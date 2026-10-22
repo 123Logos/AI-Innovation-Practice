@@ -9,6 +9,7 @@
 - [接口文档](docs/API.md)：REST/SSE/WebRTC 适配层、数据格式、错误码和权限
 - [数据库设计](docs/DATABASE.md)：MySQL 逻辑模型、约束、索引原则和第一版 DDL
 - [测试文档](docs/TESTING.md)：测试策略、错误编号、用例、预期输出和发布门槛
+- [项目当前进度](docs/PROJECT_STATUS.md)：已实现范围、验证结果、待办事项和 AI 更新协议
 - [.env.example](.env.example)：不含真实密钥的配置模板
 - [产品设想文档](产品设想文档.md)：原始需求与扩展建议
 

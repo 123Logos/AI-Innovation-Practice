@@ -46,3 +46,6 @@ frontend/.cache/
 Thumbs.db
 *.swp
 *.swo
+
+# AI Agents files
+.github
