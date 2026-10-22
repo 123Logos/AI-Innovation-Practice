@@ -7,6 +7,7 @@
 - [产品需求文档](docs/PRD.md)：用户、范围、功能、创新点、指标和验收标准
 - [开发与架构文档](docs/DEVELOPMENT.md)：技术栈、目录、AI、安全、测试和部署
 - [接口文档](docs/API.md)：REST/SSE/WebRTC 适配层、数据格式、错误码和权限
+- [数据库设计](docs/DATABASE.md)：MySQL 逻辑模型、约束、索引原则和第一版 DDL
 - [测试文档](docs/TESTING.md)：测试策略、错误编号、用例、预期输出和发布门槛
 - [.env.example](.env.example)：不含真实密钥的配置模板
 - [产品设想文档](产品设想文档.md)：原始需求与扩展建议
@@ -19,6 +20,9 @@
 - 异步任务：Redis + Worker
 - 文件：S3 兼容私有对象存储
 - 部署：Docker Compose + 反向代理 + HTTPS
+
+当前项目使用 MySQL 数据库 `ai_innovation_practice`。本地配置请以 `.env.example` 为模板，
+并通过 `DATABASE_URL` 指向该数据库。
 
 ## 配置安全
 
