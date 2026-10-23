@@ -1,3 +1,5 @@
+> 【范围声明】本文件为原始产品设计参考，非 Phase 1 实现依据。Phase 1 实现范围以 docs/MVP_SCOPE.md 为准；本文件中属于 MVP_SCOPE.md 冻结清单的功能，Phase 1 不实现、不排期、不建表。两者冲突时以 MVP_SCOPE.md 为准。
+
 # AI赋能职业发展和面试指导平台
 
 ## 1. 文档说明

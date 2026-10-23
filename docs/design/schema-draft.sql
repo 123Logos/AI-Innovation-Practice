@@ -1,3 +1,5 @@
+-- 本文件是领域设计草案，不是迁移源。Phase 1 实际迁移以 Alembic 为准，仅建 users/student_profiles/skills/experiences/resumes 五张表。
+
 CREATE DATABASE IF NOT EXISTS ai_innovation_practice
   CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 USE ai_innovation_practice;

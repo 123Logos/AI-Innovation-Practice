@@ -1,3 +1,5 @@
+> 【范围声明】本文件为测试设计参考，非 Phase 1 实现依据。Phase 1 测试范围以 docs/MVP_SCOPE.md 为准；本文件中属于 MVP_SCOPE.md 冻结清单的功能或依赖，Phase 1 不实现、不排期、不建表。与 docs/MVP_SCOPE.md 或 AGENTS.md 冲突时，以后两者为准；本文件不扩大 Phase 1 范围。
+
 # 测试文档
 
 ## 1. 文档信息与目标
