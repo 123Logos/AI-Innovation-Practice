@@ -167,3 +167,4 @@ uv run uvicorn app.main:app --reload
 结构化日志包含 request ID、用户/组织哈希、路由、状态码、耗时和错误码；指标包含 API 延迟、AI 成功率、任务积压、数据库连接、导出量和授权拒绝量。告警不得把敏感请求体直接发送到第三方。
 
 参考：[OWASP API Security Top 10 2023](https://api-security.owasp.org/editions/2023/en/0x11-t10/)、[W3C WebRTC Recommendation](https://www.w3.org/TR/webrtc/)、[ISO/IEC 25010:2023](https://www.iso.org/standard/78176.html)。
+所有文本文件统一 UTF-8 无 BOM；Windows 下用 Get-Content -Encoding utf8 查看，避免乱码。
