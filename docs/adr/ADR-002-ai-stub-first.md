@@ -14,7 +14,7 @@ Phase 1 的验收标准是：**生成结果整洁规范、不超过一页 A4、�
 
 ## 决策
 
-**Phase 1 采用“adapter 接口 + stub/模板实现”，不接真实 DeepSeek。**
+**Phase 1 采用“adapter 接口 + stub/模板实现”，使用固定模板渲染，不要求真实调用 DeepSeek。**
 
 具体：
 
