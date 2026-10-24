@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,10 +13,7 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:5173"
     allowed_origins: str = "http://localhost:5173"
     enable_api_docs: bool = True
-    database_url: str = Field(
-        default="mysql+aiomysql://career_app:change-me@127.0.0.1:3306/"
-        "ai_innovation_practice?charset=utf8mb4"
-    )
+    database_url: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -24,6 +21,12 @@ class Settings(BaseSettings):
         extra="ignore",
         case_sensitive=False,
     )
+
+    @model_validator(mode="after")
+    def validate_production_database_url(self) -> "Settings":
+        if self.environment == "production" and not self.database_url:
+            raise ValueError("database_url is required when environment is production")
+        return self
 
     @property
     def cors_origins(self) -> list[str]:

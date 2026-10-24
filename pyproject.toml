@@ -17,13 +17,62 @@ dependencies = [
 [dependency-groups]
 dev = [
     "httpx>=0.27.0",
+    "import-linter>=2.3.0",
+    "mypy>=1.13.0",
     "pytest>=8.3.0",
     "ruff>=0.17.1",
 ]
 
+[tool.importlinter]
+root_package = "app"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Application layers"
+type = "layers"
+layers = [
+    "app.api",
+    "app.services",
+    "app.repositories",
+    "app.integrations",
+]
+
+[[tool.importlinter.contracts]]
+name = "Services cannot depend on FastAPI"
+type = "forbidden"
+source_modules = ["app.services"]
+forbidden_modules = ["fastapi"]
+
+[[tool.importlinter.contracts]]
+name = "API cannot depend on repositories"
+type = "forbidden"
+source_modules = ["app.api"]
+forbidden_modules = ["app.repositories"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "API cannot depend on integrations"
+type = "forbidden"
+source_modules = ["app.api"]
+forbidden_modules = ["app.integrations"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "Repositories cannot depend on services"
+type = "forbidden"
+source_modules = ["app.repositories"]
+forbidden_modules = ["app.services"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py313"
+
+[tool.mypy]
+python_version = "3.13"
+ignore_missing_imports = true
+disallow_untyped_defs = false
+warn_unused_configs = true
+exclude = "tests/test_(migrations|resumes_generate)\\.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

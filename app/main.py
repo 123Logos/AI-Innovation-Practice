@@ -2,17 +2,25 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse
+from sqlalchemy import create_engine, text
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.router import router
 from app.core.config import get_settings
-from app.core.responses import error_response
+from app.core.errors import error_response
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    settings = get_settings()
+    if settings.database_url:
+        with create_engine(settings.database_url).connect() as connection:
+            connection.execute(text("SELECT 1"))
     yield
 
 
@@ -38,8 +46,45 @@ def create_app() -> FastAPI:
     async def unhandled_exception(request: Request, _: Exception) -> JSONResponse:
         return JSONResponse(
             status_code=500,
-            content=error_response(request, "INTERNAL_ERROR", "服务暂时不可用，请稍后重试。"),
+            content=error_response(
+                request,
+                "INTERNAL_ERROR",
+                "服务暂时不可用，请稍后重试。",
+            ),
         )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception(
+        request: Request,
+        exc: StarletteHTTPException,
+    ) -> JSONResponse:
+        if exc.status_code == 404:
+            code = "NOT_FOUND"
+            message = "资源不存在。"
+        elif 400 <= exc.status_code < 500:
+            code = "CLIENT_ERROR"
+            message = str(exc.detail)
+        else:
+            code = "INTERNAL_ERROR"
+            message = "服务暂时不可用，请稍后重试。"
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=error_response(request, code, message, details={"detail": exc.detail}),
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception(
+        request: Request,
+        exc: RequestValidationError,
+    ) -> JSONResponse:
+        details = jsonable_encoder(exc.errors())
+        body = error_response(
+            request,
+            "VALIDATION_ERROR",
+            "请求参数校验失败。",
+            details=details,
+        )
+        return JSONResponse(status_code=422, content=body)
 
     app.include_router(router, prefix="/api/v1")
 

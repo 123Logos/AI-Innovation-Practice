@@ -48,4 +48,4 @@ Thumbs.db
 *.swo
 
 # AI Agents files
-.github
+.github/copilot-instructions.md

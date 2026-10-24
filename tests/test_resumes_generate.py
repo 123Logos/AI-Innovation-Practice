@@ -117,4 +117,4 @@ def test_generate_rejects_missing_title() -> None:
     response = client.post("/api/v1/resumes/generate", json=invalid)
 
     assert response.status_code == 422
-    assert "title" in response.json()["detail"][0]["loc"]
+    assert "title" in response.json()["error"]["details"][0]["loc"]
