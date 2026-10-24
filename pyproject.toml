@@ -5,8 +5,12 @@ description = "AI-powered career development and interview guidance platform"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "alembic>=1.14.0",
     "fastapi>=0.115.0",
     "pydantic-settings>=2.6.0",
+    "pymysql>=1.1.0",
+    "cryptography>=41.0.0,<42",
+    "sqlalchemy>=2.0.36",
     "uvicorn[standard]>=0.32.0",
 ]
 
@@ -14,7 +18,7 @@ dependencies = [
 dev = [
     "httpx>=0.27.0",
     "pytest>=8.3.0",
-    "ruff>=0.8.0",
+    "ruff>=0.17.1",
 ]
 
 [tool.ruff]
