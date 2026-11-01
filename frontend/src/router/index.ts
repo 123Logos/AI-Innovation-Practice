@@ -1,14 +1,14 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
-import DashboardView from '@/views/DashboardView.vue'
+import ResumeEditorView from '@/views/ResumeEditorView.vue'
 
 export default createRouter({
   history: createWebHistory(),
   routes: [
     {
       path: '/',
-      name: 'dashboard',
-      component: DashboardView,
+      name: 'resume-editor',
+      component: ResumeEditorView,
     },
   ],
 })
