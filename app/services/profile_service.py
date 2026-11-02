@@ -1,16 +1,26 @@
 """档案业务逻辑：读取当前用户档案、整体保存（PUT 语义）。
 
 本层不接触 HTTP：未填写档案返回 None，由 API 层决定用空结构还是状态码表达。
+
+T7.5：教育经历与 skills / experiences 一样走「先删后插」的全量替换，
+不新增表外的任何状态；`grade` 已下架，不参与保存。
 """
 
 from app.repositories.student_profile_repository import (
+    EducationDraft,
     ExperienceDraft,
     ProfileDraft,
     SkillDraft,
     StudentProfile,
     StudentProfileRepository,
 )
-from app.schemas.profile import ExperienceRead, ProfileRead, ProfileUpsertRequest, SkillRead
+from app.schemas.profile import (
+    EducationRead,
+    ExperienceRead,
+    ProfileRead,
+    ProfileUpsertRequest,
+    SkillRead,
+)
 
 
 class ProfileService:
@@ -29,7 +39,7 @@ class ProfileService:
             ProfileDraft(
                 full_name=payload.full_name,
                 major=payload.major,
-                grade=payload.grade,
+                # 年级列仍在库里但产品已移除该字段：不再写入任何业务值（见仓储）。
                 contact=payload.contact,
             ),
             [
@@ -45,6 +55,16 @@ class ProfileService:
                     responsibility=experience.responsibility,
                 )
                 for experience in payload.experiences
+            ],
+            [
+                EducationDraft(
+                    school=education.school,
+                    major=education.major,
+                    degree=education.degree,
+                    edu_start=education.edu_start,
+                    edu_end=education.edu_end,
+                )
+                for education in payload.educations
             ],
         )
         saved = self._repository.get_by_user_id(user_id)
@@ -69,5 +89,9 @@ class ProfileService:
             experiences=[
                 ExperienceRead.model_validate(experience)
                 for experience in self._repository.list_experiences(profile.id)
+            ],
+            educations=[
+                EducationRead.model_validate(education)
+                for education in self._repository.list_educations(profile.id)
             ],
         )

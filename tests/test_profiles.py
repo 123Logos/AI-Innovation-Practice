@@ -1,6 +1,6 @@
 """T7.2 集成测试：学生档案读写，连接真实 MySQL（TEST_DATABASE_URL）。
 
-覆盖：鉴权 → 未填写档案返回空结构 → PUT 落库（profiles/skills/experiences 三张表）
+覆盖：鉴权 → 未填写档案返回空结构 → PUT 落库（profiles/skills/experiences/educations）
 → 二次 PUT 全量替换 → 跨用户隔离 → 请求校验边界。
 建表走 Alembic 迁移（与生产同一条链路），测试前后 upgrade head / downgrade base。
 """
@@ -30,7 +30,14 @@ REGISTER_URL = "/api/v1/auth/register"
 LOGIN_URL = "/api/v1/auth/login"
 PASSWORD = "Passw0rd!2026"
 # 外键为 RESTRICT，清理必须从子表到父表。
-CLEAN_ORDER = ("resumes", "skills", "experiences", "student_profiles", "users")
+CLEAN_ORDER = (
+    "resumes",
+    "educations",
+    "skills",
+    "experiences",
+    "student_profiles",
+    "users",
+)
 
 
 def _delete_all_rows() -> None:
@@ -76,14 +83,32 @@ def _experience(
     return payload
 
 
+def _education(
+    school: str = "示例大学",
+    major: str = "计算机科学与技术",
+    degree: str = "本科",
+    edu_start: str = "2021-09-01",
+    edu_end: str | None = "2025-06-30",
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "school": school,
+        "major": major,
+        "degree": degree,
+        "edu_start": edu_start,
+    }
+    if edu_end is not None:
+        payload["edu_end"] = edu_end
+    return payload
+
+
 def _profile_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "full_name": "张三",
         "major": "计算机科学与技术",
-        "grade": "大三",
         "contact": "13800000000",
         "skills": [_skill("Python", 4), _skill("SQL"), _skill("React")],
         "experiences": [_experience()],
+        "educations": [_education()],
     }
     payload.update(overrides)
     return payload
@@ -135,7 +160,9 @@ def test_get_profile_returns_null_before_creation(client: TestClient) -> None:
     assert _count("student_profiles") == 0
 
 
-def test_put_profile_persists_profile_skills_and_experiences(client: TestClient) -> None:
+def test_put_profile_persists_profile_skills_experiences_and_educations(
+    client: TestClient,
+) -> None:
     token = _register_and_login(client)
 
     response = client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token))
@@ -144,17 +171,22 @@ def test_put_profile_persists_profile_skills_and_experiences(client: TestClient)
     profile = response.json()["data"]["profile"]
     assert profile["full_name"] == "张三"
     assert profile["major"] == "计算机科学与技术"
-    assert profile["grade"] == "大三"
+    # 年级已下架：列还在，但不再写业务值。
+    assert profile["grade"] == ""
     assert profile["contact"] == "13800000000"
     assert {skill["name"] for skill in profile["skills"]} == {"Python", "SQL", "React"}
     assert len(profile["experiences"]) == 1
     assert profile["experiences"][0]["title"] == "校园二手交易平台"
+    assert len(profile["educations"]) == 1
+    assert profile["educations"][0]["school"] == "示例大学"
+    assert profile["educations"][0]["degree"] == "本科"
     assert profile["created_at"] and profile["updated_at"]
 
-    # 库内三张表都要有真实记录，且 profile.user_id 指向当前登录用户
+    # 库内四张子/父表都要有真实记录，且 profile.user_id 指向当前登录用户
     assert _count("student_profiles") == 1
     assert _count("skills") == 3
     assert _count("experiences") == 1
+    assert _count("educations") == 1
     with get_engine().connect() as connection:
         row = connection.execute(
             text(
@@ -170,6 +202,90 @@ def test_put_profile_persists_profile_skills_and_experiences(client: TestClient)
     read_back = client.get(PROFILES_URL, headers=_headers(token))
     assert read_back.status_code == 200
     assert read_back.json()["data"]["profile"]["id"] == profile["id"]
+
+
+def test_put_profile_keeps_multiple_educations_then_replaces_them(client: TestClient) -> None:
+    """T7.5：教育经历是一对多子表，PUT 语义为全量替换（先删后插）。"""
+    token = _register_and_login(client)
+    two = _profile_payload(
+        educations=[
+            _education(
+                school="清华大学",
+                major="软件工程",
+                degree="硕士",
+                edu_start="2025-09-01",
+                edu_end=None,
+            ),
+            _education(school="示例大学", major="计算机科学与技术", degree="本科"),
+        ]
+    )
+
+    first = client.put(PROFILES_URL, json=two, headers=_headers(token))
+
+    assert first.status_code == 200, first.text
+    educations = first.json()["data"]["profile"]["educations"]
+    assert len(educations) == 2
+    assert _count("educations") == 2
+    with get_engine().connect() as connection:
+        rows = connection.execute(
+            text("SELECT school, major, degree, edu_start, edu_end FROM educations ORDER BY edu_start")
+        ).all()
+    assert [row.school for row in rows] == ["示例大学", "清华大学"]
+    assert rows[1].degree == "硕士"
+    assert rows[1].edu_end is None  # 在读：edu_end 为 NULL
+    assert str(rows[0].edu_end) == "2025-06-30"
+
+    second = client.put(
+        PROFILES_URL,
+        json=_profile_payload(educations=[_education(school="示例大学", degree="专科")]),
+        headers=_headers(token),
+    )
+
+    assert second.status_code == 200, second.text
+    replaced = second.json()["data"]["profile"]["educations"]
+    assert len(replaced) == 1
+    assert replaced[0]["degree"] == "专科"
+    # 旧的两行必须被物理删除，不能残留
+    assert _count("educations") == 1
+    with get_engine().connect() as connection:
+        remaining = connection.execute(text("SELECT school, degree FROM educations")).all()
+    assert [(row.school, row.degree) for row in remaining] == [("示例大学", "专科")]
+
+
+def test_put_profile_rejects_unknown_degree(client: TestClient) -> None:
+    token = _register_and_login(client)
+    payload = _profile_payload(educations=[_education(degree="博士后")])
+
+    response = client.put(PROFILES_URL, json=payload, headers=_headers(token))
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert _count("educations") == 0
+
+
+def test_put_profile_rejects_education_date_range_violation(client: TestClient) -> None:
+    token = _register_and_login(client)
+    payload = _profile_payload(
+        educations=[_education(edu_start="2025-06-01", edu_end="2021-09-01")]
+    )
+
+    response = client.put(PROFILES_URL, json=payload, headers=_headers(token))
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_put_profile_allows_empty_educations(client: TestClient) -> None:
+    """未填写教育经历时不该被后端拦住（生成器负责跳过整块）。"""
+    token = _register_and_login(client)
+
+    response = client.put(
+        PROFILES_URL, json=_profile_payload(educations=[]), headers=_headers(token)
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["profile"]["educations"] == []
+    assert _count("educations") == 0
 
 
 def test_put_profile_replaces_children_on_second_call(client: TestClient) -> None:
@@ -203,6 +319,7 @@ def test_put_profile_replaces_children_on_second_call(client: TestClient) -> Non
     assert _count("student_profiles") == 1
     assert _count("skills") == 4
     assert _count("experiences") == 2
+    assert _count("educations") == 1
 
 
 def test_profiles_are_isolated_per_user(client: TestClient) -> None:

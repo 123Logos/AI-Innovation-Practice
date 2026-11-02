@@ -6,6 +6,7 @@
 from app.integrations.resume_generator import ResumeGenerator
 from app.repositories.resume_repository import ResumeRepository
 from app.repositories.student_profile_repository import StudentProfileRepository
+from app.schemas.profile import EducationInput
 from app.schemas.resume import (
     ExperienceInput,
     ProfileInput,
@@ -36,6 +37,7 @@ class ResumeService:
             raise ProfileIncompleteError(user_id)
         skills = self._profile_repository.list_skills(profile.id)
         experiences = self._profile_repository.list_experiences(profile.id)
+        educations = self._profile_repository.list_educations(profile.id)
         if not skills or not experiences:
             raise ProfileIncompleteError(user_id)
 
@@ -43,7 +45,6 @@ class ResumeService:
             profile=ProfileInput(
                 full_name=profile.full_name,
                 major=profile.major,
-                grade=profile.grade,
                 contact=profile.contact,
             ),
             skills=[
@@ -60,6 +61,16 @@ class ResumeService:
                 for experience in experiences
             ],
             title=payload.title,
+            educations=[
+                EducationInput(
+                    school=education.school,
+                    major=education.major,
+                    degree=education.degree,  # type: ignore[arg-type]
+                    edu_start=education.edu_start,
+                    edu_end=education.edu_end,
+                )
+                for education in educations
+            ],
         )
         resume = self._resume_repository.create_resume(
             student_profile_id=profile.id,

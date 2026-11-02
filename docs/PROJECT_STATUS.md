@@ -37,7 +37,7 @@
 
 | 项 | 对应任务 | 状态 |
 |---|---|---|
-| Alembic 基线 + 5 张表迁移 | T4 | 已验证 |
+| Alembic 基线 + 5 张表迁移 | T4 | 已验证（T7.5 追加第 6 张表 `educations`，见下） |
 | fake 垂直切片 + 集成测试 | T5 | 已验证；T7.2 起被真实仓储取代，`fake_resume_repository.py` 仅留存不再被路由引用 |
 | import-linter 架构约束 | T6 | 已验证（5 个 contract 全部通过） |
 | 配置 fail-fast + `.env.example` | T6 | 已验证 |
@@ -45,8 +45,9 @@
 | CI 四件套 | T6 | 已配置，未在 GitHub 运行 |
 | T7.4 前端组件与本地状态流转 | T7 | 已验证（typecheck/build 通过） |
 | 注册/登录/JWT 鉴权基建 | T7.1 | 已验证（`tests/test_auth.py` 12 passed，连 `resume_mvp_test`） |
-| 真实档案仓储 + 档案接口 | T7.2 | 已验证（`tests/test_profiles.py` 10 passed，写满三张表） |
-| 简历生成落真实库 | T7.2 | 已验证（`tests/test_resumes_generate.py` 7 passed，写入 `resumes`） |
+| 真实档案仓储 + 档案接口 | T7.2 | 已验证（`tests/test_profiles.py` 14 passed，写满四张表） |
+| 简历生成落真实库 | T7.2 | 已验证（`tests/test_resumes_generate.py` 8 passed，写入 `resumes`） |
+| 多段教育经历（`educations` 子表） | T7.5 | 已验证：迁移 `20261102_0002`（upgrade/downgrade 可逆）；`tests/test_profiles.py` 覆盖「两段 → 一段」全量替换；生成器按入学时间倒序渲染教育区块 |
 | 真实链路 + 真实用户验证 | T7 | 未开始（后端链路已通，前端仍未接 API） |
 
 ## 3. 已验证 / 未验证
@@ -57,8 +58,8 @@
 | 数据库迁移可跑通 | **已验证** | `alembic/versions/20261023_0001_initial_phase1.py`、`tests/test_migrations.py`、`uv run pytest` 1 passed、MySQL 8.0.43、Ruff 0.17.1 全绿 |
 | 注册/登录写入真实 MySQL | **已验证** | `uv run pytest tests/test_auth.py -v` 12 passed（201 注册 + 库内记录断言、重复用户名/邮箱 400、登录 200 + Bearer、错密码/未知用户 401、`/auth/me` 200、六种无效令牌 401） |
 | JWT 生产 fail-fast | **已验证** | `Settings(environment="production")` 缺 `jwt_secret_key` 或不足 32 位均抛 `ValueError` |
-| 档案读写写入真实 MySQL | **已验证** | `uv run pytest tests/test_profiles.py -v` 10 passed：PUT 后 `student_profiles` 1 行 / `skills` 3 行 / `experiences` 1 行，二次 PUT 全量替换为 4/2 且 profile id 不变，两用户互不可见 |
-| 简历生成写入真实 MySQL | **已验证** | `uv run pytest tests/test_resumes_generate.py -v` 7 passed：注册→PUT 档案→生成，断言 `resumes` 行的 id / student_profile_id / title / content_html 与响应一致；未登录 401；无档案 400 |
+| 档案读写写入真实 MySQL | **已验证** | `uv run pytest tests/test_profiles.py -v` 14 passed：PUT 后 `student_profiles` 1 行 / `skills` 3 行 / `experiences` 1 行 / `educations` 1 行；教育经历 2 段再改 1 段时旧行被物理删除；二次 PUT 技能/经历全量替换且 profile id 不变；两用户互不可见 |
+| 简历生成写入真实 MySQL | **已验证** | `uv run pytest tests/test_resumes_generate.py -v` 8 passed：注册→PUT 档案→生成，断言 `resumes` 行的 id / student_profile_id / title / content_html 与响应一致；教育区块含学校/专业/学历/起止时间且按入学时间倒序，无教育经历时整块不渲染；未登录 401；无档案 400 |
 | 业务链路可跑通 | **已验证（后端）** | 后端从注册到简历落库全链路已通；前端仍未接 API |
 | 手机/电脑可用 | **未验证** | 无真实用户记录 |
 | AI 生成简历 | **未验证** | 仍是 `TemplateResumeGenerator` 模板拼装 |
@@ -109,12 +110,32 @@
   （任务允许 404 或空结构，这里选空结构以免前端把「还没填」当错误）；
   `docs/API.md` 仍未登记 auth / profiles 端点；`app/api/router.py` 里旧的
   `GET /api/v1/me`（返回 `authenticated: false`）占位未清理，不在授权范围。
+- T7.5：新增迁移 `20261102_0002_educations.py`（`educations` 表：id / student_profile_id
+  FK RESTRICT / school / major / degree（CHECK 专科·本科·硕士·博士）/ edu_start / edu_end
+  NULL / created_at·updated_at DATETIME(6)，含 `ix_educations_student_profile_id` 与
+  `ck_educations_date_range`，downgrade 为 `drop_table`）。
+  仓储、`ProfileUpsertRequest` / `ProfileRead`、`ProfileService` 全部加上 educations
+  （先删后插，与 skills/experiences 同策略）；生成器在「基本信息」之后插入「教育经历」
+  区块，按 `edu_start` 倒序渲染「学校 / 专业 ｜ 学历 ｜ 2021.09 — 2025.06（或至今）」，
+  无数据时整块不渲染。前端移除「年级」输入与预览中的年级段，新增教育经历动态列表
+  （默认 1 段、可增删、至少保留 1 段、必填项带星号），store 的 `ProfileDraft` 增加
+  `educations`、payload 里 `YYYY-MM` 补成 `YYYY-MM-01`，旧草稿缺该字段时补空数组。
+  验证：`uv run pytest -q` 45 passed（连 `resume_mvp_test`）；`ruff` / `mypy` /
+  `lint-imports`（5/5）全绿；前端 `npm run typecheck` / `npm run build` 通过；
+  迁移在测试库上跑通 `downgrade base → upgrade head` 两轮。
+- T7.5 越界声明：除授权清单外还改了 4 个文件，均为「不改就跑不通」的连带改动 ——
+  `app/schemas/resume.py`（`ProfileInput` 去掉 `grade`：库里该列已恒为空串，
+  留着会触发 `min_length=1` 校验直接炸掉生成接口）、`app/services/resume_service.py`
+  （把 educations 传给生成器，约 10 行）、`frontend/src/api/types.ts`（补 EducationInput /
+  EducationRead，否则 typecheck 必红）、`tests/test_migrations.py`（表集合与 FK 集合是
+  精确断言，新增表必然变红，且「downgrade 后 educations 消失」的用例要求写在这里）。
+  另：`grade` 列保留在库中但前后端都不再写业务值（恒写空串），未删列、未改表结构。
 
 ## 7. 本轮未做（显式声明）
 
 - 未新增简历列表 / 详情 / 编辑接口，`resumes` 表只有写入路径。
 - 未新增或修改任何数据库表、迁移（`student_profiles` / `skills` / `experiences` / `resumes`
-  均为 T4 既有表）。
+  均为 T4 既有表）。**T7.5 例外**：新增 `educations` 表与迁移 `20261102_0002`，见 §6。
 - 未修改 `app/integrations/`（模板生成器原样）、`app/repositories/fake_resume_repository.py`、
   `app/core/security.py` 等 T7.1 鉴权核心，也未改 `frontend/` 下任何文件。
 - 档案写入的边界（3–8 技能、1–3 经历）沿用 T5 原契约，未放宽也未收紧。

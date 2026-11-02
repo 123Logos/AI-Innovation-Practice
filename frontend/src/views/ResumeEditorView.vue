@@ -1,15 +1,24 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 import AppTopBar from '@/components/AppTopBar.vue'
 import ResumeEditor from '@/components/ResumeEditor.vue'
 import ResumePreview from '@/components/ResumePreview.vue'
 import StylePanel from '@/components/StylePanel.vue'
 import { isApiError } from '@/api'
+import { useAuthStore } from '@/stores/auth'
 import { useResumeStore } from '@/stores/resume'
 
+const auth = useAuthStore()
 const store = useResumeStore()
 const loadError = ref('')
+
+/** 草稿写入时间，仅用于提示文案。 */
+const draftSavedAt = computed(() => {
+  const at = store.pendingDraft?.saved_at
+  if (!at) return ''
+  return new Date(at).toLocaleString('zh-CN', { hour12: false })
+})
 
 onMounted(async () => {
   try {
@@ -18,7 +27,19 @@ onMounted(async () => {
     loadError.value = isApiError(error)
       ? `读取档案失败：${error.message}`
       : '读取档案失败，请刷新页面重试。'
+    // 读取失败时表单是空白骨架，若此时开启自动保存会覆盖已有草稿，所以直接返回。
+    return
   }
+
+  const ownerId = auth.user?.id
+  if (!ownerId) return
+  store.startDraftAutosave(ownerId)
+  // 必须在 loadFromServer() 之后：判定「草稿是否值得恢复」的基准是服务端数据。
+  store.detectLocalDraft(ownerId)
+})
+
+onUnmounted(() => {
+  store.stopDraftAutosave()
 })
 </script>
 
@@ -28,6 +49,23 @@ onMounted(async () => {
 
     <p v-if="loadError" class="load-error">{{ loadError }}</p>
     <p v-else-if="store.loading" class="load-hint">正在加载档案…</p>
+
+    <div v-if="store.pendingDraft" class="draft-banner-shell">
+      <section class="draft-banner">
+        <p class="draft-banner__text">
+          检测到上次未保存的草稿<template v-if="draftSavedAt">（{{ draftSavedAt }}）</template>，
+          是否恢复？
+        </p>
+        <div class="draft-banner__actions">
+          <button class="draft-banner__restore" type="button" @click="store.restoreDraft()">
+            恢复草稿
+          </button>
+          <button class="draft-banner__discard" type="button" @click="store.discardDraft()">
+            丢弃
+          </button>
+        </div>
+      </section>
+    </div>
 
     <main class="resume-workspace">
       <ResumeEditor class="editor" />
@@ -47,20 +85,43 @@ onMounted(async () => {
 .load-error, .load-hint { width: min(1440px, 100%); margin: 0 auto; padding: 12px 48px 0; font-size: 13px; }
 .load-error { color: #9a5e58; }
 .load-hint { color: #879692; }
+
+/* 本地草稿恢复提示：用页面内联条，不用 window.confirm —— 可样式化、不阻塞、可测。 */
+.draft-banner-shell { width: min(1440px, 100%); margin: 0 auto; padding: 12px 48px 0; }
+.draft-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
+  border: 1px solid #b8c8c4;
+  border-left: 4px solid #527873;
+  padding: 12px 16px;
+  background: #edf4f2;
+}
+.draft-banner__text { margin: 0; color: #2f4f4a; font-size: 13px; line-height: 1.5; }
+.draft-banner__actions { display: flex; gap: 8px; }
+.draft-banner__restore { border: 1px solid #527873; padding: 8px 16px; color: #fff; background: #527873; cursor: pointer; font: inherit; font-size: 13px; }
+.draft-banner__restore:hover { background: #3f635e; }
+.draft-banner__discard { border: 1px solid #b8c8c4; padding: 8px 16px; color: #52635f; background: #fff; cursor: pointer; font: inherit; font-size: 13px; }
+.draft-banner__discard:hover { border-color: #c9b1ae; color: #9a5e58; }
+.draft-banner__restore:focus-visible, .draft-banner__discard:focus-visible { outline: 2px solid #6b8f8a; outline-offset: 2px; }
 @media (max-width: 1100px) {
   .resume-workspace { grid-template-columns: 300px minmax(380px, 1fr); gap: 24px; padding: 24px 28px 56px; }
   .style-panel { grid-column: 1 / -1; }
-  .load-error, .load-hint { padding: 12px 28px 0; }
+  .load-error, .load-hint, .draft-banner-shell { padding: 12px 28px 0; }
 }
 @media (max-width: 760px) {
   .resume-workspace { grid-template-columns: 1fr; gap: 24px; padding: 20px 16px 48px; }
   .editor, .style-panel { grid-column: auto; }
   .footer-hint { grid-column: auto; }
-  .load-error, .load-hint { padding: 12px 16px 0; }
+  .load-error, .load-hint, .draft-banner-shell { padding: 12px 16px 0; }
+  .draft-banner { flex-direction: column; align-items: stretch; }
+  .draft-banner__actions { justify-content: flex-end; }
 }
 @media print {
   .app-shell { background: #fff; }
   .resume-workspace { display: block; padding: 0; }
-  .editor, .style-panel, .footer-hint, .load-error, .load-hint { display: none; }
+  .editor, .style-panel, .footer-hint, .load-error, .load-hint, .draft-banner-shell { display: none; }
 }
 </style>

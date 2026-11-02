@@ -11,9 +11,14 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class ProfileInput(BaseModel):
+    """生成器需要的基本信息。
+
+    T7.5 起不再包含 `grade`（年级已从产品下架），避免调用方被一个
+    「库里恒为空串」的字段卡在校验上。
+    """
+
     full_name: str = Field(min_length=1, max_length=100)
     major: str = Field(min_length=1, max_length=100)
-    grade: str = Field(min_length=1, max_length=50)
     contact: str = Field(min_length=1, max_length=255)
 
 

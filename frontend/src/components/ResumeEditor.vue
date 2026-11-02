@@ -2,13 +2,20 @@
 import { ref } from 'vue'
 
 import { isApiError } from '@/api'
-import { EXPERIENCE_LIMIT, SKILL_LIMIT, useResumeStore } from '@/stores/resume'
+import {
+  DEGREE_OPTIONS,
+  EDUCATION_LIMIT,
+  EXPERIENCE_LIMIT,
+  SKILL_LIMIT,
+  useResumeStore,
+} from '@/stores/resume'
+import type { EducationDraft } from '@/stores/resume'
 
 const store = useResumeStore()
 
 const feedback = ref<{ tone: 'ok' | 'error'; text: string } | null>(null)
 
-type ProfileField = 'full_name' | 'major' | 'grade' | 'contact'
+type ProfileField = 'full_name' | 'major' | 'contact'
 
 function onProfileInput(field: ProfileField, event: Event): void {
   store.updateProfileField(field, (event.target as HTMLInputElement).value)
@@ -18,8 +25,9 @@ function onSkillName(index: number, event: Event): void {
   store.updateSkill(index, 'name', (event.target as HTMLInputElement).value)
 }
 
-function onSkillRating(index: number, event: Event): void {
-  store.updateSkill(index, 'self_rating', Number((event.target as HTMLSelectElement).value))
+function onEducationInput(index: number, field: keyof EducationDraft, event: Event): void {
+  const target = event.target as HTMLInputElement | HTMLSelectElement
+  store.updateEducation(index, field, target.value)
 }
 
 function onExperienceInput(
@@ -60,23 +68,100 @@ async function handleSave(): Promise<void> {
     <section class="form-section">
       <h2>基本信息</h2>
       <label class="field">
-        <span>姓名</span>
+        <span>姓名 <b class="required">*</b></span>
         <input :value="store.draft.full_name" @input="onProfileInput('full_name', $event)" />
-      </label>
-      <label class="field">
-        <span>专业</span>
-        <input :value="store.draft.major" @input="onProfileInput('major', $event)" />
       </label>
       <div class="field-row">
         <label class="field">
-          <span>年级</span>
-          <input :value="store.draft.grade" @input="onProfileInput('grade', $event)" />
+          <span>专业 <b class="required">*</b></span>
+          <input :value="store.draft.major" @input="onProfileInput('major', $event)" />
         </label>
         <label class="field">
-          <span>联系方式</span>
+          <span>联系方式 <b class="required">*</b></span>
           <input :value="store.draft.contact" @input="onProfileInput('contact', $event)" />
         </label>
       </div>
+    </section>
+
+    <section class="form-section">
+      <div class="section-title">
+        <h2>教育经历</h2>
+        <span class="counter">{{ store.draft.educations.length }} / {{ EDUCATION_LIMIT.max }}</span>
+      </div>
+      <article
+        v-for="(education, index) in store.draft.educations"
+        :key="`edu-${index}`"
+        class="education-form"
+      >
+        <div class="section-title">
+          <span class="item-index">0{{ index + 1 }}</span>
+          <button
+            class="remove-button"
+            type="button"
+            :disabled="!store.canRemoveEducation"
+            :aria-label="`删除第 ${index + 1} 段教育经历`"
+            @click="store.removeEducation(index)"
+          >
+            ×
+          </button>
+        </div>
+        <label class="field">
+          <span>学校 <b class="required">*</b></span>
+          <input
+            :value="education.school"
+            placeholder="如 清华大学"
+            @input="onEducationInput(index, 'school', $event)"
+          />
+        </label>
+        <div class="field-row">
+          <label class="field">
+            <span>专业 <b class="required">*</b></span>
+            <input
+              :value="education.major"
+              placeholder="如 计算机科学与技术"
+              @input="onEducationInput(index, 'major', $event)"
+            />
+          </label>
+          <label class="field">
+            <span>学历 <b class="required">*</b></span>
+            <select
+              :value="education.degree"
+              @change="onEducationInput(index, 'degree', $event)"
+            >
+              <option v-for="degree in DEGREE_OPTIONS" :key="degree" :value="degree">
+                {{ degree }}
+              </option>
+            </select>
+          </label>
+        </div>
+        <div class="field-row">
+          <label class="field">
+            <span>入学时间 <b class="required">*</b></span>
+            <input
+              type="month"
+              :value="education.edu_start"
+              @input="onEducationInput(index, 'edu_start', $event)"
+            />
+          </label>
+          <label class="field">
+            <span>毕业时间（留空为「至今」）</span>
+            <input
+              type="month"
+              :value="education.edu_end"
+              @input="onEducationInput(index, 'edu_end', $event)"
+            />
+          </label>
+        </div>
+      </article>
+      <button
+        class="text-button"
+        type="button"
+        :disabled="!store.canAddEducation"
+        @click="store.addEducation"
+      >
+        + 添加教育经历
+      </button>
+      <p class="hint">教育经历至少 {{ EDUCATION_LIMIT.min }} 段、最多 {{ EDUCATION_LIMIT.max }} 段。</p>
     </section>
 
     <section class="form-section">
@@ -91,13 +176,6 @@ async function handleSave(): Promise<void> {
           placeholder="如 Python"
           @input="onSkillName(index, $event)"
         />
-        <label class="rating">
-          <span class="visually-hidden">技能 {{ index + 1 }} 自评</span>
-          <select :value="skill.self_rating" @change="onSkillRating(index, $event)">
-            <option v-for="score in 5" :key="score" :value="score">{{ score }}</option>
-          </select>
-          <span class="rating-unit">/5</span>
-        </label>
         <button
           class="remove-button"
           type="button"
@@ -215,13 +293,11 @@ textarea { min-height: 58px; resize: vertical; line-height: 1.45; }
 .field-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .text-button { justify-self: start; border: 0; padding: 0; color: #527873; background: transparent; cursor: pointer; font-size: 12px; }
 .text-button:disabled { color: #a9b6b3; cursor: not-allowed; }
-.skill-row { display: grid; grid-template-columns: minmax(0, 1fr) 84px 20px; align-items: center; gap: 8px; }
-.rating { display: flex; align-items: center; gap: 4px; }
-.rating select { padding: 9px 4px; text-align: center; }
-.rating-unit { color: #879692; font-size: 11px; }
+.skill-row { display: grid; grid-template-columns: minmax(0, 1fr) 20px; align-items: center; gap: 8px; }
 .remove-button { border: 0; padding: 0 4px; color: #9a5e58; background: transparent; cursor: pointer; font-size: 18px; line-height: 1; }
 .remove-button:disabled { color: #c9d2d0; cursor: not-allowed; }
-.experience-form { display: grid; gap: 10px; border-top: 1px solid #dde5e2; padding-top: 12px; }
+.experience-form, .education-form { display: grid; gap: 10px; border-top: 1px solid #dde5e2; padding-top: 12px; }
+.required { color: #9a5e58; font-weight: 400; }
 .item-index { color: #6b8f8a; font-family: "SF Mono", Consolas, monospace; font-size: 12px; }
 .hint { color: #879692; font-size: 11px; line-height: 1.5; }
 .save-section { display: grid; gap: 8px; border-top: 1px solid #dde5e2; padding-top: 16px; }
@@ -231,13 +307,12 @@ textarea { min-height: 58px; resize: vertical; line-height: 1.45; }
 .feedback { font-size: 12px; line-height: 1.5; }
 .feedback--ok { color: #3f7a5f; }
 .feedback--error { color: #9a5e58; }
-.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 @media (prefers-color-scheme: dark) {
   .editor-panel { color: #e8eae9; }
   .panel-intro, .field span, .hint { color: #b7c3c0; }
   input, textarea, select { border-color: #52635f; color: #e8eae9; background: #263330; }
-  .save-section, .experience-form { border-color: #52635f; }
-  .counter, .rating-unit { color: #8ea09c; }
+  .save-section, .experience-form, .education-form { border-color: #52635f; }
+  .counter { color: #8ea09c; }
 }
 @media print {
   .editor-panel { display: none; }

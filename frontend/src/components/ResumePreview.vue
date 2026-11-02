@@ -8,15 +8,32 @@ const store = useResumeStore()
 /**
  * 后端 `TemplateResumeGenerator` 返回的是完整 HTML 文档（含 `<html><head>`），
  * 直接塞进纸面会带上不需要的文档级标签，所以只取 `<body>` 内部内容。
+ *
+ * 这里只做「取 body」，不再对文本做任何改写：
+ * 技能熟练度已从后端模板中彻底移除，落库的 HTML 本身是干净的，
+ * 前端若再剥离一次，反而会掩盖后端回归问题。
  */
 const generatedBody = computed(() => {
   const html = store.generatedHtml
   if (!html) return ''
-  const parsed = new DOMParser().parseFromString(html, 'text/html')
-  return parsed.body.innerHTML
+  return new DOMParser().parseFromString(html, 'text/html').body.innerHTML
 })
 
 const generatedResumeId = computed(() => store.generatedResumeId?.slice(0, 8) ?? '')
+
+/** A4 纸上的月份展示：草稿存 `YYYY-MM`，与后端生成器的 `2021.09` 保持一致。 */
+function toDisplayMonth(value: string): string {
+  if (!value) return ''
+  return value.slice(0, 7).replace('-', '.')
+}
+
+/**
+ * 教育经历按入学时间倒序（最近一段在前），与后端生成器 `sorted(..., reverse=True)` 同序，
+ * 保证「实时预览」和「已生成简历」两套渲染的视觉顺序一致。
+ */
+const sortedEducations = computed(() =>
+  [...store.draft.educations].sort((left, right) => right.edu_start.localeCompare(left.edu_start)),
+)
 
 /**
  * 纸面编辑只在**失焦时**回写 store。
@@ -60,14 +77,15 @@ function onBlockCommit(event: Event, apply: (value: string) => void): void {
       </div>
     </div>
 
-    <article
-      v-if="store.isGeneratingResultVisible"
-      class="paper paper--generated"
-      aria-label="已生成的简历"
-      v-html="generatedBody"
-    />
+    <div class="paper-frame">
+      <article
+        v-if="store.isGeneratingResultVisible"
+        class="paper paper--generated"
+        aria-label="已生成的简历"
+        v-html="generatedBody"
+      />
 
-    <article v-else class="paper" aria-label="简历预览">
+      <article v-else class="paper" aria-label="简历预览">
       <header class="paper-header">
         <h1
           contenteditable="true"
@@ -80,12 +98,6 @@ function onBlockCommit(event: Event, apply: (value: string) => void): void {
             spellcheck="false"
             @blur="onBlockCommit($event, (value) => store.updateProfileField('major', value))"
           >{{ store.draft.major || '专业' }}</span>
-          <span class="divider">·</span>
-          <span
-            contenteditable="true"
-            spellcheck="false"
-            @blur="onBlockCommit($event, (value) => store.updateProfileField('grade', value))"
-          >{{ store.draft.grade || '年级' }}</span>
         </p>
         <p
           class="contact"
@@ -94,6 +106,22 @@ function onBlockCommit(event: Event, apply: (value: string) => void): void {
           @blur="onBlockCommit($event, (value) => store.updateProfileField('contact', value))"
         >{{ store.draft.contact || '联系方式' }}</p>
       </header>
+
+      <section v-if="sortedEducations.length" class="paper-section">
+        <h2>教育经历</h2>
+        <article
+          v-for="(education, index) in sortedEducations"
+          :key="`edu-${index}`"
+          class="paper-experience"
+        >
+          <h3 class="education-school">{{ education.school || '学校名称' }}</h3>
+          <p class="education-meta">
+            {{ education.major || '专业' }} ｜ {{ education.degree }} ｜
+            {{ toDisplayMonth(education.edu_start) || '入学时间' }} —
+            {{ toDisplayMonth(education.edu_end) || '至今' }}
+          </p>
+        </article>
+      </section>
 
       <section class="paper-section">
         <h2>技能</h2>
@@ -104,7 +132,6 @@ function onBlockCommit(event: Event, apply: (value: string) => void): void {
               spellcheck="false"
               @blur="onBlockCommit($event, (value) => store.updateSkill(index, 'name', value))"
             >{{ skill.name || '技能' }}</span>
-            <em class="rating-badge">{{ skill.self_rating }}/5</em>
           </span>
         </div>
       </section>
@@ -138,7 +165,11 @@ function onBlockCommit(event: Event, apply: (value: string) => void): void {
           >{{ experience.responsibility }}</p>
         </article>
       </section>
-    </article>
+      </article>
+
+      <!-- 水印：绝对定位在纸张右下角，pointer-events:none 不干扰纸面编辑。 -->
+      <span class="paper-watermark" aria-hidden="true">职途AI</span>
+    </div>
   </section>
 </template>
 
@@ -197,18 +228,32 @@ function onBlockCommit(event: Event, apply: (value: string) => void): void {
 .preview-button:active { background: #c6dbd6; }
 .preview-button:focus-visible { outline: 2px solid #6b8f8a; outline-offset: 2px; }
 .preview-button__icon { font-size: 16px; line-height: 1; }
+.paper-frame { position: relative; }
+.paper-watermark {
+  position: absolute;
+  right: 14px;
+  bottom: 10px;
+  z-index: 1;
+  color: #b0b0b0;
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: .08em;
+  opacity: .5;
+  pointer-events: none;
+  user-select: none;
+}
 .paper { aspect-ratio: 210 / 297; min-height: 720px; overflow: auto; padding: 56px 52px; color: #263330; background: #fff; box-shadow: 0 14px 36px #2633301c; }
 .paper-header { border-bottom: 2px solid #6b8f8a; padding-bottom: 24px; }
 .paper-header h1 { margin: 0 0 8px; font-size: 32px; font-weight: 700; }
 .subtitle { margin: 4px 0; color: #52635f; font-size: 14px; }
-.divider { padding: 0 4px; }
 .paper-header .contact { margin: 4px 0; color: #52635f; font-family: "SF Mono", Consolas, monospace; font-size: 12px; }
 .paper-section { margin-top: 28px; }
 .paper-section h2 { margin: 0 0 14px; color: #527873; font-size: 13px; letter-spacing: .14em; }
 .skill-list { display: flex; flex-wrap: wrap; gap: 10px 18px; }
 .skill-item { display: inline-flex; align-items: baseline; gap: 6px; border-bottom: 1px solid #b8c8c4; padding-bottom: 3px; font-size: 13px; }
-.rating-badge { color: #879692; font-size: 10px; font-style: normal; font-family: "SF Mono", Consolas, monospace; }
 .paper-experience { margin-bottom: 20px; }
+/* 教育区块：学校做标题，专业/学历/起止同一行，与后端生成器的 HTML 结构对齐。 */
+.education-school { margin: 0; font-size: 15px; }
 .experience-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .experience-heading h3 { margin: 0; font-size: 15px; }
 .date { color: #687875; font-size: 11px; white-space: nowrap; }
@@ -249,5 +294,17 @@ function onBlockCommit(event: Event, apply: (value: string) => void): void {
 @media print {
   .preview-toolbar { display: none; }
   .paper { min-height: 0; box-shadow: none; margin: 0; }
+  /*
+   * 水印必须打印出来：显式给色并关掉浏览器的省墨降色（print-color-adjust），
+   * 否则淡灰在部分浏览器会被优化成不可见。
+   */
+  .paper-watermark {
+    right: 6mm;
+    bottom: 4mm;
+    color: #b0b0b0;
+    opacity: .5;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
 }
 </style>

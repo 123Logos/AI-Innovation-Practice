@@ -3,7 +3,7 @@
  *
  * 字段命名与 `app/schemas/` 下的 Pydantic 模型逐一对应：
  * - `auth.py`      → UserRead / TokenResponse / RegisterRequest / LoginRequest
- * - `profile.py`   → ProfileUpsertRequest / ProfileRead / SkillRead / ExperienceRead
+ * - `profile.py`   → ProfileUpsertRequest / ProfileRead / SkillRead / ExperienceRead / EducationRead
  * - `resume.py`    → SkillInput / ExperienceInput / ResumeRead
  *
  * 所有响应都被 T6 统一响应模型包一层：成功是 `{ data, meta }`，
@@ -82,6 +82,18 @@ export interface ExperienceInput {
   responsibility: string
 }
 
+/** 学历枚举，与后端 `ck_educations_degree` 一致。 */
+export type Degree = '专科' | '本科' | '硕士' | '博士'
+
+/** 后端 `EducationInput`：日期为 `YYYY-MM-DD`，`edu_end` 为 null 表示「至今」。 */
+export interface EducationInput {
+  school: string
+  major: string
+  degree: Degree
+  edu_start: string
+  edu_end: string | null
+}
+
 export interface SkillRead extends SkillInput {
   id: string
 }
@@ -90,14 +102,20 @@ export interface ExperienceRead extends ExperienceInput {
   id: string
 }
 
+export interface EducationRead extends EducationInput {
+  id: string
+}
+
 /** 后端 `ProfileUpsertRequest`：技能 3–8 条，经历 1–3 条，技能名唯一。 */
 export interface ProfileUpsertRequest {
   full_name: string
   major: string
-  grade: string
+  /** 年级已下架，可不传。 */
+  grade?: string | null
   contact: string
   skills: SkillInput[]
   experiences: ExperienceInput[]
+  educations: EducationInput[]
 }
 
 export interface ProfileRead {
@@ -111,6 +129,7 @@ export interface ProfileRead {
   updated_at: string
   skills: SkillRead[]
   experiences: ExperienceRead[]
+  educations: EducationRead[]
 }
 
 /** `GET /api/v1/profiles/me` 未填写档案时返回 `{ profile: null }`。 */

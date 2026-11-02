@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, text
 
 from alembic import command
 
-EXPECTED_TABLES = {"experiences", "resumes", "skills", "student_profiles", "users"}
+EXPECTED_TABLES = {"educations", "experiences", "resumes", "skills", "student_profiles", "users"}
 
 
 def _database_url() -> str:
@@ -60,6 +60,7 @@ def test_upgrade_schema_constraints_and_downgrade() -> None:
             "fk_student_profiles_user_id",
             "fk_skills_student_profile_id",
             "fk_experiences_student_profile_id",
+            "fk_educations_student_profile_id",
             "fk_resumes_student_profile_id",
         }
         assert set(foreign_keys.values()) == {"RESTRICT"}
@@ -81,6 +82,25 @@ def test_upgrade_schema_constraints_and_downgrade() -> None:
             ).scalars()
         )
         assert "ck_experiences_date_range" in checks
+
+        education_checks = set(
+            connection.execute(
+                text(
+                    """
+                    SELECT cc.CONSTRAINT_NAME
+                    FROM information_schema.CHECK_CONSTRAINTS AS cc
+                    JOIN information_schema.TABLE_CONSTRAINTS AS tc
+                      ON tc.CONSTRAINT_SCHEMA = cc.CONSTRAINT_SCHEMA
+                     AND tc.CONSTRAINT_NAME = cc.CONSTRAINT_NAME
+                    WHERE cc.CONSTRAINT_SCHEMA = DATABASE()
+                      AND tc.TABLE_NAME = 'educations'
+                      AND tc.CONSTRAINT_TYPE = 'CHECK'
+                    """
+                )
+            ).scalars()
+        )
+        assert "ck_educations_degree" in education_checks
+        assert "ck_educations_date_range" in education_checks
 
         created_at_indexes = connection.execute(
             text(
@@ -136,3 +156,5 @@ def test_upgrade_schema_constraints_and_downgrade() -> None:
             ).scalars()
         )
         assert remaining_tables == {"alembic_version"}
+        # T7.5 的 downgrade 必须真的把 educations 删掉，而不是留在库里。
+        assert "educations" not in remaining_tables

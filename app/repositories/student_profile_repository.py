@@ -1,11 +1,12 @@
-"""`student_profiles` / `skills` / `experiences` 的 SQLAlchemy 映射与仓储。
+"""`student_profiles` / `skills` / `experiences` / `educations` 的映射与仓储。
 
-表结构由 `alembic/versions/20261023_0001_initial_phase1.py` 建立，本模块只做映射。
+表结构由 Alembic 迁移建立（`20261023_0001_initial_phase1` 建前四张，
+`20261102_0002_educations` 建教育经历），本模块只做映射。
 写入采用「父表 upsert + 子表全量替换」，语义对齐 PUT。
 """
 
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from uuid import uuid4
 
@@ -60,13 +61,29 @@ class Experience(ProfileBase):
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
+class Education(ProfileBase):
+    __tablename__ = "educations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    student_profile_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    school: Mapped[str] = mapped_column(String(200), nullable=False)
+    major: Mapped[str] = mapped_column(String(100), nullable=False)
+    degree: Mapped[str] = mapped_column(String(50), nullable=False)
+    edu_start: Mapped[date] = mapped_column(Date, nullable=False)
+    edu_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
 @dataclass(frozen=True)
 class ProfileDraft:
-    """仓储入参：不依赖 Pydantic，避免仓储层感知 API 模型。"""
+    """仓储入参：不依赖 Pydantic，避免仓储层感知 API 模型。
+
+    T7.5 起不含 `grade`：年级字段已从产品下架，列保留但不再写业务值。
+    """
 
     full_name: str
     major: str
-    grade: str
     contact: str
 
 
@@ -83,6 +100,15 @@ class ExperienceDraft:
     end_date: date | None
     description: str
     responsibility: str
+
+
+@dataclass(frozen=True)
+class EducationDraft:
+    school: str
+    major: str
+    degree: str
+    edu_start: date
+    edu_end: date | None
 
 
 class StudentProfileRepository:
@@ -110,14 +136,28 @@ class StudentProfileRepository:
         )
         return list(self._session.scalars(statement))
 
+    def list_educations(self, student_profile_id: str) -> list[Education]:
+        """按入学时间倒序：最近的一段学历排在最前（与简历渲染顺序一致）。"""
+        statement = (
+            select(Education)
+            .where(Education.student_profile_id == student_profile_id)
+            .order_by(Education.edu_start.desc(), Education.id)
+        )
+        return list(self._session.scalars(statement))
+
     def replace_profile(
         self,
         user_id: str,
         profile: ProfileDraft,
         skills: Sequence[SkillDraft],
         experiences: Sequence[ExperienceDraft],
+        educations: Sequence[EducationDraft],
     ) -> StudentProfile:
-        """父表不存在则建、存在则改；子表先删后插，整体一次提交。"""
+        """父表不存在则建、存在则改；子表先删后插，整体一次提交。
+
+        `grade` 已从产品中下架：列在库里保留（NOT NULL），但前后端都不再写入业务值，
+        统一落空串，避免「一个没人维护的字段」继续漂移。
+        """
         now = utc_now()
         target = self.get_by_user_id(user_id)
         if target is None:
@@ -126,14 +166,16 @@ class StudentProfileRepository:
                 user_id=user_id,
                 created_at=now,
                 updated_at=now,
-                **asdict(profile),
+                full_name=profile.full_name,
+                major=profile.major,
+                grade="",
+                contact=profile.contact,
             )
             self._session.add(target)
             self._session.flush()
         else:
             target.full_name = profile.full_name
             target.major = profile.major
-            target.grade = profile.grade
             target.contact = profile.contact
             target.updated_at = now
             self._session.flush()
@@ -142,6 +184,7 @@ class StudentProfileRepository:
         self._session.execute(
             delete(Experience).where(Experience.student_profile_id == target.id)
         )
+        self._session.execute(delete(Education).where(Education.student_profile_id == target.id))
         for skill in skills:
             self._session.add(
                 Skill(
@@ -163,6 +206,20 @@ class StudentProfileRepository:
                     end_date=experience.end_date,
                     description=experience.description,
                     responsibility=experience.responsibility,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        for education in educations:
+            self._session.add(
+                Education(
+                    id=str(uuid4()),
+                    student_profile_id=target.id,
+                    school=education.school,
+                    major=education.major,
+                    degree=education.degree,
+                    edu_start=education.edu_start,
+                    edu_end=education.edu_end,
                     created_at=now,
                     updated_at=now,
                 )
