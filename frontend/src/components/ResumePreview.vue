@@ -42,6 +42,7 @@ function onBlockCommit(event: Event, apply: (value: string) => void): void {
         class="mode-badge"
         :class="{ 'mode-badge--generated': store.isGeneratingResultVisible }"
       >
+        <span class="mode-badge__dot" aria-hidden="true"></span>
         {{ store.isGeneratingResultVisible ? '已生成简历' : '实时预览' }}
       </span>
       <div class="toolbar-right">
@@ -143,18 +144,59 @@ function onBlockCommit(event: Event, apply: (value: string) => void): void {
 
 <style scoped>
 .preview-column { min-width: 0; }
-.preview-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; color: #687875; font-size: 12px; }
-.toolbar-right { display: flex; align-items: center; gap: 12px; }
+.preview-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; color: #687875; font-size: 12px; }
+/* 右侧占满剩余宽度，让「回到实时预览」能撑开（任务 2）。 */
+.toolbar-right { display: flex; flex: 1; align-items: center; justify-content: flex-end; gap: 12px; }
 .page-count, .date, .code { font-family: "SF Mono", Consolas, monospace; }
 .code { color: #a9b6b3; }
-.mode-badge { border: 1px solid #dde5e2; padding: 3px 10px; color: #687875; background: #fff; font-size: 11px; letter-spacing: .04em; }
-.mode-badge--generated { border-color: #6b8f8a; color: #3f635e; background: #e8f0ee; }
-/* Bug 3：入口必须一眼可见——带边框 + 低饱和青绿底 + 明确 hover。 */
-.preview-button { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #6b8f8a; border-radius: 0; padding: 6px 14px; color: #3f635e; background: #e8f0ee; cursor: pointer; font: inherit; font-size: 12px; font-weight: 600; }
+/* 任务 3：状态标识要能一眼看到——16px / 700 / 深墨绿 / 浅底标签。 */
+.mode-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #9fbab4;
+  border-left: 4px solid #527873;
+  padding: 7px 14px;
+  color: #2f4f4a;
+  background: #edf4f2;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+.mode-badge__dot { width: 8px; height: 8px; border-radius: 50%; background: #527873; }
+.mode-badge--generated { border-color: #6b8f8a; border-left-color: #3f635e; color: #26433e; background: #dceae6; }
+.mode-badge--generated .mode-badge__dot { background: #3f635e; }
+/*
+ * 任务 2：尺寸对齐 StylePanel 的 .generate-button（padding 11px / font-size 13px），
+ * 并靠 flex:1 撑满工具栏右侧剩余空间，视觉重量与「生成简历」同档。
+ */
+.preview-button {
+  display: inline-flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 180px;
+  /* 上限避免在宽屏下拉成超宽扁条，同时仍明显大于旧版。 */
+  max-width: 280px;
+  border: 1px solid #6b8f8a;
+  border-radius: 0;
+  padding: 11px 20px;
+  color: #3f635e;
+  background: #e8f0ee;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
 .preview-button:hover { border-color: #527873; background: #d5e5e1; }
 .preview-button:active { background: #c6dbd6; }
 .preview-button:focus-visible { outline: 2px solid #6b8f8a; outline-offset: 2px; }
-.preview-button__icon { font-size: 14px; line-height: 1; }
+.preview-button__icon { font-size: 16px; line-height: 1; }
 .paper { aspect-ratio: 210 / 297; min-height: 720px; overflow: auto; padding: 56px 52px; color: #263330; background: #fff; box-shadow: 0 14px 36px #2633301c; }
 .paper-header { border-bottom: 2px solid #6b8f8a; padding-bottom: 24px; }
 .paper-header h1 { margin: 0 0 8px; font-size: 32px; font-weight: 700; }
@@ -187,11 +229,20 @@ function onBlockCommit(event: Event, apply: (value: string) => void): void {
 .paper--generated :deep(article h3) { margin: 0; font-size: 15px; }
 .paper--generated :deep(article p) { margin: 6px 0 0; color: #52635f; font-size: 12px; line-height: 1.6; }
 
+/* 窄屏：按钮变宽后单行放不下，工具栏改为两行，按钮独占整行（仍满足「撑满」）。 */
+@media (max-width: 720px) {
+  .preview-toolbar { flex-wrap: wrap; row-gap: 10px; }
+  .toolbar-right { flex: 1 0 100%; justify-content: space-between; }
+  .preview-button { flex: 1 1 100%; max-width: none; }
+}
+
 @media (prefers-color-scheme: dark) {
   .paper { color: #263330; background: #fff; }
   .subtitle, .paper-experience p, .date, .paper-header .contact { color: #52635f; }
-  .mode-badge { border-color: #52635f; color: #b7c3c0; background: #263330; }
-  .mode-badge--generated { border-color: #6b8f8a; color: #d7e5e1; background: #2f4340; }
+  .mode-badge { border-color: #527873; border-left-color: #8fb3ab; color: #e4eeec; background: #2f4340; }
+  .mode-badge__dot { background: #8fb3ab; }
+  .mode-badge--generated { border-color: #6b8f8a; border-left-color: #d7e5e1; color: #f0f6f4; background: #3d5b56; }
+  .mode-badge--generated .mode-badge__dot { background: #d7e5e1; }
   .preview-button { border-color: #6b8f8a; color: #eaf1ef; background: #3d5b56; }
   .preview-button:hover { background: #4a6c66; }
 }

@@ -15,6 +15,17 @@ const username = ref('')
 const password = ref('')
 const errorMessage = ref('')
 
+/**
+ * 密码可见性状态。
+ *
+ * - `false` = 密码处于隐藏状态 → 显示「闭眼」图标，点击后转为可见
+ * - `true`  = 密码处于可见状态 → 显示「睁眼」图标，点击后转为隐藏
+ *
+ * 注意：这里是自己实现的常驻按钮，不是 `el-input` 的 `show-password`，
+ * 也不是浏览器自带的 reveal 按钮（后者在输入为空或失焦时会自己消失）。
+ */
+const passwordVisible = ref(false)
+
 async function submit(): Promise<void> {
   errorMessage.value = ''
   if (!username.value.trim() || !password.value) {
@@ -48,12 +59,57 @@ async function submit(): Promise<void> {
         </label>
         <label class="field">
           <span>密码</span>
-          <input
-            v-model="password"
-            type="password"
-            autocomplete="current-password"
-            placeholder="请输入密码"
-          />
+          <div class="password-field">
+            <input
+              v-model="password"
+              :type="passwordVisible ? 'text' : 'password'"
+              autocomplete="current-password"
+              placeholder="请输入密码"
+            />
+            <button
+              class="password-toggle"
+              type="button"
+              :aria-label="passwordVisible ? '隐藏密码' : '显示密码'"
+              :aria-pressed="passwordVisible"
+              :title="passwordVisible ? '隐藏密码' : '显示密码'"
+              @mousedown.prevent
+              @click.stop.prevent="passwordVisible = !passwordVisible"
+            >
+              <!-- 睁眼：当前密码可见，点击隐藏 -->
+              <svg
+                v-if="passwordVisible"
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+              <!-- 闭眼：当前密码隐藏，点击显示 -->
+              <svg
+                v-else
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z" />
+                <circle cx="12" cy="12" r="3" />
+                <line x1="4" y1="20" x2="20" y2="4" />
+              </svg>
+            </button>
+          </div>
         </label>
 
         <p v-if="errorMessage" class="feedback feedback--error">{{ errorMessage }}</p>
@@ -82,6 +138,32 @@ h1 { margin: 0; font-size: 24px; font-weight: 650; }
 .field span { color: #687875; font-size: 12px; }
 input { width: 100%; border: 1px solid #d6dfdc; padding: 11px 12px; color: #243330; background: #fff; font: inherit; font-size: 14px; outline: 0; }
 input:focus { border-color: #6b8f8a; box-shadow: 0 0 0 2px #6b8f8a22; }
+
+/* ---- 密码可见性切换（常驻） ---- */
+.password-field { position: relative; display: block; }
+.password-field input { padding-right: 44px; }
+/* 关掉浏览器/Vendor 自带的 reveal 按钮，避免与自建按钮并存或自行消失。 */
+.password-field input::-ms-reveal,
+.password-field input::-ms-clear { display: none; width: 0; height: 0; }
+.password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  padding: 0;
+  color: #6b8f8a;
+  background: transparent;
+  cursor: pointer;
+}
+.password-toggle:hover { color: #3f635e; }
+.password-toggle:active { color: #243330; }
+.password-toggle:focus-visible { outline: 2px solid #6b8f8a; outline-offset: 1px; }
 .primary-button { border: 0; padding: 12px; color: #fff; background: #6b8f8a; cursor: pointer; font: inherit; font-size: 14px; }
 .primary-button:hover:not(:disabled) { background: #527873; }
 .primary-button:disabled { opacity: .6; cursor: progress; }
@@ -94,5 +176,7 @@ input:focus { border-color: #6b8f8a; box-shadow: 0 0 0 2px #6b8f8a22; }
   .auth-card { border-color: #52635f; background: #263330; color: #e8eae9; }
   .intro, .field span, .switch-hint { color: #b7c3c0; }
   input { border-color: #52635f; color: #e8eae9; background: #1f2a28; }
+  .password-toggle { color: #9db8b2; }
+  .password-toggle:hover, .password-toggle:active { color: #d7e5e1; }
 }
 </style>
