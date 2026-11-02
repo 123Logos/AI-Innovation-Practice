@@ -45,6 +45,7 @@ class ResumeService:
             profile=ProfileInput(
                 full_name=profile.full_name,
                 contact=profile.contact,
+                email=profile.email,
             ),
             skills=[
                 SkillInput(name=skill.name, self_rating=skill.self_rating) for skill in skills

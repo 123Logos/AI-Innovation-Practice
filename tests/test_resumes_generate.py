@@ -90,6 +90,7 @@ def _profile_payload(**overrides: object) -> dict[str, object]:
     }
     payload: dict[str, object] = {
         "full_name": "张三",
+        "email": "zhangsan@example.com",
         "contact": "13800000000",
         "skills": [
             {"name": "Python", "self_rating": 4},
@@ -177,28 +178,44 @@ def test_generate_persists_resume_for_current_user(client: TestClient) -> None:
     data = response.json()["data"]
     assert data["resume_id"]
     assert data["title"] == "我的第一份简历"
-    assert data["created_at"]
-    assert "张三" in data["content_html"]
+    # 时间统一东八区：带 +08:00 偏移，前端解析不会再差 8 小时。
+    assert data["created_at"].endswith("+08:00"), data["created_at"]
+
+    html = data["content_html"]
+    assert "张三" in html
     # T7.6：专业只在教育经历区块出现一次，基本信息栏不再重复渲染。
-    assert data["content_html"].count("计算机科学与技术") == 1
-    assert "Python" in data["content_html"]
-    assert "校园二手交易平台" in data["content_html"]
+    assert html.count("计算机科学与技术") == 1
+    assert "Python" in html
+    assert "校园二手交易平台" in html
     # 熟练度已下架：生成器只渲染技能名，HTML 里不得残留「自评 x/5」。
-    assert "自评" not in data["content_html"]
-    assert "<li>Python</li>" in data["content_html"]
-    # 基本信息栏只保留姓名和联系方式（年级、专业都已下架）。
-    assert "<p>张三｜13800000000</p>" in data["content_html"]
-    assert "｜｜" not in data["content_html"]
+    assert "自评" not in html
+    assert '<span class="skill-item">Python</span>' in html
+
+    # 结构必须与 ResumePreview.vue 对齐：姓名大字打头，没有「我的简历」正文标题、
+    # 没有单独的「基本信息」区块，也没有空分隔符。
+    assert '<header class="paper-header"><h1 class="resume-name">张三</h1>' in html
+    assert "<h1>我的简历</h1>" not in html
+    assert "基本信息" not in html
+    assert "｜｜" not in html
+
+    # 联系方式行：手机号 + 邮箱（档案里填了 email 时）
+    assert '<span class="contact-phone">13800000000</span>' in html
+    assert '<span class="contact-email">zhangsan@example.com</span>' in html
 
     # 教育经历区块：学校全称 / 专业 / 学历 / 起止时间，且按入学时间倒序。
-    html = data["content_html"]
     assert "教育经历" in html
-    for fragment in ("清华大学", "软件工程", "硕士", "2025.09", "至今"):
+    assert '<h3 class="education-school">清华大学</h3>' in html
+    for fragment in ("软件工程", "硕士", "2025.09", "至今"):
         assert fragment in html, fragment
     for fragment in ("示例大学", "计算机科学与技术", "本科", "2021.09", "2025.06"):
         assert fragment in html, fragment
     assert html.index("清华大学") < html.index("示例大学"), "教育经历必须按入学时间倒序"
     assert html.index("硕士") < html.index("本科")
+
+    # 项目经历区块：标题 + 日期区间（**精确到日**，体验反馈修复）+ 描述 + 职责
+    assert "项目经历" in html
+    assert '<h3 class="experience-title">校园二手交易平台</h3>' in html
+    assert '<span class="date">2024.03.01 — 2024.06.30</span>' in html
 
     # 落库校验：id / 归属 / 标题 / HTML 与响应一致
     with get_engine().connect() as connection:
@@ -265,7 +282,42 @@ def test_generate_renders_ongoing_experience(client: TestClient) -> None:
     assert response.status_code == 200, response.text
     content_html = response.json()["data"]["content_html"]
     assert "至今" in content_html
-    assert "2024-03-01" in content_html
+    # 项目经历精确到日（体验反馈修复）；教育经历仍是月份精度，两者不再共用一个格式。
+    assert '<span class="date">2024.03.01 — 至今</span>' in content_html
+    assert "2024.03.01" in content_html
+    for month_only in ("2021.09", "2025.06"):
+        assert month_only in content_html, month_only
+    assert "<span class=\"edu-end\">2025.06</span>" in content_html
+
+
+def test_generate_omits_email_span_when_profile_has_none(client: TestClient) -> None:
+    token = _register_and_login(client)
+    client.put(PROFILES_URL, json=_profile_payload(email=None), headers=_headers(token))
+
+    response = client.post(GENERATE_URL, json={"title": "没填邮箱"}, headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    content_html = response.json()["data"]["content_html"]
+    assert '<span class="contact-phone">13800000000</span>' in content_html
+    assert "contact-email" not in content_html
+    assert " · " not in content_html
+
+
+def test_generate_requires_at_least_one_skill_and_experience(client: TestClient) -> None:
+    """保存可以空着存，但生成必须完整——后端这条兜底不能被前面放宽校验削弱。"""
+    token = _register_and_login(client)
+    put = client.put(
+        PROFILES_URL,
+        json=_profile_payload(skills=[], experiences=[]),
+        headers=_headers(token),
+    )
+    assert put.status_code == 200, put.text
+
+    response = client.post(GENERATE_URL, json={"title": "空档案"}, headers=_headers(token))
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "CLIENT_ERROR"
+    assert _count("resumes") == 0
 
 
 def test_generate_rejects_missing_title(client: TestClient) -> None:

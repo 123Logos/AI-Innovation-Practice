@@ -7,6 +7,7 @@
 
 import os
 from collections.abc import Iterator
+from datetime import date, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -104,6 +105,7 @@ def _education(
 def _profile_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "full_name": "张三",
+        "email": "zhangsan@example.com",
         "contact": "13800000000",
         "skills": [_skill("Python", 4), _skill("SQL"), _skill("React")],
         "experiences": [_experience()],
@@ -160,7 +162,10 @@ def test_get_profile_returns_null_before_creation(client: TestClient) -> None:
 
 
 def test_schema_dropped_profile_major_but_keeps_education_major() -> None:
-    """T7.6：主表 `major` 必须被迁移删掉，`educations.major` 必须原样保留。"""
+    """T7.6：主表 `major` 必须被迁移删掉，`educations.major` 必须原样保留。
+
+    用户反馈轮：主表新增可空的 `email`（简历邮箱），登录邮箱仍在 `users.email`。
+    """
     with get_engine().connect() as connection:
         columns = {
             (row.TABLE_NAME, row.COLUMN_NAME)
@@ -169,13 +174,15 @@ def test_schema_dropped_profile_major_but_keeps_education_major() -> None:
                     "SELECT TABLE_NAME, COLUMN_NAME "
                     "FROM information_schema.COLUMNS "
                     "WHERE TABLE_SCHEMA = DATABASE() "
-                    "AND TABLE_NAME IN ('student_profiles', 'educations')"
+                    "AND TABLE_NAME IN ('student_profiles', 'educations', 'users')"
                 )
             ).all()
         }
 
     assert ("student_profiles", "major") not in columns
     assert ("educations", "major") in columns
+    assert ("student_profiles", "email") in columns
+    assert ("users", "email") in columns
 
 
 def test_put_profile_ignores_legacy_major_field(client: TestClient) -> None:
@@ -212,13 +219,17 @@ def test_put_profile_persists_profile_skills_experiences_and_educations(
     # 年级已下架：列还在，但不再写业务值。
     assert profile["grade"] == ""
     assert profile["contact"] == "13800000000"
+    # 简历邮箱落在档案表（与 users.email 登录邮箱互不影响）。
+    assert profile["email"] == "zhangsan@example.com"
     assert {skill["name"] for skill in profile["skills"]} == {"Python", "SQL", "React"}
     assert len(profile["experiences"]) == 1
     assert profile["experiences"][0]["title"] == "校园二手交易平台"
     assert len(profile["educations"]) == 1
     assert profile["educations"][0]["school"] == "示例大学"
     assert profile["educations"][0]["degree"] == "本科"
-    assert profile["created_at"] and profile["updated_at"]
+    # 时间字段统一按东八区返回：带 +08:00 偏移，前端解析不会再差 8 小时。
+    assert profile["created_at"].endswith("+08:00"), profile["created_at"]
+    assert profile["updated_at"].endswith("+08:00"), profile["updated_at"]
 
     # 库内四张子/父表都要有真实记录，且 profile.user_id 指向当前登录用户
     assert _count("student_profiles") == 1
@@ -228,13 +239,14 @@ def test_put_profile_persists_profile_skills_experiences_and_educations(
     with get_engine().connect() as connection:
         row = connection.execute(
             text(
-                "SELECT p.id, p.user_id, p.full_name, u.username "
+                "SELECT p.id, p.user_id, p.full_name, p.email, u.username "
                 "FROM student_profiles AS p JOIN users AS u ON u.id = p.user_id"
             )
         ).one()
     assert row.id == profile["id"]
     assert row.user_id == profile["user_id"]
     assert row.full_name == "张三"
+    assert row.email == "zhangsan@example.com"
 
     # 再次 GET 必须读到同一份数据
     read_back = client.get(PROFILES_URL, headers=_headers(token))
@@ -382,26 +394,87 @@ def test_profiles_are_isolated_per_user(client: TestClient) -> None:
     assert _count("student_profiles") == 2
 
 
-def test_put_profile_rejects_skill_count_outside_three_to_eight(client: TestClient) -> None:
+def test_put_profile_allows_empty_children_but_rejects_overflow(client: TestClient) -> None:
+    """保存不再拦必填（用户反馈）：技能/经历/教育都可为空，只拦超出上限。"""
     token = _register_and_login(client)
-    too_few = _profile_payload(skills=[_skill("Python"), _skill("SQL")])
-    too_many = _profile_payload(skills=[_skill(str(index)) for index in range(9)])
+    empty = _profile_payload(skills=[], experiences=[], educations=[])
 
-    for payload in (too_few, too_many):
+    saved = client.put(PROFILES_URL, json=empty, headers=_headers(token))
+
+    assert saved.status_code == 200, saved.text
+    profile = saved.json()["data"]["profile"]
+    assert profile["skills"] == []
+    assert profile["experiences"] == []
+    assert profile["educations"] == []
+    assert _count("student_profiles") == 1
+
+    overflow = (
+        _profile_payload(skills=[_skill(str(index)) for index in range(9)]),
+        _profile_payload(experiences=[_experience(f"经历{index}") for index in range(4)]),
+        _profile_payload(educations=[_education(school=f"学校{index}") for index in range(6)]),
+    )
+    for payload in overflow:
         response = client.put(PROFILES_URL, json=payload, headers=_headers(token))
-        assert response.status_code == 422
+        assert response.status_code == 422, response.text
         assert response.json()["error"]["code"] == "VALIDATION_ERROR"
 
-    assert _count("student_profiles") == 0
 
-
-def test_put_profile_rejects_experience_count_outside_one_to_three(client: TestClient) -> None:
+def test_put_profile_accepts_partially_filled_rows(client: TestClient) -> None:
+    """只填了锚点字段（技能名 / 项目名 / 学校）也必须能保存，不因缺描述被拒。"""
     token = _register_and_login(client)
-    none = _profile_payload(experiences=[])
-    too_many = _profile_payload(experiences=[_experience(f"经历{index}") for index in range(4)])
+    payload = _profile_payload(
+        skills=[_skill("Python")],
+        experiences=[
+            {"title": "还没写描述", "start_date": "2024-03-01"},
+        ],
+        educations=[
+            {
+                "school": "示例大学",
+                "degree": "本科",
+                "edu_start": "2021-09-01",
+            }
+        ],
+    )
 
-    for payload in (none, too_many):
-        assert client.put(PROFILES_URL, json=payload, headers=_headers(token)).status_code == 422
+    response = client.put(PROFILES_URL, json=payload, headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    profile = response.json()["data"]["profile"]
+    assert profile["experiences"][0]["description"] == ""
+    assert profile["experiences"][0]["responsibility"] == ""
+    assert profile["educations"][0]["major"] == ""
+
+
+def test_put_profile_stores_resume_email_without_touching_login_email(
+    client: TestClient,
+) -> None:
+    """档案 email 是「简历上的邮箱」，与 users.email（登录邮箱）互不影响。"""
+    token = _register_and_login(client)
+
+    response = client.put(
+        PROFILES_URL,
+        json=_profile_payload(email="resume-only@example.com"),
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["profile"]["email"] == "resume-only@example.com"
+    with get_engine().connect() as connection:
+        stored = connection.execute(text("SELECT email FROM student_profiles")).scalar_one()
+    assert stored == "resume-only@example.com"
+
+    me = client.get("/api/v1/auth/me", headers=_headers(token))
+    assert me.status_code == 200
+    assert me.json()["data"]["user"]["email"] != "resume-only@example.com"
+
+    # 空串等同「没填」，库里存 NULL 而不是空字符串
+    cleared = client.put(
+        PROFILES_URL, json=_profile_payload(email=""), headers=_headers(token)
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["data"]["profile"]["email"] is None
+    with get_engine().connect() as connection:
+        assert connection.execute(text("SELECT email FROM student_profiles")).scalar_one() is None
 
 
 def test_put_profile_rejects_invalid_rating(client: TestClient) -> None:
@@ -432,3 +505,96 @@ def test_put_profile_rejects_invalid_date_range(client: TestClient) -> None:
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_put_profile_rejects_future_start_dates(client: TestClient) -> None:
+    """**开始**时间不能是未来：入学 / 项目开始晚于今天一律 422。
+
+    结束时间不在此列——应届生要填「预计毕业时间」（见下一个用例）。
+    """
+    token = _register_and_login(client)
+    future = (date.today() + timedelta(days=400)).isoformat()
+
+    for payload in (
+        _profile_payload(educations=[_education(edu_start=future, edu_end=None)]),
+        _profile_payload(experiences=[_experience("未来开始", future, None)]),
+    ):
+        response = client.put(PROFILES_URL, json=payload, headers=_headers(token))
+        assert response.status_code == 422, response.text
+        assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    assert _count("student_profiles") == 0
+
+
+def test_put_profile_accepts_future_end_dates(client: TestClient) -> None:
+    """**结束**时间允许未来：应届生的「预计毕业」必须能存。
+
+    体验反馈修复：之前把 `edu_end` / `end_date` 也卡在「过去」，
+    导致应届生无法填写毕业时间、在做的项目无法写预计结束时间。
+    """
+    token = _register_and_login(client)
+    future = (date.today() + timedelta(days=400)).isoformat()
+
+    response = client.put(
+        PROFILES_URL,
+        json=_profile_payload(
+            educations=[_education(edu_start="2023-09-01", edu_end=future)],
+            experiences=[_experience("预计结束的项目", "2024-03-01", future)],
+        ),
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    profile = response.json()["data"]["profile"]
+    assert profile["educations"][0]["edu_end"] == future
+    assert profile["experiences"][0]["end_date"] == future
+
+    # 真实落库，不只是回显：未来的结束时间必须原样写进 DATE 列。
+    with get_engine().connect() as connection:
+        edu_row = connection.execute(text("SELECT edu_end FROM educations")).one()
+        exp_row = connection.execute(text("SELECT end_date FROM experiences")).one()
+    assert str(edu_row.edu_end) == future
+    assert str(exp_row.end_date) == future
+
+
+def test_put_profile_accepts_today_as_date(client: TestClient) -> None:
+    """边界：允许「今天」，只有严格晚于今天才拦。"""
+    token = _register_and_login(client)
+    today = date.today().isoformat()
+
+    response = client.put(
+        PROFILES_URL,
+        json=_profile_payload(
+            educations=[_education(edu_start="2021-09-01", edu_end=today)],
+            experiences=[_experience("到今天为止", "2024-03-01", today)],
+        ),
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+
+
+def test_put_profile_rejects_non_phone_contact(client: TestClient) -> None:
+    """手机号必须是大陆 11 位号码（`^1[3-9]\\d{9}$`）。"""
+    token = _register_and_login(client)
+
+    for contact in ("12345", "1380000000", "12345678901", "021-88886666", "手机13800000000"):
+        response = client.put(
+            PROFILES_URL, json=_profile_payload(contact=contact), headers=_headers(token)
+        )
+        assert response.status_code == 422, f"{contact} -> {response.text}"
+        assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    assert _count("student_profiles") == 0
+
+
+def test_put_profile_allows_empty_contact_as_draft(client: TestClient) -> None:
+    """保存不拦必填：手机号留空也能存草稿，只在生成简历时强校验。"""
+    token = _register_and_login(client)
+
+    response = client.put(
+        PROFILES_URL, json=_profile_payload(contact=""), headers=_headers(token)
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["profile"]["contact"] == ""

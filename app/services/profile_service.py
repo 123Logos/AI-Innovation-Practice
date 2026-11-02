@@ -39,6 +39,7 @@ class ProfileService:
             user_id,
             ProfileDraft(
                 full_name=payload.full_name,
+                email=payload.email,
                 # 年级列仍在库里但产品已移除该字段：不再写入任何业务值（见仓储）。
                 contact=payload.contact,
             ),
@@ -77,6 +78,7 @@ class ProfileService:
             id=profile.id,
             user_id=profile.user_id,
             full_name=profile.full_name,
+            email=profile.email,
             grade=profile.grade,
             contact=profile.contact,
             created_at=profile.created_at,

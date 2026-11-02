@@ -106,9 +106,11 @@ export interface EducationRead extends EducationInput {
   id: string
 }
 
-/** 后端 `ProfileUpsertRequest`：技能 3–8 条，经历 1–3 条，技能名唯一。 */
+/** 后端 `ProfileUpsertRequest`：技能 ≤8 条、经历 ≤3 条、教育 ≤5 段（无下限），技能名唯一。 */
 export interface ProfileUpsertRequest {
   full_name: string
+  /** 简历上展示的邮箱；登录邮箱在 `users.email`，两者互不影响。 */
+  email?: string | null
   /** 年级已下架，可不传。 */
   grade?: string | null
   contact: string
@@ -121,8 +123,10 @@ export interface ProfileRead {
   id: string
   user_id: string
   full_name: string
+  email: string | null
   grade: string
   contact: string
+  /** 东八区 ISO 串，如 `2026-11-02T21:25:00+08:00`。 */
   created_at: string
   updated_at: string
   skills: SkillRead[]

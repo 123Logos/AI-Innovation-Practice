@@ -1,23 +1,47 @@
 """学生档案的请求/响应模型。
 
-写入沿用 T5 已定的边界：3–8 条技能、1–3 条经历；
-技能名在同一份档案内唯一，评分 1–5，经历结束日期不得早于开始日期。
+写入沿用 T5 已定的边界：技能、经历、教育经历都只限制**上限**，不设下限——
+用户反馈要求「保存不拦必填」（草稿式保存），完整性校验挪到「生成简历」时做。
+
+技能名在同一份档案内唯一，评分 1–5，经历/教育的结束日期不得早于开始日期。
 
 T7.5 起教育经历是一对多子表（`educations`）：
 学校 / 专业 / 学历 / 起止时间，字段对齐学信网备案表。
 `grade`（年级）在库中保留，但已从产品表单下架，请求体里可选、后端忽略。
 T7.6 起主表不再有 `major`：专业只由每段教育经历各自携带。
+用户反馈轮：新增 `email`（简历上展示的邮箱，与 `users.email` 登录邮箱无关）。
+
+真实用户反馈：
+- `contact` 收紧为中国大陆手机号（`^1[3-9]\\d{9}$`），空串仍然放行以便先存草稿；
+- 经历的**开始**时间不得晚于「今天」，否则 422。
+
+体验修复（本轮）：**结束**时间放开未来限制。
+应届生要写「预计 2027-06 毕业」、在职项目要写「预计 2027-03 结束」，
+把结束时间卡在「过去」会直接堵死这两类真实场景。开始时间仍然不许选未来
+（没开始的事情不该出现在简历里），结束时间只需不早于开始时间。
 """
 
+import re
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
+from app.core.datetime_display import format_shanghai_datetime, shanghai_today
 from app.schemas.resume import ExperienceInput, SkillInput
 
 #: 学历枚举，与 `ck_educations_degree` 约束保持一致。
 Degree = Literal["专科", "本科", "硕士", "博士"]
+
+#: 中国大陆手机号；前端 `resume.ts` 里有一份同源正则，两边必须同步。
+PHONE_PATTERN = re.compile(r"^1[3-9]\d{9}$")
 
 
 class SkillRead(BaseModel):
@@ -40,10 +64,16 @@ class ExperienceRead(BaseModel):
 
 
 class EducationInput(BaseModel):
-    """一段教育经历；`edu_end` 为 None 表示「至今」（在读）。"""
+    """一段教育经历；`edu_end` 为 None 表示「至今」（在读）。
+
+    只有 `school` 是「这段经历真的存在」的锚点，必须非空；
+    其余字段允许留空以便先存草稿，完整性由前端在生成时统一拦截。
+
+    `edu_end` 允许是未来（应届生填「预计毕业时间」），`edu_start` 不允许。
+    """
 
     school: str = Field(min_length=1, max_length=200)
-    major: str = Field(min_length=1, max_length=100)
+    major: str = Field(default="", max_length=100)
     degree: Degree
     edu_start: date
     edu_end: date | None = None
@@ -52,6 +82,8 @@ class EducationInput(BaseModel):
     def validate_date_range(self) -> "EducationInput":
         if self.edu_end is not None and self.edu_end < self.edu_start:
             raise ValueError("edu_end must be on or after edu_start")
+        if self.edu_start > shanghai_today():
+            raise ValueError("edu_start must not be in the future")
         return self
 
 
@@ -71,16 +103,37 @@ class ProfileUpsertRequest(BaseModel):
 
     T7.6：不再有主表 `major`——专业由 `educations[].major` 表达，
     旧客户端若继续传 `major`，Pydantic 会按默认 `extra="ignore"` 丢弃。
+
+    用户反馈轮：去掉技能/经历的**下限**（原先 3 条 / 1 条），允许先存草稿；
+    上限仍然保留，避免一次提交超出简历版式容量。
     """
 
     full_name: str = Field(min_length=1, max_length=100)
+    #: 简历上展示的邮箱；登录邮箱见 `users.email`，两者互不影响。
+    email: str | None = Field(default=None, max_length=254)
     #: 年级已下架：允许缺省，服务层不再把它写进库（列保留）。
     grade: str | None = Field(default=None, max_length=50)
-    contact: str = Field(min_length=1, max_length=255)
-    skills: list[SkillInput] = Field(min_length=3, max_length=8)
-    experiences: list[ExperienceInput] = Field(min_length=1, max_length=3)
+    #: 手机号。允许空串（先存草稿），一旦填了就必须是大陆 11 位手机号。
+    contact: str = Field(default="", max_length=255)
+    skills: list[SkillInput] = Field(default_factory=list, max_length=8)
+    experiences: list[ExperienceInput] = Field(default_factory=list, max_length=3)
     #: 教育经历 0–5 段；为空时不渲染教育区块，缺省值兼容尚未升级的旧客户端。
     educations: list[EducationInput] = Field(default_factory=list, max_length=5)
+
+    @field_validator("contact")
+    @classmethod
+    def validate_contact(cls, contact: str) -> str:
+        """空串合法（草稿式保存）；非空必须是 `^1[3-9]\\d{9}$`。
+
+        为什么不用 `Field(pattern=...)`：pattern 会把空串也判成不合法，
+        而产品明确要求「保存档案不拦必填」，只能把格式校验放进校验器里。
+        """
+        trimmed = contact.strip()
+        if not trimmed:
+            return ""
+        if not PHONE_PATTERN.fullmatch(trimmed):
+            raise ValueError("contact must be a mainland China mobile number")
+        return trimmed
 
     @field_validator("skills")
     @classmethod
@@ -90,11 +143,21 @@ class ProfileUpsertRequest(BaseModel):
             raise ValueError("skill names must be unique")
         return skills
 
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, email: str | None) -> str | None:
+        """空串等同「没填」，避免库里出现半空不空的邮箱。"""
+        if email is None:
+            return None
+        trimmed = email.strip()
+        return trimmed or None
+
 
 class ProfileRead(BaseModel):
     id: str
     user_id: str
     full_name: str
+    email: str | None = None
     grade: str
     contact: str
     created_at: datetime
@@ -102,3 +165,8 @@ class ProfileRead(BaseModel):
     skills: list[SkillRead]
     experiences: list[ExperienceRead]
     educations: list[EducationRead] = Field(default_factory=list)
+
+    @field_serializer("created_at", "updated_at")
+    def serialize_shanghai(self, value: datetime) -> str:
+        """库里是 naive UTC，返回前统一转东八区（见 `app/core/datetime_display.py`）。"""
+        return format_shanghai_datetime(value)

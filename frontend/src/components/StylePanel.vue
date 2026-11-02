@@ -15,13 +15,35 @@ const resumeStatus = computed(() =>
 
 async function handleGenerate(): Promise<void> {
   feedback.value = null
-  if (!store.hasSavedProfile) {
-    feedback.value = {
-      tone: 'error',
-      text: '请先在左侧完善并保存档案，再生成简历。',
-    }
+
+  // 保存已经不再拦必填，所以「能不能生成」的判断全部落在这里（严格校验）。
+  const issue = store.validateForGenerate()
+  if (issue) {
+    feedback.value = { tone: 'error', text: issue }
     return
   }
+
+  // 未保存的修改不能悄悄丢掉：先确认，再保存，最后生成。
+  if (store.dirty) {
+    const shouldSave = window.confirm('你有未保存的修改，是否先保存再生成？')
+    if (!shouldSave) {
+      feedback.value = {
+        tone: 'error',
+        text: '已取消生成：请先保存修改，或再次点击「生成简历」并按提示确认保存。',
+      }
+      return
+    }
+    try {
+      await store.save()
+    } catch (error) {
+      feedback.value = {
+        tone: 'error',
+        text: isApiError(error) ? `保存失败：${error.message}` : '保存失败，请稍后重试。',
+      }
+      return
+    }
+  }
+
   try {
     const resume = await store.generate('我的简历')
     feedback.value = {
@@ -58,7 +80,9 @@ function printResume(): void {
       <p class="panel-label">数据状态</p>
       <div class="status-row"><span>档案</span><strong>{{ profileStatus }}</strong></div>
       <div class="status-row"><span>简历</span><strong>{{ resumeStatus }}</strong></div>
-      <p v-if="store.dirty" class="warning">左侧有未保存的修改，生成时使用的是已保存版本。</p>
+      <p v-if="store.dirty" class="warning">
+        左侧有未保存的修改，点「生成简历」时会先询问是否保存。
+      </p>
     </div>
 
     <div class="panel-section">
@@ -71,6 +95,9 @@ function printResume(): void {
     <div class="panel-section">
       <p class="panel-label">编辑提示</p>
       <p class="hint">点击中央纸面上的文字块即可直接编辑，内容会同步到左侧表单。</p>
+      <p class="hint print-tip">
+        💡 建议在打印设置中取消勾选「页眉和页脚」以获得纯净简历
+      </p>
     </div>
 
     <button class="print-button" type="button" @click="printResume">打印 / 导出 PDF</button>
@@ -88,6 +115,8 @@ h2 { font-size: 18px; }
 .status-row strong { color: #263330; font-family: "SF Mono", Consolas, monospace; font-weight: 500; }
 .panel-label { color: #527873; font-size: 12px; }
 .hint { color: #687875; font-size: 13px; line-height: 1.6; }
+/* 浏览器打印页眉/页脚（日期、URL）无法用代码关掉，只能提示用户自己取消勾选。 */
+.print-tip { color: #8a7c3f; font-size: 12px; }
 .warning { color: #94781a; font-size: 11px; line-height: 1.5; }
 .generate-button { width: 100%; border: 0; padding: 11px; color: #fff; background: #527873; cursor: pointer; font: inherit; font-size: 13px; }
 .generate-button:hover:not(:disabled) { background: #3f635e; }

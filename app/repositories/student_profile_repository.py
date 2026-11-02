@@ -29,6 +29,8 @@ class StudentProfile(ProfileBase):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
     full_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    # 简历上展示的邮箱；登录邮箱在 `users.email`，两者互不影响。
+    email: Mapped[str | None] = mapped_column(String(254), nullable=True)
     # T7.6：`major` 列已随迁移删除，专业只存在于 `educations.major`。
     grade: Mapped[str] = mapped_column(String(50), nullable=False)
     contact: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -84,6 +86,7 @@ class ProfileDraft:
     """
 
     full_name: str
+    email: str | None
     contact: str
 
 
@@ -168,6 +171,7 @@ class StudentProfileRepository:
                 created_at=now,
                 updated_at=now,
                 full_name=profile.full_name,
+                email=profile.email,
                 grade="",
                 contact=profile.contact,
             )
@@ -175,6 +179,7 @@ class StudentProfileRepository:
             self._session.flush()
         else:
             target.full_name = profile.full_name
+            target.email = profile.email
             target.contact = profile.contact
             target.updated_at = now
             self._session.flush()

@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 
 import { useResumeStore } from '@/stores/resume'
+import { formatDate, formatMonth, parseDateInput, parseMonthInput } from '@/utils/datetime'
 
 const store = useResumeStore()
 
@@ -9,9 +10,10 @@ const store = useResumeStore()
  * 后端 `TemplateResumeGenerator` 返回的是完整 HTML 文档（含 `<html><head>`），
  * 直接塞进纸面会带上不需要的文档级标签，所以只取 `<body>` 内部内容。
  *
- * 这里只做「取 body」，不再对文本做任何改写：
- * 技能熟练度已从后端模板中彻底移除，落库的 HTML 本身是干净的，
- * 前端若再剥离一次，反而会掩盖后端回归问题。
+ * 这里只做「取 body」，不再对文本做任何改写：生成的 HTML 与下方模板使用
+ * 同一套类名（`.paper-header` / `.paper-section` / `.education-school` …），
+ * 版式由同一个非 scoped 样式块统一负责，所以「实时预览」和「已生成简历」
+ * 长得完全一样，打印出来也就是所见的那样。
  */
 const generatedBody = computed(() => {
   const html = store.generatedHtml
@@ -21,19 +23,22 @@ const generatedBody = computed(() => {
 
 const generatedResumeId = computed(() => store.generatedResumeId?.slice(0, 8) ?? '')
 
-/** A4 纸上的月份展示：草稿存 `YYYY-MM`，与后端生成器的 `2021.09` 保持一致。 */
-function toDisplayMonth(value: string): string {
-  if (!value) return ''
-  return value.slice(0, 7).replace('-', '.')
-}
-
 /**
- * 教育经历按入学时间倒序（最近一段在前），与后端生成器 `sorted(..., reverse=True)` 同序，
- * 保证「实时预览」和「已生成简历」两套渲染的视觉顺序一致。
+ * 教育经历按入学时间倒序（最近一段在前），与后端生成器 `sorted(..., reverse=True)` 同序。
+ *
+ * 排序会打乱数组下标，所以这里把「原始下标」一起带出来——
+ * 纸面上编辑完要按原始下标回写 store，否则会改错行。
  */
-const sortedEducations = computed(() =>
-  [...store.draft.educations].sort((left, right) => right.edu_start.localeCompare(left.edu_start)),
+const displayEducations = computed(() =>
+  store.draft.educations
+    .map((education, index) => ({ education, index }))
+    .sort((left, right) => right.education.edu_start.localeCompare(left.education.edu_start)),
 )
+
+/** 教育经历入学/毕业时间的展示形态：`2021-09` → `2021.09`，空值由调用方给占位。 */
+function displayMonth(value: string): string {
+  return formatMonth(value)
+}
 
 /**
  * 纸面编辑只在**失焦时**回写 store。
@@ -42,13 +47,72 @@ const sortedEducations = computed(() =>
  * 浏览器会丢失原生 Selection，光标被强制归零（表现为「四张三」）。
  * 改用 `@blur` 后，编辑过程中 store 不变、DOM 不被 patch，光标完全交给浏览器管。
  *
- * 副作用可接受：左侧表单要等失焦后才同步。点击「保存档案」「生成简历」
- * 会先触发 blur，所以提交时读到的一定是最新内容。
+ * `apply` 返回「该值对应的规范展示文本」：日期被用户敲成 `2021.9` 这类写法时，
+ * 回写后要把 DOM 文本也纠正成 `2021.09`，否则纸面会留下用户的原始输入。
+ * 内容为空时置空串，交给 CSS 的 `data-placeholder` 显示灰色占位。
  */
-function onBlockCommit(event: Event, apply: (value: string) => void): void {
+function commitText(event: Event, current: string, apply: (value: string) => string): void {
   const element = event.currentTarget as HTMLElement | null
   if (!element) return
-  apply(element.innerText)
+  const value = element.innerText.trim()
+  const display = value === current.trim() ? current : apply(value)
+  if (element.innerText !== display) {
+    element.innerText = display
+  }
+}
+
+/** 教育经历的月份单元格：能识别就写回 store，识别不了就还原成原值。 */
+function commitEducationMonth(
+  index: number,
+  field: 'edu_start' | 'edu_end',
+  event: Event,
+): void {
+  const education = store.draft.educations[index]
+  if (!education) return
+  const current = displayMonth(education[field]) || (field === 'edu_end' ? '至今' : '入学时间')
+  commitText(event, current, (value) => {
+    // 「至今」等价于清空 edu_end；入学时间不允许空。
+    const parsed = value === '' || value === '至今' ? '' : parseMonthInput(value)
+    if (parsed === null) return current
+    if (field === 'edu_start' && parsed === '') return current
+    store.updateEducation(index, field, parsed)
+    return displayMonth(parsed) || (field === 'edu_end' ? '至今' : '入学时间')
+  })
+}
+
+/**
+ * 纸面上编辑项目经历的起止时间（失焦回写）。
+ *
+ * 纸面按「年.月.日」展示（与后端生成器 `_format_day` 同口径），store 里也是
+ * 完整 ISO 日期（`2024-03-15`），所以这里只做「用户输入 → ISO」的解析：
+ *
+ * - 写完整日期（`2024.03.15` / `2024-03-15` / `2024/3/15`）→ 原样落库；
+ * - 只写年月（`2024.03`）→ 由 `parseDateInput` 补 `-01`，兼容旧习惯；
+ * - 解析不了 → 视为放弃修改，还原原展示文本；
+ * - 结束时间被删空或写成「至今」→ `end_date` 置空串，渲染层显示「至今」；
+ * - 开始时间被删空 → 同样视为放弃修改（开始时间是必填锚点）。
+ */
+function updateExpDate(
+  event: Event,
+  index: number,
+  field: 'start_date' | 'end_date',
+): void {
+  const experience = store.draft.experiences[index]
+  if (!experience) return
+  const fallback = field === 'end_date' ? '至今' : '开始'
+  const current = formatDate(experience[field]) || fallback
+  commitText(event, current, (value) => {
+    if (value === '' || value === '至今') {
+      // 只有结束时间可以用「空」表达「至今」，开始时间缺失时保持原值。
+      if (field !== 'end_date') return current
+      store.updateExperience(index, field, '')
+      return fallback
+    }
+    const parsed = parseDateInput(value)
+    if (parsed === null) return current
+    store.updateExperience(index, field, parsed)
+    return formatDate(parsed) || fallback
+  })
 }
 </script>
 
@@ -86,79 +150,187 @@ function onBlockCommit(event: Event, apply: (value: string) => void): void {
       />
 
       <article v-else class="paper" aria-label="简历预览">
-      <header class="paper-header">
-        <h1
-          contenteditable="true"
-          spellcheck="false"
-          @blur="onBlockCommit($event, (value) => store.updateProfileField('full_name', value))"
-        >{{ store.draft.full_name || '姓名' }}</h1>
-        <!-- T7.6：基本信息栏只留姓名与联系方式，专业交给「教育经历」区块。 -->
-        <p
-          class="contact"
-          contenteditable="true"
-          spellcheck="false"
-          @blur="onBlockCommit($event, (value) => store.updateProfileField('contact', value))"
-        >{{ store.draft.contact || '联系方式' }}</p>
-      </header>
-
-      <section v-if="sortedEducations.length" class="paper-section">
-        <h2>教育经历</h2>
-        <article
-          v-for="(education, index) in sortedEducations"
-          :key="`edu-${index}`"
-          class="paper-experience"
-        >
-          <h3 class="education-school">{{ education.school || '学校名称' }}</h3>
-          <p class="education-meta">
-            {{ education.major || '专业' }} ｜ {{ education.degree }} ｜
-            {{ toDisplayMonth(education.edu_start) || '入学时间' }} —
-            {{ toDisplayMonth(education.edu_end) || '至今' }}
-          </p>
-        </article>
-      </section>
-
-      <section class="paper-section">
-        <h2>技能</h2>
-        <div class="skill-list">
-          <span v-for="(skill, index) in store.draft.skills" :key="index" class="skill-item">
+        <header class="paper-header">
+          <h1
+            class="resume-name"
+            contenteditable="true"
+            spellcheck="false"
+            data-placeholder="姓名"
+            @blur="
+              commitText($event, store.draft.full_name, (value) => {
+                store.updateProfileField('full_name', value)
+                return value
+              })
+            "
+          >{{ store.draft.full_name }}</h1>
+          <p class="contact">
             <span
+              class="contact-phone"
               contenteditable="true"
               spellcheck="false"
-              @blur="onBlockCommit($event, (value) => store.updateSkill(index, 'name', value))"
-            >{{ skill.name || '技能' }}</span>
-          </span>
-        </div>
-      </section>
+              data-placeholder="手机号"
+              @blur="
+                commitText($event, store.draft.contact, (value) => {
+                  store.updateProfileField('contact', value)
+                  return value
+                })
+              "
+            >{{ store.draft.contact }}</span>
+            <span class="contact-separator">·</span>
+            <span
+              class="contact-email"
+              contenteditable="true"
+              spellcheck="false"
+              data-placeholder="邮箱（选填）"
+              @blur="
+                commitText($event, store.draft.email, (value) => {
+                  store.updateProfileField('email', value)
+                  return value
+                })
+              "
+            >{{ store.draft.email }}</span>
+          </p>
+        </header>
 
-      <section class="paper-section">
-        <h2>项目经历</h2>
-        <article
-          v-for="(experience, index) in store.draft.experiences"
-          :key="index"
-          class="paper-experience"
-        >
-          <div class="experience-heading">
+        <section v-if="displayEducations.length" class="paper-section">
+          <h2>教育经历</h2>
+          <article
+            v-for="row in displayEducations"
+            :key="`edu-${row.index}`"
+            class="paper-experience"
+          >
             <h3
+              class="education-school"
               contenteditable="true"
               spellcheck="false"
-              @blur="onBlockCommit($event, (value) => store.updateExperience(index, 'title', value))"
-            >{{ experience.title || '项目名称' }}</h3>
-            <span class="date">
-              {{ experience.start_date || '开始' }} — {{ experience.end_date || '至今' }}
+              data-placeholder="学校名称"
+              @blur="
+                commitText($event, row.education.school, (value) => {
+                  store.updateEducation(row.index, 'school', value)
+                  return value
+                })
+              "
+            >{{ row.education.school }}</h3>
+            <p class="education-meta">
+              <span
+                class="edu-major"
+                contenteditable="true"
+                spellcheck="false"
+                data-placeholder="专业"
+                @blur="
+                  commitText($event, row.education.major, (value) => {
+                    store.updateEducation(row.index, 'major', value)
+                    return value
+                  })
+                "
+              >{{ row.education.major }}</span>
+              <span class="edu-divider"> ｜ </span>
+              <span class="edu-degree">{{ row.education.degree }}</span>
+              <span class="edu-divider"> ｜ </span>
+              <span
+                class="edu-start"
+                contenteditable="true"
+                spellcheck="false"
+                data-placeholder="入学时间"
+                @blur="commitEducationMonth(row.index, 'edu_start', $event)"
+              >{{ displayMonth(row.education.edu_start) }}</span>
+              <span class="edu-divider"> — </span>
+              <span
+                class="edu-end"
+                contenteditable="true"
+                spellcheck="false"
+                data-placeholder="至今"
+                @blur="commitEducationMonth(row.index, 'edu_end', $event)"
+              >{{ displayMonth(row.education.edu_end) || '至今' }}</span>
+            </p>
+          </article>
+        </section>
+
+        <section class="paper-section">
+          <h2>技能</h2>
+          <div class="skill-list">
+            <span v-for="(skill, index) in store.draft.skills" :key="index" class="skill-item">
+              <span
+                contenteditable="true"
+                spellcheck="false"
+                data-placeholder="技能"
+                @blur="
+                  commitText($event, skill.name, (value) => {
+                    store.updateSkill(index, 'name', value)
+                    return value
+                  })
+                "
+              >{{ skill.name }}</span>
             </span>
           </div>
-          <p
-            contenteditable="true"
-            spellcheck="false"
-            @blur="onBlockCommit($event, (value) => store.updateExperience(index, 'description', value))"
-          >{{ experience.description }}</p>
-          <p
-            contenteditable="true"
-            spellcheck="false"
-            @blur="onBlockCommit($event, (value) => store.updateExperience(index, 'responsibility', value))"
-          >{{ experience.responsibility }}</p>
-        </article>
-      </section>
+        </section>
+
+        <section class="paper-section">
+          <h2>项目经历</h2>
+          <article
+            v-for="(experience, index) in store.draft.experiences"
+            :key="index"
+            class="paper-experience"
+          >
+            <div class="experience-heading">
+              <h3
+                class="experience-title"
+                contenteditable="true"
+                spellcheck="false"
+                data-placeholder="项目名称"
+                @blur="
+                  commitText($event, experience.title, (value) => {
+                    store.updateExperience(index, 'title', value)
+                    return value
+                  })
+                "
+              >{{ experience.title }}</h3>
+              <!--
+                时间拆成「开始 / 分隔符 / 结束」三段独立节点，各自可点编辑。
+                外层仍用 .date，保证与后端生成器的 `<span class="date">…</span>` 视觉一致。
+              -->
+              <span class="date date-range">
+                <span
+                  class="date-start"
+                  contenteditable="true"
+                  spellcheck="false"
+                  data-placeholder="开始"
+                  @blur="updateExpDate($event, index, 'start_date')"
+                >{{ formatDate(experience.start_date) }}</span>
+                <span class="date-divider"> — </span>
+                <span
+                  class="date-end"
+                  contenteditable="true"
+                  spellcheck="false"
+                  data-placeholder="至今"
+                  @blur="updateExpDate($event, index, 'end_date')"
+                >{{ formatDate(experience.end_date) || '至今' }}</span>
+              </span>
+            </div>
+            <p
+              class="experience-description"
+              contenteditable="true"
+              spellcheck="false"
+              @blur="
+                commitText($event, experience.description, (value) => {
+                  store.updateExperience(index, 'description', value)
+                  return value
+                })
+              "
+            >{{ experience.description }}</p>
+            <p
+              class="experience-responsibility"
+              contenteditable="true"
+              spellcheck="false"
+              @blur="
+                commitText($event, experience.responsibility, (value) => {
+                  store.updateExperience(index, 'responsibility', value)
+                  return value
+                })
+              "
+            >{{ experience.responsibility }}</p>
+          </article>
+        </section>
       </article>
 
       <!-- 水印：绝对定位在纸张右下角，pointer-events:none 不干扰纸面编辑。 -->
@@ -236,36 +408,8 @@ function onBlockCommit(event: Event, apply: (value: string) => void): void {
   pointer-events: none;
   user-select: none;
 }
+/* 纸张本身：实时预览与生成结果都用 `.paper`，所以放在 scoped 里没问题。 */
 .paper { aspect-ratio: 210 / 297; min-height: 720px; overflow: auto; padding: 56px 52px; color: #263330; background: #fff; box-shadow: 0 14px 36px #2633301c; }
-.paper-header { border-bottom: 2px solid #6b8f8a; padding-bottom: 24px; }
-.paper-header h1 { margin: 0 0 8px; font-size: 32px; font-weight: 700; }
-.paper-header .contact { margin: 4px 0; color: #52635f; font-family: "SF Mono", Consolas, monospace; font-size: 12px; }
-.paper-section { margin-top: 28px; }
-.paper-section h2 { margin: 0 0 14px; color: #527873; font-size: 13px; letter-spacing: .14em; }
-.skill-list { display: flex; flex-wrap: wrap; gap: 10px 18px; }
-.skill-item { display: inline-flex; align-items: baseline; gap: 6px; border-bottom: 1px solid #b8c8c4; padding-bottom: 3px; font-size: 13px; }
-.paper-experience { margin-bottom: 20px; }
-/* 教育区块：学校做标题，专业/学历/起止同一行，与后端生成器的 HTML 结构对齐。 */
-.education-school { margin: 0; font-size: 15px; }
-.experience-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.experience-heading h3 { margin: 0; font-size: 15px; }
-.date { color: #687875; font-size: 11px; white-space: nowrap; }
-.paper-experience p { margin: 6px 0 0; color: #52635f; font-size: 12px; line-height: 1.6; }
-/* 失焦回写后文本节点被重绘，靠 pre-wrap 保住用户敲的换行。 */
-.paper-experience p[contenteditable] { white-space: pre-wrap; }
-[contenteditable="true"] { outline: 0; }
-[contenteditable="true"]:focus { background: #eaf1ef; }
-
-/* 后端模板产出的 HTML 没有 scoped 属性，必须用 :deep() 才能命中。 */
-.paper--generated :deep(h1) { margin: 0 0 12px; border-bottom: 2px solid #6b8f8a; padding-bottom: 20px; font-size: 30px; font-weight: 700; }
-.paper--generated :deep(section) { margin-top: 28px; }
-.paper--generated :deep(section > h2) { margin: 0 0 14px; color: #527873; font-size: 13px; letter-spacing: .14em; }
-.paper--generated :deep(section > p) { margin: 0; color: #52635f; font-size: 13px; line-height: 1.6; }
-.paper--generated :deep(ul) { display: flex; flex-wrap: wrap; gap: 10px 18px; margin: 0; padding: 0; list-style: none; }
-.paper--generated :deep(li) { border-bottom: 1px solid #b8c8c4; padding-bottom: 3px; font-size: 13px; }
-.paper--generated :deep(article) { margin-bottom: 20px; }
-.paper--generated :deep(article h3) { margin: 0; font-size: 15px; }
-.paper--generated :deep(article p) { margin: 6px 0 0; color: #52635f; font-size: 12px; line-height: 1.6; }
 
 /* 窄屏：按钮变宽后单行放不下，工具栏改为两行，按钮独占整行（仍满足「撑满」）。 */
 @media (max-width: 720px) {
@@ -274,16 +418,6 @@ function onBlockCommit(event: Event, apply: (value: string) => void): void {
   .preview-button { flex: 1 1 100%; max-width: none; }
 }
 
-@media (prefers-color-scheme: dark) {
-  .paper { color: #263330; background: #fff; }
-  .paper-experience p, .date, .paper-header .contact { color: #52635f; }
-  .mode-badge { border-color: #527873; border-left-color: #8fb3ab; color: #e4eeec; background: #2f4340; }
-  .mode-badge__dot { background: #8fb3ab; }
-  .mode-badge--generated { border-color: #6b8f8a; border-left-color: #d7e5e1; color: #f0f6f4; background: #3d5b56; }
-  .mode-badge--generated .mode-badge__dot { background: #d7e5e1; }
-  .preview-button { border-color: #6b8f8a; color: #eaf1ef; background: #3d5b56; }
-  .preview-button:hover { background: #4a6c66; }
-}
 @media print {
   .preview-toolbar { display: none; }
   .paper { min-height: 0; box-shadow: none; margin: 0; }
@@ -299,5 +433,44 @@ function onBlockCommit(event: Event, apply: (value: string) => void): void {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
+}
+</style>
+
+<!--
+  纸面文档样式：**不加 scoped**。
+  实时预览的子节点带 scoped 属性，后端 v-html 出来的不一样，
+  只有全局选择器能让两者共用一套规则——这正是「所见即所得」的实现方式。
+  所有选择器都以 `.paper` 开头，不会污染页面其他区域。
+-->
+<style>
+.paper .paper-header { border-bottom: 2px solid #6b8f8a; padding-bottom: 24px; }
+.paper .paper-header h1,
+.paper .resume-name { margin: 0 0 8px; font-size: 32px; font-weight: 700; line-height: 1.2; }
+.paper .contact { margin: 4px 0 0; color: #52635f; font-family: "SF Mono", Consolas, monospace; font-size: 12px; }
+.paper .contact-separator { padding: 0 6px; color: #8fa5a1; }
+.paper .paper-section { margin-top: 28px; }
+.paper .paper-section > h2 { margin: 0 0 14px; color: #527873; font-size: 13px; font-weight: 650; letter-spacing: .14em; }
+.paper .skill-list { display: flex; flex-wrap: wrap; gap: 10px 18px; }
+.paper .skill-item { display: inline-flex; align-items: baseline; gap: 6px; border-bottom: 1px solid #b8c8c4; padding-bottom: 3px; font-size: 13px; }
+.paper .paper-experience { margin-bottom: 20px; }
+.paper .paper-experience:last-child { margin-bottom: 0; }
+.paper .education-school,
+.paper .experience-title { margin: 0; font-size: 15px; font-weight: 650; }
+.paper .education-meta { margin: 6px 0 0; color: #52635f; font-size: 12px; line-height: 1.6; }
+.paper .experience-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.paper .date { color: #687875; font-family: "SF Mono", Consolas, monospace; font-size: 11px; white-space: nowrap; }
+/* 时间拆成三段可编辑节点后，分隔符要淡一点，避免和数字抢视线。 */
+.paper .date-divider { color: #8fa5a1; }
+.paper .paper-experience p { margin: 6px 0 0; color: #52635f; font-size: 12px; line-height: 1.6; }
+/* 失焦回写后文本节点被重绘，靠 pre-wrap 保住用户敲的换行。 */
+.paper [contenteditable] { outline: 0; }
+.paper [contenteditable]:focus { background: #eaf1ef; }
+.paper .experience-description[contenteditable],
+.paper .experience-responsibility[contenteditable] { white-space: pre-wrap; }
+/* 空单元格用灰色占位，不用把占位文字写进 value（否则会被人当成内容保存下来）。 */
+.paper [contenteditable]:empty::before {
+  content: attr(data-placeholder);
+  color: #b8c8c4;
+  pointer-events: none;
 }
 </style>

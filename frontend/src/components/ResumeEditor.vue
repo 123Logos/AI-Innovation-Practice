@@ -10,12 +10,27 @@ import {
   useResumeStore,
 } from '@/stores/resume'
 import type { EducationDraft } from '@/stores/resume'
+import { currentMonthValue, todayIsoDate } from '@/utils/datetime'
 
 const store = useResumeStore()
 
+/**
+ * **开始**时间的 `max`：不允许选未来。
+ *
+ * 只挂在入学时间 / 项目开始日期上；毕业时间与项目结束日期刻意不加 `max`——
+ * 应届生要填「预计毕业时间」，项目也可能「预计结束」，卡在过去会把这两类
+ * 真实场景直接堵死（体验反馈修复）。
+ *
+ * 与 `validateForGenerate()` 里的同口径校验互补——浏览器原生控件先挡住，
+ * 手改 DOM / 贴值绕过时再由生成前校验与后端 422 兜底。
+ * 取值按东八区（见 `utils/datetime.ts`），与后端 `shanghai_today()` 一致。
+ */
+const maxMonth = currentMonthValue()
+const maxDate = todayIsoDate()
+
 const feedback = ref<{ tone: 'ok' | 'error'; text: string } | null>(null)
 
-type ProfileField = 'full_name' | 'contact'
+type ProfileField = 'full_name' | 'email' | 'contact'
 
 function onProfileInput(field: ProfileField, event: Event): void {
   store.updateProfileField(field, (event.target as HTMLInputElement).value)
@@ -38,13 +53,12 @@ function onExperienceInput(
   store.updateExperience(index, field, (event.target as HTMLInputElement | HTMLTextAreaElement).value)
 }
 
+/**
+ * 保存不再拦必填（用户反馈）：空行由 store 过滤，这里直接把能存的部分存下去。
+ * 严格的完整性校验挪到「生成简历」时（`StylePanel` → `validateForGenerate()`）。
+ */
 async function handleSave(): Promise<void> {
   feedback.value = null
-  const invalid = store.validate()
-  if (invalid) {
-    feedback.value = { tone: 'error', text: invalid }
-    return
-  }
   try {
     await store.save()
     feedback.value = { tone: 'ok', text: '档案已保存到数据库。' }
@@ -72,9 +86,26 @@ async function handleSave(): Promise<void> {
         <input :value="store.draft.full_name" @input="onProfileInput('full_name', $event)" />
       </label>
       <label class="field">
-        <span>联系方式 <b class="required">*</b></span>
-        <input :value="store.draft.contact" @input="onProfileInput('contact', $event)" />
+        <span>手机号码 <b class="required">*</b></span>
+        <input
+          type="tel"
+          inputmode="numeric"
+          maxlength="11"
+          :value="store.draft.contact"
+          placeholder="请输入 11 位手机号"
+          @input="onProfileInput('contact', $event)"
+        />
       </label>
+      <label class="field">
+        <span>简历邮箱</span>
+        <input
+          type="email"
+          :value="store.draft.email"
+          placeholder="选填，会显示在简历的联系方式旁"
+          @input="onProfileInput('email', $event)"
+        />
+      </label>
+      <p class="hint">带 <b class="required">*</b> 的项在「生成简历」时才校验；随时可保存草稿。</p>
     </section>
 
     <section class="form-section">
@@ -134,6 +165,7 @@ async function handleSave(): Promise<void> {
             <input
               type="month"
               :value="education.edu_start"
+              :max="maxMonth"
               @input="onEducationInput(index, 'edu_start', $event)"
             />
           </label>
@@ -142,6 +174,7 @@ async function handleSave(): Promise<void> {
             <input
               type="month"
               :value="education.edu_end"
+              :min="education.edu_start || undefined"
               @input="onEducationInput(index, 'edu_end', $event)"
             />
           </label>
@@ -155,7 +188,9 @@ async function handleSave(): Promise<void> {
       >
         + 添加教育经历
       </button>
-      <p class="hint">教育经历至少 {{ EDUCATION_LIMIT.min }} 段、最多 {{ EDUCATION_LIMIT.max }} 段。</p>
+      <p class="hint">
+        最多 {{ EDUCATION_LIMIT.max }} 段，按入学时间倒序展示；生成简历时至少需要 1 段完整的。
+      </p>
     </section>
 
     <section class="form-section">
@@ -183,7 +218,7 @@ async function handleSave(): Promise<void> {
       <button class="text-button" type="button" :disabled="!store.canAddSkill" @click="store.addSkill">
         + 新增技能
       </button>
-      <p class="hint">技能需 {{ SKILL_LIMIT.min }}–{{ SKILL_LIMIT.max }} 条，名称不可重复。</p>
+      <p class="hint">最多 {{ SKILL_LIMIT.max }} 条，名称不可重复；可先存草稿。</p>
     </section>
 
     <section class="form-section">
@@ -220,6 +255,7 @@ async function handleSave(): Promise<void> {
             <input
               type="date"
               :value="experience.start_date"
+              :max="maxDate"
               @input="onExperienceInput(index, 'start_date', $event)"
             />
           </label>
@@ -228,6 +264,7 @@ async function handleSave(): Promise<void> {
             <input
               type="date"
               :value="experience.end_date"
+              :min="experience.start_date || undefined"
               @input="onExperienceInput(index, 'end_date', $event)"
             />
           </label>
@@ -255,7 +292,7 @@ async function handleSave(): Promise<void> {
       >
         + 新增经历
       </button>
-      <p class="hint">经历需 {{ EXPERIENCE_LIMIT.min }}–{{ EXPERIENCE_LIMIT.max }} 条。</p>
+      <p class="hint">最多 {{ EXPERIENCE_LIMIT.max }} 条。</p>
     </section>
 
     <section class="save-section">

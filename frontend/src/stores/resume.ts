@@ -17,6 +17,17 @@
  * 因此 `ProfileDraft` 里也没有顶层的 `major`；旧草稿里残留的顶层 `major`
  * 会在恢复时被 `normalizeDraft()` 重建对象时自然丢弃。
  *
+ * 邮箱（`email`，用户反馈轮）：是**简历上展示的邮箱**，
+ * 与登录邮箱 `users.email` 无关，可空。
+ *
+ * 校验时机（用户反馈轮）：
+ * - 保存档案**不拦必填**：只提交「填了锚点字段」的行（技能名 / 项目名 / 学校），
+ *   空行直接丢弃，全空就等于存一份空档案；
+ * - 生成简历才是严格时刻，见 `validateForGenerate()`：
+ *   手机号必须匹配 `PHONE_PATTERN`，开始时间不得晚于今天。
+ *   结束时间允许未来（应届生的「预计毕业」、在做的项目「预计结束」），
+ *   只要求不早于开始时间。
+ *
  * 教育经历（T7.5）是一对多子表，前端与后端的渲染顺序都是「入学时间倒序」。
  *
  * 本地草稿：按用户 id 隔离存在 `localStorage`，只写不覆盖服务端数据；
@@ -28,18 +39,28 @@ import { defineStore } from 'pinia'
 
 import { profilesApi, resumesApi } from '@/api'
 import type { Degree, ProfileRead, ProfileUpsertRequest, ResumeRead } from '@/api/types'
+import { currentMonthValue, todayIsoDate } from '@/utils/datetime'
 
-/** 与后端 `ProfileUpsertRequest` 的 Field 约束保持一致。 */
-export const SKILL_LIMIT = { min: 3, max: 8 } as const
-export const EXPERIENCE_LIMIT = { min: 1, max: 3 } as const
-/** 后端 `educations` 最多 5 段；UI 至少保留 1 段。 */
+/** 与后端 `ProfileUpsertRequest` 的 Field 约束保持一致（只有上限，保存不拦必填）。 */
+export const SKILL_LIMIT = { min: 0, max: 8 } as const
+export const EXPERIENCE_LIMIT = { min: 0, max: 3 } as const
+/** 后端 `educations` 最多 5 段；UI 至少保留 1 行空的，避免区段消失。 */
 export const EDUCATION_LIMIT = { min: 1, max: 5 } as const
+
+/** 生成简历时的最低要求（后端 `ResumeService` 对技能/经历为空会返回 400）。 */
+export const GENERATE_MIN = { skills: 1, experiences: 1, educations: 1 } as const
 
 /** 学历下拉选项，顺序与后端枚举声明一致。 */
 export const DEGREE_OPTIONS: readonly Degree[] = ['专科', '本科', '硕士', '博士']
 
 /** UI 已不再采集熟练度；提交时一律用它填后端必填字段。 */
 export const DEFAULT_SKILL_RATING = 3
+
+/**
+ * 中国大陆手机号；与后端 `app/schemas/profile.py::PHONE_PATTERN` 同源，
+ * 两边必须同步修改，否则前端放过、后端 422。
+ */
+export const PHONE_PATTERN = /^1[3-9]\d{9}$/
 
 const DRAFT_STORAGE_PREFIX = 'resume_draft:'
 const DRAFT_VERSION = 1
@@ -72,24 +93,22 @@ export interface EducationDraft {
 
 export interface ProfileDraft {
   full_name: string
+  /** 简历上展示的邮箱（可空），与登录邮箱无关。 */
+  email: string
   contact: string
   skills: SkillDraft[]
   experiences: ExperienceDraft[]
   educations: EducationDraft[]
 }
 
-/** 当前日期（`YYYY-MM-DD`），用作新经历的默认开始日期。 */
-function todayIso(): string {
-  const now = new Date()
-  const month = String(now.getMonth() + 1).padStart(2, '0')
-  const day = String(now.getDate()).padStart(2, '0')
-  return `${now.getFullYear()}-${month}-${day}`
-}
-
-/** 当前月份（`YYYY-MM`），用作新教育经历入学时间的默认值。 */
-function currentMonth(): string {
-  const now = new Date()
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+/**
+ * 新教育经历的默认入学时间：**当前年份的 4 年前的 9 月**。
+ *
+ * 面向本科大四/应届生：4 年前 9 月入学，正好覆盖「现在毕业」这段学历，
+ * 比默认当前月份少一次手工改。
+ */
+function defaultEducationStart(): string {
+  return `${Number(currentMonthValue().slice(0, 4)) - 4}-09`
 }
 
 /** 后端返回 `2021-09-01`，`<input type="month">` 只认 `2021-09`。 */
@@ -109,24 +128,30 @@ function createEmptyEducation(): EducationDraft {
     school: '',
     major: '',
     degree: '本科',
-    edu_start: currentMonth(),
+    edu_start: defaultEducationStart(),
     edu_end: '',
   }
 }
 
-/** 首次进入时的空白骨架：默认给到后端要求的最小条数，避免用户一进来就撞 422。 */
+/**
+ * 首次进入时的空白骨架。
+ *
+ * 技能给 3 行只是「常见条数」的顺手默认，不是后端要求——保存不拦必填，
+ * 空行会在 `toUpsertPayload()` 里被丢弃。
+ */
 function createEmptyDraft(): ProfileDraft {
   return {
     full_name: '',
+    email: '',
     contact: '',
-    skills: Array.from({ length: SKILL_LIMIT.min }, () => ({
+    skills: Array.from({ length: 3 }, () => ({
       name: '',
       self_rating: DEFAULT_SKILL_RATING,
     })),
     experiences: [
       {
         title: '',
-        start_date: todayIso(),
+        start_date: todayIsoDate(),
         end_date: '',
         description: '',
         responsibility: '',
@@ -139,6 +164,7 @@ function createEmptyDraft(): ProfileDraft {
 function draftFromProfile(profile: ProfileRead): ProfileDraft {
   return {
     full_name: profile.full_name,
+    email: profile.email ?? '',
     contact: profile.contact,
     skills: profile.skills.map((skill) => ({
       name: skill.name,
@@ -198,7 +224,9 @@ function isProfileDraft(value: unknown): value is ProfileDraft {
     ) &&
     // T7.5 之前写入的草稿没有 educations，缺省视为合法（恢复时补空数组）；
     // 但只要有这个字段，就必须是数组，避免脏数据把渲染层搞崩。
-    (candidate.educations === undefined || Array.isArray(candidate.educations))
+    (candidate.educations === undefined || Array.isArray(candidate.educations)) &&
+    // 用户反馈轮才新增 email，旧草稿没有该字段同样合法；有则必须是字符串。
+    (candidate.email === undefined || typeof candidate.email === 'string')
   )
 }
 
@@ -238,11 +266,13 @@ function removeDraft(ownerId: string): void {
  * - T7.6 已删除主表 `major`（专业），旧草稿里的顶层 `major` 一并丢弃——
  *   重建对象时不拷贝该键，运行时自然消失；
  * - 已下线的 `self_rating` 抹平为默认值；
- * - T7.5 之前的草稿没有 `educations`，补空数组而不是报错。
+ * - T7.5 之前的草稿没有 `educations`，补空数组而不是报错；
+ * - 用户反馈轮之前的草稿没有 `email`，补空串。
  */
 function normalizeDraft(raw: ProfileDraft): ProfileDraft {
   return {
     full_name: raw.full_name ?? '',
+    email: raw.email ?? '',
     contact: raw.contact ?? '',
     skills: (raw.skills ?? [])
       .filter((skill) => skill && typeof skill.name === 'string')
@@ -268,26 +298,51 @@ function normalizeDraft(raw: ProfileDraft): ProfileDraft {
   }
 }
 
+/* ------------------------------ 行有效性过滤 ------------------------------ */
+
+/*
+ * 保存不再拦必填，但也不能把用户没开始填的空行提交上去（后端 `name` / `title` /
+ * `school` 是必填锚点）。规则：锚点字段为空即视为「UI 占位行」，提交与比较时都跳过。
+ */
+
+function meaningfulSkills(source: ProfileDraft): SkillDraft[] {
+  return (source.skills ?? []).filter((skill) => skill.name.trim() !== '')
+}
+
+function meaningfulExperiences(source: ProfileDraft): ExperienceDraft[] {
+  return (source.experiences ?? []).filter((experience) => experience.title.trim() !== '')
+}
+
+function meaningfulEducations(source: ProfileDraft): EducationDraft[] {
+  return (source.educations ?? []).filter((education) => education.school.trim() !== '')
+}
+
 /**
  * 用于「草稿 vs 服务端」比较的归一化序列化。
  *
  * 刻意忽略 `self_rating`：UI 已不采集它，提交后恒为 3，
  * 若把它算进比较，一份本来没改过的草稿也会被判成「有未保存修改」。
+ * 同时也只比较「有效行」，否则一份 3 个空技能行的空白骨架
+ * 会跟服务端的 0 条技能判成「有差异」，每次进页面都弹恢复提示。
  * 顶层 `major` 已不存在（T7.6），无需再参与比较。
+ *
+ * 所有字段都用 `?? ''` 兜底：草稿来自 `localStorage`，可能是任何一个旧版本的结构
+ * （比如本轮之前没有 `email`），这里绝不能因为缺一个键就抛异常。
  */
 function comparableOf(source: ProfileDraft): string {
   return JSON.stringify({
-    full_name: source.full_name,
-    contact: source.contact,
-    skills: source.skills.map((skill) => skill.name),
-    experiences: source.experiences.map((experience) => [
+    full_name: (source.full_name ?? '').trim(),
+    email: (source.email ?? '').trim(),
+    contact: (source.contact ?? '').trim(),
+    skills: meaningfulSkills(source).map((skill) => skill.name.trim()),
+    experiences: meaningfulExperiences(source).map((experience) => [
       experience.title,
       experience.start_date,
       experience.end_date,
       experience.description,
       experience.responsibility,
     ]),
-    educations: (source.educations ?? []).map((education) => [
+    educations: meaningfulEducations(source).map((education) => [
       education.school,
       education.major,
       education.degree,
@@ -334,6 +389,7 @@ export const useResumeStore = defineStore('resume', () => {
 
   function applyDraft(next: ProfileDraft, profile: ProfileRead | null): void {
     draft.full_name = next.full_name
+    draft.email = next.email
     draft.contact = next.contact
     draft.skills = next.skills
     draft.experiences = next.experiences
@@ -342,7 +398,7 @@ export const useResumeStore = defineStore('resume', () => {
     dirty.value = false
   }
 
-  function updateProfileField(field: 'full_name' | 'contact', value: string): void {
+  function updateProfileField(field: 'full_name' | 'email' | 'contact', value: string): void {
     draft[field] = value
     markDirty()
   }
@@ -381,7 +437,7 @@ export const useResumeStore = defineStore('resume', () => {
     if (!canAddExperience.value) return
     draft.experiences.push({
       title: '',
-      start_date: todayIso(),
+      start_date: todayIsoDate(),
       end_date: '',
       description: '',
       responsibility: '',
@@ -419,75 +475,107 @@ export const useResumeStore = defineStore('resume', () => {
     markDirty()
   }
 
-  /** 组装请求体：去首尾空格，日期空串转 null，熟练度固定 3，年级/专业不再提交。 */
+  /**
+   * 组装请求体：去首尾空格，日期空串转 null，熟练度固定 3，年级/专业不再提交。
+   *
+   * 只提交「有效行」（锚点字段非空），所以整份全空就是空数组——
+   * 后端已去掉技能/经历的下限，这种「空档案」可以正常保存。
+   */
   function toUpsertPayload(): ProfileUpsertRequest {
     return {
       full_name: draft.full_name.trim(),
+      // 空串等同「没填」，交给后端存 NULL。
+      email: draft.email.trim() || null,
       contact: draft.contact.trim(),
-      skills: draft.skills.map((skill) => ({
+      skills: meaningfulSkills(draft).map((skill) => ({
         name: skill.name.trim(),
         // 后端 `SkillInput.self_rating` 仍必填（1–5），但 UI 不再采集，统一写 3。
         self_rating: DEFAULT_SKILL_RATING,
       })),
-      experiences: draft.experiences.map((experience) => ({
+      experiences: meaningfulExperiences(draft).map((experience) => ({
         title: experience.title.trim(),
         start_date: experience.start_date,
         end_date: experience.end_date === '' ? null : experience.end_date,
         description: experience.description.trim(),
         responsibility: experience.responsibility.trim(),
       })),
-      educations: draft.educations.map((education) => ({
+      educations: meaningfulEducations(draft).map((education) => ({
         school: education.school.trim(),
         major: education.major.trim(),
         degree: education.degree,
-        // 后端是 DATE：`YYYY-MM` 补成当月 1 号；空值由校验拦住，这里兜底给空串外的 null。
+        // 后端是 DATE：`YYYY-MM` 补成当月 1 号；空值由生成前校验拦住。
         edu_start: toIsoDate(education.edu_start) ?? '',
         edu_end: toIsoDate(education.edu_end),
       })),
     }
   }
 
-  /** 本地预校验，规则逐条对齐后端；返回 null 表示通过。 */
-  function validate(): string | null {
-    if (!draft.full_name.trim()) return '请填写姓名。'
-    if (!draft.contact.trim()) return '请填写联系方式。'
+  /** 宽松的邮箱格式检查：只拦明显不是邮箱的输入，不做 RFC 全量校验。 */
+  function looksLikeEmail(value: string): boolean {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+  }
 
-    if (draft.skills.length < SKILL_LIMIT.min || draft.skills.length > SKILL_LIMIT.max) {
-      return `技能数量需在 ${SKILL_LIMIT.min}–${SKILL_LIMIT.max} 条之间。`
+  /**
+   * 生成简历前的完整性校验（严格）。
+   *
+   * 保存已经不拦必填了，所以「能不能生成」的全部判断都收敛到这里：
+   * 姓名 / 手机号必填且号码合法，邮箱填了就必须像邮箱，
+   * 教育经历至少 1 段且四要素齐全，技能与项目各至少 1 条并不超上限；
+   * 开始时间不得晚于今天（与后端 `shanghai_today()` 同口径），
+   * 结束时间允许未来——应届生要写「预计毕业时间」，只校验不早于开始时间。
+   * 返回 null 表示通过。
+   */
+  function validateForGenerate(): string | null {
+    if (!draft.full_name.trim()) return '请先填写姓名，再生成简历。'
+    const contact = draft.contact.trim()
+    if (!contact) return '请先填写手机号，再生成简历。'
+    if (!PHONE_PATTERN.test(contact)) {
+      return '手机号格式不正确，请填写 11 位中国大陆手机号（如 13800000000）。'
     }
-    const skillNames = draft.skills.map((skill) => skill.name.trim())
-    if (skillNames.some((name) => !name)) return '技能名称不能为空。'
+    const email = draft.email.trim()
+    if (email && !looksLikeEmail(email)) return '邮箱格式不正确，请检查后再生成。'
+
+    const today = todayIsoDate()
+    // 教育经历是「年月」精度，比较基准也截到月，否则 2026-11 与 2026-11-02 会误判。
+    const todayMonth = today.slice(0, 7)
+
+    const skills = meaningfulSkills(draft)
+    if (skills.length < GENERATE_MIN.skills) return '至少填写 1 条技能，再生成简历。'
+    if (skills.length > SKILL_LIMIT.max) return `技能最多 ${SKILL_LIMIT.max} 条。`
+    const skillNames = skills.map((skill) => skill.name.trim())
     if (new Set(skillNames).size !== skillNames.length) return '技能名称不能重复。'
 
-    if (
-      draft.educations.length < EDUCATION_LIMIT.min ||
-      draft.educations.length > EDUCATION_LIMIT.max
-    ) {
-      return `教育经历需在 ${EDUCATION_LIMIT.min}–${EDUCATION_LIMIT.max} 段之间。`
+    const educations = meaningfulEducations(draft)
+    if (educations.length < GENERATE_MIN.educations) {
+      return '至少填写 1 段教育经历（学校、专业、学历、入学时间），再生成简历。'
     }
-    for (const [index, education] of draft.educations.entries()) {
+    if (educations.length > EDUCATION_LIMIT.max) {
+      return `教育经历最多 ${EDUCATION_LIMIT.max} 段。`
+    }
+    for (const [index, education] of educations.entries()) {
       const label = `第 ${index + 1} 段教育经历`
-      if (!education.school.trim()) return `${label}缺少学校名称。`
       if (!education.major.trim()) return `${label}缺少专业。`
       if (!education.degree) return `${label}缺少学历。`
       if (!education.edu_start) return `${label}缺少入学时间。`
+      if (education.edu_start > todayMonth) return `${label}的入学时间不能选择未来。`
+      // 毕业时间允许未来（应届生填「预计毕业时间」），只要求不早于入学时间。
       if (education.edu_end && education.edu_end < education.edu_start) {
         return `${label}的毕业时间不能早于入学时间。`
       }
     }
 
-    if (
-      draft.experiences.length < EXPERIENCE_LIMIT.min ||
-      draft.experiences.length > EXPERIENCE_LIMIT.max
-    ) {
-      return `经历数量需在 ${EXPERIENCE_LIMIT.min}–${EXPERIENCE_LIMIT.max} 条之间。`
+    const experiences = meaningfulExperiences(draft)
+    if (experiences.length < GENERATE_MIN.experiences) return '至少填写 1 段项目经历，再生成简历。'
+    if (experiences.length > EXPERIENCE_LIMIT.max) {
+      return `项目经历最多 ${EXPERIENCE_LIMIT.max} 条。`
     }
-    for (const [index, experience] of draft.experiences.entries()) {
+    for (const [index, experience] of experiences.entries()) {
       const label = `第 ${index + 1} 段经历`
-      if (!experience.title.trim()) return `${label}缺少项目名称。`
       if (!experience.start_date) return `${label}缺少开始日期。`
       if (!experience.description.trim()) return `${label}缺少项目描述。`
       if (!experience.responsibility.trim()) return `${label}缺少个人职责。`
+      if (experience.start_date > today) return `${label}的开始时间不能选择未来。`
+      // 结束时间允许未来（「预计结束」），只要求不早于开始时间。
       if (experience.end_date && experience.end_date < experience.start_date) {
         return `${label}的结束日期不能早于开始日期。`
       }
@@ -694,7 +782,7 @@ export const useResumeStore = defineStore('resume', () => {
     updateEducation,
     addEducation,
     removeEducation,
-    validate,
+    validateForGenerate,
     toUpsertPayload,
     loadFromServer,
     save,
