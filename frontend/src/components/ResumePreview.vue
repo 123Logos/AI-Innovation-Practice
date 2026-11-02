@@ -92,13 +92,7 @@ function onBlockCommit(event: Event, apply: (value: string) => void): void {
           spellcheck="false"
           @blur="onBlockCommit($event, (value) => store.updateProfileField('full_name', value))"
         >{{ store.draft.full_name || '姓名' }}</h1>
-        <p class="subtitle">
-          <span
-            contenteditable="true"
-            spellcheck="false"
-            @blur="onBlockCommit($event, (value) => store.updateProfileField('major', value))"
-          >{{ store.draft.major || '专业' }}</span>
-        </p>
+        <!-- T7.6：基本信息栏只留姓名与联系方式，专业交给「教育经历」区块。 -->
         <p
           class="contact"
           contenteditable="true"
@@ -245,7 +239,6 @@ function onBlockCommit(event: Event, apply: (value: string) => void): void {
 .paper { aspect-ratio: 210 / 297; min-height: 720px; overflow: auto; padding: 56px 52px; color: #263330; background: #fff; box-shadow: 0 14px 36px #2633301c; }
 .paper-header { border-bottom: 2px solid #6b8f8a; padding-bottom: 24px; }
 .paper-header h1 { margin: 0 0 8px; font-size: 32px; font-weight: 700; }
-.subtitle { margin: 4px 0; color: #52635f; font-size: 14px; }
 .paper-header .contact { margin: 4px 0; color: #52635f; font-family: "SF Mono", Consolas, monospace; font-size: 12px; }
 .paper-section { margin-top: 28px; }
 .paper-section h2 { margin: 0 0 14px; color: #527873; font-size: 13px; letter-spacing: .14em; }
@@ -283,7 +276,7 @@ function onBlockCommit(event: Event, apply: (value: string) => void): void {
 
 @media (prefers-color-scheme: dark) {
   .paper { color: #263330; background: #fff; }
-  .subtitle, .paper-experience p, .date, .paper-header .contact { color: #52635f; }
+  .paper-experience p, .date, .paper-header .contact { color: #52635f; }
   .mode-badge { border-color: #527873; border-left-color: #8fb3ab; color: #e4eeec; background: #2f4340; }
   .mode-badge__dot { background: #8fb3ab; }
   .mode-badge--generated { border-color: #6b8f8a; border-left-color: #d7e5e1; color: #f0f6f4; background: #3d5b56; }

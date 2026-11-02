@@ -6,6 +6,7 @@
 T7.5 起教育经历是一对多子表（`educations`）：
 学校 / 专业 / 学历 / 起止时间，字段对齐学信网备案表。
 `grade`（年级）在库中保留，但已从产品表单下架，请求体里可选、后端忽略。
+T7.6 起主表不再有 `major`：专业只由每段教育经历各自携带。
 """
 
 from datetime import date, datetime
@@ -66,8 +67,13 @@ class EducationRead(BaseModel):
 
 
 class ProfileUpsertRequest(BaseModel):
+    """写入档案的请求体。
+
+    T7.6：不再有主表 `major`——专业由 `educations[].major` 表达，
+    旧客户端若继续传 `major`，Pydantic 会按默认 `extra="ignore"` 丢弃。
+    """
+
     full_name: str = Field(min_length=1, max_length=100)
-    major: str = Field(min_length=1, max_length=100)
     #: 年级已下架：允许缺省，服务层不再把它写进库（列保留）。
     grade: str | None = Field(default=None, max_length=50)
     contact: str = Field(min_length=1, max_length=255)
@@ -89,7 +95,6 @@ class ProfileRead(BaseModel):
     id: str
     user_id: str
     full_name: str
-    major: str
     grade: str
     contact: str
     created_at: datetime

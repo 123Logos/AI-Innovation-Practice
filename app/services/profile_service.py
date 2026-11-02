@@ -4,6 +4,7 @@
 
 T7.5：教育经历与 skills / experiences 一样走「先删后插」的全量替换，
 不新增表外的任何状态；`grade` 已下架，不参与保存。
+T7.6：主表 `major` 已删除，专业随每段教育经历保存。
 """
 
 from app.repositories.student_profile_repository import (
@@ -38,7 +39,6 @@ class ProfileService:
             user_id,
             ProfileDraft(
                 full_name=payload.full_name,
-                major=payload.major,
                 # 年级列仍在库里但产品已移除该字段：不再写入任何业务值（见仓储）。
                 contact=payload.contact,
             ),
@@ -77,7 +77,6 @@ class ProfileService:
             id=profile.id,
             user_id=profile.user_id,
             full_name=profile.full_name,
-            major=profile.major,
             grade=profile.grade,
             contact=profile.contact,
             created_at=profile.created_at,

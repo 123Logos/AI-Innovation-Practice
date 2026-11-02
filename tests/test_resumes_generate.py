@@ -90,7 +90,6 @@ def _profile_payload(**overrides: object) -> dict[str, object]:
     }
     payload: dict[str, object] = {
         "full_name": "张三",
-        "major": "计算机科学与技术",
         "contact": "13800000000",
         "skills": [
             {"name": "Python", "self_rating": 4},
@@ -180,13 +179,15 @@ def test_generate_persists_resume_for_current_user(client: TestClient) -> None:
     assert data["title"] == "我的第一份简历"
     assert data["created_at"]
     assert "张三" in data["content_html"]
-    assert "计算机科学与技术" in data["content_html"]
+    # T7.6：专业只在教育经历区块出现一次，基本信息栏不再重复渲染。
+    assert data["content_html"].count("计算机科学与技术") == 1
     assert "Python" in data["content_html"]
     assert "校园二手交易平台" in data["content_html"]
     # 熟练度已下架：生成器只渲染技能名，HTML 里不得残留「自评 x/5」。
     assert "自评" not in data["content_html"]
     assert "<li>Python</li>" in data["content_html"]
-    # 年级已下架：基本信息行不能留下空的 `｜｜` 分隔。
+    # 基本信息栏只保留姓名和联系方式（年级、专业都已下架）。
+    assert "<p>张三｜13800000000</p>" in data["content_html"]
     assert "｜｜" not in data["content_html"]
 
     # 教育经历区块：学校全称 / 专业 / 学历 / 起止时间，且按入学时间倒序。

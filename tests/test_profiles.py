@@ -104,7 +104,6 @@ def _education(
 def _profile_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "full_name": "张三",
-        "major": "计算机科学与技术",
         "contact": "13800000000",
         "skills": [_skill("Python", 4), _skill("SQL"), _skill("React")],
         "experiences": [_experience()],
@@ -160,6 +159,44 @@ def test_get_profile_returns_null_before_creation(client: TestClient) -> None:
     assert _count("student_profiles") == 0
 
 
+def test_schema_dropped_profile_major_but_keeps_education_major() -> None:
+    """T7.6：主表 `major` 必须被迁移删掉，`educations.major` 必须原样保留。"""
+    with get_engine().connect() as connection:
+        columns = {
+            (row.TABLE_NAME, row.COLUMN_NAME)
+            for row in connection.execute(
+                text(
+                    "SELECT TABLE_NAME, COLUMN_NAME "
+                    "FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() "
+                    "AND TABLE_NAME IN ('student_profiles', 'educations')"
+                )
+            ).all()
+        }
+
+    assert ("student_profiles", "major") not in columns
+    assert ("educations", "major") in columns
+
+
+def test_put_profile_ignores_legacy_major_field(client: TestClient) -> None:
+    """旧客户端还会传顶层 `major`：不能报 422，也不能写到任何地方。"""
+    token = _register_and_login(client)
+
+    response = client.put(
+        PROFILES_URL,
+        json=_profile_payload(major="计算机科学与技术"),
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    assert "major" not in response.json()["data"]["profile"]
+    # 专业只落在教育经历子表里
+    assert _count("educations") == 1
+    with get_engine().connect() as connection:
+        majors = connection.execute(text("SELECT major FROM educations")).scalars().all()
+    assert majors == ["计算机科学与技术"]
+
+
 def test_put_profile_persists_profile_skills_experiences_and_educations(
     client: TestClient,
 ) -> None:
@@ -170,7 +207,8 @@ def test_put_profile_persists_profile_skills_experiences_and_educations(
     assert response.status_code == 200, response.text
     profile = response.json()["data"]["profile"]
     assert profile["full_name"] == "张三"
-    assert profile["major"] == "计算机科学与技术"
+    # T7.6：主表 `major` 已彻底移除，专业只存在于每段教育经历。
+    assert "major" not in profile
     # 年级已下架：列还在，但不再写业务值。
     assert profile["grade"] == ""
     assert profile["contact"] == "13800000000"

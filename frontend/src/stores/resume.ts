@@ -13,6 +13,10 @@
  * 前者类型保留、提交时统一写 `DEFAULT_SKILL_RATING`（3）；
  * 后者前后端都不再传写，数据库列保留但不再参与业务。
  *
+ * 专业（`major`）自 T7.6 起只属于「教育经历」的每一段，主表不再有该字段，
+ * 因此 `ProfileDraft` 里也没有顶层的 `major`；旧草稿里残留的顶层 `major`
+ * 会在恢复时被 `normalizeDraft()` 重建对象时自然丢弃。
+ *
  * 教育经历（T7.5）是一对多子表，前端与后端的渲染顺序都是「入学时间倒序」。
  *
  * 本地草稿：按用户 id 隔离存在 `localStorage`，只写不覆盖服务端数据；
@@ -68,7 +72,6 @@ export interface EducationDraft {
 
 export interface ProfileDraft {
   full_name: string
-  major: string
   contact: string
   skills: SkillDraft[]
   experiences: ExperienceDraft[]
@@ -115,7 +118,6 @@ function createEmptyEducation(): EducationDraft {
 function createEmptyDraft(): ProfileDraft {
   return {
     full_name: '',
-    major: '',
     contact: '',
     skills: Array.from({ length: SKILL_LIMIT.min }, () => ({
       name: '',
@@ -137,7 +139,6 @@ function createEmptyDraft(): ProfileDraft {
 function draftFromProfile(profile: ProfileRead): ProfileDraft {
   return {
     full_name: profile.full_name,
-    major: profile.major,
     contact: profile.contact,
     skills: profile.skills.map((skill) => ({
       name: skill.name,
@@ -180,7 +181,6 @@ function isProfileDraft(value: unknown): value is ProfileDraft {
   const candidate = value as Partial<ProfileDraft>
   return (
     typeof candidate.full_name === 'string' &&
-    typeof candidate.major === 'string' &&
     typeof candidate.contact === 'string' &&
     Array.isArray(candidate.skills) &&
     candidate.skills.every(
@@ -235,13 +235,14 @@ function removeDraft(ownerId: string): void {
  * 补齐缺失字段，让旧草稿也能安全恢复。
  *
  * - 已下线的 `grade`（年级）直接丢弃；
+ * - T7.6 已删除主表 `major`（专业），旧草稿里的顶层 `major` 一并丢弃——
+ *   重建对象时不拷贝该键，运行时自然消失；
  * - 已下线的 `self_rating` 抹平为默认值；
  * - T7.5 之前的草稿没有 `educations`，补空数组而不是报错。
  */
 function normalizeDraft(raw: ProfileDraft): ProfileDraft {
   return {
     full_name: raw.full_name ?? '',
-    major: raw.major ?? '',
     contact: raw.contact ?? '',
     skills: (raw.skills ?? [])
       .filter((skill) => skill && typeof skill.name === 'string')
@@ -272,11 +273,11 @@ function normalizeDraft(raw: ProfileDraft): ProfileDraft {
  *
  * 刻意忽略 `self_rating`：UI 已不采集它，提交后恒为 3，
  * 若把它算进比较，一份本来没改过的草稿也会被判成「有未保存修改」。
+ * 顶层 `major` 已不存在（T7.6），无需再参与比较。
  */
 function comparableOf(source: ProfileDraft): string {
   return JSON.stringify({
     full_name: source.full_name,
-    major: source.major,
     contact: source.contact,
     skills: source.skills.map((skill) => skill.name),
     experiences: source.experiences.map((experience) => [
@@ -333,7 +334,6 @@ export const useResumeStore = defineStore('resume', () => {
 
   function applyDraft(next: ProfileDraft, profile: ProfileRead | null): void {
     draft.full_name = next.full_name
-    draft.major = next.major
     draft.contact = next.contact
     draft.skills = next.skills
     draft.experiences = next.experiences
@@ -342,7 +342,7 @@ export const useResumeStore = defineStore('resume', () => {
     dirty.value = false
   }
 
-  function updateProfileField(field: 'full_name' | 'major' | 'contact', value: string): void {
+  function updateProfileField(field: 'full_name' | 'contact', value: string): void {
     draft[field] = value
     markDirty()
   }
@@ -419,11 +419,10 @@ export const useResumeStore = defineStore('resume', () => {
     markDirty()
   }
 
-  /** 组装请求体：去首尾空格，日期空串转 null，熟练度固定 3，年级不再提交。 */
+  /** 组装请求体：去首尾空格，日期空串转 null，熟练度固定 3，年级/专业不再提交。 */
   function toUpsertPayload(): ProfileUpsertRequest {
     return {
       full_name: draft.full_name.trim(),
-      major: draft.major.trim(),
       contact: draft.contact.trim(),
       skills: draft.skills.map((skill) => ({
         name: skill.name.trim(),
@@ -451,7 +450,6 @@ export const useResumeStore = defineStore('resume', () => {
   /** 本地预校验，规则逐条对齐后端；返回 null 表示通过。 */
   function validate(): string | null {
     if (!draft.full_name.trim()) return '请填写姓名。'
-    if (!draft.major.trim()) return '请填写专业。'
     if (!draft.contact.trim()) return '请填写联系方式。'
 
     if (draft.skills.length < SKILL_LIMIT.min || draft.skills.length > SKILL_LIMIT.max) {

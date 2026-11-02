@@ -44,7 +44,6 @@ class ResumeService:
         content_html = self._generator.generate(
             profile=ProfileInput(
                 full_name=profile.full_name,
-                major=profile.major,
                 contact=profile.contact,
             ),
             skills=[

@@ -15,10 +15,11 @@ class ProfileInput(BaseModel):
 
     T7.5 起不再包含 `grade`（年级已从产品下架），避免调用方被一个
     「库里恒为空串」的字段卡在校验上。
+    T7.6 起不再包含 `major`：专业由 `educations` 的每一段各自携带，
+    基本信息栏只渲染姓名与联系方式。
     """
 
     full_name: str = Field(min_length=1, max_length=100)
-    major: str = Field(min_length=1, max_length=100)
     contact: str = Field(min_length=1, max_length=255)
 
 

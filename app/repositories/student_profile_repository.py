@@ -29,7 +29,7 @@ class StudentProfile(ProfileBase):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(36), unique=True, nullable=False)
     full_name: Mapped[str] = mapped_column(String(100), nullable=False)
-    major: Mapped[str] = mapped_column(String(100), nullable=False)
+    # T7.6：`major` 列已随迁移删除，专业只存在于 `educations.major`。
     grade: Mapped[str] = mapped_column(String(50), nullable=False)
     contact: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
@@ -80,10 +80,10 @@ class ProfileDraft:
     """仓储入参：不依赖 Pydantic，避免仓储层感知 API 模型。
 
     T7.5 起不含 `grade`：年级字段已从产品下架，列保留但不再写业务值。
+    T7.6 起不含 `major`：专业由 `educations.major` 表达，主表列已删除。
     """
 
     full_name: str
-    major: str
     contact: str
 
 
@@ -157,6 +157,7 @@ class StudentProfileRepository:
 
         `grade` 已从产品中下架：列在库里保留（NOT NULL），但前后端都不再写入业务值，
         统一落空串，避免「一个没人维护的字段」继续漂移。
+        `major` 列已在 T7.6 删除，专业改由 `educations` 承载。
         """
         now = utc_now()
         target = self.get_by_user_id(user_id)
@@ -167,7 +168,6 @@ class StudentProfileRepository:
                 created_at=now,
                 updated_at=now,
                 full_name=profile.full_name,
-                major=profile.major,
                 grade="",
                 contact=profile.contact,
             )
@@ -175,7 +175,6 @@ class StudentProfileRepository:
             self._session.flush()
         else:
             target.full_name = profile.full_name
-            target.major = profile.major
             target.contact = profile.contact
             target.updated_at = now
             self._session.flush()

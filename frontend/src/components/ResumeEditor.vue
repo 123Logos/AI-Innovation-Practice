@@ -15,7 +15,7 @@ const store = useResumeStore()
 
 const feedback = ref<{ tone: 'ok' | 'error'; text: string } | null>(null)
 
-type ProfileField = 'full_name' | 'major' | 'contact'
+type ProfileField = 'full_name' | 'contact'
 
 function onProfileInput(field: ProfileField, event: Event): void {
   store.updateProfileField(field, (event.target as HTMLInputElement).value)
@@ -71,16 +71,10 @@ async function handleSave(): Promise<void> {
         <span>姓名 <b class="required">*</b></span>
         <input :value="store.draft.full_name" @input="onProfileInput('full_name', $event)" />
       </label>
-      <div class="field-row">
-        <label class="field">
-          <span>专业 <b class="required">*</b></span>
-          <input :value="store.draft.major" @input="onProfileInput('major', $event)" />
-        </label>
-        <label class="field">
-          <span>联系方式 <b class="required">*</b></span>
-          <input :value="store.draft.contact" @input="onProfileInput('contact', $event)" />
-        </label>
-      </div>
+      <label class="field">
+        <span>联系方式 <b class="required">*</b></span>
+        <input :value="store.draft.contact" @input="onProfileInput('contact', $event)" />
+      </label>
     </section>
 
     <section class="form-section">

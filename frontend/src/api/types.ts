@@ -109,7 +109,6 @@ export interface EducationRead extends EducationInput {
 /** 后端 `ProfileUpsertRequest`：技能 3–8 条，经历 1–3 条，技能名唯一。 */
 export interface ProfileUpsertRequest {
   full_name: string
-  major: string
   /** 年级已下架，可不传。 */
   grade?: string | null
   contact: string
@@ -122,7 +121,6 @@ export interface ProfileRead {
   id: string
   user_id: string
   full_name: string
-  major: string
   grade: string
   contact: string
   created_at: string

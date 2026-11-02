@@ -30,7 +30,8 @@ class TemplateResumeGenerator(ResumeGenerator):
         self._template = template or (
             "<html><head><meta charset=\"utf-8\"><title>{title}</title></head>"
             "<body><h1>{title}</h1><section><h2>基本信息</h2>"
-            "<p>{full_name}｜{major}｜{contact}</p></section>"
+            # 专业不再进基本信息栏：它属于具体某段学历，由「教育经历」区块呈现。
+            "<p>{full_name}｜{contact}</p></section>"
             "{education_section}"
             "<section><h2>技能</h2><ul>{skills}</ul></section>"
             "<section><h2>经历</h2>{experiences}</section></body></html>"
@@ -73,7 +74,6 @@ class TemplateResumeGenerator(ResumeGenerator):
         return self._template.format(
             title=escape(title),
             full_name=escape(profile.full_name),
-            major=escape(profile.major),
             contact=escape(profile.contact),
             education_section=education_section,
             skills=skill_items,
