@@ -14,7 +14,10 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "pyjwt>=2.15.1",
     "passlib[bcrypt]>=1.7.4",
-    "bcrypt<5",
+    # passlib 1.7.4 通过 bcrypt.__about__.__version__ 读取版本，
+    # bcrypt 4.1 起移除了该属性，会打印 "(trapped) error reading bcrypt version"。
+    # 锁在 4.0.x 是 passlib 停更下的唯一干净组合。
+    "bcrypt>=4.0.1,<4.1.0",
 ]
 
 [dependency-groups]
