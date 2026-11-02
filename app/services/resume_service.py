@@ -1,34 +1,74 @@
-from datetime import UTC, datetime
-from uuid import uuid4
+"""简历生成业务逻辑：按登录用户从库中取档案 → 交给生成器 → 落库。
+
+与 T5 的差别：不再接收请求体里的档案数据，也不再写内存仓储。
+"""
 
 from app.integrations.resume_generator import ResumeGenerator
-from app.repositories.fake_resume_repository import FakeResumeRepository
-from app.schemas.resume import ResumeGenerateRequest
+from app.repositories.resume_repository import ResumeRepository
+from app.repositories.student_profile_repository import StudentProfileRepository
+from app.schemas.resume import (
+    ExperienceInput,
+    ProfileInput,
+    ResumeGenerateRequest,
+    ResumeRead,
+    SkillInput,
+)
+
+
+class ProfileIncompleteError(Exception):
+    """当前用户还没有可用于生成简历的档案（或缺技能/经历）。"""
 
 
 class ResumeService:
     def __init__(
         self,
-        repository: FakeResumeRepository,
+        profile_repository: StudentProfileRepository,
+        resume_repository: ResumeRepository,
         generator: ResumeGenerator,
     ) -> None:
-        self._repository = repository
+        self._profile_repository = profile_repository
+        self._resume_repository = resume_repository
         self._generator = generator
 
-    def generate(self, payload: ResumeGenerateRequest) -> dict[str, str]:
-        resume_id = str(uuid4())
-        created_at = datetime.now(UTC).replace(tzinfo=None)
+    def generate(self, user_id: str, payload: ResumeGenerateRequest) -> ResumeRead:
+        profile = self._profile_repository.get_by_user_id(user_id)
+        if profile is None:
+            raise ProfileIncompleteError(user_id)
+        skills = self._profile_repository.list_skills(profile.id)
+        experiences = self._profile_repository.list_experiences(profile.id)
+        if not skills or not experiences:
+            raise ProfileIncompleteError(user_id)
+
         content_html = self._generator.generate(
-            profile=payload.profile,
-            skills=payload.skills,
-            experiences=payload.experiences,
+            profile=ProfileInput(
+                full_name=profile.full_name,
+                major=profile.major,
+                grade=profile.grade,
+                contact=profile.contact,
+            ),
+            skills=[
+                SkillInput(name=skill.name, self_rating=skill.self_rating) for skill in skills
+            ],
+            experiences=[
+                ExperienceInput(
+                    title=experience.title,
+                    start_date=experience.start_date,
+                    end_date=experience.end_date,
+                    description=experience.description,
+                    responsibility=experience.responsibility,
+                )
+                for experience in experiences
+            ],
             title=payload.title,
         )
-        resume = {
-            "resume_id": resume_id,
-            "title": payload.title,
-            "content_html": content_html,
-            "created_at": created_at.isoformat(),
-        }
-        self._repository.save(resume_id, resume)
-        return resume
+        resume = self._resume_repository.create_resume(
+            student_profile_id=profile.id,
+            title=payload.title,
+            content_html=content_html,
+        )
+        return ResumeRead(
+            resume_id=resume.id,
+            title=resume.title,
+            content_html=resume.content_html,
+            created_at=resume.created_at,
+        )

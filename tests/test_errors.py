@@ -1,9 +1,17 @@
+from datetime import UTC, datetime
 from typing import NoReturn
 
 from fastapi.testclient import TestClient
 
 from app.api.v1.resumes import get_resume_service
 from app.main import app
+from app.schemas.auth import UserRead
+from app.services.dependencies import get_current_user
+
+
+def _fake_current_user() -> UserRead:
+    """T7.2 起 /resumes/generate 需要登录态；依赖先于请求体校验，故需绕过鉴权才能测 422。"""
+    return UserRead(id="test-user", username="tester", email=None, created_at=datetime.now(UTC))
 
 
 def test_not_found_uses_unified_error_response() -> None:
@@ -15,7 +23,11 @@ def test_not_found_uses_unified_error_response() -> None:
 
 
 def test_validation_error_uses_unified_error_response() -> None:
-    response = TestClient(app).post("/api/v1/resumes/generate", json={})
+    app.dependency_overrides[get_current_user] = _fake_current_user
+    try:
+        response = TestClient(app).post("/api/v1/resumes/generate", json={})
+    finally:
+        app.dependency_overrides.clear()
 
     assert response.status_code == 422
     body = response.json()

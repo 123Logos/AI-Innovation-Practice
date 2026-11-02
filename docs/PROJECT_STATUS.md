@@ -6,9 +6,8 @@
 
 ## 1. 一句话状态
 
-简历切片已具备骨架链路（fake 仓储 + 模板生成 + 前端三栏编辑器）；后端在 T7.1 补齐
-注册/登录/JWT 鉴权，认证链路已连真实 MySQL 并有集成测试。**简历生成仍走 fake 仓储，
-尚未接真实用户。**
+简历切片后端已打通真实库：注册/登录（JWT）→ 保存学生档案（三张表）→ 生成简历落 `resumes`。
+**前端仍未接 API，也还没有真实用户；简历生成仍是模板拼装，不是 AI。**
 
 > 历史说明：本节曾写“数据库迁移未建立、测试仅覆盖健康检查”，该描述截至 T7.4 已过期，
 > 现行事实以下方表格与第 6 节为准。
@@ -39,14 +38,16 @@
 | 项 | 对应任务 | 状态 |
 |---|---|---|
 | Alembic 基线 + 5 张表迁移 | T4 | 已验证 |
-| fake 垂直切片 + 集成测试 | T5 | 已验证 |
+| fake 垂直切片 + 集成测试 | T5 | 已验证；T7.2 起被真实仓储取代，`fake_resume_repository.py` 仅留存不再被路由引用 |
 | import-linter 架构约束 | T6 | 已验证（5 个 contract 全部通过） |
 | 配置 fail-fast + `.env.example` | T6 | 已验证 |
 | 统一错误模型 + 测试 | T6 | 已验证（含 404/422/405/500） |
 | CI 四件套 | T6 | 已配置，未在 GitHub 运行 |
 | T7.4 前端组件与本地状态流转 | T7 | 已验证（typecheck/build 通过） |
 | 注册/登录/JWT 鉴权基建 | T7.1 | 已验证（`tests/test_auth.py` 12 passed，连 `resume_mvp_test`） |
-| 真实链路 + 真实用户验证 | T7 | 未开始 |
+| 真实档案仓储 + 档案接口 | T7.2 | 已验证（`tests/test_profiles.py` 10 passed，写满三张表） |
+| 简历生成落真实库 | T7.2 | 已验证（`tests/test_resumes_generate.py` 7 passed，写入 `resumes`） |
+| 真实链路 + 真实用户验证 | T7 | 未开始（后端链路已通，前端仍未接 API） |
 
 ## 3. 已验证 / 未验证
 
@@ -56,14 +57,16 @@
 | 数据库迁移可跑通 | **已验证** | `alembic/versions/20261023_0001_initial_phase1.py`、`tests/test_migrations.py`、`uv run pytest` 1 passed、MySQL 8.0.43、Ruff 0.17.1 全绿 |
 | 注册/登录写入真实 MySQL | **已验证** | `uv run pytest tests/test_auth.py -v` 12 passed（201 注册 + 库内记录断言、重复用户名/邮箱 400、登录 200 + Bearer、错密码/未知用户 401、`/auth/me` 200、六种无效令牌 401） |
 | JWT 生产 fail-fast | **已验证** | `Settings(environment="production")` 缺 `jwt_secret_key` 或不足 32 位均抛 `ValueError` |
-| 业务链路可跑通 | **未验证** | 简历生成仍是 fake 仓储 |
+| 档案读写写入真实 MySQL | **已验证** | `uv run pytest tests/test_profiles.py -v` 10 passed：PUT 后 `student_profiles` 1 行 / `skills` 3 行 / `experiences` 1 行，二次 PUT 全量替换为 4/2 且 profile id 不变，两用户互不可见 |
+| 简历生成写入真实 MySQL | **已验证** | `uv run pytest tests/test_resumes_generate.py -v` 7 passed：注册→PUT 档案→生成，断言 `resumes` 行的 id / student_profile_id / title / content_html 与响应一致；未登录 401；无档案 400 |
+| 业务链路可跑通 | **已验证（后端）** | 后端从注册到简历落库全链路已通；前端仍未接 API |
 | 手机/电脑可用 | **未验证** | 无真实用户记录 |
-| AI 生成简历 | **未验证** | 未实现 |
+| AI 生成简历 | **未验证** | 仍是 `TemplateResumeGenerator` 模板拼装 |
 
 ## 4. 当前阻塞项
 
-1. 简历生成仍是 fake 仓储，未落库；T7 的真实链路尚未开始（T7 剩余处理）；
-2. 前端未接入登录态，认证接口只有后端与测试消费者；
+1. 前端未接入登录态，也未接 `/profiles/me` 与 `/resumes/generate`（T7.2 明确不改前端）；
+2. 简历只有「生成并落库」，没有列表/详情/编辑接口，`resumes` 表只写不读；
 3. CI 已配置四件套，但仅在本地验证过，未在 GitHub Actions 实际运行。
 
 ## 5. 下一步
@@ -89,10 +92,29 @@
   未新增表、未 commit。
 - T7.1 已知遗留：401 响应未透传 `WWW-Authenticate` 头（需改 `main.py`，不在本轮授权）；
   `docs/API.md` 尚未登记 `/api/v1/auth/*` 三个端点；前端未接入登录态。
+- T7.2：新增 `app/repositories/student_profile_repository.py`（profiles/skills/experiences
+  映射 + 父表 upsert、子表全量替换）与 `app/repositories/resume_repository.py`（`resumes`
+  只写）；新增 `app/services/profile_service.py`、`app/api/v1/profiles.py`
+  （`GET` / `PUT /api/v1/profiles/me`）；改造 `resume_service` 与 `resumes.py`：
+  请求体只剩 `title`，档案一律按登录用户从库中读，未登录 401、无档案 400。
+  `dependencies.py` 的 `get_resume_service` 改装配真实仓储，`FakeResumeRepository`
+  不再被正式路由引用（文件保留）。新增 `tests/test_profiles.py`（10 项）与重写
+  `tests/test_resumes_generate.py`（7 项），建表走 Alembic `upgrade head` / `downgrade base`。
+  全量 `uv run pytest -q` 40 passed；`ruff` / `mypy` / `lint-imports`（5/5）全绿。
+- T7.2 越界声明：`tests/test_errors.py` 改了 14 行（超出授权清单）。原因：`/resumes/generate`
+  加鉴权后，FastAPI 先解依赖再做请求体校验，未带 Token 的 `json={}` 会返回 401 而不是 422，
+  原「422 统一错误模型」用例必然变红；处理方式是为该用例补一个 `get_current_user` 覆盖，
+  没有放宽任何断言。500 用例靠「service 依赖先于鉴权解析」保持原样通过。
+- T7.2 已知遗留：`GET /api/v1/profiles/me` 未填档案时返回 `200 + {"profile": null}`
+  （任务允许 404 或空结构，这里选空结构以免前端把「还没填」当错误）；
+  `docs/API.md` 仍未登记 auth / profiles 端点；`app/api/router.py` 里旧的
+  `GET /api/v1/me`（返回 `authenticated: false`）占位未清理，不在授权范围。
 
 ## 7. 本轮未做（显式声明）
 
-- 未新增 refresh token、令牌黑名单、登出接口（需新增表，超出 T7.1 范围）。
-- 未把 `POST /api/v1/resumes/generate` 改为需要登录态（任务明确本轮不改简历接口）。
-- 未修改 `app/integrations/`、`app/repositories/fake_resume_repository.py`、
-  `frontend/` 下任何文件。
+- 未新增简历列表 / 详情 / 编辑接口，`resumes` 表只有写入路径。
+- 未新增或修改任何数据库表、迁移（`student_profiles` / `skills` / `experiences` / `resumes`
+  均为 T4 既有表）。
+- 未修改 `app/integrations/`（模板生成器原样）、`app/repositories/fake_resume_repository.py`、
+  `app/core/security.py` 等 T7.1 鉴权核心，也未改 `frontend/` 下任何文件。
+- 档案写入的边界（3–8 技能、1–3 经历）沿用 T5 原契约，未放宽也未收紧。

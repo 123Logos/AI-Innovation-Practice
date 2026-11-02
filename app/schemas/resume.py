@@ -1,6 +1,13 @@
-from datetime import date
+"""简历相关的 Pydantic 模型。
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+`ProfileInput` / `SkillInput` / `ExperienceInput` 是**生成器契约**：
+`app/integrations/resume_generator.py` 直接消费它们，因此保留在原位置，
+不再作为 API 请求体的一部分（T7.2 起请求体只收 title，数据一律来自数据库）。
+"""
+
+from datetime import date, datetime
+
+from pydantic import BaseModel, Field, model_validator
 
 
 class ProfileInput(BaseModel):
@@ -30,15 +37,13 @@ class ExperienceInput(BaseModel):
 
 
 class ResumeGenerateRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=200)
-    profile: ProfileInput
-    skills: list[SkillInput] = Field(min_length=3, max_length=8)
-    experiences: list[ExperienceInput] = Field(min_length=1, max_length=3)
+    """生成请求体只剩标题；档案、技能、经历由服务层按登录用户从库中读取。"""
 
-    @field_validator("skills")
-    @classmethod
-    def validate_unique_skill_names(cls, skills: list[SkillInput]) -> list[SkillInput]:
-        names = [skill.name for skill in skills]
-        if len(names) != len(set(names)):
-            raise ValueError("skill names must be unique")
-        return skills
+    title: str = Field(min_length=1, max_length=200)
+
+
+class ResumeRead(BaseModel):
+    resume_id: str
+    title: str
+    content_html: str
+    created_at: datetime
