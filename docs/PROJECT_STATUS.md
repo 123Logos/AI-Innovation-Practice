@@ -6,7 +6,12 @@
 
 ## 1. 一句话状态
 
-骨架可启动；数据库迁移未建立；无业务垂直切片；测试仅覆盖健康检查。**尚未进入功能开发。**
+简历切片已具备骨架链路（fake 仓储 + 模板生成 + 前端三栏编辑器）；后端在 T7.1 补齐
+注册/登录/JWT 鉴权，认证链路已连真实 MySQL 并有集成测试。**简历生成仍走 fake 仓储，
+尚未接真实用户。**
+
+> 历史说明：本节曾写“数据库迁移未建立、测试仅覆盖健康检查”，该描述截至 T7.4 已过期，
+> 现行事实以下方表格与第 6 节为准。
 
 ## 2. 资产分级
 
@@ -40,6 +45,7 @@
 | 统一错误模型 + 测试 | T6 | 已验证（含 404/422/405/500） |
 | CI 四件套 | T6 | 已配置，未在 GitHub 运行 |
 | T7.4 前端组件与本地状态流转 | T7 | 已验证（typecheck/build 通过） |
+| 注册/登录/JWT 鉴权基建 | T7.1 | 已验证（`tests/test_auth.py` 12 passed，连 `resume_mvp_test`） |
 | 真实链路 + 真实用户验证 | T7 | 未开始 |
 
 ## 3. 已验证 / 未验证
@@ -48,15 +54,17 @@
 |---|---|---|
 | 进程可启动 | 未验证 | 本次未运行启动或健康检查命令 |
 | 数据库迁移可跑通 | **已验证** | `alembic/versions/20261023_0001_initial_phase1.py`、`tests/test_migrations.py`、`uv run pytest` 1 passed、MySQL 8.0.43、Ruff 0.17.1 全绿 |
-| 业务链路可跑通 | **未验证** | 无业务代码 |
+| 注册/登录写入真实 MySQL | **已验证** | `uv run pytest tests/test_auth.py -v` 12 passed（201 注册 + 库内记录断言、重复用户名/邮箱 400、登录 200 + Bearer、错密码/未知用户 401、`/auth/me` 200、六种无效令牌 401） |
+| JWT 生产 fail-fast | **已验证** | `Settings(environment="production")` 缺 `jwt_secret_key` 或不足 32 位均抛 `ValueError` |
+| 业务链路可跑通 | **未验证** | 简历生成仍是 fake 仓储 |
 | 手机/电脑可用 | **未验证** | 无真实用户记录 |
 | AI 生成简历 | **未验证** | 未实现 |
 
 ## 4. 当前阻塞项
 
-1. Alembic 基线和 Phase 1 五张表迁移尚未建立（T4 处理）；
-2. 无业务垂直切片和集成测试（T5 处理）；
-3. 无 CI，无法判断“完成”是否可信（T6 处理）。
+1. 简历生成仍是 fake 仓储，未落库；T7 的真实链路尚未开始（T7 剩余处理）；
+2. 前端未接入登录态，认证接口只有后端与测试消费者；
+3. CI 已配置四件套，但仅在本地验证过，未在 GitHub Actions 实际运行。
 
 ## 5. 下一步
 
@@ -71,3 +79,20 @@
   contracts 均通过；已提供仅含占位符的 `.env.example`。
 - T7.4：新增三栏简历编辑器、A4 预览、样式辅助面板与 Pinia 本地状态同步；未接入后端 API。
 - 前端 TS 配置修复：新增 `@types/node`，移除已弃用 `baseUrl`；`npm run typecheck` 与 `npm run build` 通过。
+- T7.1：新增 ADR-004（JWT 决策，含 bcrypt 版本锁定补记）；补充 `jwt_secret_key` /
+  `jwt_algorithm` / `jwt_expire_minutes` 配置与 production fail-fast；新增
+  `app/core/security.py`、`app/schemas/auth.py`、`app/repositories/user_repository.py`、
+  `app/services/auth_service.py`、`app/api/v1/auth.py`，在 `dependencies.py` 增加
+  `get_auth_service` / `get_current_user`；新增 `tests/test_auth.py`（12 项，连真实 MySQL
+  `resume_mvp_test`，测试前后自动建表/删表）。全量 `uv run pytest -q` 31 passed，
+  `ruff` / `mypy` / `lint-imports`（5/5 contract）全绿。未改前端、未改简历业务逻辑、
+  未新增表、未 commit。
+- T7.1 已知遗留：401 响应未透传 `WWW-Authenticate` 头（需改 `main.py`，不在本轮授权）；
+  `docs/API.md` 尚未登记 `/api/v1/auth/*` 三个端点；前端未接入登录态。
+
+## 7. 本轮未做（显式声明）
+
+- 未新增 refresh token、令牌黑名单、登出接口（需新增表，超出 T7.1 范围）。
+- 未把 `POST /api/v1/resumes/generate` 改为需要登录态（任务明确本轮不改简历接口）。
+- 未修改 `app/integrations/`、`app/repositories/fake_resume_repository.py`、
+  `frontend/` 下任何文件。
