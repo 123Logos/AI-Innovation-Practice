@@ -1,11 +1,13 @@
-"""简历生成业务逻辑：按登录用户从库中取档案 → 交给生成器 → 落库。
+"""简历生成业务逻辑：按登录用户取**指定那份**简历 → 交给生成器 → 落库。
 
 与 T5 的差别：不再接收请求体里的档案数据，也不再写内存仓储。
+与 D4.1 之前的差别：一个用户有多份简历，`ResumeGenerateRequest.profile_id`
+指定用哪一份生成；不传则用默认简历（兼容只发 `title` 的旧前端）。
 """
 
 from app.integrations.resume_generator import ResumeGenerator
 from app.repositories.resume_repository import ResumeRepository
-from app.repositories.student_profile_repository import StudentProfileRepository
+from app.repositories.student_profile_repository import StudentProfile, StudentProfileRepository
 from app.schemas.profile import EducationInput
 from app.schemas.resume import (
     ExperienceInput,
@@ -14,6 +16,7 @@ from app.schemas.resume import (
     ResumeRead,
     SkillInput,
 )
+from app.services.profile_service import ProfileNotFoundError
 
 
 class ProfileIncompleteError(Exception):
@@ -32,9 +35,7 @@ class ResumeService:
         self._generator = generator
 
     def generate(self, user_id: str, payload: ResumeGenerateRequest) -> ResumeRead:
-        profile = self._profile_repository.get_by_user_id(user_id)
-        if profile is None:
-            raise ProfileIncompleteError(user_id)
+        profile = self._resolve_profile(user_id, payload)
         skills = self._profile_repository.list_skills(profile.id)
         experiences = self._profile_repository.list_experiences(profile.id)
         educations = self._profile_repository.list_educations(profile.id)
@@ -52,9 +53,7 @@ class ResumeService:
                 contact=profile.contact,
                 email=profile.email,
             ),
-            skills=[
-                SkillInput(name=skill.name, self_rating=skill.self_rating) for skill in skills
-            ],
+            skills=[SkillInput(name=skill.name, self_rating=skill.self_rating) for skill in skills],
             experiences=[
                 ExperienceInput(
                     title=experience.title,
@@ -88,3 +87,20 @@ class ResumeService:
             content_html=resume.content_html,
             created_at=resume.created_at,
         )
+
+    def _resolve_profile(self, user_id: str, payload: ResumeGenerateRequest) -> StudentProfile:
+        """定位要生成的那份简历。
+
+        - 传了 `profile_id`：必须是**当前用户的、未删除的**那份，否则 404
+          （查不到与不属于自己共用同一个 404，避免探测他人 id）；
+        - 没传：退回默认简历，一份都没有则 400「档案不完整」。
+        """
+        if payload.profile_id:
+            profile = self._profile_repository.get_by_id(user_id, payload.profile_id)
+            if profile is None:
+                raise ProfileNotFoundError(payload.profile_id)
+            return profile
+        profile = self._profile_repository.get_by_user_id(user_id)
+        if profile is None:
+            raise ProfileIncompleteError(user_id)
+        return profile

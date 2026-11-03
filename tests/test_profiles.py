@@ -3,11 +3,14 @@
 覆盖：鉴权 → 未填写档案返回空结构 → PUT 落库（profiles/skills/experiences/educations）
 → 二次 PUT 全量替换 → 跨用户隔离 → 请求校验边界。
 建表走 Alembic 迁移（与生产同一条链路），测试前后 upgrade head / downgrade base。
+
+D4.1 起补充「多份简历 + 回收站」的用例（文件末尾）：越权、默认简历规则、
+软删除/恢复/彻底删除、过期惰性清理。
 """
 
 import os
 from collections.abc import Iterator
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -27,6 +30,7 @@ from app.main import app
 from app.repositories.user_repository import dispose_engine, get_engine
 
 PROFILES_URL = "/api/v1/profiles/me"
+PROFILES_BASE = "/api/v1/profiles"
 REGISTER_URL = "/api/v1/auth/register"
 LOGIN_URL = "/api/v1/auth/login"
 PASSWORD = "Passw0rd!2026"
@@ -278,7 +282,9 @@ def test_put_profile_keeps_multiple_educations_then_replaces_them(client: TestCl
     assert _count("educations") == 2
     with get_engine().connect() as connection:
         rows = connection.execute(
-            text("SELECT school, major, degree, edu_start, edu_end FROM educations ORDER BY edu_start")
+            text(
+                "SELECT school, major, degree, edu_start, edu_end FROM educations ORDER BY edu_start"
+            )
         ).all()
     assert [row.school for row in rows] == ["示例大学", "清华大学"]
     assert rows[1].degree == "硕士"
@@ -385,9 +391,7 @@ def test_profiles_are_isolated_per_user(client: TestClient) -> None:
 
     assert second_profile.status_code == 200
     first_read = client.get(PROFILES_URL, headers=_headers(first_token)).json()["data"]["profile"]
-    second_read = client.get(PROFILES_URL, headers=_headers(second_token)).json()["data"][
-        "profile"
-    ]
+    second_read = client.get(PROFILES_URL, headers=_headers(second_token)).json()["data"]["profile"]
     assert first_read["full_name"] == "张三"
     assert second_read["full_name"] == "王五"
     assert first_read["id"] != second_read["id"]
@@ -468,9 +472,7 @@ def test_put_profile_stores_resume_email_without_touching_login_email(
     assert me.json()["data"]["user"]["email"] != "resume-only@example.com"
 
     # 空串等同「没填」，库里存 NULL 而不是空字符串
-    cleared = client.put(
-        PROFILES_URL, json=_profile_payload(email=""), headers=_headers(token)
-    )
+    cleared = client.put(PROFILES_URL, json=_profile_payload(email=""), headers=_headers(token))
     assert cleared.status_code == 200, cleared.text
     assert cleared.json()["data"]["profile"]["email"] is None
     with get_engine().connect() as connection:
@@ -592,9 +594,352 @@ def test_put_profile_allows_empty_contact_as_draft(client: TestClient) -> None:
     """保存不拦必填：手机号留空也能存草稿，只在生成简历时强校验。"""
     token = _register_and_login(client)
 
-    response = client.put(
-        PROFILES_URL, json=_profile_payload(contact=""), headers=_headers(token)
-    )
+    response = client.put(PROFILES_URL, json=_profile_payload(contact=""), headers=_headers(token))
 
     assert response.status_code == 200, response.text
     assert response.json()["data"]["profile"]["contact"] == ""
+
+
+# --------------------------------------------------------------------------- #
+# D4.1：多份简历 + 回收站
+# --------------------------------------------------------------------------- #
+
+
+def _create(client: TestClient, token: str, **payload: object) -> dict[str, object]:
+    response = client.post(PROFILES_BASE, json=payload, headers=_headers(token))
+    assert response.status_code == 201, response.text
+    profile: dict[str, object] = response.json()["data"]["profile"]
+    return profile
+
+
+def _list_profiles(client: TestClient, token: str) -> list[dict[str, object]]:
+    response = client.get(PROFILES_BASE, headers=_headers(token))
+    assert response.status_code == 200, response.text
+    profiles: list[dict[str, object]] = response.json()["data"]["profiles"]
+    return profiles
+
+
+def _trash(client: TestClient, token: str) -> list[dict[str, object]]:
+    response = client.get(f"{PROFILES_BASE}/trash", headers=_headers(token))
+    assert response.status_code == 200, response.text
+    profiles: list[dict[str, object]] = response.json()["data"]["profiles"]
+    return profiles
+
+
+def _user_id(client: TestClient, token: str) -> str:
+    response = client.get("/api/v1/auth/me", headers=_headers(token))
+    assert response.status_code == 200, response.text
+    user_id: str = response.json()["data"]["user"]["id"]
+    return user_id
+
+
+def _naive_utc_now() -> datetime:
+    """库里存的是 naive UTC，测试回填时间要同口径（不能塞带时区的 datetime）。"""
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
+def test_schema_allows_multiple_profiles_per_user() -> None:
+    """D4.1：`user_id` 唯一约束必须消失，改为普通索引；三列必须存在。
+
+    直接 `DROP INDEX user_id` 会被外键挡住（实测 1553），所以迁移里是先补
+    `ix_student_profiles_user_id` 再摘唯一索引 —— 这里一并断言那个普通索引在。
+    """
+    with get_engine().connect() as connection:
+        indexes = connection.execute(
+            text(
+                "SELECT INDEX_NAME, NON_UNIQUE, COLUMN_NAME FROM information_schema.STATISTICS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'student_profiles'"
+            )
+        ).all()
+        columns = {
+            row.COLUMN_NAME
+            for row in connection.execute(
+                text(
+                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'student_profiles'"
+                )
+            ).all()
+        }
+
+    unique_on_user_id = [
+        row.INDEX_NAME for row in indexes if row.COLUMN_NAME == "user_id" and row.NON_UNIQUE == 0
+    ]
+    assert unique_on_user_id == [], "user_id 上不应再有唯一索引（否则一人只能一份简历）"
+    assert any(
+        row.INDEX_NAME == "ix_student_profiles_user_id" and row.NON_UNIQUE == 1 for row in indexes
+    ), "外键需要 user_id 上的普通索引"
+    assert {"title", "is_default", "deleted_at"} <= columns
+
+
+def test_create_profile_autoincrements_default_title(client: TestClient) -> None:
+    """新建不传标题时递增命名：我的简历 → 我的简历 2 → …；显式标题原样保留。"""
+    token = _register_and_login(client)
+
+    first = _create(client, token)
+    assert first["title"] == "我的简历"
+    # 第一份自动成为默认简历
+    assert first["is_default"] is True
+
+    second = _create(client, token)
+    assert second["title"] == "我的简历 2"
+    assert second["is_default"] is False
+
+    named = _create(client, token, title="投算法")
+    assert named["title"] == "投算法"
+
+    third = _create(client, token)
+    assert third["title"] == "我的简历 3", "跳过已占用的编号，取最大值 + 1"
+
+    assert _count("student_profiles") == 4
+
+
+def test_list_and_detail_are_scoped_to_owner(client: TestClient) -> None:
+    """用户 A 只能看到/改动自己的简历；B 猜 id 也一律 404（不是 403）。"""
+    token_a = _register_and_login(client)
+    token_b = _register_and_login(client)
+    a_first = _create(client, token_a)
+    a_second = _create(client, token_a)
+    b_first = _create(client, token_b)
+
+    assert sorted(profile["id"] for profile in _list_profiles(client, token_a)) == sorted(
+        [a_first["id"], a_second["id"]]
+    )
+    assert [profile["id"] for profile in _list_profiles(client, token_b)] == [b_first["id"]]
+
+    profile_url = f"{PROFILES_BASE}/{a_first['id']}"
+    assert client.get(profile_url, headers=_headers(token_b)).status_code == 404
+    assert (
+        client.put(profile_url, json=_profile_payload(full_name="越权"), headers=_headers(token_b))
+    ).status_code == 404
+    assert client.delete(profile_url, headers=_headers(token_b)).status_code == 404
+    assert (client.put(f"{profile_url}/restore", headers=_headers(token_b))).status_code == 404
+    assert (client.delete(f"{profile_url}/permanent", headers=_headers(token_b))).status_code == 404
+
+    # A 的数据必须完全没被 B 的尝试影响
+    still_there = client.get(profile_url, headers=_headers(token_a))
+    assert still_there.status_code == 200
+    assert still_there.json()["data"]["profile"]["full_name"] == ""
+    assert len(_list_profiles(client, token_a)) == 2
+
+
+def test_create_profile_copy_from_deep_copies_content(client: TestClient) -> None:
+    """`copy_from_id` 是服务端深拷贝：内容一致、子行 id 全新、改副本不影响源。"""
+    token = _register_and_login(client)
+    source = client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token)).json()[
+        "data"
+    ]["profile"]
+
+    copied = _create(client, token, copy_from_id=source["id"], title="投后端")
+
+    assert copied["id"] != source["id"]
+    assert copied["title"] == "投后端"
+    assert copied["full_name"] == "张三"
+    assert copied["contact"] == "13800000000"
+    assert {skill["name"] for skill in copied["skills"]} == {"Python", "SQL", "React"}
+    assert len(copied["experiences"]) == 1
+    assert copied["educations"][0]["school"] == "示例大学"
+    assert copied["is_default"] is False
+    assert {skill["id"] for skill in copied["skills"]}.isdisjoint(
+        {skill["id"] for skill in source["skills"]}
+    ), "子行必须重新分配 id，否则改副本会回写源简历"
+
+    updated = client.put(
+        f"{PROFILES_BASE}/{copied['id']}",
+        json=_profile_payload(full_name="李四", skills=[_skill("Go", 5)]),
+        headers=_headers(token),
+    )
+    assert updated.status_code == 200, updated.text
+
+    reread = client.get(f"{PROFILES_BASE}/{source['id']}", headers=_headers(token))
+    source_after = reread.json()["data"]["profile"]
+    assert source_after["full_name"] == "张三"
+    assert {skill["name"] for skill in source_after["skills"]} == {"Python", "SQL", "React"}
+
+
+def test_create_profile_as_default_clears_previous(client: TestClient) -> None:
+    """新建时 `is_default=true` 要把旧的默认置为 0，且全局只有一个默认。"""
+    token = _register_and_login(client)
+    first = _create(client, token)
+    second = _create(client, token, is_default=True)
+
+    profiles = {profile["id"]: profile for profile in _list_profiles(client, token)}
+    assert profiles[second["id"]]["is_default"] is True
+    assert profiles[first["id"]]["is_default"] is False
+    assert sum(1 for profile in profiles.values() if profile["is_default"]) == 1
+
+    me = client.get(PROFILES_URL, headers=_headers(token))
+    assert me.json()["data"]["profile"]["id"] == second["id"]
+
+    # 显式切换默认：旧的自动取消
+    switched = client.put(f"{PROFILES_BASE}/{first['id']}/default", headers=_headers(token))
+    assert switched.status_code == 200
+    assert switched.json()["data"]["profile"]["is_default"] is True
+    profiles = {profile["id"]: profile for profile in _list_profiles(client, token)}
+    assert profiles[second["id"]]["is_default"] is False
+
+
+def test_put_by_id_only_touches_that_profile(client: TestClient) -> None:
+    token = _register_and_login(client)
+    first = _create(client, token)
+    second = _create(client, token)
+
+    client.put(
+        f"{PROFILES_BASE}/{second['id']}",
+        json=_profile_payload(full_name="李四", skills=[_skill("Go")]),
+        headers=_headers(token),
+    )
+
+    untouched = client.get(f"{PROFILES_BASE}/{first['id']}", headers=_headers(token))
+    assert untouched.json()["data"]["profile"]["full_name"] == ""
+    assert untouched.json()["data"]["profile"]["skills"] == []
+
+
+def test_soft_delete_moves_profile_to_trash(client: TestClient) -> None:
+    """软删除：列表消失、详情 404、回收站可见；子表一行都不能少。"""
+    token = _register_and_login(client)
+    saved = client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token)).json()[
+        "data"
+    ]["profile"]
+
+    deleted = client.delete(f"{PROFILES_BASE}/{saved['id']}", headers=_headers(token))
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["data"] == {"profile_id": saved["id"], "deleted": True}
+
+    assert _list_profiles(client, token) == []
+    assert client.get(f"{PROFILES_BASE}/{saved['id']}", headers=_headers(token)).status_code == 404
+    # 软删除只是打标记，子表不能动（恢复后内容必须还在）
+    assert _count("student_profiles") == 1
+    assert _count("skills") == 3
+    assert _count("experiences") == 1
+    assert _count("educations") == 1
+
+    trash = _trash(client, token)
+    assert [profile["id"] for profile in trash] == [saved["id"]]
+    assert trash[0]["deleted_at"].endswith("+08:00"), trash[0]["deleted_at"]
+
+    restored = client.put(f"{PROFILES_BASE}/{saved['id']}/restore", headers=_headers(token))
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["data"]["profile"]["deleted_at"] is None
+    assert [profile["id"] for profile in _list_profiles(client, token)] == [saved["id"]]
+    assert _trash(client, token) == []
+
+
+def test_deleting_default_promotes_newest_remaining(client: TestClient) -> None:
+    """删掉默认简历后，自动把**最新**的一份未删除简历设为默认。"""
+    token = _register_and_login(client)
+    oldest = _create(client, token)
+    _create(client, token)
+    newest = _create(client, token)
+    assert oldest["is_default"] is True
+
+    client.delete(f"{PROFILES_BASE}/{oldest['id']}", headers=_headers(token))
+
+    remaining = _list_profiles(client, token)
+    assert len(remaining) == 2
+    defaults = [profile for profile in remaining if profile["is_default"]]
+    assert [profile["id"] for profile in defaults] == [newest["id"]]
+
+    me = client.get(PROFILES_URL, headers=_headers(token))
+    assert me.json()["data"]["profile"]["id"] == newest["id"]
+
+
+def test_permanent_delete_removes_profile_and_children(client: TestClient) -> None:
+    """彻底删除只能对回收站里的简历执行，且要连带清掉四张子表。"""
+    token = _register_and_login(client)
+    saved = client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token)).json()[
+        "data"
+    ]["profile"]
+
+    refused = client.delete(f"{PROFILES_BASE}/{saved['id']}/permanent", headers=_headers(token))
+    assert refused.status_code == 400
+    assert refused.json()["error"]["code"] == "CLIENT_ERROR"
+    assert _count("student_profiles") == 1, "未进回收站不能物理删除"
+
+    client.delete(f"{PROFILES_BASE}/{saved['id']}", headers=_headers(token))
+    purged = client.delete(f"{PROFILES_BASE}/{saved['id']}/permanent", headers=_headers(token))
+    assert purged.status_code == 200, purged.text
+    assert purged.json()["data"] == {"profile_id": saved["id"], "purged": True}
+
+    assert _count("student_profiles") == 0
+    assert _count("skills") == 0
+    assert _count("experiences") == 0
+    assert _count("educations") == 0
+    # 物删之后连恢复都该 404
+    assert (
+        client.put(f"{PROFILES_BASE}/{saved['id']}/restore", headers=_headers(token)).status_code
+        == 404
+    )
+
+
+def test_expired_trash_is_purged_lazily_on_list(client: TestClient) -> None:
+    """回收站保留 30 天：过期记录在下一次读取列表时被惰性物理清理。"""
+    token = _register_and_login(client)
+    saved = client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token)).json()[
+        "data"
+    ]["profile"]
+    client.delete(f"{PROFILES_BASE}/{saved['id']}", headers=_headers(token))
+
+    with get_engine().begin() as connection:
+        connection.execute(
+            text("UPDATE student_profiles SET deleted_at = :at WHERE id = :id"),
+            {"at": _naive_utc_now() - timedelta(days=31), "id": saved["id"]},
+        )
+
+    assert _trash(client, token) == []
+    assert _count("student_profiles") == 0
+    assert _count("skills") == 0
+    assert _count("educations") == 0
+
+
+def test_me_rebuilds_default_profile_after_everything_is_deleted(client: TestClient) -> None:
+    """旧客户端（只认 `/profiles/me`）在全部删光后再点保存，要能重建一份默认简历。"""
+    token = _register_and_login(client)
+    saved = client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token)).json()[
+        "data"
+    ]["profile"]
+    client.delete(f"{PROFILES_BASE}/{saved['id']}", headers=_headers(token))
+
+    me = client.get(PROFILES_URL, headers=_headers(token))
+    assert me.status_code == 200
+    assert me.json()["data"]["profile"] is None
+
+    again = client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token))
+    assert again.status_code == 200, again.text
+    rebuilt = again.json()["data"]["profile"]
+    assert rebuilt["is_default"] is True
+    assert rebuilt["title"] == "我的简历"
+    assert rebuilt["id"] != saved["id"]
+    # 回收站里那份仍在（软删除不参与重名判断，所以标题可以重复）
+    assert _count("student_profiles") == 2
+    assert [profile["id"] for profile in _trash(client, token)] == [saved["id"]]
+
+
+def test_profile_count_is_capped(client: TestClient) -> None:
+    """每人最多 20 份（ADR-006 §4.4）：超出返回 400，不再新增行。"""
+    token = _register_and_login(client)
+    user_id = _user_id(client, token)
+    now = _naive_utc_now()
+    with get_engine().begin() as connection:
+        for index in range(20):
+            connection.execute(
+                text(
+                    "INSERT INTO student_profiles "
+                    "(id, user_id, title, is_default, full_name, grade, contact, "
+                    " created_at, updated_at) "
+                    "VALUES (:id, :user_id, :title, :is_default, '', '', '', :now, :now)"
+                ),
+                {
+                    "id": str(uuid4()),
+                    "user_id": user_id,
+                    "title": f"批量 {index}",
+                    "is_default": 1 if index == 0 else 0,
+                    "now": now,
+                },
+            )
+
+    response = client.post(PROFILES_BASE, json={}, headers=_headers(token))
+
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["code"] == "CLIENT_ERROR"
+    assert "20" in response.json()["error"]["message"]
+    assert _count("student_profiles") == 20

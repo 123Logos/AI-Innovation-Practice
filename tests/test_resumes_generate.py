@@ -2,6 +2,9 @@
 
 链路：注册 → 登录 → PUT 档案 → POST 生成 → 校验 `resumes` 表内的 HTML 与归属。
 同时验证：未登录 401、无档案 400、请求体不能覆盖库内数据、标题缺失 422。
+
+D4.1 起补充「按 profile_id 指定简历生成」的用例（文件末尾）：
+指定生效、不指定走默认、他人 id 与回收站 id 都是 404。
 """
 
 import os
@@ -26,6 +29,7 @@ from app.repositories.user_repository import dispose_engine, get_engine
 
 GENERATE_URL = "/api/v1/resumes/generate"
 PROFILES_URL = "/api/v1/profiles/me"
+PROFILES_BASE = "/api/v1/profiles"
 REGISTER_URL = "/api/v1/auth/register"
 LOGIN_URL = "/api/v1/auth/login"
 PASSWORD = "Passw0rd!2026"
@@ -287,7 +291,7 @@ def test_generate_renders_ongoing_experience(client: TestClient) -> None:
     assert "2024.03.01" in content_html
     for month_only in ("2021.09", "2025.06"):
         assert month_only in content_html, month_only
-    assert "<span class=\"edu-end\">2025.06</span>" in content_html
+    assert '<span class="edu-end">2025.06</span>' in content_html
 
 
 def test_generate_omits_email_span_when_profile_has_none(client: TestClient) -> None:
@@ -344,3 +348,138 @@ def test_each_generate_creates_a_new_resume_row(client: TestClient) -> None:
     assert second.status_code == 200
     assert first.json()["data"]["resume_id"] != second.json()["data"]["resume_id"]
     assert _count("resumes") == 2
+
+
+# --------------------------------------------------------------------------- #
+# D4.1：按 profile_id 生成
+# --------------------------------------------------------------------------- #
+
+
+def _create_profile(client: TestClient, token: str, **payload: object) -> dict[str, object]:
+    response = client.post(PROFILES_BASE, json=payload, headers=_headers(token))
+    assert response.status_code == 201, response.text
+    profile: dict[str, object] = response.json()["data"]["profile"]
+    return profile
+
+
+def test_generate_uses_requested_profile(client: TestClient) -> None:
+    """传 `profile_id` 时，生成内容与落库归属都必须指向那一份，而不是默认简历。"""
+    token = _register_and_login(client)
+    # 默认简历：张三 + Python/SQL/React
+    client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token))
+    algorithm = _create_profile(client, token, title="投算法")
+    filled = client.put(
+        f"{PROFILES_BASE}/{algorithm['id']}",
+        json=_profile_payload(
+            full_name="李四",
+            email=None,
+            contact="13900000000",
+            skills=[{"name": "PyTorch", "self_rating": 5}],
+            experiences=[],
+        ),
+        headers=_headers(token),
+    )
+    assert filled.status_code == 200, filled.text
+
+    response = client.post(
+        GENERATE_URL,
+        json={"title": "算法版", "profile_id": algorithm["id"]},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 400, "算法版没填项目经历，后端应拒绝生成"
+    assert _count("resumes") == 0
+
+    # 补上项目经历后再生成
+    client.put(
+        f"{PROFILES_BASE}/{algorithm['id']}",
+        json=_profile_payload(
+            full_name="李四",
+            email=None,
+            contact="13900000000",
+            skills=[{"name": "PyTorch", "self_rating": 5}],
+        ),
+        headers=_headers(token),
+    )
+    response = client.post(
+        GENERATE_URL,
+        json={"title": "算法版", "profile_id": algorithm["id"]},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    content_html = response.json()["data"]["content_html"]
+    assert "李四" in content_html
+    assert "PyTorch" in content_html
+    assert "张三" not in content_html, "不能混入默认简历的内容"
+
+    with get_engine().connect() as connection:
+        owner = connection.execute(text("SELECT student_profile_id FROM resumes")).one()
+    assert owner.student_profile_id == algorithm["id"]
+
+
+def test_generate_without_profile_id_uses_default_profile(client: TestClient) -> None:
+    """不传 `profile_id`（旧前端的请求形状）时回落到默认简历。"""
+    token = _register_and_login(client)
+    client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token))
+    alternative = _create_profile(client, token, title="投后端", is_default=True)
+    client.put(
+        f"{PROFILES_BASE}/{alternative['id']}",
+        json=_profile_payload(full_name="王五", contact="13900000000"),
+        headers=_headers(token),
+    )
+
+    response = client.post(GENERATE_URL, json={"title": "默认那份"}, headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    content_html = response.json()["data"]["content_html"]
+    assert "王五" in content_html
+    assert "张三" not in content_html
+
+    with get_engine().connect() as connection:
+        owner = connection.execute(text("SELECT student_profile_id FROM resumes")).one()
+    assert owner.student_profile_id == alternative["id"]
+
+
+def test_generate_rejects_profile_of_another_user(client: TestClient) -> None:
+    """拿别人的简历 id 生成：404（不是 400/403），且不写任何 `resumes` 行。"""
+    token_a = _register_and_login(client)
+    token_b = _register_and_login(client)
+    a_profile = client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token_a)).json()[
+        "data"
+    ]["profile"]
+    # B 自己也要有一份完整简历，否则会先撞上「档案不完整」的 400，掩盖越权判定。
+    b_profile = client.put(
+        PROFILES_URL,
+        json=_profile_payload(full_name="王五", contact="13900000000"),
+        headers=_headers(token_b),
+    ).json()["data"]["profile"]
+    assert b_profile["id"] != a_profile["id"]
+
+    response = client.post(
+        GENERATE_URL,
+        json={"title": "越权尝试", "profile_id": a_profile["id"]},
+        headers=_headers(token_b),
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "NOT_FOUND"
+    assert _count("resumes") == 0
+
+
+def test_generate_rejects_profile_in_trash(client: TestClient) -> None:
+    """回收站里的简历不能用来生成。"""
+    token = _register_and_login(client)
+    saved = client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token)).json()[
+        "data"
+    ]["profile"]
+    client.delete(f"{PROFILES_BASE}/{saved['id']}", headers=_headers(token))
+
+    response = client.post(
+        GENERATE_URL,
+        json={"title": "已删除的简历", "profile_id": saved["id"]},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 404, response.text
+    assert _count("resumes") == 0

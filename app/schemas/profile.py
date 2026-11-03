@@ -163,9 +163,53 @@ class ProfileUpsertRequest(BaseModel):
         return trimmed or None
 
 
+class ProfileCreateRequest(BaseModel):
+    """新建一份简历（D4.1 · 多份简历）。
+
+    - `title` 省略或全空白时由服务层递增生成（「我的简历」「我的简历 2」…）；
+    - `copy_from_id` 非空时做**服务端深拷贝**（基本信息 + 全部技能/经历/教育），
+      不走「前端 GET 再 PUT」——那会在两次请求之间留下源简历被改的竞态；
+    - `is_default` 为真时把新建的这份设为默认，其余未删除简历自动取消默认。
+    """
+
+    title: str | None = Field(default=None, max_length=200)
+    copy_from_id: str | None = Field(default=None, max_length=36)
+    is_default: bool = False
+
+
+class ProfileSummary(BaseModel):
+    """列表 / 回收站用的轻量结构。
+
+    刻意不带 `skills` / `experiences` / `educations`：列表只需要区分「哪一份」，
+    把整份简历搬进列表会让「打开档案库」变成一次全量读取。
+    """
+
+    id: str
+    title: str
+    is_default: bool
+    full_name: str
+    created_at: datetime
+    updated_at: datetime
+    deleted_at: datetime | None = None
+
+    @field_serializer("created_at", "updated_at")
+    def serialize_shanghai(self, value: datetime) -> str:
+        return format_shanghai_datetime(value)
+
+    @field_serializer("deleted_at")
+    def serialize_deleted_at(self, value: datetime | None) -> str | None:
+        """回收站里的删除时间同样按东八区返回；未删除返回 `null`。"""
+        return None if value is None else format_shanghai_datetime(value)
+
+
 class ProfileRead(BaseModel):
     id: str
     user_id: str
+    #: D4.1：这份简历的名字与默认标记（列表里区分「投后端」「投算法」）。
+    title: str
+    is_default: bool
+    #: 非空 = 在回收站里；详情接口查询时已排除，留着是为了回收站能如实回显。
+    deleted_at: datetime | None = None
     full_name: str
     email: str | None = None
     grade: str
@@ -180,3 +224,7 @@ class ProfileRead(BaseModel):
     def serialize_shanghai(self, value: datetime) -> str:
         """库里是 naive UTC，返回前统一转东八区（见 `app/core/datetime_display.py`）。"""
         return format_shanghai_datetime(value)
+
+    @field_serializer("deleted_at")
+    def serialize_deleted_at(self, value: datetime | None) -> str | None:
+        return None if value is None else format_shanghai_datetime(value)

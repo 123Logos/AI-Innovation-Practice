@@ -56,9 +56,14 @@ class ExperienceInput(BaseModel):
 
 
 class ResumeGenerateRequest(BaseModel):
-    """生成请求体只剩标题；档案、技能、经历由服务层按登录用户从库中读取。"""
+    """生成请求体只剩标题 + 可选的目标简历；档案内容由服务层按登录用户从库中读取。
+
+    D4.1 起一个用户有多份简历，`profile_id` 指定用哪一份生成；
+    不传则用默认简历 —— 旧前端（D4.2 之前）只发 `title`，必须继续可用。
+    """
 
     title: str = Field(min_length=1, max_length=200)
+    profile_id: str | None = Field(default=None, max_length=36)
 
 
 class ResumeRead(BaseModel):
