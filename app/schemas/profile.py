@@ -177,6 +177,25 @@ class ProfileCreateRequest(BaseModel):
     is_default: bool = False
 
 
+class ProfileTitleUpdate(BaseModel):
+    """重命名请求（D4.3）。
+
+    - 两端空白在服务端裁掉（前端也裁，但不能只依赖前端）；
+    - 裁完为空按 422 拒绝：空标题会让下拉列表认不出这是哪一份；
+    - 重名判断不在这里做——需要查库，属于服务层，冲突返回 400。
+    """
+
+    title: str = Field(min_length=1, max_length=200)
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, title: str) -> str:
+        trimmed = title.strip()
+        if not trimmed:
+            raise ValueError("title must not be blank")
+        return trimmed
+
+
 class ProfileSummary(BaseModel):
     """列表 / 回收站用的轻量结构。
 

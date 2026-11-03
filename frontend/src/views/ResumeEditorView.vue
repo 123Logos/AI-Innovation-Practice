@@ -39,6 +39,8 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  // 先 flush 再解绑：去回收站 / 切路由时，防抖里没写完的编辑也要留下来。
+  store.flushDraft()
   store.stopDraftAutosave()
 })
 </script>

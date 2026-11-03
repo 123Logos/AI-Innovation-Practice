@@ -943,3 +943,228 @@ def test_profile_count_is_capped(client: TestClient) -> None:
     assert response.json()["error"]["code"] == "CLIENT_ERROR"
     assert "20" in response.json()["error"]["message"]
     assert _count("student_profiles") == 20
+
+
+# --------------------------------------------------------------------------- #
+# D4.3：列表排序 / 重命名 / 重名约束
+# --------------------------------------------------------------------------- #
+
+
+def _insert_profile_row(
+    user_id: str,
+    title: str,
+    *,
+    created_at: datetime,
+    updated_at: datetime,
+    is_default: bool = False,
+) -> str:
+    """直接插一行（绕过 API），用来构造「创建时间」与「修改时间」不一致的场景。
+
+    走 API 建简历时两个时间戳几乎相同，无法验证「按 updated_at 排」与
+    「按 created_at 排」的差异，所以这里手工指定。
+    """
+    profile_id = str(uuid4())
+    with get_engine().begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO student_profiles "
+                "(id, user_id, title, is_default, full_name, grade, contact, "
+                " created_at, updated_at) "
+                "VALUES (:id, :user_id, :title, :is_default, '', '', '', :created_at, :updated_at)"
+            ),
+            {
+                "id": profile_id,
+                "user_id": user_id,
+                "title": title,
+                "is_default": 1 if is_default else 0,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            },
+        )
+    return profile_id
+
+
+def _list_profiles_sorted(client: TestClient, token: str, **params: str) -> list[dict[str, object]]:
+    response = client.get(PROFILES_BASE, params=params, headers=_headers(token))
+    assert response.status_code == 200, response.text
+    profiles: list[dict[str, object]] = response.json()["data"]["profiles"]
+    return profiles
+
+
+def test_list_profiles_defaults_to_updated_at_desc(client: TestClient) -> None:
+    """D4.3：默认按「最近修改」倒序，而不是按默认标记/创建时间。"""
+    token = _register_and_login(client)
+    user_id = _user_id(client, token)
+    now = _naive_utc_now()
+    stale = _insert_profile_row(
+        user_id,
+        "三小时前改过",
+        created_at=now - timedelta(hours=3),
+        updated_at=now - timedelta(hours=3),
+    )
+    middle = _insert_profile_row(
+        user_id,
+        "一小时前改过",
+        created_at=now - timedelta(hours=2),
+        updated_at=now - timedelta(hours=1),
+    )
+    freshest = _insert_profile_row(
+        user_id,
+        "刚改过",
+        created_at=now - timedelta(hours=5),
+        updated_at=now,
+    )
+
+    assert [profile["id"] for profile in _list_profiles(client, token)] == [
+        freshest,
+        middle,
+        stale,
+    ]
+
+
+def test_list_profiles_supports_created_at_and_ascending(client: TestClient) -> None:
+    """排序字段与方向都可由查询参数切换；`asc` 必须是 `desc` 的严格倒序。"""
+    token = _register_and_login(client)
+    user_id = _user_id(client, token)
+    now = _naive_utc_now()
+    first = _insert_profile_row(
+        user_id, "最早建的", created_at=now - timedelta(days=3), updated_at=now
+    )
+    second = _insert_profile_row(
+        user_id, "中间建的", created_at=now - timedelta(days=2), updated_at=now
+    )
+    third = _insert_profile_row(
+        user_id, "最新建的", created_at=now - timedelta(days=1), updated_at=now
+    )
+
+    ascending = _list_profiles_sorted(client, token, order_by="created_at", order="asc")
+    assert [profile["id"] for profile in ascending] == [first, second, third]
+
+    descending = _list_profiles_sorted(client, token, order_by="created_at", order="desc")
+    assert [profile["id"] for profile in descending] == [third, second, first]
+
+
+def test_list_profiles_rejects_unknown_sort_field(client: TestClient) -> None:
+    """白名单外的排序字段直接 422，不做字符串拼 SQL。"""
+    token = _register_and_login(client)
+
+    response = client.get(PROFILES_BASE, params={"order_by": "full_name"}, headers=_headers(token))
+
+    assert response.status_code == 422, response.text
+
+
+def test_rename_profile_updates_title_and_bumps_updated_at(client: TestClient) -> None:
+    """改名成功：返回新标题、详情同步、并因为「刚修改过」跳到列表最前。"""
+    token = _register_and_login(client)
+    older = _create(client, token, title="投后端")
+    _create(client, token, title="投算法")
+
+    renamed = client.put(
+        f"{PROFILES_BASE}/{older['id']}/title",
+        json={"title": "  投基础架构  "},
+        headers=_headers(token),
+    )
+
+    assert renamed.status_code == 200, renamed.text
+    profile = renamed.json()["data"]["profile"]
+    assert profile["title"] == "投基础架构", "两端空白由服务端裁掉"
+    assert profile["id"] == older["id"]
+
+    detail = client.get(f"{PROFILES_BASE}/{older['id']}", headers=_headers(token))
+    assert detail.json()["data"]["profile"]["title"] == "投基础架构"
+    assert _list_profiles(client, token)[0]["id"] == older["id"]
+
+
+def test_rename_profile_rejects_duplicate_title(client: TestClient) -> None:
+    """重名返回 400 + 固定文案，且原标题不变。"""
+    token = _register_and_login(client)
+    _create(client, token, title="投后端")
+    target = _create(client, token, title="投算法")
+
+    response = client.put(
+        f"{PROFILES_BASE}/{target['id']}/title",
+        json={"title": "投后端"},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["message"] == "该简历名称已存在"
+    detail = client.get(f"{PROFILES_BASE}/{target['id']}", headers=_headers(token))
+    assert detail.json()["data"]["profile"]["title"] == "投算法"
+
+
+def test_rename_profile_to_same_title_is_idempotent(client: TestClient) -> None:
+    """改成原名不算重复、也不推进 `updated_at`（否则点一次保存列表就跳）。"""
+    token = _register_and_login(client)
+    created = _create(client, token, title="投后端")
+    before = _list_profiles(client, token)[0]["updated_at"]
+
+    response = client.put(
+        f"{PROFILES_BASE}/{created['id']}/title",
+        json={"title": "投后端"},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["profile"]["title"] == "投后端"
+    assert _list_profiles(client, token)[0]["updated_at"] == before
+
+
+def test_rename_profile_rejects_blank_title(client: TestClient) -> None:
+    """全空白标题 422：下拉列表里不能出现一行没有名字的简历。"""
+    token = _register_and_login(client)
+    created = _create(client, token, title="投后端")
+
+    response = client.put(
+        f"{PROFILES_BASE}/{created['id']}/title",
+        json={"title": "   "},
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 422, response.text
+
+
+def test_rename_profile_is_scoped_to_owner(client: TestClient) -> None:
+    """别人的简历、回收站里的简历都不能改名（统一 404，不泄露存在性）。"""
+    owner = _register_and_login(client)
+    intruder = _register_and_login(client)
+    created = _create(client, owner, title="投后端")
+
+    forbidden = client.put(
+        f"{PROFILES_BASE}/{created['id']}/title",
+        json={"title": "被改名了"},
+        headers=_headers(intruder),
+    )
+    assert forbidden.status_code == 404, forbidden.text
+
+    client.delete(f"{PROFILES_BASE}/{created['id']}", headers=_headers(owner))
+    trashed = client.put(
+        f"{PROFILES_BASE}/{created['id']}/title",
+        json={"title": "回收到回收站再改"},
+        headers=_headers(owner),
+    )
+    assert trashed.status_code == 404, trashed.text
+
+
+def test_create_profile_rejects_duplicate_title(client: TestClient) -> None:
+    """创建口子也要拦重名，否则「不能重名」这条约束一绕就破。"""
+    token = _register_and_login(client)
+    _create(client, token, title="投后端")
+
+    response = client.post(PROFILES_BASE, json={"title": "投后端"}, headers=_headers(token))
+
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["message"] == "该简历名称已存在"
+    assert _count("student_profiles") == 1
+
+
+def test_trashed_profile_does_not_hold_its_title(client: TestClient) -> None:
+    """回收站里的简历不占名字：删掉后可以用同一个标题新建。"""
+    token = _register_and_login(client)
+    created = _create(client, token, title="投后端")
+    client.delete(f"{PROFILES_BASE}/{created['id']}", headers=_headers(token))
+
+    response = client.post(PROFILES_BASE, json={"title": "投后端"}, headers=_headers(token))
+
+    assert response.status_code == 201, response.text
+    assert response.json()["data"]["profile"]["title"] == "投后端"

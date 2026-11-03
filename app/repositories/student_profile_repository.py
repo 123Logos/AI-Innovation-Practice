@@ -212,8 +212,15 @@ class StudentProfileRepository:
         self,
         user_id: str,
         include_deleted: bool = False,
+        order_by: str = "updated_at",
+        descending: bool = True,
     ) -> list[StudentProfile]:
         """列表；默认排除回收站里的记录。
+
+        排序（D4.3）：`order_by` 只接受 `updated_at` / `created_at`，
+        由 API 层的 `Literal` 先做白名单校验，这里再用 if 分支取列——不做字符串拼 SQL。
+        默认「最近修改的在前」；`descending=False` 时主键与 tie-breaker 一起反向，
+        保证 `asc` 恰好是 `desc` 的倒序（前端切换箭头时顺序可预期）。
 
         开头顺带跑一次 `purge_expired()`：回收站没有后台定时任务，惰性清理挂在
         读路径上，用户下次打开列表时过期记录就消失了。
@@ -222,12 +229,15 @@ class StudentProfileRepository:
         statement = select(StudentProfile).where(StudentProfile.user_id == user_id)
         if not include_deleted:
             statement = statement.where(StudentProfile.deleted_at.is_(None))
-        statement = statement.order_by(
-            StudentProfile.is_default.desc(),
-            StudentProfile.created_at.desc(),
-            StudentProfile.id.desc(),
+        # 主键是 uuid4，仅作确定性 tie-breaker：同一毫秒创建的简历顺序也要稳定。
+        column = (
+            StudentProfile.created_at if order_by == "created_at" else StudentProfile.updated_at
         )
-        return list(self._session.scalars(statement))
+        id_column = StudentProfile.id
+        ordering = (
+            (column.desc(), id_column.desc()) if descending else (column.asc(), id_column.asc())
+        )
+        return list(self._session.scalars(statement.order_by(*ordering)))
 
     def list_trash(self, user_id: str) -> list[StudentProfile]:
         """回收站：只返回软删除的记录，最近删除的排前面。"""
@@ -471,6 +481,36 @@ class StudentProfileRepository:
                 StudentProfile.user_id == user_id,
             )
             .values(is_default=True)
+        )
+        self._session.commit()
+
+    # 写：元信息（标题）
+
+    def title_exists(self, user_id: str, title: str, exclude_id: str | None = None) -> bool:
+        """同一用户名下是否已有同名简历（D4.3：简历不能重名）。
+
+        只在**未删除**的简历里比较：回收站那份不占名字，否则「删掉的简历」会
+        永久锁住一个标题，用户想改回原名反而被拒。
+        排序规则由库的 `utf8mb4_0900_ai_ci` 决定（大小写不敏感），这正是我们要的语义。
+        """
+        statement = select(StudentProfile.id).where(
+            StudentProfile.user_id == user_id,
+            StudentProfile.deleted_at.is_(None),
+            StudentProfile.title == title,
+        )
+        if exclude_id is not None:
+            statement = statement.where(StudentProfile.id != exclude_id)
+        return self._session.scalar(statement) is not None
+
+    def update_title(self, profile_id: str, title: str) -> None:
+        """改标题，并顺带推进 `updated_at`（重命名也是一次修改）。
+
+        调用方**必须**先用 `get_by_id(user_id, ...)` 校验归属与重名。
+        """
+        self._session.execute(
+            update(StudentProfile)
+            .where(StudentProfile.id == profile_id)
+            .values(title=title, updated_at=utc_now())
         )
         self._session.commit()
 

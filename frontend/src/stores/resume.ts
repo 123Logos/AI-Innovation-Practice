@@ -34,8 +34,19 @@
  *
  * 教育经历（T7.5）是一对多子表，前端与后端的渲染顺序都是「入学时间倒序」。
  *
- * 本地草稿：按用户 id 隔离存在 `localStorage`，只写不覆盖服务端数据；
+ * 本地草稿：**按「用户 id + 简历 id」隔离**存在 `localStorage`，只写不覆盖服务端数据；
  * 用户点预览区上方的「保存修改」（`save()`）成功后立即清除。
+ *
+ * 为什么必须带简历维度（D4.2）：D4.1 之前 key 只有 `resume_draft:${userId}`，
+ * 一个用户的所有简历共用同一格草稿，切到 B 再切回 A，A 会被 B 的草稿顶掉。
+ * 现在的 key 是 `resume_draft:${userId}:${profileId}`；还没落库的「草稿态简历」
+ * 用哨兵 `new`（`resume_draft:${userId}:new`），第一次保存后即迁移到真实 id。
+ * 老版本留下的 `resume_draft:${userId}` 在首次进入时**单向迁移**到默认简历，
+ * 迁移完就删掉旧键，避免它继续被误读。
+ *
+ * 切换简历的固定顺序（`switchProfile()`，D4.2）：先拦未保存 → 解绑 watcher →
+ * 清 `pendingDraft` / 生成结果 → 换 `currentProfileId` → 重新拉取并绑定 watcher；
+ * 全程用 `requestSeq` 丢弃过期响应，快速连点也不会出现「A 的数据落进 B」。
  *
  * 保存入口自 D3 起只有一个：纸面编辑与左侧表单都只改 Pinia，
  * `dirty` 为真即「未落库」，由 `ResumePreview.vue` 工具栏的按钮统一提交。
@@ -45,7 +56,15 @@ import { computed, reactive, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 
 import { profilesApi, resumesApi } from '@/api'
-import type { Degree, ProfileRead, ProfileUpsertRequest, ResumeRead } from '@/api/types'
+import type {
+  Degree,
+  ProfileRead,
+  ProfileSortField,
+  ProfileSummary,
+  ProfileUpsertRequest,
+  ResumeRead,
+} from '@/api/types'
+import { useAuthStore } from '@/stores/auth'
 import { currentMonthValue, todayIsoDate } from '@/utils/datetime'
 
 /** 与后端 `ProfileUpsertRequest` 的 Field 约束保持一致（只有上限，保存不拦必填）。 */
@@ -73,6 +92,26 @@ const DRAFT_STORAGE_PREFIX = 'resume_draft:'
 const DRAFT_VERSION = 1
 /** 输入停顿多久后落本地草稿（毫秒）。 */
 const DRAFT_WRITE_DELAY = 400
+/**
+ * 「还没落库的新简历」在草稿 key 里的哨兵 id。
+ *
+ * 用户第一次进编辑器时库里还没有任何简历（只有空白骨架），此时也必须能存草稿，
+ * 所以给一个不会被后端 uuid 撞上的固定串；第一次 `save()` 建出真身之后，
+ * 这格草稿会被清掉，后续都写在真实 id 下。
+ */
+const DRAFT_NEW_PROFILE_KEY = 'new'
+
+/** 后端 `DEFAULT_PROFILE_TITLE` 的同源文案：新建第一份简历时用它。 */
+const DEFAULT_PROFILE_TITLE = '我的简历'
+
+/**
+ * 「上次打开的是哪一份简历」的 localStorage 前缀（D4.3）。
+ *
+ * 存在的原因：进入 `/trash` 再返回编辑器时，`loadFromServer()` 会重新跑一遍，
+ * 若只按「默认简历」选，用户明明在看「投算法」却被切回「我的简历」。
+ * 这里记住 id，下次优先恢复；id 已不存在（被删 / 被彻底删）时再回退默认。
+ */
+const LAST_PROFILE_STORAGE_PREFIX = 'resume_last_profile:'
 
 export interface SkillDraft {
   name: string
@@ -204,7 +243,19 @@ export interface LocalDraft {
   data: ProfileDraft
 }
 
-function draftStorageKey(ownerId: string): string {
+/**
+ * 草稿 key：**用户 + 简历**两维隔离（D4.2 修掉的串号 bug）。
+ *
+ * D4.1 及之前是 `resume_draft:${userId}`，同一用户的多份简历共用一格，
+ * 切换后会互相覆盖。`profileId` 为 null 表示「还没有落库的空白简历」，
+ * 用 `new` 占位，保证第一次进入也能存草稿。
+ */
+function draftStorageKey(ownerId: string, profileId: string | null): string {
+  return `${DRAFT_STORAGE_PREFIX}${ownerId}:${profileId ?? DRAFT_NEW_PROFILE_KEY}`
+}
+
+/** D4.1 及之前的老 key（没有简历维度），只用于一次性迁移。 */
+function legacyDraftStorageKey(ownerId: string): string {
   return `${DRAFT_STORAGE_PREFIX}${ownerId}`
 }
 
@@ -237,10 +288,10 @@ function isProfileDraft(value: unknown): value is ProfileDraft {
   )
 }
 
-function readDraft(ownerId: string): LocalDraft | null {
+function readDraft(ownerId: string, profileId: string | null): LocalDraft | null {
   let raw: string | null = null
   try {
-    raw = localStorage.getItem(draftStorageKey(ownerId))
+    raw = localStorage.getItem(draftStorageKey(ownerId, profileId))
   } catch {
     return null
   }
@@ -258,11 +309,57 @@ function readDraft(ownerId: string): LocalDraft | null {
   }
 }
 
-function removeDraft(ownerId: string): void {
+function removeDraft(ownerId: string, profileId: string | null): void {
   try {
-    localStorage.removeItem(draftStorageKey(ownerId))
+    localStorage.removeItem(draftStorageKey(ownerId, profileId))
   } catch {
     // localStorage 被禁用时忽略，草稿是增益能力，不能阻断主流程。
+  }
+}
+
+/**
+ * 把 D4.1 的单槽草稿迁移到「默认简历」这一格，随后删掉旧键。
+ *
+ * 为什么值得写这段：老用户升级那一刻 `localStorage` 里正躺着一份没保存的草稿，
+ * 直接改 key 规则等于静默丢掉他的输入。迁移是**单向且只做一次**：
+ * - 只在当前操作的是真实简历（`profileId` 非空）时迁移，避免写进 `new` 哨兵；
+ * - 目标格已有草稿就不覆盖（新格式优先），但仍然删旧键，防止它被反复误读。
+ */
+function migrateLegacyDraft(ownerId: string, profileId: string | null): void {
+  if (!profileId) return
+  const legacyKey = legacyDraftStorageKey(ownerId)
+  try {
+    const legacy = localStorage.getItem(legacyKey)
+    if (!legacy) return
+    const targetKey = draftStorageKey(ownerId, profileId)
+    if (localStorage.getItem(targetKey) === null) {
+      localStorage.setItem(targetKey, legacy)
+    }
+    localStorage.removeItem(legacyKey)
+  } catch {
+    // 无痕模式 / 配额满：迁移失败就保持原样，不能影响进入编辑器。
+  }
+}
+
+/** 记住「上次打开的是哪一份简历」，按用户隔离。`null` 表示清掉记录。 */
+function rememberProfileId(ownerId: string, profileId: string | null): void {
+  const key = `${LAST_PROFILE_STORAGE_PREFIX}${ownerId}`
+  try {
+    if (profileId) {
+      localStorage.setItem(key, profileId)
+    } else {
+      localStorage.removeItem(key)
+    }
+  } catch {
+    // 存储不可用时忽略：记住上次打开的是锦上添花，不能阻断进入编辑器。
+  }
+}
+
+function readRememberedProfileId(ownerId: string): string | null {
+  try {
+    return localStorage.getItem(`${LAST_PROFILE_STORAGE_PREFIX}${ownerId}`)
+  } catch {
+    return null
   }
 }
 
@@ -380,6 +477,52 @@ export const useResumeStore = defineStore('resume', () => {
 
   const hasSavedProfile = computed(() => savedProfile.value !== null)
   const isGeneratingResultVisible = computed(() => generatedHtml.value !== null)
+
+  /* ------------------------------ 多份简历状态 ------------------------------ */
+  /*
+   * `profiles` 是档案库的「行」（只含 title / is_default / 时间），
+   * 明细永远按需 `GET /profiles/{id}` 单份拉取——列表不背整份简历。
+   */
+  const profiles = ref<ProfileSummary[]>([])
+  /** 当前正在编辑的简历 id；null = 库里一份都没有，正处于「未落库的空白骨架」。 */
+  const currentProfileId = ref<string | null>(null)
+  const profilesLoading = ref(false)
+  /** 回收站列表：只在打开回收站时拉取，不跟着编辑器一起加载。 */
+  const trashProfiles = ref<ProfileSummary[]>([])
+  const trashLoading = ref(false)
+
+  /** 列表排序（D4.3）：字段 + 方向；默认「最近修改的在前」。 */
+  const sortBy = ref<ProfileSortField>('updated_at')
+  const sortDesc = ref(true)
+
+  /**
+   * 这批数据属于哪个用户。
+   *
+   * 首屏 `loadFromServer()` 时视图还没调用 `startDraftAutosave(ownerId)`，
+   * `draftOwnerId` 仍是 null，于是回落到 auth store——路由守卫进页面前已经用
+   * `/auth/me` 校验过，此刻 `user` 必定存在。auth 不反向依赖本 store，无循环引用。
+   */
+  function resolveOwnerId(): string | null {
+    return draftOwnerId.value ?? useAuthStore().user?.id ?? null
+  }
+
+  /**
+   * 切换 / 加载的并发序号（D4.2 快速连点的保护）。
+   *
+   * 每发起一次「换简历」就 `++requestSeq`，响应回来时若序号已被更新的请求顶掉，
+   * 直接丢弃——否则慢的 A 响应会覆盖刚切过去的 B，表现为「切到 B 却看到 A 的内容」。
+   * 用普通变量而不是 `ref`：它只是并发标记，不该触发任何渲染。
+   */
+  let requestSeq = 0
+
+  const currentProfile = computed(
+    () => profiles.value.find((profile) => profile.id === currentProfileId.value) ?? null,
+  )
+  /** 顶栏与生成标题都用它；没有简历时退回默认文案。 */
+  const currentProfileTitle = computed(
+    () => currentProfile.value?.title ?? DEFAULT_PROFILE_TITLE,
+  )
+  const hasProfiles = computed(() => profiles.value.length > 0)
 
   /** 后端只接受 3–8 条技能，这里同步限制 UI，避免用户删到 2 条才发现被拒。 */
   const canAddSkill = computed(() => draft.skills.length < SKILL_LIMIT.max)
@@ -653,20 +796,240 @@ export const useResumeStore = defineStore('resume', () => {
     return null
   }
 
-  /** 进入编辑器时调用：拉取当前用户档案，未填写则保留空白骨架。 */
-  async function loadFromServer(): Promise<void> {
+  /* ------------------------------ 多份简历操作 ------------------------------ */
+
+  /** 当前排序的查询参数，列表的每一次刷新都用它。 */
+  function listQuery(): { orderBy: ProfileSortField; order: 'asc' | 'desc' } {
+    return { orderBy: sortBy.value, order: sortDesc.value ? 'desc' : 'asc' }
+  }
+
+  /** 列表刷新（不含回收站）：新建 / 删除 / 恢复 / 设默认 / 改名之后都要同步一次。 */
+  async function refreshProfiles(): Promise<void> {
+    profiles.value = await profilesApi.listProfiles(listQuery())
+  }
+
+  /** 切换排序字段（D4.3）；同字段重复点是「换方向」，不在这里处理。 */
+  async function setSortField(field: ProfileSortField): Promise<void> {
+    if (sortBy.value === field) return
+    sortBy.value = field
+    await refreshProfiles()
+  }
+
+  /** 切换升 / 降序。 */
+  async function toggleSortOrder(): Promise<void> {
+    sortDesc.value = !sortDesc.value
+    await refreshProfiles()
+  }
+
+  /**
+   * 重命名（D4.3）。
+   *
+   * 重名由后端返回 400「该简历名称已存在」，这里原样抛给 UI 展示——
+   * 前端可以先做一次本地查重来省一次请求，但那只是体验优化，
+   * 真正的约束必须在服务端（多标签页并发时前端列表是过期的）。
+   */
+  async function renameProfile(profileId: string, title: string): Promise<void> {
+    const updated = await profilesApi.renameProfile(profileId, title)
+    if (savedProfile.value?.id === profileId) {
+      savedProfile.value.title = updated.title
+      savedProfile.value.updated_at = updated.updated_at
+    }
+    await refreshProfiles()
+  }
+
+  /**
+   * 未保存修改的拦截（切简历、新建简历前都先走这里）。
+   *
+   * 返回 false = 用户放弃本次操作，调用方必须真的停下。
+   * 保存失败会带着中文原因抛出去交给 UI 展示——绝不能吞掉错误后硬切，
+   * 否则用户会以为自己的修改已经落库。
+   */
+  async function ensureSavedBeforeSwitch(): Promise<boolean> {
+    if (!dirty.value) return true
+    const shouldSave = window.confirm('当前简历有未保存的修改。切换前需要先保存，是否现在保存？')
+    if (!shouldSave) return false
+    await save()
+    return true
+  }
+
+  /**
+   * 真正执行「换一份简历」，**不弹确认**（供已确认过的调用方复用）。
+   *
+   * 顺序是硬要求（D4.2）：
+   * 1. 先停 watcher —— 否则下一步清空 draft 时，会把空白骨架写成上一份的草稿；
+   * 2. 清 `pendingDraft` 与生成结果 —— 防止 A 的草稿横幅、A 的 HTML 出现在 B 里；
+   * 3. 换 `currentProfileId` —— 之后草稿 key、保存目标都跟着变；
+   * 4. 拉新数据 → `applyDraft` → 重新绑定 watcher；
+   * 5. 每个 await 之后都用 `requestSeq` 确认自己还是「最新的一次切换」。
+   */
+  async function activateProfile(targetId: string | null): Promise<void> {
+    const owner = resolveOwnerId()
+    const previousId = currentProfileId.value
+    const seq = ++requestSeq
+
+    // 1. 解绑 autosave（内含取消失衡的延迟写入，避免旧 draft 被写进新 key）。
+    stopDraftAutosave()
+    // 2. 丢掉属于「上一份」的瞬时状态。
+    pendingDraft.value = null
+    showLivePreview()
+    // 3. 换指针。
+    currentProfileId.value = targetId
     loading.value = true
+
     try {
-      const profile = await profilesApi.getMyProfile()
+      const profile = targetId ? await profilesApi.getProfile(targetId) : null
+      if (seq !== requestSeq) return
+      applyDraft(profile ? draftFromProfile(profile) : createEmptyDraft(), profile)
+      if (owner) {
+        // 3.5 记住「上次打开的是哪一份」：进回收站再回来要能回到这一份（D4.3）。
+        rememberProfileId(owner, targetId)
+        // 4. 绑定新简历的 watcher；草稿判定也必须在新数据之后。
+        startDraftAutosave(owner)
+        detectLocalDraft(owner)
+      }
+    } catch (error) {
+      // 拉取失败：把指针退回去并恢复 watcher，避免「id 是 B、内容是 A」的撕裂状态。
+      if (seq === requestSeq) {
+        currentProfileId.value = previousId
+        if (owner) startDraftAutosave(owner)
+      }
+      throw error
+    } finally {
+      if (seq === requestSeq) loading.value = false
+    }
+  }
+
+  /** 顶栏点击切换的入口：先拦未保存再切。返回 false = 用户取消。 */
+  async function switchProfile(targetId: string): Promise<boolean> {
+    if (targetId === currentProfileId.value) return true
+    const ready = await ensureSavedBeforeSwitch()
+    if (!ready) return false
+    await activateProfile(targetId)
+    return true
+  }
+
+  /**
+   * 新建一份简历（空白 or 复制当前）。
+   *
+   * `copy_from_id` 交给后端深拷贝，**不要**前端 GET 再 PUT：两次请求之间源简历
+   * 可能被改，拼出来会是一份「半新半旧」的混合体。
+   */
+  async function createProfile(
+    options: { title?: string; copyCurrent?: boolean } = {},
+  ): Promise<ProfileRead> {
+    const ready = await ensureSavedBeforeSwitch()
+    if (!ready) throw new Error('已取消：当前简历的修改尚未保存。')
+
+    const created = await profilesApi.createProfile({
+      title: options.title?.trim() ? options.title.trim() : null,
+      copy_from_id: options.copyCurrent ? currentProfileId.value : null,
+    })
+
+    await refreshProfiles()
+    await activateProfile(created.id)
+    return created
+  }
+
+  /** 设为默认：后端会把其余未删除简历的 `is_default` 一起清掉。 */
+  async function setDefaultProfile(profileId: string): Promise<void> {
+    await profilesApi.setDefaultProfile(profileId)
+    // 默认是「一群人里唯一的那个」，必须整表刷新，不能只改本地一条。
+    await refreshProfiles()
+    if (savedProfile.value?.id === profileId) savedProfile.value.is_default = true
+  }
+
+  /**
+   * 删除（软删除进回收站，30 天内可恢复）。
+   *
+   * 删的是当前简历时自动切到默认 / 最新一份；一份不剩就回到空白骨架。
+   * 这里刻意**不经过** `ensureSavedBeforeSwitch()`：简历都要删了，
+   * 再问「要不要先保存」只会让用户困惑。
+   */
+  async function deleteProfile(profileId: string): Promise<void> {
+    await profilesApi.deleteProfile(profileId)
+    await refreshProfiles()
+
+    const owner = resolveOwnerId()
+    // 这份已经进回收站，它的本地草稿也必须清掉，否则恢复后又会弹「恢复草稿」。
+    if (owner) removeDraft(owner, profileId)
+
+    if (currentProfileId.value !== profileId) return
+    const next = profiles.value.find((profile) => profile.is_default) ?? profiles.value[0] ?? null
+    await activateProfile(next?.id ?? null)
+  }
+
+  /** 拉回收站列表（只在打开回收站时调用）。 */
+  async function loadTrash(): Promise<void> {
+    trashLoading.value = true
+    try {
+      trashProfiles.value = await profilesApi.listTrashProfiles()
+    } finally {
+      trashLoading.value = false
+    }
+  }
+
+  /** 从回收站恢复：恢复后档案库与回收站都要刷新。 */
+  async function restoreProfile(profileId: string): Promise<void> {
+    await profilesApi.restoreProfile(profileId)
+    await refreshProfiles()
+    await loadTrash()
+  }
+
+  /** 彻底删除（不可恢复）：同时清掉该简历的本地草稿。 */
+  async function purgeProfile(profileId: string): Promise<void> {
+    await profilesApi.purgeProfile(profileId)
+    const owner = resolveOwnerId()
+    if (owner) removeDraft(owner, profileId)
+    await loadTrash()
+  }
+
+  /* -------------------------------- 读写主线 -------------------------------- */
+
+  /** 进入编辑器时调用：拉列表 → 恢复上次打开的那份（否则默认简历）→ 回填数据。 */
+  async function loadFromServer(): Promise<void> {
+    const seq = ++requestSeq
+    const owner = resolveOwnerId()
+    // 首屏就把归属绑好：后续 `activateProfile` / 草稿 key 都要用它。
+    if (owner) draftOwnerId.value = owner
+    loading.value = true
+    profilesLoading.value = true
+    try {
+      const list = await profilesApi.listProfiles(listQuery())
+      if (seq !== requestSeq) return
+      profiles.value = list
+
+      /*
+       * 选哪一份（D4.3）：上次打开的那份 > 默认简历 > 列表第一份。
+       *
+       * 「上次打开的」只在**当前用户的列表里找得到**时才用：从回收站回来要回到
+       * 原来那份，但被删掉 / 被彻底删掉之后必须能自动回退，不能卡在 404 上。
+       */
+      const rememberedId = owner ? readRememberedProfileId(owner) : null
+      const remembered = rememberedId
+        ? list.find((profile) => profile.id === rememberedId)
+        : undefined
+      const target = remembered ?? list.find((profile) => profile.is_default) ?? list[0] ?? null
+
+      currentProfileId.value = target?.id ?? null
+      if (owner) rememberProfileId(owner, target?.id ?? null)
+
+      const profile = target ? await profilesApi.getProfile(target.id) : null
+      if (seq !== requestSeq) return
       applyDraft(profile ? draftFromProfile(profile) : createEmptyDraft(), profile)
     } finally {
-      loading.value = false
+      if (seq === requestSeq) {
+        loading.value = false
+        profilesLoading.value = false
+      }
     }
   }
 
   /**
-   * 唯一的保存动作（表单 + 纸面共用）：PUT 整体替换，
-   * 成功后用服务端返回值回填本地（`applyDraft` 会把 `dirty` 归零），并清掉本地草稿。
+   * 唯一的保存动作（表单 + 纸面共用）：PUT 整体替换**当前这份**简历。
+   *
+   * 库里一份都没有时先 `POST /profiles` 建一份默认简历再 PUT——
+   * 这样「只打开页面、什么都不填」不会在库里留下空行（与 D4.1 的 `/me` 语义一致），
+   * 一旦真的点了保存，就一定有一份真简历接住这些数据。
    *
    * 提交前先跑 `validateForSave()`：有硬错误就直接抛，**不发请求**——
    * 这样用户看到的是「第 1 段教育经历缺少入学时间」而不是一个 422。
@@ -675,9 +1038,25 @@ export const useResumeStore = defineStore('resume', () => {
     const problem = validateForSave()
     if (problem) throw new Error(problem)
     saving.value = true
+    const owner = draftOwnerId.value
     try {
-      const profile = await profilesApi.saveMyProfile(toUpsertPayload())
+      let profile: ProfileRead
+      if (currentProfileId.value) {
+        profile = await profilesApi.updateProfile(currentProfileId.value, toUpsertPayload())
+      } else {
+        const created = await profilesApi.createProfile({ is_default: true })
+        profile = await profilesApi.updateProfile(created.id, toUpsertPayload())
+        currentProfileId.value = created.id
+        // 空白骨架那格草稿（`:new`）已经没有意义，别留着让下次误提示。
+        if (owner) removeDraft(owner, null)
+      }
       applyDraft(draftFromProfile(profile), profile)
+      // 列表里的 updated_at / 标题要跟着刷新；失败不影响「已保存」这个事实。
+      try {
+        await refreshProfiles()
+      } catch {
+        // 忽略：下次进页面会重新拉。
+      }
       lastSavedAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
       // 已经落库，本地草稿失去意义，立刻删除，避免下次进来误提示恢复。
       clearDraft()
@@ -687,11 +1066,20 @@ export const useResumeStore = defineStore('resume', () => {
     }
   }
 
-  /** 生成简历：只传 title，内容由后端按登录用户从库里组装。 */
-  async function generate(title = '我的简历'): Promise<ResumeRead> {
+  /**
+   * 生成简历：内容由后端按 `profile_id` 从库里组装。
+   *
+   * 标题优先用当前简历的 `title`（「投后端」生成出来就叫《投后端》），
+   * 传参只在「还没有任何简历」时兜底——`StylePanel` 仍在传 '我的简历'，
+   * 保持旧调用点不动，但不再用它覆盖真实的简历标题。
+   */
+  async function generate(title?: string): Promise<ResumeRead> {
     generating.value = true
     try {
-      const resume = await resumesApi.generateResume({ title })
+      const resume = await resumesApi.generateResume({
+        title: currentProfileTitle.value || title?.trim() || DEFAULT_PROFILE_TITLE,
+        profile_id: currentProfileId.value,
+      })
       generatedHtml.value = resume.content_html
       generatedResumeId.value = resume.resume_id
       generatedTitle.value = resume.title
@@ -731,7 +1119,11 @@ export const useResumeStore = defineStore('resume', () => {
         // 且草稿必须是写入那一刻的快照，不能被后续编辑改写。
         data: JSON.parse(JSON.stringify(draft)) as ProfileDraft,
       }
-      localStorage.setItem(draftStorageKey(owner), JSON.stringify(envelope))
+      // key 必须带当前简历 id：切到 B 之后，A 的草稿不能写进 B 的格子。
+      localStorage.setItem(
+        draftStorageKey(owner, currentProfileId.value),
+        JSON.stringify(envelope),
+      )
       autosavedAt.value = envelope.saved_at
     } catch {
       // 超出配额 / 无痕模式禁用 storage：草稿是增益能力，失败必须静默。
@@ -779,14 +1171,17 @@ export const useResumeStore = defineStore('resume', () => {
    * 直接比时间会稳定偏 8 小时，误判成「草稿更新」。时间只用于提示文案。
    */
   function detectLocalDraft(ownerId: string): void {
-    const found = readDraft(ownerId)
+    // 老用户升级上来的第一格草稿还在旧 key 里，先搬到当前简历名下再判定。
+    migrateLegacyDraft(ownerId, currentProfileId.value)
+
+    const found = readDraft(ownerId, currentProfileId.value)
     if (!found) {
       pendingDraft.value = null
       return
     }
     if (comparableOf(found.data) === comparableOf(draft)) {
       // 和服务器一模一样，说明上次其实已经保存成功，草稿是残留，直接清掉。
-      removeDraft(ownerId)
+      removeDraft(ownerId, currentProfileId.value)
       pendingDraft.value = null
       return
     }
@@ -805,25 +1200,43 @@ export const useResumeStore = defineStore('resume', () => {
   /** 用户选择「丢弃」：删本地草稿，保留服务端数据。 */
   function discardDraft(): void {
     const owner = draftOwnerId.value
-    if (owner) removeDraft(owner)
+    if (owner) removeDraft(owner, currentProfileId.value)
     pendingDraft.value = null
   }
 
   function clearDraft(): void {
     cancelScheduledWrite()
     const owner = draftOwnerId.value
-    if (owner) removeDraft(owner)
+    if (owner) removeDraft(owner, currentProfileId.value)
     autosavedAt.value = null
     pendingDraft.value = null
   }
 
-  /** 登出时清空，避免下一个账号看到上一个人的档案。 */
+  /**
+   * 离开编辑器前把「还在 400ms 防抖里」的改动立刻落一次草稿。
+   *
+   * 新增回收站路由后，页面可以被切走；若只 `stopDraftAutosave()`，
+   * 最后几次输入会连草稿都没写就被丢弃。这里先 flush 再解绑，
+   * 回到编辑器时走的是「检测到未保存草稿 → 是否恢复」的正常路径。
+   */
+  function flushDraft(): void {
+    if (!dirty.value || !draftOwnerId.value) return
+    cancelScheduledWrite()
+    persistNow()
+  }
+
+  /** 登出时清空，避免下一个账号看到上一个人的简历列表与档案。 */
   function reset(): void {
+    // 让在途的加载 / 切换全部作废（否则登出后回来的响应还会写进 store）。
+    requestSeq += 1
     // 先解绑归属，再清空 draft：否则监听器会把空白骨架写成上一个人的草稿。
     draftOwnerId.value = null
     cancelScheduledWrite()
     pendingDraft.value = null
     autosavedAt.value = null
+    profiles.value = []
+    currentProfileId.value = null
+    trashProfiles.value = []
     applyDraft(createEmptyDraft(), null)
     lastSavedAt.value = null
     showLivePreview()
@@ -844,6 +1257,28 @@ export const useResumeStore = defineStore('resume', () => {
     autosavedAt,
     hasSavedProfile,
     isGeneratingResultVisible,
+    /* 多份简历 */
+    profiles,
+    currentProfile,
+    currentProfileId,
+    currentProfileTitle,
+    profilesLoading,
+    hasProfiles,
+    trashProfiles,
+    trashLoading,
+    switchProfile,
+    createProfile,
+    deleteProfile,
+    setDefaultProfile,
+    renameProfile,
+    sortBy,
+    sortDesc,
+    setSortField,
+    toggleSortOrder,
+    refreshProfiles,
+    loadTrash,
+    restoreProfile,
+    purgeProfile,
     canAddSkill,
     canRemoveSkill,
     canAddExperience,
@@ -873,6 +1308,7 @@ export const useResumeStore = defineStore('resume', () => {
     restoreDraft,
     discardDraft,
     clearDraft,
+    flushDraft,
     reset,
   }
 })

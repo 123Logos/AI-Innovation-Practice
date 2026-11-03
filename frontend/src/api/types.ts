@@ -113,6 +113,54 @@ export interface EducationRead extends EducationInput {
   id: string
 }
 
+/**
+ * 后端 `ProfileSummary`（D4.1）：档案库列表 / 回收站的轻量行。
+ *
+ * 刻意不带 skills / experiences / educations——列表只回答「是哪一份」，
+ * 把整份简历搬进列表会让「打开档案库」变成一次全量读取。
+ */
+export interface ProfileSummary {
+  id: string
+  /** 简历标题，如「我的简历 2」「投后端」。 */
+  title: string
+  /** 每人恒有且仅有一份默认简历（由服务层保证）。 */
+  is_default: boolean
+  full_name: string
+  created_at: string
+  updated_at: string
+  /** 非空 = 在回收站里（东八区 ISO 串）。 */
+  deleted_at: string | null
+}
+
+/** `GET /api/v1/profiles` 与 `GET /api/v1/profiles/trash` 共用。 */
+export interface ProfileListResponse {
+  profiles: ProfileSummary[]
+}
+
+/** 列表排序字段（D4.3）：最近修改 / 创建时间。 */
+export type ProfileSortField = 'updated_at' | 'created_at'
+
+/** 列表排序方向；`desc` = 新的在前。 */
+export type ProfileSortOrder = 'asc' | 'desc'
+
+/** 列表排序参数（与后端 `GET /profiles` 的查询参数一一对应）。 */
+export interface ProfileListQuery {
+  orderBy?: ProfileSortField
+  order?: ProfileSortOrder
+}
+
+/**
+ * 后端 `ProfileCreateRequest`。
+ *
+ * `title` 省略或全空白时由服务端递增生成（我的简历 / 我的简历 2 …）；
+ * `copy_from_id` 触发**服务端深拷贝**，不要用「GET 源简历再 PUT」自己拼。
+ */
+export interface ProfileCreateRequest {
+  title?: string | null
+  copy_from_id?: string | null
+  is_default?: boolean
+}
+
 /** 后端 `ProfileUpsertRequest`：技能 ≤8 条、经历 ≤3 条、教育 ≤5 段（无下限），技能名唯一。 */
 export interface ProfileUpsertRequest {
   full_name: string
@@ -129,6 +177,11 @@ export interface ProfileUpsertRequest {
 export interface ProfileRead {
   id: string
   user_id: string
+  /** D4.1：这份简历的名字与默认标记（列表里区分「投后端」「投算法」）。 */
+  title: string
+  is_default: boolean
+  /** 非空 = 在回收站里；详情接口已排除回收站，留字段是为了如实回显。 */
+  deleted_at: string | null
   full_name: string
   email: string | null
   grade: string
@@ -146,10 +199,17 @@ export interface ProfileResponse {
   profile: ProfileRead | null
 }
 
+/** 单份简历详情 / 新建 / 保存 / 恢复 / 设为默认的响应体。 */
+export interface ProfileDetailResponse {
+  profile: ProfileRead
+}
+
 /* ---------------------------------- 简历 ---------------------------------- */
 
 export interface ResumeGenerateRequest {
   title: string
+  /** D4.1：指定用哪一份简历生成；省略则后端取默认简历。 */
+  profile_id?: string | null
 }
 
 export interface ResumeRead {

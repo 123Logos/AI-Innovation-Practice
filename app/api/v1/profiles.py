@@ -10,19 +10,20 @@ D4.2 之前的前端只认这两个，不能因为后端引入多份简历就让
 越权处理：不属于当前用户的 id 一律 404（不是 403）——403 会暴露「该 id 存在」。
 """
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.core.responses import success_response
 from app.schemas.auth import UserRead
-from app.schemas.profile import ProfileCreateRequest, ProfileUpsertRequest
+from app.schemas.profile import ProfileCreateRequest, ProfileTitleUpdate, ProfileUpsertRequest
 from app.services.dependencies import get_current_user, get_profile_service
 from app.services.profile_service import (
     ProfileLimitExceededError,
     ProfileNotFoundError,
     ProfileService,
     ProfileStateError,
+    ProfileTitleConflictError,
 )
 
 router = APIRouter(prefix="/profiles", tags=["profiles"])
@@ -36,14 +37,32 @@ def _not_found() -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="简历不存在。")
 
 
+def _title_conflict() -> HTTPException:
+    """重名固定 400 + 固定文案（D4.3）。"""
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="该简历名称已存在",
+    )
+
+
 @router.get("")
 def list_my_profiles(
     request: Request,
     service: ProfileServiceDep,
     current_user: CurrentUserDep,
+    order_by: Literal["updated_at", "created_at"] = "updated_at",
+    order: Literal["desc", "asc"] = "desc",
 ) -> dict[str, Any]:
-    """档案库列表（不含回收站）。"""
-    profiles = service.list_profiles(current_user.id)
+    """档案库列表（不含回收站）。
+
+    排序（D4.3）：`order_by` 二选一，非法值由 FastAPI 直接 422；
+    默认「最近修改的在前」，这也是顶栏下拉的默认顺序。
+    """
+    profiles = service.list_profiles(
+        current_user.id,
+        order_by=order_by,
+        descending=order != "asc",
+    )
     return success_response(
         request,
         {"profiles": [profile.model_dump(mode="json") for profile in profiles]},
@@ -62,6 +81,8 @@ def create_my_profile(
         profile = service.create_profile(current_user.id, payload)
     except ProfileNotFoundError as error:
         raise _not_found() from error
+    except ProfileTitleConflictError as error:
+        raise _title_conflict() from error
     except ProfileLimitExceededError as error:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -153,6 +174,32 @@ def set_default_profile(
         profile = service.set_default(current_user.id, profile_id)
     except ProfileNotFoundError as error:
         raise _not_found() from error
+    return success_response(request, {"profile": profile.model_dump(mode="json")})
+
+
+@router.put("/{profile_id}/title")
+def rename_profile(
+    profile_id: str,
+    payload: ProfileTitleUpdate,
+    request: Request,
+    service: ProfileServiceDep,
+    current_user: CurrentUserDep,
+) -> dict[str, Any]:
+    """只改标题（D4.3）。
+
+    为什么单独开一个端点而不是并进 `PUT /profiles/{profile_id}`：
+    后者是「整份内容全量替换」，改名若走那条路，前端得先 GET 全量再 PUT 回去，
+    中间任何一次并发保存都会把内容覆盖掉，而且改个名字要传几十个字段。
+
+    方法用 `PUT` 而不是 `PATCH`：语义上都是「替换标题」，但 `app/main.py` 的
+    CORS 白名单只放行 GET/POST/PUT/DELETE，本轮不动那份配置。
+    """
+    try:
+        profile = service.rename_profile(current_user.id, profile_id, payload.title)
+    except ProfileNotFoundError as error:
+        raise _not_found() from error
+    except ProfileTitleConflictError as error:
+        raise _title_conflict() from error
     return success_response(request, {"profile": profile.model_dump(mode="json")})
 
 

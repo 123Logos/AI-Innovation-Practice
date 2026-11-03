@@ -3,6 +3,7 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { setUnauthorizedHandler } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import LoginView from '@/views/LoginView.vue'
+import RecycleBinView from '@/views/RecycleBinView.vue'
 import RegisterView from '@/views/RegisterView.vue'
 import ResumeEditorView from '@/views/ResumeEditorView.vue'
 
@@ -20,6 +21,12 @@ const routes: RouteRecordRaw[] = [
     path: '/',
     name: 'resume-editor',
     component: ResumeEditorView,
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/trash',
+    name: 'recycle-bin',
+    component: RecycleBinView,
     meta: { requiresAuth: true },
   },
   {

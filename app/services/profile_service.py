@@ -59,17 +59,43 @@ class ProfileLimitExceededError(Exception):
     """超过每人简历上限。"""
 
 
+class ProfileTitleConflictError(Exception):
+    """同一用户下的简历重名（D4.3）。
+
+    对外是 400（不是 409）：产品文案固定为「该简历名称已存在」，
+    前端只需要展示，不需要按状态码分支。
+    """
+
+    def __init__(self, title: str) -> None:
+        self.title = title
+        super().__init__(f"profile title {title!r} already exists")
+
+
 class ProfileService:
     def __init__(self, repository: StudentProfileRepository) -> None:
         self._repository = repository
 
     # ---------------------------------------------------------------- 读
 
-    def list_profiles(self, user_id: str, include_deleted: bool = False) -> list[ProfileSummary]:
-        """档案库列表；默认不含回收站里的记录。"""
+    def list_profiles(
+        self,
+        user_id: str,
+        include_deleted: bool = False,
+        order_by: str = "updated_at",
+        descending: bool = True,
+    ) -> list[ProfileSummary]:
+        """档案库列表；默认不含回收站里的记录。
+
+        排序参数由 API 层的 `Literal` 兜住非法值，这一层只做透传（D4.3）。
+        """
         return [
             self._to_summary(profile)
-            for profile in self._repository.list_by_user(user_id, include_deleted=include_deleted)
+            for profile in self._repository.list_by_user(
+                user_id,
+                include_deleted=include_deleted,
+                order_by=order_by,
+                descending=descending,
+            )
         ]
 
     def list_trash(self, user_id: str) -> list[ProfileSummary]:
@@ -101,6 +127,10 @@ class ProfileService:
             raise ProfileLimitExceededError(f"最多只能保存 {MAX_PROFILES_PER_USER} 份简历")
 
         title = (payload.title or "").strip() or self._get_next_default_title(user_id)
+        # 显式传了重复标题就直接拒（自动递增的标题一定没被占用）。
+        # D4.3 立的规矩是「同一用户下不能重名」，创建口子不堵住就形同虚设。
+        if self._repository.title_exists(user_id, title):
+            raise ProfileTitleConflictError(title)
         if payload.copy_from_id:
             source = self._repository.get_by_id(user_id, payload.copy_from_id)
             if source is None:
@@ -148,6 +178,25 @@ class ProfileService:
         if profile is None:
             raise ProfileNotFoundError(profile_id)
         self._repository.set_default(user_id, profile_id)
+        return self._reload(user_id, profile_id)
+
+    def rename_profile(self, user_id: str, profile_id: str, title: str) -> ProfileRead:
+        """改简历标题；同一用户下不允许重名（D4.3）。
+
+        - 改成和原来一样：幂等成功，**不写库也不推进 `updated_at`**——
+          否则用户点一下「保存」列表顺序就跳，看起来像 bug；
+        - 回收站里的简历不能改名（`get_by_id` 默认排除回收站）；
+        - 重名检查排除自己，否则「原名保存」会被判成冲突。
+        """
+        profile = self._repository.get_by_id(user_id, profile_id)
+        if profile is None:
+            raise ProfileNotFoundError(profile_id)
+        normalized = title.strip()
+        if normalized == profile.title:
+            return self._reload(user_id, profile_id)
+        if self._repository.title_exists(user_id, normalized, exclude_id=profile_id):
+            raise ProfileTitleConflictError(normalized)
+        self._repository.update_title(profile_id, normalized)
         return self._reload(user_id, profile_id)
 
     # ------------------------------------------------------------ 回收站
@@ -224,12 +273,13 @@ class ProfileService:
     def _ensure_default(self, user_id: str) -> None:
         """保证「每个用户至少一份默认简历」。
 
-        只在「当前没有未删除的默认简历」时动手，取列表第一行（仓储按
-        `is_default DESC, created_at DESC` 排序，即**最新的一份**）。
+        只在「当前没有未删除的默认简历」时动手，取**创建时间最新**的一份顶上。
+        这里显式指定 `created_at DESC`（D4.3 起列表默认按 `updated_at` 排，
+        不能再拿列表第一行当「最新创建的」）。
         """
         if self._repository.has_default(user_id):
             return
-        remaining = self._repository.list_by_user(user_id)
+        remaining = self._repository.list_by_user(user_id, order_by="created_at", descending=True)
         if remaining:
             self._repository.set_default(user_id, remaining[0].id)
 
