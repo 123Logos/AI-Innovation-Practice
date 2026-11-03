@@ -29,7 +29,14 @@ async function handleLogout(): Promise<void> {
     <div class="user-area">
       <span v-if="resume.dirty" class="dirty-dot" title="有未保存的修改">未保存</span>
       <span class="user-name">{{ auth.displayName || '已登录用户' }}</span>
-      <button class="logout-button" type="button" @click="handleLogout">退出登录</button>
+      <button
+        class="logout-button"
+        type="button"
+        :disabled="auth.signingOut"
+        @click="handleLogout"
+      >
+        {{ auth.signingOut ? '退出中…' : '退出登录' }}
+      </button>
     </div>
   </header>
 </template>
@@ -45,7 +52,8 @@ async function handleLogout(): Promise<void> {
 .user-name { color: #52635f; font-size: 13px; }
 .dirty-dot { border: 1px solid #c9a227; padding: 2px 7px; color: #94781a; font-size: 11px; }
 .logout-button { border: 1px solid #d6dfdc; padding: 7px 14px; color: #52635f; background: transparent; cursor: pointer; font: inherit; font-size: 12px; }
-.logout-button:hover { border-color: #6b8f8a; color: #527873; }
+.logout-button:hover:not(:disabled) { border-color: #6b8f8a; color: #527873; }
+.logout-button:disabled { opacity: .6; cursor: progress; }
 @media (max-width: 760px) {
   .app-topbar { padding: 12px 16px; }
   .brand-sub, .user-name { display: none; }

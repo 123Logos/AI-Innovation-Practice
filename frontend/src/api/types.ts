@@ -40,8 +40,15 @@ export interface UserRead {
   created_at: string
 }
 
+/**
+ * `POST /auth/login` 与 `POST /auth/refresh` 共用（后端 `TokenResponse`）。
+ *
+ * `expires_in` 只描述 **access token** 的寿命（秒）；
+ * refresh token 的 7 天寿命属于服务端状态，不通过响应体对外承诺。
+ */
 export interface TokenResponse {
   access_token: string
+  refresh_token: string
   token_type: string
   expires_in: number
 }
