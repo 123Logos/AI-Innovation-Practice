@@ -39,6 +39,42 @@ const saveLabel = computed(() => {
   return store.dirty ? '保存修改' : '已保存'
 })
 
+/**
+ * `details[0].loc` 形如 `["body", "educations", 0, "edu_start"]`：
+ * 去掉 `body` 这一段后拼成 `educations.0.edu_start`，正好能指名到具体输入框。
+ */
+function firstInvalidField(details: unknown): string {
+  if (!Array.isArray(details) || details.length === 0) return ''
+  const first: unknown = details[0]
+  if (!first || typeof first !== 'object') return ''
+  const loc = (first as { loc?: unknown }).loc
+  if (!Array.isArray(loc)) return ''
+  return loc.filter((part: unknown) => part !== 'body').join('.')
+}
+
+/**
+ * 保存失败的提示文案。
+ *
+ * 保存 422 排查轮：原先只显示 `error.message`（T6 统一文案「请求参数校验失败。」），
+ * 到底哪个字段不合法完全看不出来，只能去翻 Network 面板。现在 422 时把后端的
+ * `details` **完整打到控制台**，页面上则带上出错字段的路径。
+ * 非 422 的 `ApiError` 与 `validateForSave()` 抛出的普通 Error 都直接用人话消息。
+ */
+function describeSaveError(error: unknown): string {
+  if (isApiError(error)) {
+    if (error.status === 422) {
+      console.error('[保存档案] 后端返回 422，details：', error.details)
+      const field = firstInvalidField(error.details)
+      return field
+        ? `保存失败：字段「${field}」未通过后端校验，请检查后重试。`
+        : '保存失败：请求参数未通过后端校验，请检查后重试。'
+    }
+    return `保存失败：${error.message}`
+  }
+  if (error instanceof Error) return `保存失败：${error.message}`
+  return '保存失败，请稍后重试。'
+}
+
 async function handleSave(): Promise<void> {
   // 保存中重复点击、或在「已保存」状态下点击，都直接忽略。
   if (store.saving || !store.dirty) return
@@ -46,7 +82,7 @@ async function handleSave(): Promise<void> {
   try {
     await store.save()
   } catch (error) {
-    saveError.value = isApiError(error) ? `保存失败：${error.message}` : '保存失败，请稍后重试。'
+    saveError.value = describeSaveError(error)
   }
 }
 

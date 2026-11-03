@@ -19,6 +19,10 @@ T7.6 起主表不再有 `major`：专业只由每段教育经历各自携带。
 应届生要写「预计 2027-06 毕业」、在职项目要写「预计 2027-03 结束」，
 把结束时间卡在「过去」会直接堵死这两类真实场景。开始时间仍然不许选未来
 （没开始的事情不该出现在简历里），结束时间只需不早于开始时间。
+
+保存 422 修复轮：`full_name` 去掉 `min_length=1`（保存是草稿式覆盖，允许空），
+完整性改由「生成简历」把关；其余必填日期（`edu_start` / `start_date`）保持
+`date` 必填——库里是 `NOT NULL`，前端必须在提交前保证不为空。
 """
 
 import re
@@ -106,9 +110,15 @@ class ProfileUpsertRequest(BaseModel):
 
     用户反馈轮：去掉技能/经历的**下限**（原先 3 条 / 1 条），允许先存草稿；
     上限仍然保留，避免一次提交超出简历版式容量。
+
+    保存 422 修复轮：`full_name` 不再是必填。前端把「保存」定义成草稿式整体覆盖
+    （见 `frontend/src/stores/resume.ts` 的 `toUpsertPayload()`：空行整行丢弃、
+    全空就是一份空档案），后端却要求至少 1 个字符，点「保存修改」直接 422。
+    姓名是否填写改为在「生成简历」时判断（`ProfileInput` 仍是 `min_length=1`，
+    由 `ResumeService` 提前拦成 400），保存阶段只限制长度。
     """
 
-    full_name: str = Field(min_length=1, max_length=100)
+    full_name: str = Field(default="", max_length=100)
     #: 简历上展示的邮箱；登录邮箱见 `users.email`，两者互不影响。
     email: str | None = Field(default=None, max_length=254)
     #: 年级已下架：允许缺省，服务层不再把它写进库（列保留）。

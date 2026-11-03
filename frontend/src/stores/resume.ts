@@ -20,11 +20,15 @@
  * 邮箱（`email`，用户反馈轮）：是**简历上展示的邮箱**，
  * 与登录邮箱 `users.email` 无关，可空。
  *
- * 校验时机（用户反馈轮）：
+ * 校验时机（用户反馈轮 / 保存 422 修复轮）：
  * - 保存档案**不拦必填**：只提交「填了锚点字段」的行（技能名 / 项目名 / 学校），
  *   空行直接丢弃，全空就等于存一份空档案；
- * - 生成简历才是严格时刻，见 `validateForGenerate()`：
- *   手机号必须匹配 `PHONE_PATTERN`，开始时间不得晚于今天。
+ * - 但保存要过一道**契约自检** `validateForSave()`：手机号填了就必须合法、
+ *   教育入学时间 / 项目开始日期不能为空也不能是未来（后端是必填 `date`）、
+ *   技能名不能重复。这些是「后端一定会 422」的硬错误，提前用中文提示拦下来；
+ * - 生成简历才是完整的严格时刻，见 `validateForGenerate()`：
+ *   姓名 / 手机号必填，教育四要素齐全，技能与项目各至少 1 条。
+ *   开始时间不得晚于今天（与后端 `shanghai_today()` 同口径），
  *   结束时间允许未来（应届生的「预计毕业」、在做的项目「预计结束」），
  *   只要求不早于开始时间。
  *
@@ -586,6 +590,69 @@ export const useResumeStore = defineStore('resume', () => {
     return null
   }
 
+  /**
+   * 保存前的「契约自检」：只拦**会让后端 422** 的输入，不拦必填。
+   *
+   * 背景（保存 422 修复轮）：保存是草稿式的，`full_name` 可以空；但后端的
+   * `contact` 仍是手机号强校验、`edu_start` / `start_date` 是 `date` 必填
+   * （库里 NOT NULL），格式错或空串照样 422。与其把请求发出去再翻译
+   * 一堆 `loc` 路径，不如在点「保存修改」时就给出人话提示。
+   *
+   * 与 `validateForGenerate()` 的分工：
+   * - 这里只管「能不能落库」，不管完整性（不要求姓名/技能/项目齐全）；
+   * - 姓名、手机号、教育四要素等完整性仍在生成时拦。
+   * 返回 null 表示可以提交。
+   */
+  function validateForSave(): string | null {
+    const contact = draft.contact.trim()
+    if (contact && !PHONE_PATTERN.test(contact)) {
+      return '手机号格式不正确：请填 11 位中国大陆手机号（如 13800000000），或先清空再保存。'
+    }
+
+    const today = todayIsoDate()
+    // 教育经历是「年月」精度，比较基准也截到月（与 validateForGenerate 同口径）。
+    const todayMonth = today.slice(0, 7)
+
+    const skills = meaningfulSkills(draft)
+    if (skills.length > SKILL_LIMIT.max) return `技能最多 ${SKILL_LIMIT.max} 条。`
+    const skillNames = skills.map((skill) => skill.name.trim())
+    if (new Set(skillNames).size !== skillNames.length) return '技能名称不能重复，请先合并同名技能。'
+    if (skillNames.some((name) => name.length > 100)) return '技能名称最长 100 个字符。'
+
+    const educations = meaningfulEducations(draft)
+    if (educations.length > EDUCATION_LIMIT.max) {
+      return `教育经历最多 ${EDUCATION_LIMIT.max} 段。`
+    }
+    for (const [index, education] of educations.entries()) {
+      const label = `第 ${index + 1} 段教育经历`
+      // 后端 `edu_start: date` 必填且非未来；空串会直接 422 date 解析失败。
+      if (!education.edu_start) return `${label}缺少入学时间，请先补全再保存。`
+      if (education.edu_start > todayMonth) return `${label}的入学时间不能选择未来。`
+      if (education.edu_end && education.edu_end < education.edu_start) {
+        return `${label}的毕业时间不能早于入学时间。`
+      }
+      if (education.school.trim().length > 200) return `${label}的学校名称最长 200 个字符。`
+      if (education.major.trim().length > 100) return `${label}的专业最长 100 个字符。`
+    }
+
+    const experiences = meaningfulExperiences(draft)
+    if (experiences.length > EXPERIENCE_LIMIT.max) {
+      return `项目经历最多 ${EXPERIENCE_LIMIT.max} 条。`
+    }
+    for (const [index, experience] of experiences.entries()) {
+      const label = `第 ${index + 1} 段项目经历`
+      // 后端 `start_date: date` 必填且非未来。
+      if (!experience.start_date) return `${label}缺少开始日期，请先补全再保存。`
+      if (experience.start_date > today) return `${label}的开始时间不能选择未来。`
+      if (experience.end_date && experience.end_date < experience.start_date) {
+        return `${label}的结束日期不能早于开始日期。`
+      }
+      if (experience.title.trim().length > 200) return `${label}的项目名称最长 200 个字符。`
+    }
+
+    return null
+  }
+
   /** 进入编辑器时调用：拉取当前用户档案，未填写则保留空白骨架。 */
   async function loadFromServer(): Promise<void> {
     loading.value = true
@@ -600,8 +667,13 @@ export const useResumeStore = defineStore('resume', () => {
   /**
    * 唯一的保存动作（表单 + 纸面共用）：PUT 整体替换，
    * 成功后用服务端返回值回填本地（`applyDraft` 会把 `dirty` 归零），并清掉本地草稿。
+   *
+   * 提交前先跑 `validateForSave()`：有硬错误就直接抛，**不发请求**——
+   * 这样用户看到的是「第 1 段教育经历缺少入学时间」而不是一个 422。
    */
   async function save(): Promise<ProfileRead> {
+    const problem = validateForSave()
+    if (problem) throw new Error(problem)
     saving.value = true
     try {
       const profile = await profilesApi.saveMyProfile(toUpsertPayload())
@@ -789,6 +861,7 @@ export const useResumeStore = defineStore('resume', () => {
     addEducation,
     removeEducation,
     validateForGenerate,
+    validateForSave,
     toUpsertPayload,
     loadFromServer,
     save,

@@ -38,6 +38,11 @@ class ResumeService:
         skills = self._profile_repository.list_skills(profile.id)
         experiences = self._profile_repository.list_experiences(profile.id)
         educations = self._profile_repository.list_educations(profile.id)
+        # 保存是草稿式的（`ProfileUpsertRequest.full_name` / `contact` 都允许空），
+        # 所以「基本信息填全了没有」必须在这里判，否则 pydantic 会在下面抛
+        # ValidationError，冒到接口层变成 500 —— 而它其实是一个「档案不完整」的 400。
+        if not profile.full_name.strip() or not profile.contact.strip():
+            raise ProfileIncompleteError(user_id)
         if not skills or not experiences:
             raise ProfileIncompleteError(user_id)
 
