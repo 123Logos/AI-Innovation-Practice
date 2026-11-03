@@ -68,6 +68,8 @@ async function submit(): Promise<void> {
         <label class="field">
           <span>用户名</span>
           <input v-model="username" autocomplete="username" placeholder="3 个字符以上，不含空格" />
+          <!-- 提前告知归一规则，避免用户注册后看到用户名「变小写」以为出错了。 -->
+          <small class="field-hint">提示：用户名不区分大小写，将以小写形式保存。</small>
         </label>
         <label class="field">
           <span>邮箱（选填）</span>
@@ -116,6 +118,8 @@ h1 { margin: 0; font-size: 24px; font-weight: 650; }
 .auth-form { display: grid; gap: 16px; }
 .field { display: grid; gap: 6px; }
 .field span { color: #687875; font-size: 12px; }
+/* 提示文案：比字段标签再淡一档，不抢注意力，也不与错误文案的红色混淆。 */
+.field-hint { color: #8fa5a1; font-size: 11px; line-height: 1.5; }
 input { width: 100%; border: 1px solid #d6dfdc; padding: 11px 12px; color: #243330; background: #fff; font: inherit; font-size: 14px; outline: 0; }
 input:focus { border-color: #6b8f8a; box-shadow: 0 0 0 2px #6b8f8a22; }
 .primary-button { border: 0; padding: 12px; color: #fff; background: #6b8f8a; cursor: pointer; font: inherit; font-size: 14px; }
@@ -129,6 +133,7 @@ input:focus { border-color: #6b8f8a; box-shadow: 0 0 0 2px #6b8f8a22; }
   .auth-page { background: #1f2a28; }
   .auth-card { border-color: #52635f; background: #263330; color: #e8eae9; }
   .intro, .field span, .switch-hint { color: #b7c3c0; }
+  .field-hint { color: #8fa5a1; }
   input { border-color: #52635f; color: #e8eae9; background: #1f2a28; }
 }
 </style>

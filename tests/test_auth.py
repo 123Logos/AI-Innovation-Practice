@@ -67,6 +67,20 @@ def _count_users(username: str) -> int:
     return int(value)
 
 
+def _stored_username(user_id: str) -> str:
+    """取回库里的用户名**原文**（按主键查）。
+
+    刻意不写成 `WHERE username = :username`：该列是 `utf8mb4_0900_ai_ci`，
+    `ZhangSan` 与 `zhangsan` 在它眼里相等，那样根本断言不了「存的是哪一种大小写」。
+    """
+    with get_engine().connect() as connection:
+        value = connection.execute(
+            text("SELECT username FROM users WHERE id = :id"),
+            {"id": user_id},
+        ).scalar_one()
+    return str(value)
+
+
 @pytest.fixture(scope="module", autouse=True)
 def _schema() -> Iterator[None]:
     if not TEST_DATABASE_URL:
@@ -127,6 +141,21 @@ def test_register_persists_user_in_database(client: TestClient) -> None:
     assert row.password_hash.startswith("$2b$")
     assert PASSWORD not in row.password_hash
     assert row.password_hash != PASSWORD
+
+
+def test_register_lowercases_username(client: TestClient) -> None:
+    """Phase 2 · D1：注册即归一为小写，库里存的就是小写。
+
+    断言值用「按主键取原文」的方式读，不能靠 `WHERE username = ?` 判断——
+    `utf8mb4_0900_ai_ci` 下大小写本来就相等，那样写等于什么都没验。
+    """
+    username = _unique_username("ZhangSan")
+    assert username != username.lower()  # 前提：这个用例真的带了大写
+
+    user = _register(client, username)
+
+    assert user["username"] == username.lower()
+    assert _stored_username(str(user["id"])) == username.lower()
 
 
 def test_register_duplicate_username_returns_400(client: TestClient) -> None:
@@ -193,6 +222,26 @@ def test_login_returns_bearer_token(client: TestClient) -> None:
     claims = jwt.decode(data["access_token"], options={"verify_signature": False})
     assert claims["sub"] == user["id"]
     assert claims["type"] == "access"
+
+
+def test_login_is_case_insensitive(client: TestClient) -> None:
+    """Phase 2 · D1：注册时敲了什么大小写，登录时任意大小写都能进。
+
+    这条测试是「守护」而不是「发现」：在 D1 之前，大小写不敏感是 MySQL 的
+    `utf8mb4_0900_ai_ci` 隐式给的，代码里没有任何一行表达这个意图，
+    也没有任何测试会因为排序规则变化而失败。现在归一是显式代码，测试锁住行为。
+    """
+    username = _unique_username("ZhangSan")
+    user = _register(client, username)
+    assert user["username"] == username.lower()
+
+    for attempt in (username.lower(), username.upper(), username.swapcase()):
+        response = client.post(LOGIN_URL, json={"username": attempt, "password": PASSWORD})
+        assert response.status_code == 200, f"{attempt} -> {response.text}"
+        token = response.json()["data"]["access_token"]
+        assert token.count(".") == 2
+        claims = jwt.decode(token, options={"verify_signature": False})
+        assert claims["sub"] == user["id"]
 
 
 def test_login_with_wrong_password_returns_401(client: TestClient) -> None:

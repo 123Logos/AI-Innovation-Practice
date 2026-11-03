@@ -19,9 +19,17 @@ class RegisterRequest(BaseModel):
     @field_validator("username")
     @classmethod
     def validate_username(cls, value: str) -> str:
-        candidate = value.strip()
-        if len(candidate) < 3:
-            raise ValueError("username must contain at least 3 characters")
+        """只定「长什么样」，不挑大小写；大小写归一在下面 `lower()` 一次做掉。
+
+        Phase 2 · D1（docs/adr/ADR-005）：用户名是**大小写不敏感**的标识符，
+        统一以小写存储。归一放在模型层，是因为它决定了落库的值；
+        `AuthService` 入口还会再归一一次（幂等），保证不经 schema 的内部调用也安全。
+        """
+        candidate = value.strip().lower()
+        # 归一后重新判长度：某些字符小写化后长度会变（如 'İ' → 'i̇'），
+        # 只信 `Field(max_length=100)` 会让超长值一路落到数据库再炸成 500。
+        if not 3 <= len(candidate) <= 100:
+            raise ValueError("username must contain between 3 and 100 characters")
         if any(character.isspace() for character in candidate):
             raise ValueError("username must not contain whitespace")
         return candidate
