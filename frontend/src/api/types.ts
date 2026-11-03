@@ -92,6 +92,15 @@ export interface ExperienceInput {
 /** 学历枚举，与后端 `ck_educations_degree` 一致。 */
 export type Degree = '专科' | '本科' | '硕士' | '博士'
 
+/**
+ * 纸张尺寸（D5.1）。与后端 `PaperSize` 同源，只做两档：
+ * A4 = 国内招聘事实标准，Letter = 北美投递。
+ *
+ * 加第三档必须同时改三处：后端 `PaperSize`、`PAPER_SPECS`、`@page` 注入，
+ * 否则会出现「能选但印不出来」。
+ */
+export type PaperSize = 'A4' | 'Letter'
+
 /** 后端 `EducationInput`：日期为 `YYYY-MM-DD`，`edu_end` 为 null 表示「至今」。 */
 export interface EducationInput {
   school: string
@@ -169,6 +178,11 @@ export interface ProfileUpsertRequest {
   /** 年级已下架，可不传。 */
   grade?: string | null
   contact: string
+  /**
+   * 纸张尺寸（D5.1）。**三态语义**（ADR-007 §10.2）：
+   * 不传 = 保留库里原值（旧客户端安全）；`null` = 恢复默认 A4；枚举值 = 设置。
+   */
+  paper_size?: PaperSize | null
   skills: SkillInput[]
   experiences: ExperienceInput[]
   educations: EducationInput[]
@@ -182,6 +196,8 @@ export interface ProfileRead {
   is_default: boolean
   /** 非空 = 在回收站里；详情接口已排除回收站，留字段是为了如实回显。 */
   deleted_at: string | null
+  /** D5.1：纸张尺寸。后端保证读侧恒为具体值（不是 null）。 */
+  paper_size: PaperSize
   full_name: string
   email: string | null
   grade: string

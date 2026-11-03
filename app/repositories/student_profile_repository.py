@@ -75,6 +75,9 @@ class StudentProfile(ProfileBase):
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     #: 非空即「在回收站里」；`purge_expired()` 到期后物理删除。
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: D5.1 纸张尺寸（`A4` / `Letter`）。取值白名单在 API 层（pydantic `Literal`），
+    #: 这里只存字符串——加一种纸不必改表，与 `grade` 的处理口径一致。
+    paper_size: Mapped[str] = mapped_column(String(16), nullable=False, default="A4")
     full_name: Mapped[str] = mapped_column(String(100), nullable=False)
     # 简历上展示的邮箱；登录邮箱在 `users.email`，两者互不影响。
     email: Mapped[str | None] = mapped_column(String(254), nullable=True)
@@ -130,11 +133,15 @@ class ProfileDraft:
 
     T7.5 起不含 `grade`：年级字段已从产品下架，列保留但不再写业务值。
     T7.6 起不含 `major`：专业由 `educations.major` 表达，主表列已删除。
+    D5.1 起含 `paper_size`：它属于「内容」而不是「元信息」（改名 / 设默认 /
+    软删除才是元信息），所以跟着 PUT 一起写；三态语义由服务层解析成具体值后
+    再传进来——仓储只负责写，不做「缺省即保留」的判断。
     """
 
     full_name: str
     email: str | None
     contact: str
+    paper_size: str = "A4"
 
 
 @dataclass(frozen=True)
@@ -294,11 +301,20 @@ class StudentProfileRepository:
 
     # 写：新建
 
-    def create_profile(self, user_id: str, title: str, is_default: bool) -> StudentProfile:
+    def create_profile(
+        self,
+        user_id: str,
+        title: str,
+        is_default: bool,
+        paper_size: str = "A4",
+    ) -> StudentProfile:
         """建一份空简历（基本信息与子表都为空，等用户填）。
 
         `full_name` / `grade` / `contact` 在库里是 `NOT NULL`，但产品允许空草稿，
         所以统一落空串 —— 与 `replace_profile_content()` 的口径一致。
+
+        `paper_size` 显式写死 A4 而不是依赖列的 `server_default`：
+        SQLAlchemy 在 INSERT 时会带上这个属性，若留 `None` 会直接撞 NOT NULL。
         """
         now = utc_now()
         profile = StudentProfile(
@@ -307,6 +323,7 @@ class StudentProfileRepository:
             title=title,
             is_default=is_default,
             deleted_at=None,
+            paper_size=paper_size,
             full_name="",
             email=None,
             grade="",
@@ -330,6 +347,9 @@ class StudentProfileRepository:
 
         子行全部重新分配 id，所以「改副本」不会回写到源简历。
         `resumes`（已生成物）不复制 —— 新简历应当是「未生成」状态。
+
+        D5.1：`paper_size` 一并复制。只复制内容不复制纸张等于「换个名字就换版式」，
+        用户复制简历最常见的动机就是「同一份内容投另一类岗位，换个纸张/配色」。
         """
         now = utc_now()
         target = StudentProfile(
@@ -338,6 +358,7 @@ class StudentProfileRepository:
             title=title,
             is_default=is_default,
             deleted_at=None,
+            paper_size=source.paper_size,
             full_name=source.full_name,
             email=source.email,
             grade=source.grade,
@@ -407,11 +428,14 @@ class StudentProfileRepository:
         统一落空串，避免「一个没人维护的字段」继续漂移。
         `title` / `is_default` / `deleted_at` 不在这里改 —— 它们属于简历元信息，
         由创建 / 设默认 / 软删除各自的方法负责。
+        `paper_size`（D5.1）**在这里改**：它属于内容，和文字一起保存，
+        否则「改了纸张 → 保存 → 刷新又变回 A4」。
         """
         now = utc_now()
         profile.full_name = draft.full_name
         profile.email = draft.email
         profile.contact = draft.contact
+        profile.paper_size = draft.paper_size
         profile.updated_at = now
         self._session.flush()
 

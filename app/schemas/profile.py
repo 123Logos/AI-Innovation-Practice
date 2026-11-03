@@ -44,6 +44,24 @@ from app.schemas.resume import ExperienceInput, SkillInput
 #: 学历枚举，与 `ck_educations_degree` 约束保持一致。
 Degree = Literal["专科", "本科", "硕士", "博士"]
 
+#: 纸张尺寸（D5.1）。只做两档：A4 是国内招聘事实标准，Letter 覆盖北美投递。
+#: 加第三种纸必须同时改前端 `PAPER_SPECS` 与 `@page` 注入，否则「能选但不能印」。
+PaperSize = Literal["A4", "Letter"]
+
+#: 缺省纸张：与迁移里的 `server_default` 和前端 `createEmptyDraft()` 同源。
+DEFAULT_PAPER_SIZE: PaperSize = "A4"
+
+
+def normalize_paper_size(value: object) -> PaperSize:
+    """把库里的字符串收敛到两档枚举，未知值一律回落 A4。
+
+    读路径**永不因为装饰性字段失败**（ADR-007 §10.4）：手工改库、或将来从
+    「支持 Legal」的版本降级回滚，残留的 `Legal` 不该让整份简历 500。
+    写路径仍由 pydantic 严格拦截（非法值 422），这个不对称是刻意的。
+    """
+    return "Letter" if value == "Letter" else DEFAULT_PAPER_SIZE
+
+
 #: 中国大陆手机号；前端 `resume.ts` 里有一份同源正则，两边必须同步。
 PHONE_PATTERN = re.compile(r"^1[3-9]\d{9}$")
 
@@ -116,6 +134,18 @@ class ProfileUpsertRequest(BaseModel):
     全空就是一份空档案），后端却要求至少 1 个字符，点「保存修改」直接 422。
     姓名是否填写改为在「生成简历」时判断（`ProfileInput` 仍是 `min_length=1`，
     由 `ResumeService` 提前拦成 400），保存阶段只限制长度。
+
+    D5.1：新增 `paper_size`，**三态语义**（见 ADR-007 §10.2）——
+
+    | 请求体 | 语义 |
+    |---|---|
+    | 不含该键 | 保留库里原值（旧客户端安全） |
+    | `"paper_size": null` | 恢复默认 A4 |
+    | `"paper_size": "Letter"` | 设为 Letter |
+
+    实现靠 `model_fields_set`：只有「请求体真的出现过这个键」才算用户意图。
+    若按「None 即默认」处理，任何缓存了旧版 JS 的浏览器点一次保存
+    就会把用户选的纸张悄悄清回 A4。
     """
 
     full_name: str = Field(default="", max_length=100)
@@ -125,6 +155,8 @@ class ProfileUpsertRequest(BaseModel):
     grade: str | None = Field(default=None, max_length=50)
     #: 手机号。允许空串（先存草稿），一旦填了就必须是大陆 11 位手机号。
     contact: str = Field(default="", max_length=255)
+    #: 纸张尺寸；缺省 = 不改动（不是重置），显式 null = 回到 A4。
+    paper_size: PaperSize | None = None
     skills: list[SkillInput] = Field(default_factory=list, max_length=8)
     experiences: list[ExperienceInput] = Field(default_factory=list, max_length=3)
     #: 教育经历 0–5 段；为空时不渲染教育区块，缺省值兼容尚未升级的旧客户端。
@@ -229,6 +261,9 @@ class ProfileRead(BaseModel):
     is_default: bool
     #: 非空 = 在回收站里；详情接口查询时已排除，留着是为了回收站能如实回显。
     deleted_at: datetime | None = None
+    #: D5.1：纸张尺寸。**读侧恒为具体值**（库里 NOT NULL + server_default）——
+    #: 三态只存在于写侧，读接口给 `null` 只会让前端多一层兜底，没有任何收益。
+    paper_size: PaperSize = DEFAULT_PAPER_SIZE
     full_name: str
     email: str | None = None
     grade: str

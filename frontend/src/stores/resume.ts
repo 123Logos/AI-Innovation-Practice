@@ -58,6 +58,7 @@ import { defineStore } from 'pinia'
 import { profilesApi, resumesApi } from '@/api'
 import type {
   Degree,
+  PaperSize,
   ProfileRead,
   ProfileSortField,
   ProfileSummary,
@@ -66,6 +67,25 @@ import type {
 } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { currentMonthValue, todayIsoDate } from '@/utils/datetime'
+
+/**
+ * 纸张物理尺寸（D5.1）。
+ *
+ * `widthMm` / `heightMm` 是**排版坐标**的唯一来源：`.paper` 用 mm 定尺，
+ * 屏幕上的缩放只由 `transform: scale()` 完成，所以「屏幕像素」在任何视口下
+ * 都等于「mm × 96/25.4 × zoom」，与打印保持同一套坐标。
+ *
+ * Letter 按英寸定义精确换算：8.5in × 11in = 215.9 × 279.4mm
+ * （常写作 216 × 279，差 0.1mm 会让页数计算多算/少算一点点，所以用精确值）。
+ */
+export const PAPER_SPECS: Record<PaperSize, { label: string; widthMm: number; heightMm: number }> =
+  {
+    A4: { label: 'A4', widthMm: 210, heightMm: 297 },
+    Letter: { label: 'Letter', widthMm: 215.9, heightMm: 279.4 },
+  }
+
+/** 1mm 在 CSS 里恒等于 96/25.4 px（CSS 规范定义，与设备 DPI 无关）。 */
+export const PX_PER_MM = 96 / 25.4
 
 /** 与后端 `ProfileUpsertRequest` 的 Field 约束保持一致（只有上限，保存不拦必填）。 */
 export const SKILL_LIMIT = { min: 0, max: 8 } as const
@@ -142,6 +162,13 @@ export interface ProfileDraft {
   /** 简历上展示的邮箱（可空），与登录邮箱无关。 */
   email: string
   contact: string
+  /**
+   * 纸张尺寸（D5.1）。
+   *
+   * 必须放在 draft 里而不是单独的 `ref`：`comparableOf()` 只投影 draft 的字段，
+   * 放外面会导致「改纸张不触发 dirty、切简历纸张残留」（ADR-007 §3.3）。
+   */
+  paper_size: PaperSize
   skills: SkillDraft[]
   experiences: ExperienceDraft[]
   educations: EducationDraft[]
@@ -169,6 +196,17 @@ function toIsoDate(month: string): string | null {
   return month.length === 7 ? `${month}-01` : month
 }
 
+/**
+ * 把任意值收敛到两档纸张。
+ *
+ * `localStorage` 里的草稿、旧版后端响应都可能是 `undefined` 或未知字符串
+ * （比如将来支持过 Legal 又回滚），一律回落 A4 —— 纸张是装饰性字段，
+ * 不能因为它让整份草稿恢复失败。
+ */
+function toPaperSize(value: unknown): PaperSize {
+  return value === 'Letter' ? 'Letter' : 'A4'
+}
+
 function createEmptyEducation(): EducationDraft {
   return {
     school: '',
@@ -190,6 +228,7 @@ function createEmptyDraft(): ProfileDraft {
     full_name: '',
     email: '',
     contact: '',
+    paper_size: 'A4',
     skills: Array.from({ length: 3 }, () => ({
       name: '',
       self_rating: DEFAULT_SKILL_RATING,
@@ -212,6 +251,8 @@ function draftFromProfile(profile: ProfileRead): ProfileDraft {
     full_name: profile.full_name,
     email: profile.email ?? '',
     contact: profile.contact,
+    // 后端保证读侧是具体值；`??` 只是为了兼容「D5.1 之前缓存的响应对象」。
+    paper_size: profile.paper_size ?? 'A4',
     skills: profile.skills.map((skill) => ({
       name: skill.name,
       self_rating: skill.self_rating,
@@ -284,7 +325,12 @@ function isProfileDraft(value: unknown): value is ProfileDraft {
     // 但只要有这个字段，就必须是数组，避免脏数据把渲染层搞崩。
     (candidate.educations === undefined || Array.isArray(candidate.educations)) &&
     // 用户反馈轮才新增 email，旧草稿没有该字段同样合法；有则必须是字符串。
-    (candidate.email === undefined || typeof candidate.email === 'string')
+    (candidate.email === undefined || typeof candidate.email === 'string') &&
+    // D5.1 才新增 paper_size：**旧草稿没有它必须依然合法**，否则用户升级后
+    // 会被判定成「没有草稿」，正在编辑的内容就悄悄丢了。有则必须是两档之一。
+    (candidate.paper_size === undefined ||
+      candidate.paper_size === 'A4' ||
+      candidate.paper_size === 'Letter')
   )
 }
 
@@ -371,13 +417,16 @@ function readRememberedProfileId(ownerId: string): string | null {
  *   重建对象时不拷贝该键，运行时自然消失；
  * - 已下线的 `self_rating` 抹平为默认值；
  * - T7.5 之前的草稿没有 `educations`，补空数组而不是报错；
- * - 用户反馈轮之前的草稿没有 `email`，补空串。
+ * - 用户反馈轮之前的草稿没有 `email`，补空串；
+ * - D5.1 之前的草稿没有 `paper_size`，补 A4（否则升级后弹出的「恢复草稿」
+ *   横幅会带着 `undefined` 一路飘到请求体里，被后端 422 拒掉）。
  */
 function normalizeDraft(raw: ProfileDraft): ProfileDraft {
   return {
     full_name: raw.full_name ?? '',
     email: raw.email ?? '',
     contact: raw.contact ?? '',
+    paper_size: toPaperSize(raw.paper_size),
     skills: (raw.skills ?? [])
       .filter((skill) => skill && typeof skill.name === 'string')
       .map((skill) => ({ name: skill.name, self_rating: DEFAULT_SKILL_RATING })),
@@ -438,6 +487,9 @@ function comparableOf(source: ProfileDraft): string {
     full_name: (source.full_name ?? '').trim(),
     email: (source.email ?? '').trim(),
     contact: (source.contact ?? '').trim(),
+    // `?? 'A4'`：D5.1 之前的草稿没有这个键，缺省必须与服务器默认值一致，
+    // 否则「什么都没改」的旧草稿会立刻被判成「有未保存的修改」（ADR-007 §11.5）。
+    paper_size: toPaperSize(source.paper_size),
     skills: meaningfulSkills(source).map((skill) => skill.name.trim()),
     experiences: meaningfulExperiences(source).map((experience) => [
       experience.title,
@@ -474,6 +526,22 @@ export const useResumeStore = defineStore('resume', () => {
   const generatedHtml = ref<string | null>(null)
   const generatedResumeId = ref<string | null>(null)
   const generatedTitle = ref<string | null>(null)
+
+  /**
+   * 真实页数（D5.1）。
+   *
+   * 由 `ResumePreview.vue` 量出 `.paper` 的 `scrollHeight` 后回写，`StylePanel`
+   * 只读展示——两处各量一遍不仅要写两份 ResizeObserver，还可能量出不同结果。
+   * 默认 1：还没测量时不能说「0 页」。
+   */
+  const pageCount = ref(1)
+
+  /** 当前纸张的物理尺寸（mm）；预览与面板共用，避免两处各写一份数字。 */
+  const paperSpec = computed(() => PAPER_SPECS[draft.paper_size])
+
+  function setPageCount(value: number): void {
+    pageCount.value = Math.max(1, Math.round(value))
+  }
 
   const hasSavedProfile = computed(() => savedProfile.value !== null)
   const isGeneratingResultVisible = computed(() => generatedHtml.value !== null)
@@ -541,6 +609,7 @@ export const useResumeStore = defineStore('resume', () => {
     draft.full_name = next.full_name
     draft.email = next.email
     draft.contact = next.contact
+    draft.paper_size = next.paper_size
     draft.skills = next.skills
     draft.experiences = next.experiences
     draft.educations = next.educations
@@ -550,6 +619,16 @@ export const useResumeStore = defineStore('resume', () => {
 
   function updateProfileField(field: 'full_name' | 'email' | 'contact', value: string): void {
     draft[field] = value
+    markDirty()
+  }
+
+  /**
+   * 切换纸张（D5.1）。走 `draft` 而不是直接调接口：它和改名字、改手机号一样
+   * 属于「未保存的修改」，要跟着「保存修改」一起落库，也才会触发本地草稿。
+   */
+  function updatePaperSize(size: PaperSize): void {
+    if (draft.paper_size === size) return
+    draft.paper_size = size
     markDirty()
   }
 
@@ -637,6 +716,9 @@ export const useResumeStore = defineStore('resume', () => {
       // 空串等同「没填」，交给后端存 NULL。
       email: draft.email.trim() || null,
       contact: draft.contact.trim(),
+      // 显式传值（而不是省略）：前端永远知道当前选的是哪档纸，
+      // 省略只会让后端走「保留原值」分支，万一本地和服务端不同步就再也改不回来。
+      paper_size: draft.paper_size,
       skills: meaningfulSkills(draft).map((skill) => ({
         name: skill.name.trim(),
         // 后端 `SkillInput.self_rating` 仍必填（1–5），但 UI 不再采集，统一写 3。
@@ -1257,6 +1339,11 @@ export const useResumeStore = defineStore('resume', () => {
     autosavedAt,
     hasSavedProfile,
     isGeneratingResultVisible,
+    /* 纸张与页数（D5.1） */
+    pageCount,
+    paperSpec,
+    setPageCount,
+    updatePaperSize,
     /* 多份简历 */
     profiles,
     currentProfile,

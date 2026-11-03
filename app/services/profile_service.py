@@ -22,6 +22,7 @@ from app.repositories.student_profile_repository import (
     StudentProfileRepository,
 )
 from app.schemas.profile import (
+    DEFAULT_PAPER_SIZE,
     EducationRead,
     ExperienceRead,
     ProfileCreateRequest,
@@ -29,6 +30,7 @@ from app.schemas.profile import (
     ProfileSummary,
     ProfileUpsertRequest,
     SkillRead,
+    normalize_paper_size,
 )
 
 #: 新建简历的默认标题前缀：第一份「我的简历」，之后「我的简历 2」「我的简历 3」…
@@ -242,6 +244,7 @@ class ProfileService:
                 email=payload.email,
                 # 年级列仍在库里但产品已移除该字段：不再写入任何业务值（见仓储）。
                 contact=payload.contact,
+                paper_size=self._resolve_paper_size(profile, payload),
             ),
             [
                 SkillDraft(name=skill.name, self_rating=skill.self_rating)
@@ -269,6 +272,23 @@ class ProfileService:
             ],
         )
         return self._reload(profile.user_id, profile.id)
+
+    @staticmethod
+    def _resolve_paper_size(profile: StudentProfile, payload: ProfileUpsertRequest) -> str:
+        """把 `paper_size` 的三态语义解析成一个具体值（ADR-007 §10.2）。
+
+        | 请求体 | 结果 |
+        |---|---|
+        | 不含该键 | 库里原值（旧客户端安全：它压根不知道有这列） |
+        | `null` | 回到默认 A4 |
+        | `"Letter"` | Letter |
+
+        判据是 `model_fields_set` 而不是「值是否为 None」：后者会把
+        「没传」和「显式传 null」压成同一种语义，旧前端一次保存就清空用户选择。
+        """
+        if "paper_size" not in payload.model_fields_set:
+            return profile.paper_size
+        return payload.paper_size or DEFAULT_PAPER_SIZE
 
     def _ensure_default(self, user_id: str) -> None:
         """保证「每个用户至少一份默认简历」。
@@ -313,6 +333,7 @@ class ProfileService:
             title=profile.title,
             is_default=profile.is_default,
             deleted_at=profile.deleted_at,
+            paper_size=normalize_paper_size(profile.paper_size),
             full_name=profile.full_name,
             email=profile.email,
             grade=profile.grade,

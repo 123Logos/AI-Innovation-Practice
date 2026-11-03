@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { isApiError } from '@/api'
-import { useResumeStore } from '@/stores/resume'
+import type { PaperSize } from '@/api/types'
+import { PX_PER_MM, useResumeStore } from '@/stores/resume'
 import { formatDate, formatMonth, parseDateInput, parseMonthInput } from '@/utils/datetime'
 
 const store = useResumeStore()
@@ -23,6 +24,142 @@ const generatedBody = computed(() => {
 })
 
 const generatedResumeId = computed(() => store.generatedResumeId?.slice(0, 8) ?? '')
+
+/* ------------------------------ 纸张与缩放（D5.1） ------------------------------ */
+
+/**
+ * P2 方案（ADR-007 §4.2）：`.paper` 永远按真实 mm 排版，屏幕放不下就整体缩放。
+ *
+ * 这不只是为了「好看」——它是页数能算对的前提：
+ * 1. 屏幕与打印共用同一套 mm 坐标，字号 px 在两边占纸宽的比例一致（所见即所得）；
+ * 2. 于是「内容高度」可以除以「一张纸的高度」得到真实页数。
+ *
+ * 缩放走 `transform`，**不参与排版**，所以量出来的高度与 zoom 无关，
+ * 缩放变化时不必重量。这正是它比「改宽度/字号」更可靠的地方。
+ */
+const paperRef = ref<HTMLElement | null>(null)
+const frameRef = ref<HTMLElement | null>(null)
+/** 预览列可用宽度（px），由 ResizeObserver 维护。 */
+const columnWidth = ref(0)
+/** `.paper` 内容真实高度（未缩放 px）。 */
+const contentHeight = ref(0)
+
+const onePageWidth = computed(() => store.paperSpec.widthMm * PX_PER_MM)
+const onePageHeight = computed(() => store.paperSpec.heightMm * PX_PER_MM)
+
+/**
+ * 显示倍率 = 列宽 / 一张纸的宽度。
+ *
+ * 不设 1 的上限：容器更宽时按比例放大，纸面始终铺满预览列（与改造前观感一致）。
+ * 封顶 1 会让宽屏下左右各留一大片空白，看起来像「没加载完整」。
+ */
+const zoom = computed(() => {
+  if (!columnWidth.value || !onePageWidth.value) return 1
+  return Math.max(0.2, columnWidth.value / onePageWidth.value)
+})
+
+/** 真实页数：内容高度 ÷ 一张纸的高度，向上取整。 */
+const pageCount = computed(() => {
+  const height = contentHeight.value || onePageHeight.value
+  // 减 1px：`scrollHeight` 是整数像素，内容刚好铺满时可能多出不到 1px，
+  // 不减就会把「正好一页」算成两页。
+  return Math.max(1, Math.ceil((height - 1) / onePageHeight.value))
+})
+
+/**
+ * stage 的尺寸是「缩放后的可见尺寸」，必须显式给：
+ * 纸面的布局宽度是 210mm（794px）而显示宽度是 794×zoom，
+ * 让父容器按缩放后的大小占位，才不会在窄列里撑出横向滚动条。
+ */
+const stageStyle = computed<Record<string, string>>(() => ({
+  width: `${onePageWidth.value * zoom.value}px`,
+  height: `${Math.max(contentHeight.value, onePageHeight.value) * zoom.value}px`,
+  // 三个变量挂在 stage 上，纸面与水印一起继承（水印也要跟着缩放）。
+  '--paper-zoom': String(zoom.value),
+  '--paper-width': `${store.paperSpec.widthMm}mm`,
+  '--paper-height': `${store.paperSpec.heightMm}mm`,
+}))
+
+const paperMeta = computed(() => `${store.paperSpec.label} · ${pageCount.value} 页`)
+
+function measurePaper(): void {
+  const element = paperRef.value
+  if (!element) return
+  contentHeight.value = element.scrollHeight
+}
+
+watch(pageCount, (value) => store.setPageCount(value), { immediate: true })
+
+/** 容器宽度：窗口缩放、侧栏变化都会改它，必须观察而不是只读一次。 */
+let frameObserver: ResizeObserver | null = null
+/** 纸面高度：内容增删、换纸张、切到生成结果都会改它。 */
+let paperObserver: ResizeObserver | null = null
+
+/**
+ * 纸面元素会被 `v-if` 换掉（实时预览 ↔ 生成结果），所以观察器绑在 `paperRef` 上：
+ * 元素一变就重新 observe，否则量到的永远是上一个已卸载的 DOM。
+ */
+watch(
+  paperRef,
+  (element) => {
+    paperObserver?.disconnect()
+    if (!element) return
+    paperObserver = new ResizeObserver(measurePaper)
+    paperObserver.observe(element)
+    measurePaper()
+  },
+  { flush: 'post' },
+)
+
+/* 换纸张时 `min-height` 变了、内容可能没变，ResizeObserver 不一定触发，补量一次。 */
+watch(
+  () => store.draft.paper_size,
+  () => {
+    void nextTick(measurePaper)
+  },
+)
+
+onMounted(() => {
+  if (frameRef.value) {
+    frameObserver = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? 0
+      if (width > 0) columnWidth.value = width
+    })
+    frameObserver.observe(frameRef.value)
+  }
+  void nextTick(measurePaper)
+})
+
+/* --------------------------- 打印：@page 动态注入 --------------------------- */
+
+/*
+ * `@page { size: … }` **不接受 CSS 变量**（ADR-007 §4.4）：`size: var(--x)` 是无效值，
+ * 浏览器会整条忽略。所以只能在切换纸张时改写一段 `<style>` 的 textContent。
+ *
+ * `margin: 0` 必须显式写：不写就是「浏览器默认页边距 + 纸内 padding」两层叠加，
+ * 打印出来四周多一圈白、屏幕上却没有——这是「预览和打印不一样」最常见的原因。
+ * 代价是用户若在打印对话框里勾了「页眉页脚」，页眉会压在纸内边距里（只能靠提示）。
+ */
+const PAGE_RULE_STYLE_ID = 'resume-print-page-rule'
+
+function applyPrintPageRule(size: PaperSize): void {
+  let element = document.getElementById(PAGE_RULE_STYLE_ID) as HTMLStyleElement | null
+  if (!element) {
+    element = document.createElement('style')
+    element.id = PAGE_RULE_STYLE_ID
+    document.head.appendChild(element)
+  }
+  element.textContent = `@page { size: ${size}; margin: 0; }`
+}
+
+watch(() => store.draft.paper_size, applyPrintPageRule, { immediate: true })
+
+onBeforeUnmount(() => {
+  frameObserver?.disconnect()
+  paperObserver?.disconnect()
+  // 这条规则是全局的：不摘掉会跟着留到其它路由的打印里。
+  document.getElementById(PAGE_RULE_STYLE_ID)?.remove()
+})
 
 /**
  * 全站唯一的「保存」入口（D3 方案 C）。
@@ -204,7 +341,7 @@ function updateExpDate(
       </div>
       <div class="toolbar-right">
         <span v-if="generatedResumeId" class="code">#{{ generatedResumeId }}</span>
-        <span class="page-count">A4 · 1 页</span>
+        <span class="page-count">{{ paperMeta }}</span>
         <button
           v-if="store.isGeneratingResultVisible"
           class="preview-button"
@@ -217,200 +354,207 @@ function updateExpDate(
       </div>
     </div>
 
-    <div class="paper-frame">
-      <article
-        v-if="store.isGeneratingResultVisible"
-        class="paper paper--generated"
-        aria-label="已生成的简历"
-        v-html="generatedBody"
-      />
+    <div ref="frameRef" class="paper-frame">
+      <!--
+        stage 负责「缩放后的占位尺寸」，纸面在里面按真实 mm 排版后整体 scale。
+        外层不裁剪：多页内容要让 stage 跟着变高（页数覆盖层是 D5.4 的事）。
+      -->
+      <div class="paper-stage" :style="stageStyle">
+        <article
+          v-if="store.isGeneratingResultVisible"
+          ref="paperRef"
+          class="paper paper--generated"
+          aria-label="已生成的简历"
+          v-html="generatedBody"
+        />
 
-      <article v-else class="paper" aria-label="简历预览">
-        <header class="paper-header">
-          <h1
-            class="resume-name"
-            contenteditable="true"
-            spellcheck="false"
-            data-placeholder="姓名"
-            @blur="
-              commitText($event, store.draft.full_name, (value) => {
-                store.updateProfileField('full_name', value)
-                return value
-              })
-            "
-          >{{ store.draft.full_name }}</h1>
-          <p class="contact">
-            <span
-              class="contact-phone"
+        <article v-else ref="paperRef" class="paper" aria-label="简历预览">
+          <header class="paper-header">
+            <h1
+              class="resume-name"
               contenteditable="true"
               spellcheck="false"
-              data-placeholder="手机号"
+              data-placeholder="姓名"
               @blur="
-                commitText($event, store.draft.contact, (value) => {
-                  store.updateProfileField('contact', value)
+                commitText($event, store.draft.full_name, (value) => {
+                  store.updateProfileField('full_name', value)
                   return value
                 })
               "
-            >{{ store.draft.contact }}</span>
-            <span class="contact-separator">·</span>
-            <span
-              class="contact-email"
-              contenteditable="true"
-              spellcheck="false"
-              data-placeholder="邮箱（选填）"
-              @blur="
-                commitText($event, store.draft.email, (value) => {
-                  store.updateProfileField('email', value)
-                  return value
-                })
-              "
-            >{{ store.draft.email }}</span>
-          </p>
-        </header>
-
-        <section v-if="displayEducations.length" class="paper-section">
-          <h2>教育经历</h2>
-          <article
-            v-for="row in displayEducations"
-            :key="`edu-${row.index}`"
-            class="paper-experience"
-          >
-            <h3
-              class="education-school"
-              contenteditable="true"
-              spellcheck="false"
-              data-placeholder="学校名称"
-              @blur="
-                commitText($event, row.education.school, (value) => {
-                  store.updateEducation(row.index, 'school', value)
-                  return value
-                })
-              "
-            >{{ row.education.school }}</h3>
-            <p class="education-meta">
+            >{{ store.draft.full_name }}</h1>
+            <p class="contact">
               <span
-                class="edu-major"
+                class="contact-phone"
                 contenteditable="true"
                 spellcheck="false"
-                data-placeholder="专业"
+                data-placeholder="手机号"
                 @blur="
-                  commitText($event, row.education.major, (value) => {
-                    store.updateEducation(row.index, 'major', value)
+                  commitText($event, store.draft.contact, (value) => {
+                    store.updateProfileField('contact', value)
                     return value
                   })
                 "
-              >{{ row.education.major }}</span>
-              <span class="edu-divider"> ｜ </span>
-              <span class="edu-degree">{{ row.education.degree }}</span>
-              <span class="edu-divider"> ｜ </span>
+              >{{ store.draft.contact }}</span>
+              <span class="contact-separator">·</span>
               <span
-                class="edu-start"
+                class="contact-email"
                 contenteditable="true"
                 spellcheck="false"
-                data-placeholder="入学时间"
-                @blur="commitEducationMonth(row.index, 'edu_start', $event)"
-              >{{ displayMonth(row.education.edu_start) }}</span>
-              <span class="edu-divider"> — </span>
-              <span
-                class="edu-end"
-                contenteditable="true"
-                spellcheck="false"
-                data-placeholder="至今"
-                @blur="commitEducationMonth(row.index, 'edu_end', $event)"
-              >{{ displayMonth(row.education.edu_end) || '至今' }}</span>
+                data-placeholder="邮箱（选填）"
+                @blur="
+                  commitText($event, store.draft.email, (value) => {
+                    store.updateProfileField('email', value)
+                    return value
+                  })
+                "
+              >{{ store.draft.email }}</span>
             </p>
-          </article>
-        </section>
+          </header>
 
-        <section class="paper-section">
-          <h2>技能</h2>
-          <div class="skill-list">
-            <span v-for="(skill, index) in store.draft.skills" :key="index" class="skill-item">
-              <span
-                contenteditable="true"
-                spellcheck="false"
-                data-placeholder="技能"
-                @blur="
-                  commitText($event, skill.name, (value) => {
-                    store.updateSkill(index, 'name', value)
-                    return value
-                  })
-                "
-              >{{ skill.name }}</span>
-            </span>
-          </div>
-        </section>
-
-        <section class="paper-section">
-          <h2>项目经历</h2>
-          <article
-            v-for="(experience, index) in store.draft.experiences"
-            :key="index"
-            class="paper-experience"
-          >
-            <div class="experience-heading">
+          <section v-if="displayEducations.length" class="paper-section">
+            <h2>教育经历</h2>
+            <article
+              v-for="row in displayEducations"
+              :key="`edu-${row.index}`"
+              class="paper-experience"
+            >
               <h3
-                class="experience-title"
+                class="education-school"
                 contenteditable="true"
                 spellcheck="false"
-                data-placeholder="项目名称"
+                data-placeholder="学校名称"
                 @blur="
-                  commitText($event, experience.title, (value) => {
-                    store.updateExperience(index, 'title', value)
+                  commitText($event, row.education.school, (value) => {
+                    store.updateEducation(row.index, 'school', value)
                     return value
                   })
                 "
-              >{{ experience.title }}</h3>
-              <!--
-                时间拆成「开始 / 分隔符 / 结束」三段独立节点，各自可点编辑。
-                外层仍用 .date，保证与后端生成器的 `<span class="date">…</span>` 视觉一致。
-              -->
-              <span class="date date-range">
+              >{{ row.education.school }}</h3>
+              <p class="education-meta">
                 <span
-                  class="date-start"
+                  class="edu-major"
                   contenteditable="true"
                   spellcheck="false"
-                  data-placeholder="开始"
-                  @blur="updateExpDate($event, index, 'start_date')"
-                >{{ formatDate(experience.start_date) }}</span>
-                <span class="date-divider"> — </span>
+                  data-placeholder="专业"
+                  @blur="
+                    commitText($event, row.education.major, (value) => {
+                      store.updateEducation(row.index, 'major', value)
+                      return value
+                    })
+                  "
+                >{{ row.education.major }}</span>
+                <span class="edu-divider"> ｜ </span>
+                <span class="edu-degree">{{ row.education.degree }}</span>
+                <span class="edu-divider"> ｜ </span>
                 <span
-                  class="date-end"
+                  class="edu-start"
+                  contenteditable="true"
+                  spellcheck="false"
+                  data-placeholder="入学时间"
+                  @blur="commitEducationMonth(row.index, 'edu_start', $event)"
+                >{{ displayMonth(row.education.edu_start) }}</span>
+                <span class="edu-divider"> — </span>
+                <span
+                  class="edu-end"
                   contenteditable="true"
                   spellcheck="false"
                   data-placeholder="至今"
-                  @blur="updateExpDate($event, index, 'end_date')"
-                >{{ formatDate(experience.end_date) || '至今' }}</span>
+                  @blur="commitEducationMonth(row.index, 'edu_end', $event)"
+                >{{ displayMonth(row.education.edu_end) || '至今' }}</span>
+              </p>
+            </article>
+          </section>
+
+          <section class="paper-section">
+            <h2>技能</h2>
+            <div class="skill-list">
+              <span v-for="(skill, index) in store.draft.skills" :key="index" class="skill-item">
+                <span
+                  contenteditable="true"
+                  spellcheck="false"
+                  data-placeholder="技能"
+                  @blur="
+                    commitText($event, skill.name, (value) => {
+                      store.updateSkill(index, 'name', value)
+                      return value
+                    })
+                  "
+                >{{ skill.name }}</span>
               </span>
             </div>
-            <p
-              class="experience-description"
-              contenteditable="true"
-              spellcheck="false"
-              @blur="
-                commitText($event, experience.description, (value) => {
-                  store.updateExperience(index, 'description', value)
-                  return value
-                })
-              "
-            >{{ experience.description }}</p>
-            <p
-              class="experience-responsibility"
-              contenteditable="true"
-              spellcheck="false"
-              @blur="
-                commitText($event, experience.responsibility, (value) => {
-                  store.updateExperience(index, 'responsibility', value)
-                  return value
-                })
-              "
-            >{{ experience.responsibility }}</p>
-          </article>
-        </section>
-      </article>
+          </section>
 
-      <!-- 水印：绝对定位在纸张右下角，pointer-events:none 不干扰纸面编辑。 -->
-      <span class="paper-watermark" aria-hidden="true">职途AI</span>
+          <section class="paper-section">
+            <h2>项目经历</h2>
+            <article
+              v-for="(experience, index) in store.draft.experiences"
+              :key="index"
+              class="paper-experience"
+            >
+              <div class="experience-heading">
+                <h3
+                  class="experience-title"
+                  contenteditable="true"
+                  spellcheck="false"
+                  data-placeholder="项目名称"
+                  @blur="
+                    commitText($event, experience.title, (value) => {
+                      store.updateExperience(index, 'title', value)
+                      return value
+                    })
+                  "
+                >{{ experience.title }}</h3>
+                <!--
+                  时间拆成「开始 / 分隔符 / 结束」三段独立节点，各自可点编辑。
+                  外层仍用 .date，保证与后端生成器的 `<span class="date">…</span>` 视觉一致。
+                -->
+                <span class="date date-range">
+                  <span
+                    class="date-start"
+                    contenteditable="true"
+                    spellcheck="false"
+                    data-placeholder="开始"
+                    @blur="updateExpDate($event, index, 'start_date')"
+                  >{{ formatDate(experience.start_date) }}</span>
+                  <span class="date-divider"> — </span>
+                  <span
+                    class="date-end"
+                    contenteditable="true"
+                    spellcheck="false"
+                    data-placeholder="至今"
+                    @blur="updateExpDate($event, index, 'end_date')"
+                  >{{ formatDate(experience.end_date) || '至今' }}</span>
+                </span>
+              </div>
+              <p
+                class="experience-description"
+                contenteditable="true"
+                spellcheck="false"
+                @blur="
+                  commitText($event, experience.description, (value) => {
+                    store.updateExperience(index, 'description', value)
+                    return value
+                  })
+                "
+              >{{ experience.description }}</p>
+              <p
+                class="experience-responsibility"
+                contenteditable="true"
+                spellcheck="false"
+                @blur="
+                  commitText($event, experience.responsibility, (value) => {
+                    store.updateExperience(index, 'responsibility', value)
+                    return value
+                  })
+                "
+              >{{ experience.responsibility }}</p>
+            </article>
+          </section>
+        </article>
+
+        <!-- 水印：绝对定位在纸张右下角，pointer-events:none 不干扰纸面编辑。 -->
+        <span class="paper-watermark" aria-hidden="true">职途AI</span>
+      </div>
     </div>
   </section>
 </template>
@@ -506,21 +650,51 @@ function updateExpDate(
 .preview-button:focus-visible { outline: 2px solid #6b8f8a; outline-offset: 2px; }
 .preview-button__icon { font-size: 16px; line-height: 1; }
 .paper-frame { position: relative; }
+/*
+ * 缩放容器（D5.1 · P2）：
+ * - 自己的 width / height 由 `stageStyle` 按「纸张 mm × zoom」内联算出；
+ * - `--paper-zoom` / `--paper-width` / `--paper-height` 从这里下发给纸面与水印，
+ *   所以纸面只需要 `transform: scale(var(--paper-zoom))`，不需要知道自己被缩了多少。
+ */
+.paper-stage { position: relative; margin: 0 auto; }
 .paper-watermark {
   position: absolute;
-  right: 14px;
-  bottom: 10px;
+  /* 跟着纸面一起缩放：绝对定位以「未缩放的 stage 坐标」为基准，
+     但视觉尺寸要乘 zoom，否则纸缩小后水印会显得越来越大。 */
+  right: calc(14px * var(--paper-zoom, 1));
+  bottom: calc(10px * var(--paper-zoom, 1));
   z-index: 1;
   color: #b0b0b0;
-  font-size: 10px;
+  font-size: calc(10px * var(--paper-zoom, 1));
   line-height: 1;
   letter-spacing: .08em;
   opacity: .5;
   pointer-events: none;
   user-select: none;
 }
-/* 纸张本身：实时预览与生成结果都用 `.paper`，所以放在 scoped 里没问题。 */
-.paper { aspect-ratio: 210 / 297; min-height: 720px; overflow: auto; padding: 56px 52px; color: #263330; background: #fff; box-shadow: 0 14px 36px #2633301c; }
+/*
+ * 纸张本身：**按真实物理尺寸排版**（mm），屏幕上的大小只由 `transform` 决定。
+ *
+ * 用 `min-height` 而不是 `height`：内容超过一页时要让它自然长高，
+ * 否则多出来的内容会被裁掉（打印也只有一页）。页数由 `scrollHeight` 量出来。
+ */
+.paper {
+  /*
+   * 必须显式声明：`width: 210mm` 只有配上 border-box 才等于「含内边距的纸宽」。
+   * 全局 `* { box-sizing: border-box }` 虽然已经设了，但纸张的物理尺寸是页数
+   * 计算的基准，不能依赖一条随时可能被改的全局重置（实测 content-box 会把
+   * 210mm 变成 210mm + 26mm，页数直接算错）。
+   */
+  box-sizing: border-box;
+  width: var(--paper-width, 210mm);
+  min-height: var(--paper-height, 297mm);
+  padding: 14mm 13mm;
+  transform: scale(var(--paper-zoom, 1));
+  transform-origin: top left;
+  color: #263330;
+  background: #fff;
+  box-shadow: 0 14px 36px #2633301c;
+}
 
 /* 窄屏：按钮变宽后单行放不下，工具栏改为两行，按钮独占整行（仍满足「撑满」）。 */
 @media (max-width: 720px) {
@@ -536,7 +710,19 @@ function updateExpDate(
 
 @media print {
   .preview-toolbar { display: none; }
-  .paper { min-height: 0; box-shadow: none; margin: 0; }
+  /*
+   * 打印必须**取消缩放**：stage 上的 width/height 是屏幕像素（内联样式），
+   * 不覆盖就会把整页塞进一个固定像素盒子里。`!important` 是覆盖内联值的唯一办法。
+   */
+  .paper-stage { width: auto !important; height: auto !important; margin: 0; }
+  .paper {
+    width: var(--paper-width);
+    /* 让内容按页流下去：固定 min-height 会强制第一页留白、后续页错位。 */
+    min-height: 0;
+    transform: none;
+    box-shadow: none;
+    margin: 0;
+  }
   /*
    * 水印必须打印出来：显式给色并关掉浏览器的省墨降色（print-color-adjust），
    * 否则淡灰在部分浏览器会被优化成不可见。
@@ -545,6 +731,7 @@ function updateExpDate(
     right: 6mm;
     bottom: 4mm;
     color: #b0b0b0;
+    font-size: 10px;
     opacity: .5;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;

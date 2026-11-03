@@ -1168,3 +1168,149 @@ def test_trashed_profile_does_not_hold_its_title(client: TestClient) -> None:
 
     assert response.status_code == 201, response.text
     assert response.json()["data"]["profile"]["title"] == "投后端"
+
+
+# --------------------------------------------------------------------------- #
+# D5.1：纸张尺寸（paper_size）
+# --------------------------------------------------------------------------- #
+
+
+def _read_profile(client: TestClient, token: str, profile_id: object) -> dict[str, object]:
+    response = client.get(f"{PROFILES_BASE}/{profile_id}", headers=_headers(token))
+    assert response.status_code == 200, response.text
+    profile: dict[str, object] = response.json()["data"]["profile"]
+    return profile
+
+
+def _put_content(
+    client: TestClient,
+    token: str,
+    profile_id: object,
+    **overrides: object,
+) -> dict[str, object]:
+    response = client.put(
+        f"{PROFILES_BASE}/{profile_id}",
+        json=_profile_payload(**overrides),
+        headers=_headers(token),
+    )
+    assert response.status_code == 200, response.text
+    profile: dict[str, object] = response.json()["data"]["profile"]
+    return profile
+
+
+def test_paper_size_column_is_not_null_with_a4_default() -> None:
+    """迁移只加一列：`varchar(16) NOT NULL DEFAULT 'A4'`。
+
+    用 VARCHAR 而不是 ENUM 是刻意的：加一种纸只改代码不改表（见迁移注释）。
+    """
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'student_profiles' "
+                "AND COLUMN_NAME = 'paper_size'"
+            )
+        ).one()
+
+    assert str(row.COLUMN_TYPE).lower() == "varchar(16)"
+    assert row.IS_NULLABLE == "NO"
+    assert row.COLUMN_DEFAULT == "A4"
+
+
+def test_paper_size_defaults_to_a4(client: TestClient) -> None:
+    """新建简历默认 A4；读接口必须给出具体值（不是 null）。"""
+    token = _register_and_login(client)
+    created = _create(client, token)
+
+    assert created["paper_size"] == "A4"
+    assert _read_profile(client, token, created["id"])["paper_size"] == "A4"
+    # 兼容入口 `/profiles/me` 也要带上这个字段，旧前端不该看到 null。
+    me = client.get(PROFILES_URL, headers=_headers(token))
+    assert me.status_code == 200, me.text
+    assert me.json()["data"]["profile"]["paper_size"] == "A4"
+
+
+def test_paper_size_can_be_switched_to_letter(client: TestClient) -> None:
+    """写入 Letter 后立刻生效，且重新读取仍是 Letter。"""
+    token = _register_and_login(client)
+    created = _create(client, token)
+
+    updated = _put_content(client, token, created["id"], paper_size="Letter")
+
+    assert updated["paper_size"] == "Letter"
+    assert _read_profile(client, token, created["id"])["paper_size"] == "Letter"
+
+
+def test_put_without_paper_size_keeps_existing(client: TestClient) -> None:
+    """【关键防御】旧客户端（请求体里没有 `paper_size`）不能把纸张清回 A4。
+
+    这是 ADR-007 §10.2 的核心：`PUT` 是整体替换，若按「None 即默认」处理，
+    任何缓存了旧版 JS 的浏览器点一次保存就会把用户选的纸张悄悄改掉。
+    """
+    token = _register_and_login(client)
+    created = _create(client, token)
+    _put_content(client, token, created["id"], paper_size="Letter")
+
+    # `_profile_payload()` 不含 paper_size —— 等价于 D5.1 之前的客户端。
+    assert "paper_size" not in _profile_payload()
+    repainted = _put_content(client, token, created["id"], full_name="李四")
+
+    assert repainted["full_name"] == "李四"
+    assert repainted["paper_size"] == "Letter", "没传 paper_size 时应保留原值"
+    assert _read_profile(client, token, created["id"])["paper_size"] == "Letter"
+
+
+def test_explicit_null_paper_size_resets_to_a4(client: TestClient) -> None:
+    """显式传 null = 恢复默认（与「没传」区分开）。"""
+    token = _register_and_login(client)
+    created = _create(client, token)
+    _put_content(client, token, created["id"], paper_size="Letter")
+
+    reset = _put_content(client, token, created["id"], paper_size=None)
+
+    assert reset["paper_size"] == "A4"
+
+
+def test_invalid_paper_size_is_rejected(client: TestClient) -> None:
+    """枚举外的值 422，且不落库（库里仍是原值）。"""
+    token = _register_and_login(client)
+    created = _create(client, token)
+
+    for value in ("Legal", "a4", "A3", ""):
+        response = client.put(
+            f"{PROFILES_BASE}/{created['id']}",
+            json=_profile_payload(paper_size=value),
+            headers=_headers(token),
+        )
+        assert response.status_code == 422, f"{value!r} -> {response.text}"
+        assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    assert _read_profile(client, token, created["id"])["paper_size"] == "A4"
+
+
+def test_copy_from_copies_paper_size(client: TestClient) -> None:
+    """深拷贝必须带上纸张：复制简历最常见的动机就是「同内容、换版式再投」。"""
+    token = _register_and_login(client)
+    source = _create(client, token, title="投北美")
+    _put_content(client, token, source["id"], paper_size="Letter")
+
+    copied = _create(client, token, title="投北美 副本", copy_from_id=source["id"])
+
+    assert copied["paper_size"] == "Letter"
+    assert copied["id"] != source["id"]
+
+
+def test_unknown_paper_size_in_db_falls_back_to_a4(client: TestClient) -> None:
+    """读路径永不因装饰性字段失败：库里被手工写成非法值时回落 A4，而不是 500。
+
+    写路径仍然严格（上一个用例证明 422），这个不对称是 ADR-007 §10.4 定的。
+    """
+    token = _register_and_login(client)
+    created = _create(client, token)
+    with get_engine().begin() as connection:
+        connection.execute(
+            text("UPDATE student_profiles SET paper_size = 'Legal' WHERE id = :id"),
+            {"id": created["id"]},
+        )
+
+    assert _read_profile(client, token, created["id"])["paper_size"] == "A4"

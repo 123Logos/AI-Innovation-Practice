@@ -2,11 +2,33 @@
 import { computed, ref } from 'vue'
 
 import { isApiError } from '@/api'
+import type { PaperSize } from '@/api/types'
 import { useResumeStore } from '@/stores/resume'
 
 const store = useResumeStore()
 
 const feedback = ref<{ tone: 'ok' | 'error'; text: string } | null>(null)
+
+/** 纸张尺寸展示：`215.9` 这类小数保留一位，`210` 不补 `.0`。 */
+function formatMm(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1)
+}
+
+const paperSizeText = computed(
+  () => `${formatMm(store.paperSpec.widthMm)} × ${formatMm(store.paperSpec.heightMm)} mm`,
+)
+
+/**
+ * 切换纸张（D5.1）。
+ *
+ * 走 store 的 `updatePaperSize()` 而不是直接调接口：它和改姓名一样属于
+ * 「未保存的修改」，要跟着「保存修改」一起落库，也才会触发本地草稿。
+ */
+function handlePaperChange(event: Event): void {
+  const value = (event.target as HTMLSelectElement).value
+  const size: PaperSize = value === 'Letter' ? 'Letter' : 'A4'
+  store.updatePaperSize(size)
+}
 
 /**
  * 档案状态跟「是否有未保存修改」联动：
@@ -79,8 +101,20 @@ function printResume(): void {
     </div>
 
     <div class="panel-section">
-      <div class="status-row"><span>纸张</span><strong>A4</strong></div>
-      <div class="status-row"><span>页数</span><strong>1 页</strong></div>
+      <div class="status-row">
+        <span>纸张</span>
+        <select
+          class="paper-select"
+          :value="store.draft.paper_size"
+          aria-label="纸张尺寸"
+          @change="handlePaperChange"
+        >
+          <option value="A4">A4</option>
+          <option value="Letter">Letter</option>
+        </select>
+      </div>
+      <p class="status-hint">{{ paperSizeText }}</p>
+      <div class="status-row"><span>页数</span><strong>{{ store.pageCount }} 页</strong></div>
       <div class="status-row"><span>配色</span><strong>青绿</strong></div>
     </div>
 
@@ -107,7 +141,7 @@ function printResume(): void {
         点击中央纸面上的文字块即可直接编辑，内容会同步到左侧表单；改完点上方「保存修改」落库。
       </p>
       <p class="hint print-tip">
-        💡 建议在打印设置中取消勾选「页眉和页脚」以获得纯净简历
+        💡 打印对话框里的纸张要与上方一致（{{ store.paperSpec.label }}），并取消勾选「页眉和页脚」
       </p>
     </div>
 
@@ -124,6 +158,20 @@ h2 { font-size: 18px; }
 .panel-section { display: grid; gap: 10px; border-bottom: 1px solid #dbe4e1; padding: 18px 0; }
 .status-row { display: flex; justify-content: space-between; gap: 8px; color: #687875; font-size: 13px; }
 .status-row strong { color: #263330; font-family: "SF Mono", Consolas, monospace; font-weight: 500; }
+/* 纸张切换：下拉比按钮省地方，也天然表达「二选一」。 */
+.paper-select {
+  border: 1px solid #d6dfdc;
+  border-radius: 0;
+  padding: 3px 6px;
+  color: #263330;
+  background: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+.paper-select:focus-visible { outline: 2px solid #6b8f8a; outline-offset: 2px; }
+/* 物理尺寸小字：让「A4 / Letter 到底差多少」一眼可见，不用去查。 */
+.status-hint { margin: -6px 0 0; color: #8fa5a1; font-size: 11px; text-align: right; }
 .panel-label { color: #527873; font-size: 12px; }
 .hint { color: #687875; font-size: 13px; line-height: 1.6; }
 /* 浏览器打印页眉/页脚（日期、URL）无法用代码关掉，只能提示用户自己取消勾选。 */
@@ -142,6 +190,8 @@ h2 { font-size: 18px; }
   .panel-heading, .panel-section { border-color: #52635f; }
   .status-row, .hint { color: #b7c3c0; }
   .status-row strong { color: #e8eae9; }
+  .paper-select { border-color: #52635f; color: #e8eae9; background: #1f2a28; }
+  .status-hint { color: #8fa5a1; }
 }
 @media print {
   .style-panel { display: none; }
