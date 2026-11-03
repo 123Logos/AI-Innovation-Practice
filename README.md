@@ -55,11 +55,37 @@ Copy-Item .env.example .env
 
 ## 本地开发约定
 
+> **⚠️ 拉取最新代码后，启动后端前必须执行 `uv run alembic upgrade head` 同步数据库。**
+>
+> 代码里的表结构由 `alembic/versions/` 下的迁移脚本定义，**不会在启动时自动建表**。
+> 忘记执行的表现是：服务能正常启动，但一旦走到新表（例如 `refresh_tokens`）就报
+> `Table 'xxx' doesn't exist` / 接口 500。为提前暴露这类问题，后端启动时会比对
+> 数据库的 Alembic 版本与代码的最新版本：开发/测试环境打印醒目告警，
+> **生产环境直接拒绝启动**。
+
+`alembic/env.py` 只读环境变量、不读 `.env`，所以跑迁移前要先把 `DATABASE_URL` 导出到当前 shell：
+
+```bash
+# Git Bash / macOS / Linux
+export DATABASE_URL="$(grep -E '^DATABASE_URL=' .env | cut -d= -f2-)"
+uv run alembic upgrade head
+uv run alembic current   # 确认已到 head
+```
+
+```powershell
+# PowerShell
+$env:DATABASE_URL = (Get-Content .env | Where-Object { $_ -match '^DATABASE_URL=' }) -replace '^DATABASE_URL=', ''
+uv run alembic upgrade head
+uv run alembic current
+```
+
 后端代码落地后：
 
 ```powershell
 uv venv --python 3.13
 uv sync
+Copy-Item .env.example .env
+uv run alembic upgrade head   # 同步数据库结构（拉取新代码后必跑）
 uv run uvicorn app.main:app --reload
 ```
 

@@ -146,10 +146,41 @@ MVP 不引入未经验证的全网爬虫；岗位变化雷达只使用合法来�
 
 ## 11. 本地运行与部署
 
+### 11.1 数据库迁移（每次拉取代码后必做）
+
+**⚠️ 拉取最新代码后，启动后端前必须执行 `uv run alembic upgrade head` 同步数据库。**
+
+表结构只由 `alembic/versions/` 的迁移脚本定义，应用启动时不会自动建表或改表。漏跑迁移的典型症状是「服务能起来，但某个接口一调就 500」——例如 Phase 2 · D2.1 新增 `refresh_tokens` 后，开发库没迁移时登录会报 `Table 'resume_mvp_dev.refresh_tokens' doesn't exist`。
+
+为避免把这类问题拖到运行期，`app/main.py` 的 `lifespan` 在启动时会做一次版本比对：
+
+- 读取数据库 `alembic_version` 表中已执行的版本；
+- 读取代码里 `ScriptDirectory.get_heads()` 的最新版本；
+- 两者不一致时：`ENVIRONMENT=development` / `test` 打印醒目黄色告警后继续启动；`ENVIRONMENT=production` **抛出 `DatabaseSchemaOutOfDateError` 直接阻止启动**（Fail-fast，避免带病上线）；
+- 库中还没有 `alembic_version` 表（全新库）同样视为不一致。
+
+`alembic/env.py` 只读环境变量、不读 `.env`，跑迁移前先把 `DATABASE_URL` 导出到当前 shell：
+
+```bash
+export DATABASE_URL="$(grep -E '^DATABASE_URL=' .env | cut -d= -f2-)"
+uv run alembic upgrade head
+uv run alembic current   # 应输出 <最新版本号> (head)
+```
+
+```powershell
+$env:DATABASE_URL = (Get-Content .env | Where-Object { $_ -match '^DATABASE_URL=' }) -replace '^DATABASE_URL=', ''
+uv run alembic upgrade head
+uv run alembic current
+```
+
+首次拉取仓库时，完整流程为：
+
 ```powershell
 uv venv --python 3.13
 uv sync
 Copy-Item .env.example .env
+# 导出 DATABASE_URL 后执行迁移，再启动
+uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 ```
 

@@ -1,6 +1,12 @@
+import logging
+import os
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
+from alembic.config import Config as AlembicConfig
+from alembic.script import ScriptDirectory
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -9,25 +15,125 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Connection
+from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.router import router
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.errors import error_response
 from app.core.rate_limit import limiter
+
+logger = logging.getLogger(__name__)
 
 #: 前端实际用到的 HTTP 方法，显式列出而不放通配符 `*`。
 CORS_ALLOW_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
 #: 前端实际会带的请求头：JWT、JSON、以及 `X-Request-ID`（前端可透传追踪 id）。
 CORS_ALLOW_HEADERS = ["Authorization", "Content-Type", "X-Request-ID"]
 
+#: 迁移脚本在项目根目录的 `alembic/`，用绝对路径解析，避免从别的工作目录启动时找不到。
+ALEMBIC_INI_PATH = Path(__file__).resolve().parents[1] / "alembic.ini"
+MIGRATION_FIX_COMMAND = "uv run alembic upgrade head"
+
+_ANSI_RESET = "\x1b[0m"
+_ANSI_YELLOW = "\x1b[33m"
+_ANSI_RED = "\x1b[31m"
+
+
+class DatabaseSchemaOutOfDateError(RuntimeError):
+    """生产环境数据库迁移版本与代码不一致：不阻止启动就等于带病上线。"""
+
+
+def _supports_color() -> bool:
+    """只在真终端里上色；重定向到文件/CI 时输出纯文本，日志仍可读。"""
+    return sys.stderr.isatty() and not os.environ.get("NO_COLOR")
+
+
+def _emit_startup_banner(lines: list[str], color: str) -> None:
+    """把告警打成带分隔线的色块。
+
+    不走 `logging` 是因为 uvicorn 会把 warning 压成一行普通日志，夹在满屏的
+    reload/access 日志里几乎看不见；这里直接写 stderr 保证「醒目」。
+    """
+    border = "!" * 78
+    prefix, suffix = (color, _ANSI_RESET) if _supports_color() else ("", "")
+    for line in (border, *lines, border):
+        print(f"{prefix}{line}{suffix}", file=sys.stderr, flush=True)
+
+
+def expected_migration_revisions() -> list[str]:
+    """代码里 Alembic 的最新版本（存在多个 head 时全部返回）。"""
+    if not ALEMBIC_INI_PATH.exists():
+        return []
+    script = ScriptDirectory.from_config(AlembicConfig(str(ALEMBIC_INI_PATH)))
+    return list(script.get_heads())
+
+
+def applied_migration_revisions(connection: Connection) -> list[str]:
+    """数据库当前版本；库还没执行过任何迁移（无 `alembic_version` 表）时返回空列表。
+
+    不先 `inspect().has_table()` 探测：多一次往返，而且「表不存在」在 MySQL 侧
+    本来就是一条明确的 1146 错误，就地捕获即可。
+    """
+    try:
+        rows = connection.execute(text("SELECT version_num FROM alembic_version")).scalars()
+    except SQLAlchemyError as error:
+        logger.debug("读取 alembic_version 失败，按「未执行任何迁移」处理：%s", error)
+        return []
+    return [revision for revision in rows if revision]
+
+
+def check_migration_state(connection: Connection, settings: Settings) -> None:
+    """启动时比对「数据库已执行版本」与「代码期望版本」，实现 Fail-fast。
+
+    背景：Phase 2 · D2.1 新增 `refresh_tokens` 表，开发库没跑迁移时后端能正常
+    起来，直到用户点「登录」才 500（`Table 'refresh_tokens' doesn't exist`），
+    排查成本高。这里把问题提前到启动阶段暴露：
+    - `development` / `test`：只打印醒目告警，不阻塞本地开发；
+    - `production`：直接抛异常让 uvicorn 启动失败，避免带病上线。
+    """
+    expected = expected_migration_revisions()
+    if not expected:
+        logger.debug("跳过迁移版本检查：未找到 alembic.ini 或没有任何迁移脚本。")
+        return
+
+    applied = applied_migration_revisions(connection)
+    if set(applied) == set(expected):
+        return
+
+    expected_text = ", ".join(sorted(expected))
+    applied_text = ", ".join(sorted(applied)) or "（空，数据库尚未执行任何迁移）"
+    detail = (
+        f"代码期望版本 {expected_text}，数据库当前版本 {applied_text}；"
+        f"请先执行 `{MIGRATION_FIX_COMMAND}` 同步数据库结构。"
+    )
+    lines = [
+        f"⚠️  数据库结构与代码版本不一致，请先执行 `{MIGRATION_FIX_COMMAND}`",
+        f"    代码期望版本：{expected_text}",
+        f"    数据库当前版本：{applied_text}",
+        "    常见原因：拉取新代码后没有跑迁移（如 D2.1 的 refresh_tokens 表）。",
+    ]
+    if settings.environment == "production":
+        # 生产环境必须阻断启动：继续跑下去就是运行期 500。
+        _emit_startup_banner([*lines, "    ENVIRONMENT=production：已阻止启动。"], _ANSI_RED)
+        raise DatabaseSchemaOutOfDateError(f"数据库结构与代码版本不一致：{detail}")
+
+    _emit_startup_banner(
+        [*lines, "    该检查在 ENVIRONMENT=production 下会直接阻止启动。"], _ANSI_YELLOW
+    )
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     if settings.database_url:
-        with create_engine(settings.database_url).connect() as connection:
-            connection.execute(text("SELECT 1"))
+        engine = create_engine(settings.database_url)
+        try:
+            with engine.connect() as connection:
+                connection.execute(text("SELECT 1"))
+                check_migration_state(connection, settings)
+        finally:
+            engine.dispose()
     yield
 
 
