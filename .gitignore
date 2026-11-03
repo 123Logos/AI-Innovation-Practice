@@ -14,22 +14,14 @@ build/
 dist/
 wheels/
 
-# Python virtual environments and package manager files
+# Python virtual environments
 .venv/
 venv/
-ENV/
-env/
-.uv/
 
 # Node.js and frontend build files
 node_modules/
 npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-frontend/dist/
 frontend/.vite/
-frontend/.cache/
 
 # Local secrets and environment files
 .env

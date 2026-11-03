@@ -2,15 +2,19 @@
 
 > 本文件描述的是“已实现并验证”的状态，不是“已设计”的状态。
 > 任何未附测试输出或手动复现步骤的条目，不得写入“已验证”。
-> 最后更新：2026-11-02
+> 最后更新：2026-11-03（T7.7）
 
 ## 1. 一句话状态
 
-简历切片后端已打通真实库：注册/登录（JWT）→ 保存学生档案（三张表）→ 生成简历落 `resumes`。
-**前端仍未接 API，也还没有真实用户；简历生成仍是模板拼装，不是 AI。**
+**T7.3 已实现前后端全链路联调（JWT 鉴权、Pinia 状态同步、A4 实时预览、真实数据库落库）**：
+注册/登录 → 保存学生档案（`student_profiles` + `skills` + `experiences` + `educations`）
+→ 生成简历写入 `resumes`，前端「实时预览」与「已生成简历」共用同一套版式与类名。
 
-> 历史说明：本节曾写“数据库迁移未建立、测试仅覆盖健康检查”，该描述截至 T7.4 已过期，
-> 现行事实以下方表格与第 6 节为准。
+简历正文仍由 `TemplateResumeGenerator` 模板拼装，**不是 AI 生成**；
+已有一轮以上小范围人工测试反馈（时区、版式对齐、手机号校验、结束时间未来限制等）
+并已修复，但尚无规模化真实用户数据。
+
+> 历史说明：本节曾写“前端仍未接 API”，该描述截至 T7.3 已过期，现行事实以本节与 §3 为准。
 
 ## 2. 资产分级
 
@@ -18,10 +22,9 @@
 
 | 资产 | 状态 | 说明 |
 |---|---|---|
-| 分层目录 `api/services/repositories/integrations` | 已存在 | 依赖方向规则见 AGENTS.md 4.1 |
+| 分层目录 `api/services/repositories/integrations` | 已存在 | 依赖方向由 import-linter 5 个 contract 强制 |
 | 健康检查接口 | 已实现 | 有测试 |
-| 配置管理骨架 | 已存在 | 待补 fail-fast 与 `.env.example` |
-| `DEVELOPMENT.md` 分层规则 | 已存在 | 待由 import-linter 强制 |
+| 配置管理骨架 | 已实现 | production fail-fast（DB / JWT 密钥）已有测试，`.env.example` 已提供 |
 
 ### 2.2 降级为设计稿（已设计，未实现，禁止当真相源）
 
@@ -48,7 +51,8 @@
 | 真实档案仓储 + 档案接口 | T7.2 | 已验证（`tests/test_profiles.py` 14 passed，写满四张表） |
 | 简历生成落真实库 | T7.2 | 已验证（`tests/test_resumes_generate.py` 8 passed，写入 `resumes`） |
 | 多段教育经历（`educations` 子表） | T7.5 | 已验证：迁移 `20261102_0002`（upgrade/downgrade 可逆）；`tests/test_profiles.py` 覆盖「两段 → 一段」全量替换；生成器按入学时间倒序渲染教育区块 |
-| 真实链路 + 真实用户验证 | T7 | 未开始（后端链路已通，前端仍未接 API） |
+| 前后端全链路联调 | T7.3 | **已验证**：JWT 鉴权、Pinia 状态同步、A4 实时预览、真实数据库落库（登录 → 保存档案 → 生成简历） |
+| 技术债清理与安全加固 | T7.7 | 已验证：废弃路由 `/me`、`/jobs` 下线；`utc_now()` 收敛到 `app/core/datetime_display.py`；CORS 白名单化；登录/注册 5 次/分钟限流并并入统一错误模型 |
 
 ## 3. 已验证 / 未验证
 
@@ -60,15 +64,16 @@
 | JWT 生产 fail-fast | **已验证** | `Settings(environment="production")` 缺 `jwt_secret_key` 或不足 32 位均抛 `ValueError` |
 | 档案读写写入真实 MySQL | **已验证** | `uv run pytest tests/test_profiles.py -v` 14 passed：PUT 后 `student_profiles` 1 行 / `skills` 3 行 / `experiences` 1 行 / `educations` 1 行；教育经历 2 段再改 1 段时旧行被物理删除；二次 PUT 技能/经历全量替换且 profile id 不变；两用户互不可见 |
 | 简历生成写入真实 MySQL | **已验证** | `uv run pytest tests/test_resumes_generate.py -v` 8 passed：注册→PUT 档案→生成，断言 `resumes` 行的 id / student_profile_id / title / content_html 与响应一致；教育区块含学校/专业/学历/起止时间且按入学时间倒序，无教育经历时整块不渲染；未登录 401；无档案 400 |
-| 业务链路可跑通 | **已验证（后端）** | 后端从注册到简历落库全链路已通；前端仍未接 API |
-| 手机/电脑可用 | **未验证** | 无真实用户记录 |
+| 业务链路可跑通 | **已验证（前端 + 后端）** | T7.3 起前后端全链路联调：登录态（JWT）→ 档案保存 → A4 实时预览 → 生成简历落真实 `resumes` 表；`uv run pytest -q` 55 passed 覆盖后端链路，前端 `typecheck` / `build` 通过 |
+| 手机/电脑可用 | **部分验证** | 已在小范围人工测试中跑通主流程（并据此修复 10 项体验问题）；无规模化真实用户数据 |
 | AI 生成简历 | **未验证** | 仍是 `TemplateResumeGenerator` 模板拼装 |
 
 ## 4. 当前阻塞项
 
-1. 前端未接入登录态，也未接 `/profiles/me` 与 `/resumes/generate`（T7.2 明确不改前端）；
-2. 简历只有「生成并落库」，没有列表/详情/编辑接口，`resumes` 表只写不读；
-3. CI 已配置四件套，但仅在本地验证过，未在 GitHub Actions 实际运行。
+1. `resumes` 表只有写入路径，缺列表 / 详情 / 编辑接口——「我的简历」还没有档案库视图；
+2. 纸面（`contenteditable`）上的就地编辑只写进 Pinia store，不写回已生成的 `content_html`；
+3. CI 四件套（ruff / mypy / pytest / lint-imports）仅在本地验证过，未在 GitHub Actions 实际运行；
+4. 登录/注册限流是**进程内内存计数**，多 worker 部署时每个进程各算一份，需换 Redis 存储才准确。
 
 ## 5. 下一步
 
@@ -130,12 +135,36 @@
   EducationRead，否则 typecheck 必红）、`tests/test_migrations.py`（表集合与 FK 集合是
   精确断言，新增表必然变红，且「downgrade 后 educations 消失」的用例要求写在这里）。
   另：`grade` 列保留在库中但前后端都不再写业务值（恒写空串），未删列、未改表结构。
+- T7.6：迁移 `20261102_0003_drop_profile_major` 删除主表 `student_profiles.major`
+  （专业只由每段教育经历携带，`educations.major` 保留）；前后端同步移除顶层 `major`，
+  旧客户端残留的 `major` 字段被 Pydantic `extra="ignore"` 丢弃。
+- 真实用户反馈轮（T7 阶段内，未单独编号）：①时间统一按东八区返回（新增
+  `app/core/datetime_display.py`），前端用 `Intl` + Asia/Shanghai 展示；②生成器版式与
+  `ResumePreview.vue` 对齐（去「我的简历」标题与「基本信息」区块）；③教育经历支持纸面就地编辑；
+  ④保存不拦必填、严格校验挪到生成前；⑤档案新增 `email` 列（迁移 `20261102_0004`）；
+  ⑥有未保存修改时生成前提示；⑦默认入学时间取「当前年 - 4 年」的 9 月。
+- 真实用户反馈第二轮：①手机号收紧为 `^1[3-9]\d{9}$`（前端同源正则 + 后端 field_validator，
+  空串放行以支持存草稿）；②**开始**时间禁未来（前端 `:max` + 生成前校验 + 后端 422）；
+  ③项目经历纸面时间拆成「开始 / 分隔符 / 结束」三个独立可编辑节点。
+- 体验修复轮：结束时间（`edu_end` / `end_date`）放开未来限制（应届生要填「预计毕业时间」），
+  只保留「不早于开始时间」；项目经历日期由 `YYYY.MM` 改为 `YYYY.MM.DD`（教育经历仍按月份）。
+  验证 `uv run pytest -q` 55 passed，前端 `typecheck` / `build` 通过。
+- T7.7（本轮）：①删除 `app/api/router.py` 里 T7.1 遗留的占位路由 `GET /me`、`GET /jobs`
+  （已被 `/api/v1/auth/me` 等真实接口取代）；②删除仓库根目录 101 字节的孤儿 `package-lock.json`，
+  `.gitignore` 清掉 `.uv/`、`ENV/`、`env/`、`yarn/pnpm` 日志、`frontend/.cache/`、重复的
+  `frontend/dist/`（`dist/` 已覆盖）；③`utc_now()` 从两个仓储复制粘贴改为
+  `app/core/datetime_display.py` 单点定义（`resume_repository` 里同一份内联实现一并收敛）；
+  ④CORS 去掉通配符：方法/头改显式白名单；⑤新增 `slowapi` 限流：`/auth/register`、
+  `/auth/login` 各 5 次/分钟，超限由 `RateLimitExceeded` 处理器转成 429 +
+  `{"error": {"code": "RATE_LIMITED", "retryable": true}}`（沿用 T6 统一错误模型），
+  并补 `tests/test_rate_limit.py`（登录 5×401 → 第 6 次 429、注册 5×201 → 第 6 次 429）。
+  验证：`uv run pytest -q` 58 passed（连真实 `resume_mvp_test`）；`ruff` / `mypy` /
+  `lint-imports`（5/5）全绿；未新增表、未新增迁移、未 commit。
 
 ## 7. 本轮未做（显式声明）
 
-- 未新增简历列表 / 详情 / 编辑接口，`resumes` 表只有写入路径。
-- 未新增或修改任何数据库表、迁移（`student_profiles` / `skills` / `experiences` / `resumes`
-  均为 T4 既有表）。**T7.5 例外**：新增 `educations` 表与迁移 `20261102_0002`，见 §6。
-- 未修改 `app/integrations/`（模板生成器原样）、`app/repositories/fake_resume_repository.py`、
-  `app/core/security.py` 等 T7.1 鉴权核心，也未改 `frontend/` 下任何文件。
-- 档案写入的边界（3–8 技能、1–3 经历）沿用 T5 原契约，未放宽也未收紧。
+- T7.7 未新增或修改任何数据库表、未新增迁移（本轮只删路由、清文件、去重、改配置、加限流）。
+- T7.7 未改动任何业务规则：档案/简历的字段校验、生成器版式、前端组件行为均保持原样。
+- 未新增简历列表 / 详情 / 编辑接口，`resumes` 表仍只有写入路径。
+- 未修改 `app/integrations/` 的既有模板逻辑（体验修复轮只改了日期格式与区块顺序）。
+- 档案写入的边界（技能 0–8、经历 0–3、教育 0–5，保存不拦必填）沿用 T5/T7 契约，未再调整。

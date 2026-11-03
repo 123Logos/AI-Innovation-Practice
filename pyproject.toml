@@ -18,6 +18,7 @@ dependencies = [
     # bcrypt 4.1 起移除了该属性，会打印 "(trapped) error reading bcrypt version"。
     # 锁在 4.0.x 是 passlib 停更下的唯一干净组合。
     "bcrypt>=4.0.1,<4.1.0",
+    "slowapi>=0.1.9",
 ]
 
 [dependency-groups]

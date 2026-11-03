@@ -7,12 +7,19 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
 from sqlalchemy import create_engine, text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.router import router
 from app.core.config import get_settings
 from app.core.errors import error_response
+from app.core.rate_limit import limiter
+
+#: 前端实际用到的 HTTP 方法，显式列出而不放通配符 `*`。
+CORS_ALLOW_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+#: 前端实际会带的请求头：JWT、JSON、以及 `X-Request-ID`（前端可透传追踪 id）。
+CORS_ALLOW_HEADERS = ["Authorization", "Content-Type", "X-Request-ID"]
 
 
 @asynccontextmanager
@@ -34,12 +41,13 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json" if settings.enable_api_docs else None,
         lifespan=lifespan,
     )
+    app.state.limiter = limiter
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=CORS_ALLOW_METHODS,
+        allow_headers=CORS_ALLOW_HEADERS,
     )
 
     @app.exception_handler(Exception)
@@ -85,6 +93,28 @@ def create_app() -> FastAPI:
             details=details,
         )
         return JSONResponse(status_code=422, content=body)
+
+    @app.exception_handler(RateLimitExceeded)
+    async def rate_limit_exceeded(
+        request: Request,
+        exc: RateLimitExceeded,
+    ) -> JSONResponse:
+        """限流命中也走 T6 统一错误模型，前端不需要为 429 写特例。
+
+        `Retry-After` 取 60 秒：当前规则是「每分钟 N 次」，最坏情况等满一个
+        窗口即可重试；真要精确到秒级得读 slowapi 的 limit 对象，MVP 不值当。
+        """
+        return JSONResponse(
+            status_code=429,
+            content=error_response(
+                request,
+                "RATE_LIMITED",
+                "请求过于频繁，请稍后再试。",
+                details={"limit": str(exc.detail)},
+                retryable=True,
+            ),
+            headers={"Retry-After": "60"},
+        )
 
     app.include_router(router, prefix="/api/v1")
 

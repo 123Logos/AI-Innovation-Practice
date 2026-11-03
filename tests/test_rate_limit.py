@@ -1,0 +1,112 @@
+"""T7.7：登录 / 注册限流（slowapi）与 429 的统一错误模型。
+
+测试期 `tests/conftest.py` 默认关闭限流（否则认证用例自己会撞 429）；
+本文件用 `enabled_limiter` 夹具临时打开，验证真实的「第 6 次被拦」行为。
+
+连真实 MySQL（`TEST_DATABASE_URL`）：登录要查 `users`，注册要写 `users`，
+不能用假的。与 `test_auth.py` 一样，先注入 `DATABASE_URL` 再导入 app。
+"""
+
+import os
+from collections.abc import Iterator
+from uuid import uuid4
+
+import pytest
+
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
+if TEST_DATABASE_URL:
+    # 必须早于任何 app.* 导入，否则 get_settings() 会缓存 .env 里的开发库连接串。
+    os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+
+from fastapi.testclient import TestClient
+from sqlalchemy import text
+
+from app.core.rate_limit import AUTH_RATE_LIMIT, limiter
+from app.main import app
+from app.repositories.user_repository import Base, dispose_engine, get_engine
+
+REGISTER_URL = "/api/v1/auth/register"
+LOGIN_URL = "/api/v1/auth/login"
+PASSWORD = "Passw0rd!2026"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _schema() -> Iterator[None]:
+    if not TEST_DATABASE_URL:
+        raise RuntimeError("TEST_DATABASE_URL must be set for rate limit integration tests")
+    engine = get_engine()
+    Base.metadata.create_all(engine)
+    try:
+        yield
+    finally:
+        Base.metadata.drop_all(engine)
+        dispose_engine()
+
+
+@pytest.fixture(autouse=True)
+def _clean_users() -> Iterator[None]:
+    with get_engine().begin() as connection:
+        connection.execute(text("DELETE FROM users"))
+    yield
+    with get_engine().begin() as connection:
+        connection.execute(text("DELETE FROM users"))
+
+
+@pytest.fixture
+def enabled_limiter() -> Iterator[None]:
+    """临时打开限流并清空计数；用例结束恢复「测试期关闭」的默认状态。"""
+    limiter.reset()
+    limiter.enabled = True
+    try:
+        yield
+    finally:
+        limiter.enabled = False
+        limiter.reset()
+
+
+def test_rate_limit_rule_is_five_per_minute() -> None:
+    """规则本身固定为 5 次/分钟，防止有人顺手把它放宽。"""
+    assert AUTH_RATE_LIMIT == "5/minute"
+
+
+def test_login_returns_429_after_five_attempts(enabled_limiter: None) -> None:
+    """登录暴力破解：前 5 次走到凭据校验（401），第 6 次直接被限流拦下。"""
+    client = TestClient(app)
+    payload = {"username": f"nobody_{uuid4().hex[:8]}", "password": PASSWORD}
+
+    attempts = [client.post(LOGIN_URL, json=payload).status_code for _ in range(5)]
+    assert attempts == [401] * 5, attempts
+
+    blocked = client.post(LOGIN_URL, json=payload)
+
+    assert blocked.status_code == 429, blocked.text
+    body = blocked.json()
+    # 429 必须融入 T6 统一错误模型，前端不需要为它写特例。
+    assert body["error"]["code"] == "RATE_LIMITED"
+    assert body["error"]["message"] == "请求过于频繁，请稍后再试。"
+    assert body["error"]["retryable"] is True
+    assert body["error"]["details"]["limit"]
+    assert body["meta"]["request_id"]
+    assert blocked.headers["Retry-After"] == "60"
+
+
+def test_register_returns_429_after_five_attempts(enabled_limiter: None) -> None:
+    """注册刷号：前 5 次正常 201，第 6 次被限流拦下。"""
+    client = TestClient(app)
+
+    created = [
+        client.post(
+            REGISTER_URL,
+            json={"username": f"flood_{uuid4().hex[:8]}", "password": PASSWORD},
+        ).status_code
+        for _ in range(5)
+    ]
+    assert created == [201] * 5, created
+
+    blocked = client.post(
+        REGISTER_URL,
+        json={"username": f"flood_{uuid4().hex[:8]}", "password": PASSWORD},
+    )
+
+    assert blocked.status_code == 429, blocked.text
+    assert blocked.json()["error"]["code"] == "RATE_LIMITED"

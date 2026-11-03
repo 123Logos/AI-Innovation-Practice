@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:5173"
     allowed_origins: str = "http://localhost:5173"
     enable_api_docs: bool = True
+    #: 登录/注册限流开关。默认开启；测试（`tests/conftest.py`）通过环境变量关掉，
+    #: 否则同一分钟内反复注册/登录的用例会自己撞上 429。
+    rate_limit_enabled: bool = True
     database_url: str | None = None
     jwt_secret_key: str | None = None
     jwt_algorithm: str = "HS256"

@@ -4,12 +4,13 @@
 本轮只有写入需求（生成即落库），读取接口待简历列表任务一并交付。
 """
 
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import uuid4
 
 from sqlalchemy import DateTime, String, Text
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
+from app.core.datetime_display import utc_now
 from app.repositories.student_profile_repository import ProfileBase
 
 
@@ -35,7 +36,7 @@ class ResumeRepository:
         title: str,
         content_html: str,
     ) -> Resume:
-        now = datetime.now(UTC).replace(tzinfo=None)
+        now = utc_now()
         resume = Resume(
             id=str(uuid4()),
             student_profile_id=student_profile_id,

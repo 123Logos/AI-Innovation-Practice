@@ -7,7 +7,7 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import datetime
 from uuid import uuid4
 
 from sqlalchemy import DateTime, String, create_engine, select
@@ -15,15 +15,11 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from app.core.config import get_settings
+from app.core.datetime_display import utc_now
 
 
 class Base(DeclarativeBase):
     """T7.1 只映射 `users`；其他表仍由 Alembic 迁移维护。"""
-
-
-def utc_now() -> datetime:
-    """MySQL DATETIME 无时区，统一存 UTC 的 naive 时间。"""
-    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class User(Base):

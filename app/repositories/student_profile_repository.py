@@ -7,20 +7,17 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from uuid import uuid4
 
 from sqlalchemy import Date, DateTime, SmallInteger, String, Text, delete, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
+from app.core.datetime_display import utc_now
+
 
 class ProfileBase(DeclarativeBase):
     """档案域的 declarative base；`resumes` 表复用同一 registry（见 resume_repository）。"""
-
-
-def utc_now() -> datetime:
-    """MySQL DATETIME 无时区，统一存 UTC 的 naive 时间。"""
-    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class StudentProfile(ProfileBase):

@@ -18,6 +18,10 @@
 同一个口径也用于「时间不能是未来」的校验基准（`shanghai_today`）：
 若拿服务器本地 `date.today()` 当基准，部署在 UTC 机器上就会在
 北京时间 08:00 之前把「今天」判成昨天，用户的今天被误拦。
+
+反过来，**写入**库里的时间统一用 `utc_now()`（见下）：MySQL DATETIME 不带时区，
+存 UTC 的 naive 值，读取时再由上面的函数转东八区展示。写入口径曾分散在
+三个仓储文件里各写一遍，T7.7 收敛到本模块，避免三处实现悄悄漂移。
 """
 
 from datetime import UTC, date, datetime, timedelta, timezone
@@ -47,3 +51,12 @@ def shanghai_today() -> date:
     之间会比国内日期早一天，把用户合法选中的「今天」误判成未来。
     """
     return datetime.now(SHANGHAI_TZ).date()
+
+
+def utc_now() -> datetime:
+    """写入数据库用的「现在」：UTC 的 naive 时间。
+
+    MySQL `DATETIME` 不带时区，所以库里一律存 UTC naive 值；
+    返回给前端前由 `format_shanghai_datetime()` 转东八区。
+    """
+    return datetime.now(UTC).replace(tzinfo=None)
