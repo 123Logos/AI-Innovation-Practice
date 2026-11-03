@@ -8,7 +8,15 @@ const store = useResumeStore()
 
 const feedback = ref<{ tone: 'ok' | 'error'; text: string } | null>(null)
 
-const profileStatus = computed(() => (store.hasSavedProfile ? '已保存' : '未保存'))
+/**
+ * 档案状态跟「是否有未保存修改」联动：
+ * 保存入口合并成一个后，这里若还按 `hasSavedProfile` 单独显示，
+ * 用户会看到「档案 已保存」但按钮写着「保存修改」，两处互相打架。
+ */
+const profileStatus = computed(() => {
+  if (store.dirty) return '待保存'
+  return store.hasSavedProfile ? '已保存' : '未保存'
+})
 const resumeStatus = computed(() =>
   store.generatedResumeId ? `已生成 #${store.generatedResumeId.slice(0, 8)}` : '未生成',
 )
@@ -80,8 +88,9 @@ function printResume(): void {
       <p class="panel-label">数据状态</p>
       <div class="status-row"><span>档案</span><strong>{{ profileStatus }}</strong></div>
       <div class="status-row"><span>简历</span><strong>{{ resumeStatus }}</strong></div>
+      <div class="status-row"><span>最近保存</span><strong>{{ store.lastSavedAt ?? '—' }}</strong></div>
       <p v-if="store.dirty" class="warning">
-        左侧有未保存的修改，点「生成简历」时会先询问是否保存。
+        有未保存的修改：点预览区上方的「保存修改」落库，或直接生成（会先询问是否保存）。
       </p>
     </div>
 
@@ -94,7 +103,9 @@ function printResume(): void {
 
     <div class="panel-section">
       <p class="panel-label">编辑提示</p>
-      <p class="hint">点击中央纸面上的文字块即可直接编辑，内容会同步到左侧表单。</p>
+      <p class="hint">
+        点击中央纸面上的文字块即可直接编辑，内容会同步到左侧表单；改完点上方「保存修改」落库。
+      </p>
       <p class="hint print-tip">
         💡 建议在打印设置中取消勾选「页眉和页脚」以获得纯净简历
       </p>

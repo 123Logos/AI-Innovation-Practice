@@ -1,7 +1,4 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-
-import { isApiError } from '@/api'
 import {
   DEGREE_OPTIONS,
   EDUCATION_LIMIT,
@@ -28,8 +25,6 @@ const store = useResumeStore()
 const maxMonth = currentMonthValue()
 const maxDate = todayIsoDate()
 
-const feedback = ref<{ tone: 'ok' | 'error'; text: string } | null>(null)
-
 type ProfileField = 'full_name' | 'email' | 'contact'
 
 function onProfileInput(field: ProfileField, event: Event): void {
@@ -52,23 +47,6 @@ function onExperienceInput(
 ): void {
   store.updateExperience(index, field, (event.target as HTMLInputElement | HTMLTextAreaElement).value)
 }
-
-/**
- * 保存不再拦必填（用户反馈）：空行由 store 过滤，这里直接把能存的部分存下去。
- * 严格的完整性校验挪到「生成简历」时（`StylePanel` → `validateForGenerate()`）。
- */
-async function handleSave(): Promise<void> {
-  feedback.value = null
-  try {
-    await store.save()
-    feedback.value = { tone: 'ok', text: '档案已保存到数据库。' }
-  } catch (error) {
-    feedback.value = {
-      tone: 'error',
-      text: isApiError(error) ? error.message : '保存失败，请稍后重试。',
-    }
-  }
-}
 </script>
 
 <template>
@@ -76,7 +54,7 @@ async function handleSave(): Promise<void> {
     <div class="panel-heading">
       <p class="eyebrow">简历编辑</p>
       <h1>完善你的简历</h1>
-      <p class="panel-intro">填写后点击「保存档案」落库，中央预览会实时同步。</p>
+      <p class="panel-intro">改动会实时同步到中央预览，点预览区上方的「保存修改」才落库。</p>
     </div>
 
     <section class="form-section">
@@ -294,14 +272,6 @@ async function handleSave(): Promise<void> {
       </button>
       <p class="hint">最多 {{ EXPERIENCE_LIMIT.max }} 条。</p>
     </section>
-
-    <section class="save-section">
-      <button class="save-button" type="button" :disabled="store.saving" @click="handleSave">
-        {{ store.saving ? '保存中…' : '保存档案' }}
-      </button>
-      <p v-if="feedback" :class="['feedback', `feedback--${feedback.tone}`]">{{ feedback.text }}</p>
-      <p v-else-if="store.lastSavedAt" class="feedback">上次保存：{{ store.lastSavedAt }}</p>
-    </section>
   </aside>
 </template>
 
@@ -331,18 +301,11 @@ textarea { min-height: 58px; resize: vertical; line-height: 1.45; }
 .required { color: #9a5e58; font-weight: 400; }
 .item-index { color: #6b8f8a; font-family: "SF Mono", Consolas, monospace; font-size: 12px; }
 .hint { color: #879692; font-size: 11px; line-height: 1.5; }
-.save-section { display: grid; gap: 8px; border-top: 1px solid #dde5e2; padding-top: 16px; }
-.save-button { width: 100%; border: 0; padding: 11px; color: #fff; background: #6b8f8a; cursor: pointer; font: inherit; font-size: 13px; }
-.save-button:hover:not(:disabled) { background: #527873; }
-.save-button:disabled { opacity: .6; cursor: progress; }
-.feedback { font-size: 12px; line-height: 1.5; }
-.feedback--ok { color: #3f7a5f; }
-.feedback--error { color: #9a5e58; }
 @media (prefers-color-scheme: dark) {
   .editor-panel { color: #e8eae9; }
   .panel-intro, .field span, .hint { color: #b7c3c0; }
   input, textarea, select { border-color: #52635f; color: #e8eae9; background: #263330; }
-  .save-section, .experience-form, .education-form { border-color: #52635f; }
+  .experience-form, .education-form { border-color: #52635f; }
   .counter { color: #8ea09c; }
 }
 @media print {

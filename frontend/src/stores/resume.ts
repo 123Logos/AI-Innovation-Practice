@@ -31,7 +31,10 @@
  * 教育经历（T7.5）是一对多子表，前端与后端的渲染顺序都是「入学时间倒序」。
  *
  * 本地草稿：按用户 id 隔离存在 `localStorage`，只写不覆盖服务端数据；
- * 用户点「保存档案」成功后立即清除。
+ * 用户点预览区上方的「保存修改」（`save()`）成功后立即清除。
+ *
+ * 保存入口自 D3 起只有一个：纸面编辑与左侧表单都只改 Pinia，
+ * `dirty` 为真即「未落库」，由 `ResumePreview.vue` 工具栏的按钮统一提交。
  */
 
 import { computed, reactive, ref, watch } from 'vue'
@@ -594,7 +597,10 @@ export const useResumeStore = defineStore('resume', () => {
     }
   }
 
-  /** 保存档案：PUT 整体替换，成功后用服务端返回值回填本地，并清掉本地草稿。 */
+  /**
+   * 唯一的保存动作（表单 + 纸面共用）：PUT 整体替换，
+   * 成功后用服务端返回值回填本地（`applyDraft` 会把 `dirty` 归零），并清掉本地草稿。
+   */
   async function save(): Promise<ProfileRead> {
     saving.value = true
     try {

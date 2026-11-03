@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 
+import { isApiError } from '@/api'
 import { useResumeStore } from '@/stores/resume'
 import { formatDate, formatMonth, parseDateInput, parseMonthInput } from '@/utils/datetime'
 
@@ -22,6 +23,32 @@ const generatedBody = computed(() => {
 })
 
 const generatedResumeId = computed(() => store.generatedResumeId?.slice(0, 8) ?? '')
+
+/**
+ * 全站唯一的「保存」入口（D3 方案 C）。
+ *
+ * 纸面编辑与左侧表单都只写 Pinia，`dirty` 为真即代表「改了但没落库」。
+ * 这里不再拆「保存档案 / 保存修改」两种语义——都只是把当前草稿整体
+ * `PUT /profiles/me`，成功后 `store.save()` 内部会 `applyDraft()` 把
+ * `dirty` 归零，按钮自然从高亮的「保存修改」退回灰底的「已保存」。
+ */
+const saveError = ref('')
+
+const saveLabel = computed(() => {
+  if (store.saving) return '保存中…'
+  return store.dirty ? '保存修改' : '已保存'
+})
+
+async function handleSave(): Promise<void> {
+  // 保存中重复点击、或在「已保存」状态下点击，都直接忽略。
+  if (store.saving || !store.dirty) return
+  saveError.value = ''
+  try {
+    await store.save()
+  } catch (error) {
+    saveError.value = isApiError(error) ? `保存失败：${error.message}` : '保存失败，请稍后重试。'
+  }
+}
 
 /**
  * 教育经历按入学时间倒序（最近一段在前），与后端生成器 `sorted(..., reverse=True)` 同序。
@@ -126,6 +153,19 @@ function updateExpDate(
         <span class="mode-badge__dot" aria-hidden="true"></span>
         {{ store.isGeneratingResultVisible ? '已生成简历' : '实时预览' }}
       </span>
+      <div class="toolbar-save">
+        <p v-if="saveError" class="save-error" role="alert">{{ saveError }}</p>
+        <button
+          class="save-button"
+          :class="{ 'save-button--dirty': store.dirty }"
+          type="button"
+          :disabled="store.saving || !store.dirty"
+          @click="handleSave"
+        >
+          <span v-if="store.dirty && !store.saving" class="save-button__dot" aria-hidden="true"></span>
+          {{ saveLabel }}
+        </button>
+      </div>
       <div class="toolbar-right">
         <span v-if="generatedResumeId" class="code">#{{ generatedResumeId }}</span>
         <span class="page-count">A4 · 1 页</span>
@@ -367,6 +407,41 @@ function updateExpDate(
 .mode-badge--generated { border-color: #6b8f8a; border-left-color: #3f635e; color: #26433e; background: #dceae6; }
 .mode-badge--generated .mode-badge__dot { background: #3f635e; }
 /*
+ * 唯一保存入口。两种状态刻意做出明显反差：
+ * dirty → 低饱和青绿底 + 琥珀色小圆点（「有事没做完」的警示感）；
+ * !dirty → 灰底灰字并禁用，文字变「已保存」，让「没有待办」这件事无需点击即可确认。
+ */
+.toolbar-save { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; }
+.save-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid #d6dfdc;
+  border-radius: 0;
+  padding: 9px 18px;
+  color: #a9b6b3;
+  background: #eef1f0;
+  cursor: not-allowed;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.save-button--dirty {
+  border-color: #4f8d7d;
+  color: #1f4a3f;
+  background: #d7ebe4;
+  box-shadow: 0 0 0 3px #4f8d7d1f;
+  cursor: pointer;
+}
+.save-button--dirty:hover:not(:disabled) { background: #c5e0d7; }
+.save-button--dirty:active:not(:disabled) { background: #b6d6cb; }
+/* 保存中：保留高亮外观（否则会闪一下灰），只把光标换成等待态。 */
+.save-button--dirty:disabled { cursor: progress; opacity: .8; }
+.save-button:focus-visible { outline: 2px solid #6b8f8a; outline-offset: 2px; }
+.save-button__dot { width: 7px; height: 7px; border-radius: 50%; background: #c9a227; }
+.save-error { max-width: 220px; margin: 0; color: #9a5e58; font-size: 12px; line-height: 1.4; }
+/*
  * 任务 2：尺寸对齐 StylePanel 的 .generate-button（padding 11px / font-size 13px），
  * 并靠 flex:1 撑满工具栏右侧剩余空间，视觉重量与「生成简历」同档。
  */
@@ -414,6 +489,11 @@ function updateExpDate(
 /* 窄屏：按钮变宽后单行放不下，工具栏改为两行，按钮独占整行（仍满足「撑满」）。 */
 @media (max-width: 720px) {
   .preview-toolbar { flex-wrap: wrap; row-gap: 10px; }
+  /* 窄屏一行放不下三组，让保存按钮与状态徽标各占一半，仍保持「一眼可见」。 */
+  .mode-badge { flex: 1 1 auto; justify-content: center; }
+  .toolbar-save { flex: 1 1 100%; }
+  .save-button { flex: 1 1 auto; justify-content: center; }
+  .save-error { flex: 1 1 100%; max-width: none; text-align: center; }
   .toolbar-right { flex: 1 0 100%; justify-content: space-between; }
   .preview-button { flex: 1 1 100%; max-width: none; }
 }
