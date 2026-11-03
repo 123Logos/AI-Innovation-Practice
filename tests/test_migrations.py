@@ -6,7 +6,15 @@ from sqlalchemy import create_engine, text
 
 from alembic import command
 
-EXPECTED_TABLES = {"educations", "experiences", "resumes", "skills", "student_profiles", "users"}
+EXPECTED_TABLES = {
+    "educations",
+    "experiences",
+    "refresh_tokens",
+    "resumes",
+    "skills",
+    "student_profiles",
+    "users",
+}
 
 
 def _database_url() -> str:
@@ -62,7 +70,11 @@ def test_upgrade_schema_constraints_and_downgrade() -> None:
             "fk_experiences_student_profile_id",
             "fk_educations_student_profile_id",
             "fk_resumes_student_profile_id",
+            # Phase 2 · D2.1：令牌是附属数据，用户被删时必须跟着删（CASCADE），
+            # 而不是像档案那样挡住删除（RESTRICT）。
+            "fk_refresh_tokens_user_id",
         }
+        assert foreign_keys.pop("fk_refresh_tokens_user_id") == "CASCADE"
         assert set(foreign_keys.values()) == {"RESTRICT"}
 
         checks = set(
@@ -113,6 +125,23 @@ def test_upgrade_schema_constraints_and_downgrade() -> None:
             )
         ).all()
         assert created_at_indexes == []
+
+        # refresh_tokens.token_hash 必须唯一：既是查询索引，也保证同一令牌
+        # 不会在轮换时被写成两条都能用的记录。
+        refresh_token_indexes = dict(
+            connection.execute(
+                text(
+                    """
+                    SELECT INDEX_NAME, NON_UNIQUE
+                    FROM information_schema.STATISTICS
+                    WHERE TABLE_SCHEMA = DATABASE()
+                      AND TABLE_NAME = 'refresh_tokens'
+                    """
+                )
+            ).all()
+        )
+        assert int(refresh_token_indexes["uq_refresh_tokens_token_hash"]) == 0
+        assert "ix_refresh_tokens_user_id" in refresh_token_indexes
 
         triggers = connection.execute(
             text(

@@ -16,6 +16,7 @@ from starlette.exceptions import HTTPException
 from starlette.requests import Request
 
 from app.integrations.resume_generator import TemplateResumeGenerator
+from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.resume_repository import ResumeRepository
 from app.repositories.student_profile_repository import StudentProfileRepository
 from app.repositories.user_repository import UserRepository, session_scope
@@ -29,13 +30,13 @@ UNAUTHORIZED_MESSAGE = "无效或已过期的访问令牌。"
 
 def get_auth_service() -> Iterator[AuthService]:
     with session_scope() as session:
-        yield AuthService(UserRepository(session))
+        yield AuthService(UserRepository(session), RefreshTokenRepository(session))
 
 
 def get_current_user(request: Request) -> UserRead:
     token = _bearer_token(request)
     with session_scope() as session:
-        service = AuthService(UserRepository(session))
+        service = AuthService(UserRepository(session), RefreshTokenRepository(session))
         try:
             return service.get_current_user(token)
         except AuthError as error:

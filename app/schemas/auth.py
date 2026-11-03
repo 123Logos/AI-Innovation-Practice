@@ -61,6 +61,18 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=128)
 
 
+class RefreshTokenRequest(BaseModel):
+    """`POST /auth/refresh` 与 `POST /auth/logout` 共用的请求体。
+
+    `max_length` 只做防御：JWT 一般 300–500 字符，给到 4096 是为了容纳
+    未来可能的更长声明，同时挡住「往这个接口灌 MB 级字符串」这种廉价消耗。
+    这里**不做** JWT 结构校验——那不是 schema 的职责，且校验结果不该
+    通过 422/401 的差异泄露给攻击者（统一在 service 层判 401）。
+    """
+
+    refresh_token: str = Field(min_length=1, max_length=4096)
+
+
 class UserRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -71,6 +83,14 @@ class UserRead(BaseModel):
 
 
 class TokenResponse(BaseModel):
+    """登录与刷新共用同一响应结构，前端可以无差别处理。
+
+    `expires_in` 依然只描述 **access token** 的寿命（秒）：
+    它决定前端什么时候该去刷新；refresh token 的 7 天寿命属于服务端状态
+    （可被撤销、可被轮换），不通过响应体对外承诺。
+    """
+
     access_token: str
+    refresh_token: str
     token_type: str = "bearer"
     expires_in: int

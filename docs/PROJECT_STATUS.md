@@ -2,7 +2,7 @@
 
 > 本文件描述的是“已实现并验证”的状态，不是“已设计”的状态。
 > 任何未附测试输出或手动复现步骤的条目，不得写入“已验证”。
-> 最后更新：2026-11-03（T7.7）
+> 最后更新：2026-11-03（Phase 2 · D2.1 后端双 Token）
 
 ## 1. 一句话状态
 
@@ -15,6 +15,14 @@
 并已修复，但尚无规模化真实用户数据。
 
 > 历史说明：本节曾写“前端仍未接 API”，该描述截至 T7.3 已过期，现行事实以本节与 §3 为准。
+
+Phase 2 已启动，按 `docs/PHASE2_BACKLOG.md` 优先级推进：
+
+- **D1（已完成）**：用户名在应用层显式归一小写，存量数据由迁移回填；
+- **D3（已完成）**：保存入口合并为一个「保存修改」按钮；
+- **D2（进行中）**：D2.1 后端已支持双 Token（access 15 分钟 + refresh 7 天、落库可撤销、
+  每次刷新轮换），**D2.2 前端拦截器尚未接入**——当前前端仍只拿 access token，
+  到期即掉线，需重新登录。
 
 ## 2. 资产分级
 
@@ -40,7 +48,7 @@
 
 | 项 | 对应任务 | 状态 |
 |---|---|---|
-| Alembic 基线 + 5 张表迁移 | T4 | 已验证（T7.5 追加第 6 张表 `educations`，见下） |
+| Alembic 基线 + 5 张表迁移 | T4 | 已验证（T7.5 追加第 6 张 `educations`、D2.1 追加第 7 张 `refresh_tokens`，见下） |
 | fake 垂直切片 + 集成测试 | T5 | 已验证；T7.2 起被真实仓储取代，`fake_resume_repository.py` 仅留存不再被路由引用 |
 | import-linter 架构约束 | T6 | 已验证（5 个 contract 全部通过） |
 | 配置 fail-fast + `.env.example` | T6 | 已验证 |
@@ -53,6 +61,9 @@
 | 多段教育经历（`educations` 子表） | T7.5 | 已验证：迁移 `20261102_0002`（upgrade/downgrade 可逆）；`tests/test_profiles.py` 覆盖「两段 → 一段」全量替换；生成器按入学时间倒序渲染教育区块 |
 | 前后端全链路联调 | T7.3 | **已验证**：JWT 鉴权、Pinia 状态同步、A4 实时预览、真实数据库落库（登录 → 保存档案 → 生成简历） |
 | 技术债清理与安全加固 | T7.7 | 已验证：废弃路由 `/me`、`/jobs` 下线；`utc_now()` 收敛到 `app/core/datetime_display.py`；CORS 白名单化；登录/注册 5 次/分钟限流并并入统一错误模型 |
+| 用户名大小写归一（D1） | Phase 2 | 已验证：模型层 + 业务层双重 `strip().lower()`；迁移 `20261103_0005` 用 `BINARY` 比较回填存量；`test_login_is_case_insensitive`、`test_register_lowercases_username` 守护 |
+| 显式保存按钮（D3） | Phase 2 | 已验证：保存语义合并为预览区工具栏唯一入口（三态：保存修改 / 保存中… / 已保存禁用），左侧「保存档案」按钮与相关样式删除；`typecheck` / `build` 通过 |
+| 双 Token + 刷新接口（D2.1 后端） | Phase 2 | 已验证：`refresh_tokens` 表（迁移 `20261103_0006`，`upgrade`/`downgrade` 可逆）；登录返回双 Token、库里只存 SHA-256；`POST /auth/refresh` 轮换、复用旧令牌 401；`POST /auth/logout` 撤销；`tests/test_auth.py` 9 项新用例 |
 
 ## 3. 已验证 / 未验证
 
@@ -60,11 +71,12 @@
 |---|---|---|
 | 进程可启动 | 未验证 | 本次未运行启动或健康检查命令 |
 | 数据库迁移可跑通 | **已验证** | `alembic/versions/20261023_0001_initial_phase1.py`、`tests/test_migrations.py`、`uv run pytest` 1 passed、MySQL 8.0.43、Ruff 0.17.1 全绿 |
-| 注册/登录写入真实 MySQL | **已验证** | `uv run pytest tests/test_auth.py -v` 12 passed（201 注册 + 库内记录断言、重复用户名/邮箱 400、登录 200 + Bearer、错密码/未知用户 401、`/auth/me` 200、六种无效令牌 401） |
+| 注册/登录写入真实 MySQL | **已验证** | `uv run pytest tests/test_auth.py -q` 23 passed（201 注册 + 库内记录断言、重复用户名/邮箱 400、登录 200 + Bearer、大小写不敏感登录、错密码/未知用户 401、`/auth/me` 200、六种无效令牌 401；D2.1 追加双 Token / 轮换 / 复用 401 / 登出 / 级联删除） |
+| 双 Token 与刷新 | **已验证** | `POST /auth/login` 返回 `access_token` + `refresh_token`（`expires_in` 仍为 access 的 900 秒）；库内 `refresh_tokens.token_hash` = `sha256(明文)`（64 位，明文不落库）；`POST /auth/refresh` 换发新双 Token 并把旧记录置 `revoked_at`；同一 refresh token 二次使用 401；`POST /auth/logout` 返回 204 且撤销后不可再刷新 |
 | JWT 生产 fail-fast | **已验证** | `Settings(environment="production")` 缺 `jwt_secret_key` 或不足 32 位均抛 `ValueError` |
 | 档案读写写入真实 MySQL | **已验证** | `uv run pytest tests/test_profiles.py -v` 14 passed：PUT 后 `student_profiles` 1 行 / `skills` 3 行 / `experiences` 1 行 / `educations` 1 行；教育经历 2 段再改 1 段时旧行被物理删除；二次 PUT 技能/经历全量替换且 profile id 不变；两用户互不可见 |
 | 简历生成写入真实 MySQL | **已验证** | `uv run pytest tests/test_resumes_generate.py -v` 8 passed：注册→PUT 档案→生成，断言 `resumes` 行的 id / student_profile_id / title / content_html 与响应一致；教育区块含学校/专业/学历/起止时间且按入学时间倒序，无教育经历时整块不渲染；未登录 401；无档案 400 |
-| 业务链路可跑通 | **已验证（前端 + 后端）** | T7.3 起前后端全链路联调：登录态（JWT）→ 档案保存 → A4 实时预览 → 生成简历落真实 `resumes` 表；`uv run pytest -q` 55 passed 覆盖后端链路，前端 `typecheck` / `build` 通过 |
+| 业务链路可跑通 | **已验证（前端 + 后端）** | T7.3 起前后端全链路联调：登录态（JWT）→ 档案保存 → A4 实时预览 → 生成简历落真实 `resumes` 表；`uv run pytest -q` 69 passed 覆盖后端链路，前端 `typecheck` / `build` 通过 |
 | 手机/电脑可用 | **部分验证** | 已在小范围人工测试中跑通主流程（并据此修复 10 项体验问题）；无规模化真实用户数据 |
 | AI 生成简历 | **未验证** | 仍是 `TemplateResumeGenerator` 模板拼装 |
 
@@ -73,7 +85,11 @@
 1. `resumes` 表只有写入路径，缺列表 / 详情 / 编辑接口——「我的简历」还没有档案库视图；
 2. 纸面（`contenteditable`）上的就地编辑只写进 Pinia store，不写回已生成的 `content_html`；
 3. CI 四件套（ruff / mypy / pytest / lint-imports）仅在本地验证过，未在 GitHub Actions 实际运行；
-4. 登录/注册限流是**进程内内存计数**，多 worker 部署时每个进程各算一份，需换 Redis 存储才准确。
+4. 登录/注册限流是**进程内内存计数**，多 worker 部署时每个进程各算一份，需换 Redis 存储才准确；
+5. **D2.2 未做**：后端已能签发/轮换 refresh token，但前端 `client.ts` 仍只持有 access token，
+   15 分钟后 401 直接清 Token 跳登录——双 Token 的价值要等前端拦截器接上才成立；
+6. `refresh_tokens` 没有清理任务：过期记录只会累积（每条登录会话一行，7 天后失效），
+   需要定时删除或「按用户保留最近 N 条」的策略（Phase 2 后续）。
 
 ## 5. 下一步
 
@@ -160,6 +176,33 @@
   并补 `tests/test_rate_limit.py`（登录 5×401 → 第 6 次 429、注册 5×201 → 第 6 次 429）。
   验证：`uv run pytest -q` 58 passed（连真实 `resume_mvp_test`）；`ruff` / `mypy` /
   `lint-imports`（5/5）全绿；未新增表、未新增迁移、未 commit。
+- Phase 2 · D1（用户名归一与回填）：`RegisterRequest.validate_username` 与
+  `AuthService.register/login` 双重 `strip().lower()`（模型层决定落库值、服务层幂等兜底），
+  并在归一后重判长度（`'İ'.lower()` 会变 2 字符，只信 `Field(max_length)` 会炸成 500）。
+  迁移 `20261103_0005` 回填存量——**指令给的原句在 `utf8mb4_0900_ai_ci` 下一条都不会更新**
+  （`'ZhangSan' <> LOWER('ZhangSan')` 求值为 0，实测命中 0 行），改用
+  `WHERE BINARY username <> BINARY LOWER(username)` 后命中 1 行并在测试库真跑通。
+  注册页加「用户名不区分大小写」提示。验证：`pytest` 60 passed。
+- Phase 2 · D3（显式保存按钮）：保存语义合并为预览区工具栏唯一入口，左侧「保存档案」
+  按钮连同 `handleSave` 与 `.save-*` 样式一并删除；三态（`dirty` → 青绿高亮「保存修改」+
+  琥珀圆点、`!dirty` → 灰底禁用「已保存」、`saving` → 「保存中…」且保持高亮）；
+  失败走内联 `role="alert"` 提示；`dirty` 时生成前确认弹窗与「先保存再生成」保持不变。
+  `StylePanel` 的档案状态改为 `dirty` 时显示「待保存」并新增「最近保存」行。
+  未加 `watch` 自动保存。验证：`typecheck` / `build` 通过 + 22 条 SSR 行为断言全过。
+- Phase 2 · D2.1（后端双 Token）：新增 `refresh_tokens` 表与迁移 `20261103_0006`
+  （`token_hash` 唯一、`user_id` FK `ON DELETE CASCADE`、`downgrade` 为 `drop_table`）；
+  `security.py` 新增 `create_refresh_token` / `token_hash(SHA-256)` /
+  `refresh_token_expires_at`，`decode_token` 增加 `expected_type` 防错配；
+  新增 `app/repositories/refresh_token_repository.py`（`issue` / `get_by_hash` /
+  `rotate` 单事务 / `revoke`）；`AuthService.login` 发双 Token 并落哈希，
+  `refresh` 走四道闸门后轮换，`logout` 幂等撤销；新增 `POST /auth/refresh`、
+  `POST /auth/logout`（204），错误统一落 T6 模型。
+  **实现中踩到一个真 bug**：JWT 的 `iat`/`exp` 精度只到秒，同一秒内为同一用户签发两次
+  会得到逐字节相同的令牌，`token_hash` 撞唯一索引 → 登录 500。已在载荷里加随机 `jti`
+  修复，并补回归用例 `test_login_twice_issues_distinct_refresh_tokens`。
+  验证：`uv run pytest -q` 69 passed；`ruff` / `mypy`(32 文件) / `lint-imports`(5/5) 全绿；
+  迁移在测试库跑通 `upgrade head` / `downgrade base`；手工冒烟（登录→刷新→复用→登出）见
+  本轮记录；未改前端、未 commit。
 
 ## 7. 本轮未做（显式声明）
 
@@ -168,7 +211,15 @@
 - 未新增简历列表 / 详情 / 编辑接口，`resumes` 表仍只有写入路径。
 - 未修改 `app/integrations/` 的既有模板逻辑（体验修复轮只改了日期格式与区块顺序）。
 - 档案写入的边界（技能 0–8、经历 0–3、教育 0–5，保存不拦必填）沿用 T5/T7 契约，未再调整。
+- D2.1 未改前端任何文件（`frontend/` 下一行未动），前端拦截器属 D2.2；
+  未实现「同一 refresh token 复用 → 撤销该用户全部令牌」的家族撤销策略（当前只拒绝该次请求）；
+  未做 `refresh_tokens` 的过期清理任务；未给 `/auth/refresh`、`/auth/logout` 挂限流（理由见 `app/api/v1/auth.py` 模块注释）。
+- D2.1 的 `id` / `user_id` 用 `VARCHAR(36)` 而非设计稿的 `CHAR(36)`：与本库所有主键同型，
+  避免外键两侧类型不一致导致的隐式转换与 `CHAR` 补空格问题（见迁移文件说明）。
 
 ## 8. 下一阶段
 
 Phase 1（MVP）核心开发已结束，已创建 `docs/PHASE2_BACKLOG.md` 规划下一阶段迭代。
+
+Phase 2 进度：D1（用户名归一）完成 → D3（显式保存按钮）完成 →
+**D2.1（后端双 Token）完成** → 下一步 D2.2（前端 401 拦截器 + 静默续期）。

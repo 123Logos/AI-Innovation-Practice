@@ -4,6 +4,7 @@
 再导入应用，因此应用内所有连接都指向测试库；测试前后自动建表与清理。
 """
 
+import hashlib
 import os
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -21,12 +22,14 @@ import jwt
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from app.core.security import create_access_token
+from app.core.security import create_access_token, create_refresh_token
 from app.main import app
 from app.repositories.user_repository import Base, dispose_engine, get_engine
 
 REGISTER_URL = "/api/v1/auth/register"
 LOGIN_URL = "/api/v1/auth/login"
+REFRESH_URL = "/api/v1/auth/refresh"
+LOGOUT_URL = "/api/v1/auth/logout"
 ME_URL = "/api/v1/auth/me"
 PASSWORD = "Passw0rd!2026"
 
@@ -79,6 +82,39 @@ def _stored_username(user_id: str) -> str:
             {"id": user_id},
         ).scalar_one()
     return str(value)
+
+
+def _login_tokens(client: TestClient, username: str, password: str = PASSWORD) -> dict[str, object]:
+    """登录并返回完整响应体（access + refresh），供双 Token 用例复用。"""
+    response = client.post(LOGIN_URL, json={"username": username, "password": password})
+    assert response.status_code == 200, response.text
+    data: dict[str, object] = response.json()["data"]
+    return data
+
+
+def _refresh_rows(user_id: str) -> list[dict[str, object]]:
+    """按创建顺序取该用户的全部令牌记录（只取库里的**哈希**，取不到明文）。"""
+    with get_engine().connect() as connection:
+        rows = (
+            connection.execute(
+                text(
+                    """
+                    SELECT token_hash, expires_at, revoked_at, created_at
+                    FROM refresh_tokens
+                    WHERE user_id = :user_id
+                    ORDER BY created_at, id
+                    """
+                ),
+                {"user_id": user_id},
+            )
+            .mappings()
+            .all()
+        )
+    return [dict(row) for row in rows]
+
+
+def _sha256(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -266,6 +302,182 @@ def test_login_with_unknown_username_returns_401(client: TestClient) -> None:
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "CLIENT_ERROR"
+
+
+def test_login_issues_refresh_token_and_stores_only_hash(client: TestClient) -> None:
+    """Phase 2 · D2.1：登录发双 Token，库里只留 refresh token 的 SHA-256 哈希。"""
+    username = _unique_username("judy")
+    user = _register(client, username)
+    data = _login_tokens(client, username)
+
+    assert data["access_token"].count(".") == 2
+    assert data["refresh_token"].count(".") == 2
+    assert data["expires_in"] == 900
+    access_claims = jwt.decode(str(data["access_token"]), options={"verify_signature": False})
+    refresh_claims = jwt.decode(str(data["refresh_token"]), options={"verify_signature": False})
+    assert access_claims["type"] == "access"
+    assert refresh_claims["type"] == "refresh"
+    assert refresh_claims["sub"] == user["id"]
+
+    rows = _refresh_rows(str(user["id"]))
+    assert len(rows) == 1
+    row = rows[0]
+    plaintext = str(data["refresh_token"])
+    assert row["token_hash"] == _sha256(plaintext)
+    assert row["token_hash"] != plaintext
+    assert len(str(row["token_hash"])) == 64
+    assert row["revoked_at"] is None
+    # 库里的任何一列都不该出现明文令牌。
+    assert plaintext not in str(rows)
+
+    expires_at = row["expires_at"]
+    assert isinstance(expires_at, datetime)
+    # 7 天有效期（给 1 小时容差，避免测试机时钟/取整干扰）。
+    remaining = expires_at - datetime.now(UTC).replace(tzinfo=None)
+    assert timedelta(days=6, hours=23) < remaining <= timedelta(days=7, hours=1)
+
+
+def test_login_twice_issues_distinct_refresh_tokens(client: TestClient) -> None:
+    """回归：同一秒内为同一用户登录两次，两条 refresh token 也必须不同。
+
+    JWT 的 `iat` / `exp` 精度只到秒，若载荷里没有随机 `jti`，这两条令牌会
+    逐字节相同，`token_hash` 撞唯一索引 → 登录直接 500。
+    这条用例就是那个 bug 的看门人（本轮实现时真的踩到了）。
+    """
+    username = _unique_username("peggy")
+    user = _register(client, username)
+
+    first = _login_tokens(client, username)
+    second = _login_tokens(client, username)
+
+    assert first["refresh_token"] != second["refresh_token"]
+    rows = _refresh_rows(str(user["id"]))
+    assert len(rows) == 2
+    assert {str(row["token_hash"]) for row in rows} == {
+        _sha256(str(first["refresh_token"])),
+        _sha256(str(second["refresh_token"])),
+    }
+
+
+def test_refresh_rotates_token_pair(client: TestClient) -> None:
+    """用 refresh token 换新：拿到的是一对全新令牌，旧记录被撤销。"""
+    username = _unique_username("karl")
+    user = _register(client, username)
+    first = _login_tokens(client, username)
+
+    response = client.post(REFRESH_URL, json={"refresh_token": first["refresh_token"]})
+
+    assert response.status_code == 200, response.text
+    second = response.json()["data"]
+    assert second["access_token"] != first["access_token"]
+    assert second["refresh_token"] != first["refresh_token"]
+    assert second["token_type"] == "bearer"
+    assert second["expires_in"] == 900
+    claims = jwt.decode(second["access_token"], options={"verify_signature": False})
+    assert claims["sub"] == user["id"]
+    assert claims["type"] == "access"
+
+    rows = _refresh_rows(str(user["id"]))
+    assert len(rows) == 2
+    old_row = next(row for row in rows if row["token_hash"] == _sha256(str(first["refresh_token"])))
+    new_row = next(
+        row for row in rows if row["token_hash"] == _sha256(str(second["refresh_token"]))
+    )
+    assert old_row["revoked_at"] is not None
+    assert new_row["revoked_at"] is None
+
+    # 新 access token 立刻可用于鉴权。
+    me = client.get(ME_URL, headers={"Authorization": f"Bearer {second['access_token']}"})
+    assert me.status_code == 200
+    assert me.json()["data"]["user"]["id"] == user["id"]
+
+    # 新 refresh token 还能继续换下一对（链式轮换不会把自己锁死）。
+    third = client.post(REFRESH_URL, json={"refresh_token": second["refresh_token"]})
+    assert third.status_code == 200, third.text
+    assert third.json()["data"]["refresh_token"] != second["refresh_token"]
+
+
+def test_refresh_rejects_reused_token(client: TestClient) -> None:
+    """复用测试：同一条 refresh token 第二次使用必须 401（已被轮换撤销）。"""
+    username = _unique_username("laura")
+    user = _register(client, username)
+    first = _login_tokens(client, username)
+
+    assert client.post(REFRESH_URL, json={"refresh_token": first["refresh_token"]}).status_code == 200
+
+    replay = client.post(REFRESH_URL, json={"refresh_token": first["refresh_token"]})
+
+    assert replay.status_code == 401, replay.text
+    body = replay.json()
+    assert body["error"]["code"] == "CLIENT_ERROR"
+    assert body["error"]["message"]
+    assert body["meta"]["request_id"]
+    assert "access_token" not in replay.text
+    # 重放被拒后，库里不会多出记录（说明没有在拒绝前先发新令牌）。
+    assert len(_refresh_rows(str(user["id"]))) == 2
+
+
+def test_refresh_rejects_access_token(client: TestClient) -> None:
+    """拿 access token 冒充 refresh token：类型不匹配直接 401。"""
+    username = _unique_username("mallory")
+    _register(client, username)
+    data = _login_tokens(client, username)
+
+    response = client.post(REFRESH_URL, json={"refresh_token": data["access_token"]})
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "CLIENT_ERROR"
+
+
+def test_refresh_rejects_unknown_refresh_token(client: TestClient) -> None:
+    """签名合法但库里没有的 refresh token（用户注销、伪造主体）一律 401。"""
+    response = client.post(REFRESH_URL, json={"refresh_token": create_refresh_token(str(uuid4()))})
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "CLIENT_ERROR"
+
+
+def test_refresh_rejects_malformed_token(client: TestClient) -> None:
+    for token in ("not-a-jwt", "a.b.c", ""):
+        response = client.post(REFRESH_URL, json={"refresh_token": token})
+        assert response.status_code in {401, 422}, token
+        assert "access_token" not in response.text
+
+
+def test_logout_revokes_refresh_token(client: TestClient) -> None:
+    """登出把 refresh token 置为已撤销；登出本身幂等，重复调用不报错。"""
+    username = _unique_username("niaj")
+    user = _register(client, username)
+    data = _login_tokens(client, username)
+
+    response = client.post(LOGOUT_URL, json={"refresh_token": data["refresh_token"]})
+
+    assert response.status_code == 204
+    assert response.content == b""
+    rows = _refresh_rows(str(user["id"]))
+    assert len(rows) == 1
+    assert rows[0]["revoked_at"] is not None
+
+    # 已撤销的令牌不能再换新。
+    refresh = client.post(REFRESH_URL, json={"refresh_token": data["refresh_token"]})
+    assert refresh.status_code == 401
+
+    # 幂等：重复登出、或拿一个根本不存在的令牌登出，都返回 204。
+    assert client.post(LOGOUT_URL, json={"refresh_token": data["refresh_token"]}).status_code == 204
+    assert client.post(LOGOUT_URL, json={"refresh_token": "unknown"}).status_code == 204
+
+
+def test_refresh_token_is_deleted_with_user(client: TestClient) -> None:
+    """`ON DELETE CASCADE`：删用户时令牌随之清理，不留孤儿行。"""
+    username = _unique_username("olivia")
+    user = _register(client, username)
+    _login_tokens(client, username)
+    assert len(_refresh_rows(str(user["id"]))) == 1
+
+    with get_engine().begin() as connection:
+        connection.execute(text("DELETE FROM users WHERE id = :id"), {"id": user["id"]})
+
+    assert _refresh_rows(str(user["id"])) == []
 
 
 def test_me_returns_user_with_valid_token(client: TestClient) -> None:
