@@ -30,7 +30,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from alembic import command
-from app.core.document_style import THEMES
+from app.core.document_style import DEFAULT_SECTIONS, THEMES
 from app.main import app
 from app.repositories.user_repository import dispose_engine, get_engine
 from app.schemas.profile import ProfileUpsertRequest
@@ -46,12 +46,14 @@ CLEAN_ORDER = ("resumes", "educations", "skills", "experiences", "student_profil
 #: D5.1 补 `paper_size`、D5.2 补 `theme`：这两者都是 `toUpsertPayload()` **显式传值**
 #: 的字段（不是省略），所以必须出现在这份「前端真实会发的 JSON」里，
 #: 否则三态语义的「不传即保留」分支就永远测不到真实调用形态。
+#: D5.3 补 `layout_config`：前端同样是显式传（默认排版发 `null`，自定义发快照）。
 FRONTEND_PAYLOAD_KEYS = {
     "full_name",
     "email",
     "contact",
     "paper_size",
     "theme",
+    "layout_config",
     "skills",
     "experiences",
     "educations",
@@ -75,6 +77,8 @@ def _frontend_payload() -> dict[str, object]:
         # 这两项由 `toUpsertPayload()` 显式带上（当前草稿里的值，不是省略）。
         "paper_size": "A4",
         "theme": "forest",
+        # 草稿没调过顺序 → 前端发 `null`（让库里保持 NULL，将来能跟上新默认顺序）。
+        "layout_config": None,
         "skills": [
             {"name": "Python", "self_rating": 3},
             {"name": "SQL", "self_rating": 3},
@@ -108,6 +112,7 @@ def _empty_draft_payload() -> dict[str, object]:
         "contact": "",
         "paper_size": "A4",
         "theme": "forest",
+        "layout_config": None,
         "skills": [],
         "experiences": [],
         "educations": [],
@@ -129,6 +134,42 @@ def test_frontend_payload_is_accepted_by_backend_model() -> None:
     assert parsed.educations[0].edu_end is None
     assert parsed.paper_size == "A4"
     assert parsed.theme == "forest"
+    # 前端在「默认排版」时发的是 `null`，语义是「恢复默认顺序」，不是「没传」。
+    assert "layout_config" in parsed.model_fields_set
+    assert parsed.layout_config is None
+
+
+def test_frontend_custom_layout_payload_is_accepted() -> None:
+    """用户调过顺序 / 改过标题时，前端发的是完整快照（`toUpsertPayload()` 的另一支）。
+
+    这条与上一条一起覆盖了 `layout_config` 的两种真实请求形状：
+    默认 → `null`，自定义 → `{version, sections[]}`。
+    """
+    payload = {
+        **_frontend_payload(),
+        "layout_config": {
+            "version": 1,
+            "sections": [
+                {"id": "skills", "title": "技术栈"},
+                {"id": "educations", "title": "教育背景"},
+                {"id": "experiences", "title": "项目经验"},
+            ],
+        },
+    }
+
+    parsed = ProfileUpsertRequest.model_validate(payload)
+
+    assert parsed.layout_config is not None
+    assert [section.id for section in parsed.layout_config.sections] == [
+        "skills",
+        "educations",
+        "experiences",
+    ]
+    # 落库前会被 `model_dump()` 成纯 dict（JSON 列不能塞 pydantic 实例）。
+    assert parsed.layout_config.model_dump()["sections"][0] == {
+        "id": "skills",
+        "title": "技术栈",
+    }
 
 
 def test_empty_draft_payload_is_accepted() -> None:
@@ -297,3 +338,42 @@ def test_theme_palette_matches_frontend() -> None:
         assert (name, accent, rule) == expected, (
             f"{theme.id} 双端不一致：后端 {expected} vs 前端 {(name, accent, rule)}"
         )
+
+
+# --------------------------------------------------------------------------- #
+# D5.3：默认排版顺序与标题必须双端同源
+# --------------------------------------------------------------------------- #
+
+#: 匹配 `DEFAULT_LAYOUT_SECTIONS` 里的一行：`{ id: 'skills', title: '技能' }`
+_LAYOUT_ENTRY_PATTERN = re.compile(
+    r"\{\s*id:\s*'(?P<id>[a-z]+)',\s*title:\s*'(?P<title>[^']+)'\s*\}"
+)
+
+
+def test_default_layout_matches_frontend() -> None:
+    """默认顺序与默认标题在后端 `DEFAULT_SECTIONS` 与前端常量之间必须逐字一致。
+
+    为什么值得测：两处默认值各自服务不同的阶段——前端在「还没有后端响应」的
+    空白骨架阶段就要渲染，后端在 `layout=None` 时也要出稿。它们一旦漂移，
+    用户会看到「预览里技能在第二、生成出来的 PDF 里技能在第三」，
+    而这正是 ADR-007 §7.1 说的「手工对齐的绳子断了」，肉眼很难在上线前发现。
+    """
+    if not FRONTEND_RESUME_STORE.exists():
+        pytest.skip("前端源码不在当前检出中（后端单独部署的场景）")
+
+    source = FRONTEND_RESUME_STORE.read_text(encoding="utf-8")
+    start = source.find("export const DEFAULT_LAYOUT_SECTIONS")
+    assert start != -1, "前端 `stores/resume.ts` 里找不到 `export const DEFAULT_LAYOUT_SECTIONS`"
+    # 从 `= [` 开始切，不能用「第一个 `]`」——类型标注 `LayoutSection[]` 里就有一个，
+    # 会把切片截在数组之前，得到空列表（那样测试会「通过」得莫名其妙）。
+    array_start = source.find("= [", start)
+    assert array_start != -1, "`DEFAULT_LAYOUT_SECTIONS` 后面没有 `= [`"
+    array_end = source.find("\n]", array_start)
+    assert array_end != -1, "前端 `DEFAULT_LAYOUT_SECTIONS` 数组没有闭合"
+
+    entries = [
+        (match.group("id"), match.group("title"))
+        for match in _LAYOUT_ENTRY_PATTERN.finditer(source[array_start:array_end])
+    ]
+    expected = [(section.id, section.title) for section in DEFAULT_SECTIONS]
+    assert entries == expected, f"默认排版双端不一致：后端 {expected} vs 前端 {entries}"

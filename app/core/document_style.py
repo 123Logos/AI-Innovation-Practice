@@ -1,6 +1,10 @@
-"""简历配色预设（Phase 2 · D5.2，ADR-007 §5）。
+"""简历文档样式：配色预设（D5.2，ADR-007 §5）与排版解析（D5.3，ADR-007 §6）。
 
-## 为什么是「8 套枚举」而不是任意 HEX
+放在 `app/core/` 而不是 services / integrations：它是**纯数据 + 纯函数**，
+api / services / integrations 都能 import，不引入任何层间依赖
+（ADR-007 §11.1 明确推荐这个落点）。
+
+## 配色预设（D5.2）：为什么是「8 套枚举」而不是任意 HEX
 
 主题色只染两处：`h2` 栏目标题、页眉下边框。
 
@@ -38,8 +42,9 @@
 **没有** `background` / `text` 字段，从数据结构上堵住这种误用。
 """
 
+import logging
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Literal, TypedDict, cast
 
 #: 主题枚举。前端 `ThemeId`（`frontend/src/api/types.ts`）与此同源。
 ThemeId = Literal["forest", "ink", "navy", "wine", "plum", "cocoa", "slate", "olive"]
@@ -111,3 +116,157 @@ def normalize_theme(value: object) -> ThemeId:
 def get_theme(value: object) -> DocumentTheme:
     """取预设实例；非法值回落默认，供生成器内联 CSS 变量时使用。"""
     return THEMES[normalize_theme(value)]
+
+
+# --------------------------------------------------------------------------- #
+# 排版（D5.3 · ADR-007 §6）：展示顺序与自定义标题
+# --------------------------------------------------------------------------- #
+#
+# ## 为什么解析（`resolve_layout`）放在后端而不是前端
+#
+# 排序与标题在**两个地方**生效：生成器拼 HTML、预览渲染 `<section>`。
+# 如果两边各写一套「脏数据怎么办」，同一个库里的坏配置会渲染出两种版式——
+# 而前端没有测试框架，这种漂移在 CI 里发现不了（ADR-007 §7.4）。
+# 所以降级矩阵**只在后端写一份**：读接口直接返回解析后的结果
+# （`GET /profiles/{id}` 的 `layout_config` 恒为「3 段、合法 id、标题非空」），
+# 前端拿到的永远是可以直接 `v-for` 的数据，不需要再判一次。
+#
+# 这与 `paper_size` / `theme` 的「读侧恒为具体值、三态只存在于写侧」是同一条口径。
+#
+# ## 降级矩阵（ADR-007 §6.8(3) 逐条落地）
+#
+# | 输入 | 处理 |
+# |---|---|
+# | `None` | 默认顺序 |
+# | 不是 dict / JSON 非法（ORM 层已拦） | 默认顺序 + warning |
+# | `version` 未知 | 默认顺序（向前兼容） |
+# | `sections` 不是列表 / 空数组 | 默认顺序（**不是**「什么都不渲染」） |
+# | 条目不是 dict、`id` 缺失 | 跳过，该模块在末尾按默认顺序补齐 |
+# | `id` 未知 | 丢弃 + warning |
+# | `id` 重复 | 保留首次出现，后面丢弃 + warning |
+# | `title` 空 / 全空白 / 不是字符串 | 回落该模块默认标题 |
+# | `title` 超过 12 字 | 截断（写入侧已 422，这条只应对手工改库） |
+#
+# 核心原则：排版是**装饰信息**，任何异常都退化为默认，绝不让它阻断主流程。
+# 这与写路径的严格（未知 id / 重复 id / 超长标题 → 422）刻意不对称：
+# 前者是数据状态（用户无从修复），后者是用户输入（可以报错让他改）。
+
+#: 三个可排序模块的 id。前端 `SectionId`（`frontend/src/api/types.ts`）与此同源。
+SectionId = Literal["educations", "skills", "experiences"]
+
+#: 配置版本。**只有等于这个值才认**，其余一律默认（ADR-007 §6.8(1)）。
+LAYOUT_VERSION = 1
+
+#: 标题长度上限（ADR-007 §6.8(4)）：`h2` 在 360px 视口下最多 15 字不折行，取 12 留余量。
+LAYOUT_TITLE_MAX_LEN = 12
+
+
+@dataclass(frozen=True)
+class Section:
+    """解析后的一个模块：按**渲染顺序**排好的 id + 标题。"""
+
+    id: SectionId
+    title: str
+
+
+#: 默认顺序，与 D5.3 之前模板里的占位符顺序逐字一致（教育 → 技能 → 项目）。
+#: 前端 `DEFAULT_LAYOUT_SECTIONS`（`frontend/src/stores/resume.ts`）另有一份，
+#: 由 `tests/test_profile_contract.py::test_default_layout_matches_frontend` 比对。
+DEFAULT_SECTIONS: tuple[Section, ...] = (
+    Section("educations", "教育经历"),
+    Section("skills", "技能"),
+    Section("experiences", "项目经历"),
+)
+
+#: 合法 id 的白名单，顺序同默认顺序。
+SECTION_IDS: tuple[SectionId, ...] = tuple(section.id for section in DEFAULT_SECTIONS)
+
+#: id → 默认标题。写入侧与降级路径都用它兜底。
+DEFAULT_TITLES: dict[SectionId, str] = {section.id: section.title for section in DEFAULT_SECTIONS}
+
+
+class LayoutSectionDict(TypedDict):
+    """`layout_config.sections` 里的一项（只存元信息，不存内容）。"""
+
+    id: str
+    title: str
+
+
+class LayoutConfig(TypedDict):
+    """`student_profiles.layout_config` 这一列的 JSON 形状。
+
+    刻意用 `TypedDict` 而不是 pydantic：本文件是「纯数据 + 纯函数」的 core 层，
+    写路径的严格校验属于 schema 层（`app/schemas/profile.py` 的 `LayoutConfigInput`）。
+    """
+
+    version: int
+    sections: list[LayoutSectionDict]
+
+
+#: 排版降级时记 warning（不抛异常）：运维要能从日志看出「这份简历的配置坏了」。
+_logger = logging.getLogger(__name__)
+
+
+def _resolve_title(raw_title: object, section_id: SectionId) -> str:
+    """标题归一：压平空白 → 空则回落默认 → 截断到上限。"""
+    if isinstance(raw_title, str):
+        # 压平所有空白（含换行）：`h2` 是单行标题，用户从别处粘贴带换行的文本时
+        # 不能让纸面上出现一个两行的栏目标题。
+        title = " ".join(raw_title.split())
+        if title:
+            return title[:LAYOUT_TITLE_MAX_LEN]
+    return DEFAULT_TITLES[section_id]
+
+
+def resolve_layout(layout_config: object) -> list[Section]:
+    """把库里的 `layout_config` 解析成**可直接渲染**的模块顺序。
+
+    参数类型标成 `object` 而不是 `dict | None`：调用方拿到的是 SQLAlchemy 的
+    JSON 列，手工改库后它可能是字符串、数组甚至数字，签名里写 `dict` 只会
+    让调用方误以为不必防御。真正的收窄在函数内部完成。
+    """
+    defaults = list(DEFAULT_SECTIONS)
+    if layout_config is None:
+        return defaults
+    if not isinstance(layout_config, dict):
+        _logger.warning("layout_config 不是 JSON 对象，已回落默认顺序：%r", layout_config)
+        return defaults
+    if layout_config.get("version") != LAYOUT_VERSION:
+        _logger.warning(
+            "layout_config.version 非当前版本（%r），已回落默认顺序", layout_config.get("version")
+        )
+        return defaults
+
+    raw_sections = layout_config.get("sections")
+    if not isinstance(raw_sections, list) or not raw_sections:
+        # 空数组按「数据损坏」处理，**不是**「用户想隐藏所有模块」：
+        # 后者需要 `visible` 字段，ADR-007 §6.8(6) 已明确本轮不做。
+        _logger.warning("layout_config.sections 为空或不是数组，已回落默认顺序")
+        return defaults
+
+    resolved: list[Section] = []
+    seen: set[str] = set()
+    for entry in raw_sections:
+        if not isinstance(entry, dict):
+            _logger.warning("layout_config.sections 含非对象条目，已跳过：%r", entry)
+            continue
+        section_id = entry.get("id")
+        if not isinstance(section_id, str) or section_id not in DEFAULT_TITLES:
+            # 缺 id 与未知 id 在这里合并处理：都不加入 resolved，
+            # 于是该模块会在下面「按默认顺序补齐」时回到末尾，未知 id 则彻底消失。
+            if isinstance(section_id, str) and section_id not in DEFAULT_TITLES:
+                _logger.warning("layout_config 含未知模块 id %r，已丢弃", section_id)
+            continue
+        if section_id in seen:
+            _logger.warning("layout_config 含重复模块 id %r，保留首次出现的位置", section_id)
+            continue
+        seen.add(section_id)
+        typed_id = cast(SectionId, section_id)
+        resolved.append(Section(typed_id, _resolve_title(entry.get("title"), typed_id)))
+
+    # 缺失的模块按默认顺序追加到末尾：用户升级前只见过 3 个模块，
+    # 将来加第 4 个时，老配置靠这一步自动带上它（ADR-007 §6.8(3)）。
+    for section in defaults:
+        if section.id not in seen:
+            resolved.append(section)
+    return resolved

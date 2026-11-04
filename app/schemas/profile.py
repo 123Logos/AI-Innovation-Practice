@@ -39,7 +39,15 @@ from pydantic import (
 )
 
 from app.core.datetime_display import format_shanghai_datetime, shanghai_today
-from app.core.document_style import DEFAULT_THEME, ThemeId
+from app.core.document_style import (
+    DEFAULT_THEME,
+    LAYOUT_TITLE_MAX_LEN,
+    LAYOUT_VERSION,
+    SECTION_IDS,
+    Section,
+    SectionId,
+    ThemeId,
+)
 from app.schemas.resume import ExperienceInput, SkillInput
 
 #: 学历枚举，与 `ck_educations_degree` 约束保持一致。
@@ -70,6 +78,88 @@ def normalize_paper_size(value: object) -> PaperSize:
 
 #: 中国大陆手机号；前端 `resume.ts` 里有一份同源正则，两边必须同步。
 PHONE_PATTERN = re.compile(r"^1[3-9]\d{9}$")
+
+
+class LayoutSectionInput(BaseModel):
+    """一个模块的排版元信息：id + 标题。**不含内容**（内容永远在子表里）。
+
+    写路径刻意严格（ADR-007 §10.4「写入严格、读取宽松」）：
+
+    - `id` 由 `Literal` 白名单拦截，未知模块 422；
+    - `title` 裁掉首尾空白后必须非空，长度 ≤ 12（`LAYOUT_TITLE_MAX_LEN`）——
+      空标题会在纸面上留一个空 `h2`，超长标题在 360px 视口会折行把版式撑开；
+    - `extra="forbid"`：前端若误传了内容字段（`items` / `school` …），
+      宁可 422 也不悄悄忽略——那会让「我明明调了顺序为什么没生效」无从排查。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: SectionId
+    title: str = Field(max_length=LAYOUT_TITLE_MAX_LEN)
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, title: str) -> str:
+        """压平空白并拒绝空标题；不截断——超长由 `max_length` 报 422 而不是静默改字。"""
+        normalized = " ".join(title.split())
+        if not normalized:
+            raise ValueError("layout section title must not be blank")
+        return normalized
+
+
+class LayoutConfigInput(BaseModel):
+    """`PUT` 里的 `layout_config`（完整快照，不是差异）。
+
+    - `version` 只认 `LAYOUT_VERSION`：将来升到 v2 时，旧客户端写 v1 会被拒，
+      避免「用旧语义覆盖新结构」；
+    - `sections` 允许**少于** 3 段：缺的模块由读侧的 `resolve_layout()` 追加到末尾
+      （老客户端不认识新模块时，不该因为少传一项就 422）；
+    - 重复 id 直接 422（ADR-007 §6.8(3)）：重复会让前端 `v-for` 的 key 冲突，
+      属于用户输入错误，应当报错而不是猜他想表达什么。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int
+    sections: list[LayoutSectionInput] = Field(min_length=1, max_length=len(SECTION_IDS))
+
+    @field_validator("version")
+    @classmethod
+    def validate_version(cls, version: int) -> int:
+        if version != LAYOUT_VERSION:
+            raise ValueError(f"layout_config.version must be {LAYOUT_VERSION}")
+        return version
+
+    @model_validator(mode="after")
+    def validate_unique_ids(self) -> "LayoutConfigInput":
+        ids = [section.id for section in self.sections]
+        if len(ids) != len(set(ids)):
+            raise ValueError("layout_config.sections must not contain duplicate ids")
+        return self
+
+
+class LayoutSectionRead(BaseModel):
+    id: SectionId
+    title: str
+
+
+class LayoutConfigRead(BaseModel):
+    """读侧的 `layout_config`：**恒为解析后的完整配置**，永远不会是 `null`。
+
+    与 `paper_size` / `theme` 的「读侧恒为具体值」同一条口径（ADR-007 §10.2）：
+    三态只存在于写侧。这样前端不需要把降级矩阵再实现一遍——
+    它拿到的顺序就是生成器会用的顺序。
+    """
+
+    version: int = LAYOUT_VERSION
+    sections: list[LayoutSectionRead]
+
+    @classmethod
+    def from_sections(cls, sections: list[Section]) -> "LayoutConfigRead":
+        return cls(
+            version=LAYOUT_VERSION,
+            sections=[LayoutSectionRead(id=item.id, title=item.title) for item in sections],
+        )
 
 
 class SkillRead(BaseModel):
@@ -155,6 +245,10 @@ class ProfileUpsertRequest(BaseModel):
 
     D5.2 的 `theme` 沿用同一套三态语义（不传保留 / null 回 `forest` / 传 id 设置），
     理由完全相同：装饰性字段最容易被旧客户端「顺手清空」。
+
+    D5.3 的 `layout_config` 同样是三态（不传保留 / `null` 恢复默认顺序 / 传快照设置）。
+    这里「保留」的意义比前两者更重：旧前端每次保存都会整体覆盖内容，
+    若把「没传」当成「重置」，用户调过的顺序与自定义标题会被**静默清掉**。
     """
 
     full_name: str = Field(default="", max_length=100)
@@ -168,6 +262,9 @@ class ProfileUpsertRequest(BaseModel):
     paper_size: PaperSize | None = None
     #: 配色主题（8 套预设之一）；缺省 = 不改动，显式 null = 回到 `forest`。
     theme: Theme | None = None
+    #: 排版（顺序 + 自定义标题）；缺省 = 不改动，显式 null = 恢复默认顺序。
+    #: 只存元信息：内容仍在 `skills` / `experiences` / `educations` 子表里。
+    layout_config: LayoutConfigInput | None = None
     skills: list[SkillInput] = Field(default_factory=list, max_length=8)
     experiences: list[ExperienceInput] = Field(default_factory=list, max_length=3)
     #: 教育经历 0–5 段；为空时不渲染教育区块，缺省值兼容尚未升级的旧客户端。
@@ -277,6 +374,9 @@ class ProfileRead(BaseModel):
     paper_size: PaperSize = DEFAULT_PAPER_SIZE
     #: D5.2：配色主题，同上，读侧恒为 8 套之一（库里非法值已在服务层收敛）。
     theme: Theme = DEFAULT_THEME
+    #: D5.3：排版。读侧**恒为解析后的完整配置**（永不 null），
+    #: 脏数据在 `resolve_layout()` 里已退化为默认顺序，前端拿到即可直接渲染。
+    layout_config: LayoutConfigRead
     full_name: str
     email: str | None = None
     grade: str

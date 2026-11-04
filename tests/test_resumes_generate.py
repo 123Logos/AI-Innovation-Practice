@@ -8,6 +8,7 @@ D4.1 起补充「按 profile_id 指定简历生成」的用例（文件末尾）
 """
 
 import os
+import re
 from collections.abc import Iterator
 from pathlib import Path
 from uuid import uuid4
@@ -543,3 +544,134 @@ def test_generate_falls_back_to_forest_when_db_theme_is_unknown(client: TestClie
 
     assert response.status_code == 200, response.text
     assert "--paper-accent: #527873" in response.json()["data"]["content_html"]
+
+
+# --------------------------------------------------------------------------- #
+# D5.3：顺序与自定义标题进生成物
+# --------------------------------------------------------------------------- #
+
+
+def _h2_titles(html: str) -> list[str]:
+    """按出现顺序取出所有 `<h2>` 的文本（不引入解析库，ADR-007 §7.4）。"""
+    return re.findall(r"<h2>(.*?)</h2>", html)
+
+
+def _layout(*pairs: tuple[str, str]) -> dict[str, object]:
+    return {"version": 1, "sections": [{"id": key, "title": title} for key, title in pairs]}
+
+
+def test_generate_uses_default_layout_when_never_customized(client: TestClient) -> None:
+    """没有 `layout_config` 时顺序与标题都要与 D5.3 之前完全一致。"""
+    token = _register_and_login(client)
+    client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token))
+
+    response = client.post(GENERATE_URL, json={"title": "默认排版"}, headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    assert _h2_titles(response.json()["data"]["content_html"]) == ["教育经历", "技能", "项目经历"]
+
+
+def test_generate_follows_layout_order_and_titles(client: TestClient) -> None:
+    """顺序错乱 + 标题全改：生成物的 `<h2>` 必须逐个对上（ADR-007 §7.4(a)）。"""
+    token = _register_and_login(client)
+    client.put(
+        PROFILES_URL,
+        json=_profile_payload(
+            layout_config=_layout(
+                ("skills", "技术栈"),
+                ("experiences", "项目经验"),
+                ("educations", "教育背景"),
+            )
+        ),
+        headers=_headers(token),
+    )
+
+    response = client.post(GENERATE_URL, json={"title": "自定义排版"}, headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    html = response.json()["data"]["content_html"]
+    assert _h2_titles(html) == ["技术栈", "项目经验", "教育背景"]
+    # 顺序变了，正文内容也要跟着走：技能内容必须出现在「项目经验」之前。
+    assert html.index("Python") < html.index("校园二手交易平台")
+    # 默认标题不能再残留，否则说明拼装时还在用字面量。
+    assert "<h2>技能</h2>" not in html
+
+
+def test_generate_skips_empty_module_even_when_it_is_first(client: TestClient) -> None:
+    """空模块被排在第一位时整段跳过 —— 不留空 `<h2>`，后面的模块自动顶上。"""
+    token = _register_and_login(client)
+    client.put(
+        PROFILES_URL,
+        json=_profile_payload(
+            educations=[],
+            layout_config=_layout(
+                ("educations", "教育背景"),
+                ("skills", "技术栈"),
+                ("experiences", "项目经验"),
+            ),
+        ),
+        headers=_headers(token),
+    )
+
+    response = client.post(GENERATE_URL, json={"title": "无学历"}, headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    html = response.json()["data"]["content_html"]
+    assert _h2_titles(html) == ["技术栈", "项目经验"]
+    assert "教育背景" not in html
+    # 空 `<h2></h2>` 一个都不许有（用户删光某段内容时的典型症状）。
+    assert "<h2></h2>" not in html
+
+
+def test_generate_escapes_custom_layout_title(client: TestClient) -> None:
+    """标题是用户输入，必须 `escape()`：`<img src=x>` 不能变成真标签。
+
+    这里用**直接改库**而不是 `PUT` 写入，因为写路径会按 12 字上限校验，
+    而这条用例要验的是「渲染时转义」这一步本身（库里的值理论上也可能来自旧版本）。
+    """
+    token = _register_and_login(client)
+    saved = client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token)).json()[
+        "data"
+    ]["profile"]
+    with get_engine().begin() as connection:
+        connection.execute(
+            text("UPDATE student_profiles SET layout_config = CAST(:raw AS JSON) WHERE id = :id"),
+            {
+                "raw": '{"version": 1, "sections": [{"id": "skills", "title": "<img src=x>"}]}',
+                "id": saved["id"],
+            },
+        )
+
+    response = client.post(GENERATE_URL, json={"title": "转义"}, headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    html = response.json()["data"]["content_html"]
+    assert "&lt;img src=x&gt;" in html
+    assert "<img src=x>" not in html
+
+
+def test_generate_falls_back_to_default_layout_for_broken_config(client: TestClient) -> None:
+    """库里的排版坏掉时不能让生成 500，一律按默认顺序出稿（ADR-007 §6.8(3)）。"""
+    token = _register_and_login(client)
+    saved = client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token)).json()[
+        "data"
+    ]["profile"]
+
+    broken_values = ['"junk"', "[]", '{"version": 9, "sections": []}']
+    for raw in broken_values:
+        with get_engine().begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE student_profiles SET layout_config = CAST(:raw AS JSON) WHERE id = :id"
+                ),
+                {"raw": raw, "id": saved["id"]},
+            )
+
+        response = client.post(GENERATE_URL, json={"title": "坏排版"}, headers=_headers(token))
+
+        assert response.status_code == 200, f"{raw} -> {response.text}"
+        assert _h2_titles(response.json()["data"]["content_html"]) == [
+            "教育经历",
+            "技能",
+            "项目经历",
+        ], raw

@@ -111,6 +111,31 @@ export type PaperSize = 'A4' | 'Letter'
  */
 export type ThemeId = 'forest' | 'ink' | 'navy' | 'wine' | 'plum' | 'cocoa' | 'slate' | 'olive'
 
+/**
+ * 可调顺序的模块 id（D5.3）。与后端 `document_style.SectionId` 同源。
+ *
+ * 只有这三个：`visible`（隐藏模块）本轮不做（ADR-007 §6.8(6)），
+ * 它与「生成简历要求技能/经历非空」的完整性校验会直接打架。
+ */
+export type SectionId = 'educations' | 'skills' | 'experiences'
+
+/** 一个模块的排版元信息：id + 标题。**不含内容**（内容在各自子表 / 草稿数组里）。 */
+export interface LayoutSection {
+  id: SectionId
+  title: string
+}
+
+/**
+ * 后端 `layout_config` 列的 JSON 形状（D5.3）。
+ *
+ * `version` 目前恒为 1；读接口返回的永远是**解析后的完整配置**
+ * （3 段、合法 id、标题非空），前端不需要再实现一遍降级矩阵。
+ */
+export interface LayoutConfig {
+  version: number
+  sections: LayoutSection[]
+}
+
 /** 后端 `EducationInput`：日期为 `YYYY-MM-DD`，`edu_end` 为 null 表示「至今」。 */
 export interface EducationInput {
   school: string
@@ -198,6 +223,14 @@ export interface ProfileUpsertRequest {
    * 不传 = 保留库里原值；`null` = 恢复默认 forest；预设 id = 设置。
    */
   theme?: ThemeId | null
+  /**
+   * 排版（D5.3）。**三态语义**（ADR-007 §10.2）：
+   * 不传 = 保留库里原值（旧客户端安全）；`null` = 恢复默认顺序；对象 = 完整快照。
+   *
+   * 只存元信息（id + title），绝不把内容（技能/经历数组）塞进来：
+   * 内容一旦进 JSON，就会和子表出现两份真相。
+   */
+  layout_config?: LayoutConfig | null
   skills: SkillInput[]
   experiences: ExperienceInput[]
   educations: EducationInput[]
@@ -215,6 +248,8 @@ export interface ProfileRead {
   paper_size: PaperSize
   /** D5.2：配色主题。同上，读侧恒为 8 套之一（后端已收敛非法值）。 */
   theme: ThemeId
+  /** D5.3：排版。读侧恒为解析后的完整配置（永不 null，脏数据已在后端退化）。 */
+  layout_config: LayoutConfig
   full_name: string
   email: string | null
   grade: string

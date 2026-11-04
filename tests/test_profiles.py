@@ -1474,3 +1474,255 @@ def test_unknown_theme_in_db_falls_back_to_forest(client: TestClient) -> None:
         )
 
     assert _read_profile(client, token, created["id"])["theme"] == "forest"
+
+
+# --------------------------------------------------------------------------- #
+# D5.3：排版（layout_config）
+# --------------------------------------------------------------------------- #
+
+#: 一组合法的自定义排版：顺序打乱、标题全改。
+CUSTOM_LAYOUT: dict[str, object] = {
+    "version": 1,
+    "sections": [
+        {"id": "skills", "title": "技术栈"},
+        {"id": "experiences", "title": "项目经验"},
+        {"id": "educations", "title": "教育背景"},
+    ],
+}
+
+#: 读侧在 `layout_config IS NULL` 时给出的解析结果（= 默认顺序）。
+DEFAULT_LAYOUT: dict[str, object] = {
+    "version": 1,
+    "sections": [
+        {"id": "educations", "title": "教育经历"},
+        {"id": "skills", "title": "技能"},
+        {"id": "experiences", "title": "项目经历"},
+    ],
+}
+
+
+def test_layout_config_column_is_nullable_json() -> None:
+    """迁移只加一列：`JSON NULL`，且**没有默认值**。
+
+    `NULL` 是有语义的（「从未自定义」），不能像 `paper_size` 那样给
+    `server_default` —— 否则「没调过顺序」和「调成了默认顺序」就分不出来了。
+    """
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'student_profiles' "
+                "AND COLUMN_NAME = 'layout_config'"
+            )
+        ).one()
+
+    assert str(row.DATA_TYPE).lower() == "json"
+    assert row.IS_NULLABLE == "YES"
+    assert row.COLUMN_DEFAULT is None
+
+
+def test_layout_config_defaults_to_parsed_default_order(client: TestClient) -> None:
+    """新简历库里是 NULL，但**读接口给的是解析后的默认顺序**（不是 null）。
+
+    读侧恒为具体值，前端就不用把降级矩阵再实现一遍 —— 它拿到的顺序
+    与生成器用的是同一份（ADR-007 §10.2 的既定口径）。
+    """
+    token = _register_and_login(client)
+    created = _create(client, token)
+
+    assert created["layout_config"] == DEFAULT_LAYOUT
+    assert _read_profile(client, token, created["id"])["layout_config"] == DEFAULT_LAYOUT
+
+    with get_engine().connect() as connection:
+        stored = connection.execute(
+            text("SELECT layout_config FROM student_profiles WHERE id = :id"),
+            {"id": created["id"]},
+        ).scalar_one()
+    assert stored is None, "「从未自定义」必须真的存 NULL，否则将来无法自动跟上新默认顺序"
+
+
+def test_layout_config_can_be_saved_and_reread(client: TestClient) -> None:
+    """自定义顺序与标题落库后原样读回（顺序有意义，不能被排序丢掉）。"""
+    token = _register_and_login(client)
+    created = _create(client, token)
+
+    saved = _put_content(client, token, created["id"], layout_config=CUSTOM_LAYOUT)
+
+    assert saved["layout_config"] == CUSTOM_LAYOUT
+    assert _read_profile(client, token, created["id"])["layout_config"] == CUSTOM_LAYOUT
+    assert [item["id"] for item in saved["layout_config"]["sections"]] == [
+        "skills",
+        "experiences",
+        "educations",
+    ]
+
+
+def test_put_without_layout_config_keeps_existing(client: TestClient) -> None:
+    """三态之一：请求体不含该键 → 保留库里原值（旧客户端安全）。"""
+    token = _register_and_login(client)
+    created = _create(client, token)
+    _put_content(client, token, created["id"], layout_config=CUSTOM_LAYOUT)
+
+    payload = _profile_payload()  # D5.3 之前旧前端的形状：没有 layout_config
+    assert "layout_config" not in payload
+    response = client.put(f"{PROFILES_BASE}/{created['id']}", json=payload, headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["profile"]["layout_config"] == CUSTOM_LAYOUT
+
+
+def test_explicit_null_layout_config_resets_to_default(client: TestClient) -> None:
+    """三态之二：显式 `null` → 恢复默认顺序（库里回到 NULL）。"""
+    token = _register_and_login(client)
+    created = _create(client, token)
+    _put_content(client, token, created["id"], layout_config=CUSTOM_LAYOUT)
+
+    reset = _put_content(client, token, created["id"], layout_config=None)
+
+    assert reset["layout_config"] == DEFAULT_LAYOUT
+    with get_engine().connect() as connection:
+        stored = connection.execute(
+            text("SELECT layout_config FROM student_profiles WHERE id = :id"),
+            {"id": created["id"]},
+        ).scalar_one()
+    assert stored is None, "「恢复默认」要写回 NULL，而不是写一份默认顺序的快照"
+
+
+def test_layout_config_rejects_duplicate_ids(client: TestClient) -> None:
+    """写路径严格：重复 id 会让前端 `v-for` 的 key 冲突，直接 422。"""
+    token = _register_and_login(client)
+    created = _create(client, token)
+
+    response = client.put(
+        f"{PROFILES_BASE}/{created['id']}",
+        json=_profile_payload(
+            layout_config={
+                "version": 1,
+                "sections": [
+                    {"id": "skills", "title": "技能"},
+                    {"id": "skills", "title": "技能 2"},
+                ],
+            }
+        ),
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert _read_profile(client, token, created["id"])["layout_config"] == DEFAULT_LAYOUT
+
+
+def test_layout_config_rejects_unknown_section_id(client: TestClient) -> None:
+    """未知模块 id 在写入时 422（只有读路径才降级丢弃）。"""
+    token = _register_and_login(client)
+    created = _create(client, token)
+
+    response = client.put(
+        f"{PROFILES_BASE}/{created['id']}",
+        json=_profile_payload(
+            layout_config={"version": 1, "sections": [{"id": "awards", "title": "获奖"}]}
+        ),
+        headers=_headers(token),
+    )
+
+    assert response.status_code == 422, response.text
+
+
+def test_layout_config_rejects_blank_or_overlong_title(client: TestClient) -> None:
+    """标题为空 / 全空白 / 超过 12 字都 422：空标题在纸面上是个空 `h2`。"""
+    token = _register_and_login(client)
+    created = _create(client, token)
+
+    for title in ("", "   ", "项目经历与开源贡献说明文档"):
+        response = client.put(
+            f"{PROFILES_BASE}/{created['id']}",
+            json=_profile_payload(
+                layout_config={"version": 1, "sections": [{"id": "skills", "title": title}]}
+            ),
+            headers=_headers(token),
+        )
+        assert response.status_code == 422, f"{title!r} -> {response.text}"
+
+
+def test_layout_config_rejects_unknown_version_and_content_fields(client: TestClient) -> None:
+    """`version` 只认 1；顺手在元信息里塞内容字段也 422（`extra="forbid"`）。"""
+    token = _register_and_login(client)
+    created = _create(client, token)
+
+    bad_version = client.put(
+        f"{PROFILES_BASE}/{created['id']}",
+        json=_profile_payload(
+            layout_config={"version": 2, "sections": [{"id": "skills", "title": "技能"}]}
+        ),
+        headers=_headers(token),
+    )
+    assert bad_version.status_code == 422, bad_version.text
+
+    smuggled_content = client.put(
+        f"{PROFILES_BASE}/{created['id']}",
+        json=_profile_payload(
+            layout_config={
+                "version": 1,
+                "sections": [{"id": "skills", "title": "技能", "items": ["Python"]}],
+            }
+        ),
+        headers=_headers(token),
+    )
+    assert smuggled_content.status_code == 422, smuggled_content.text
+
+
+def test_copy_from_copies_layout_config(client: TestClient) -> None:
+    """深拷贝必须带上排版，且**互不影响**（ADR-007 §6.8(5) 的 `deepcopy`）。"""
+    token = _register_and_login(client)
+    source = _create(client, token, title="投算法")
+    _put_content(client, token, source["id"], layout_config=CUSTOM_LAYOUT)
+
+    copied = _create(client, token, title="投算法 副本", copy_from_id=source["id"])
+
+    assert copied["layout_config"] == CUSTOM_LAYOUT
+
+    # 改源简历的排版，副本必须纹丝不动（共享引用的话这里会一起变）。
+    _put_content(
+        client,
+        token,
+        source["id"],
+        layout_config={
+            "version": 1,
+            "sections": [
+                {"id": "educations", "title": "学历"},
+                {"id": "skills", "title": "技术"},
+                {"id": "experiences", "title": "项目"},
+            ],
+        },
+    )
+    assert _read_profile(client, token, copied["id"])["layout_config"] == CUSTOM_LAYOUT
+
+
+def test_broken_layout_in_db_falls_back_in_read(client: TestClient) -> None:
+    """库里被写成非法结构时读接口不 500，一律退化为默认顺序。"""
+    token = _register_and_login(client)
+    created = _create(client, token)
+
+    broken_values = ['"junk"', "[]", '{"version": 9, "sections": [{"id": "skills"}]}']
+    for raw in broken_values:
+        with get_engine().begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE student_profiles SET layout_config = CAST(:raw AS JSON) WHERE id = :id"
+                ),
+                {"raw": raw, "id": created["id"]},
+            )
+
+        assert _read_profile(client, token, created["id"])["layout_config"] == DEFAULT_LAYOUT, raw
+
+
+def test_layout_config_is_not_in_profile_summary(client: TestClient) -> None:
+    """列表刻意不带排版：列表只回答「是哪一份」，多一列就多一份全量读取。"""
+    token = _register_and_login(client)
+    created = _create(client, token)
+
+    response = client.get(PROFILES_BASE, headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    row = next(item for item in response.json()["data"]["profiles"] if item["id"] == created["id"])
+    assert "layout_config" not in row

@@ -5,7 +5,7 @@
 指定用哪一份生成；不传则用默认简历（兼容只发 `title` 的旧前端）。
 """
 
-from app.core.document_style import normalize_theme
+from app.core.document_style import normalize_theme, resolve_layout
 from app.integrations.resume_generator import ResumeGenerator
 from app.repositories.resume_repository import ResumeRepository
 from app.repositories.student_profile_repository import StudentProfile, StudentProfileRepository
@@ -79,6 +79,10 @@ class ResumeService:
             # 配色跟着**这份简历**走（D5.2）：生成物把主题写成内联 CSS 变量，
             # 导出 / 分享出去也带着配色，不依赖页面样式表。
             theme=normalize_theme(profile.theme),
+            # 顺序与标题同样跟着这份简历走（D5.3）。`resolve_layout()` 是唯一入口：
+            # 库里是 NULL 或脏数据时它一律给出「3 段、合法 id、标题非空」的顺序，
+            # 所以生成器拿到的永远是可渲染的列表，不需要自己判空。
+            layout=resolve_layout(profile.layout_config),
         )
         resume = self._resume_repository.create_resume(
             student_profile_id=profile.id,

@@ -19,11 +19,13 @@
 """
 
 from collections.abc import Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Date,
     DateTime,
@@ -81,6 +83,20 @@ class StudentProfile(ProfileBase):
     #: D5.2 配色主题（8 套预设的 id，见 `app/core/document_style.py`）。
     #: 同样只存字符串：加一套主题不必迁移，非法值由读路径兜底回 `forest`。
     theme: Mapped[str] = mapped_column(String(20), nullable=False, default="forest")
+    #: D5.3 排版（`{version, sections:[{id,title}]}`，见 `document_style.LayoutConfig`）。
+    #: `NULL` = 从未自定义，读侧按默认顺序解析。
+    #:
+    #: **只能整体赋值，禁止原地修改**（ADR-007 §6.8(5)）：SQLAlchemy 默认不追踪
+    #: JSON 内部的可变对象，`profile.layout_config["sections"].append(...)` 会
+    #: 「保存成功但顺序没变」，极难排查。要改就构造一个新 dict 赋进来。
+    #:
+    #: `none_as_null=True` 是关键：不写它，Python 的 `None` 会被序列化成 JSON
+    #: 字面量 `null` 存进去，`WHERE layout_config IS NULL` 永远查不到行，
+    #: 「从未自定义」与「自定义成默认顺序」也就分不开了。加上它，`None` 落的是
+    #: 真正的 SQL NULL，语义与迁移注释一致。
+    layout_config: Mapped[dict[str, object] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
     full_name: Mapped[str] = mapped_column(String(100), nullable=False)
     # 简历上展示的邮箱；登录邮箱在 `users.email`，两者互不影响。
     email: Mapped[str | None] = mapped_column(String(254), nullable=True)
@@ -140,6 +156,8 @@ class ProfileDraft:
     软删除才是元信息），所以跟着 PUT 一起写；三态语义由服务层解析成具体值后
     再传进来——仓储只负责写，不做「缺省即保留」的判断。
     D5.2 的 `theme` 与 `paper_size` 完全同构，一起走。
+    D5.3 的 `layout_config` 也走这条路（它是「内容」的一种：跟着保存落库），
+    但**必须整份替换**——服务层已经把它解析成 `dict | None`，仓储不做判断。
     """
 
     full_name: str
@@ -147,6 +165,8 @@ class ProfileDraft:
     contact: str
     paper_size: str = "A4"
     theme: str = "forest"
+    #: `None` = 恢复默认顺序（写进库里就是 SQL NULL）。
+    layout_config: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -331,6 +351,8 @@ class StudentProfileRepository:
             deleted_at=None,
             paper_size=paper_size,
             theme=theme,
+            # D5.3：新简历没有自定义排版，`NULL` = 用默认顺序。
+            layout_config=None,
             full_name="",
             email=None,
             grade="",
@@ -358,6 +380,10 @@ class StudentProfileRepository:
         D5.1：`paper_size` 一并复制。只复制内容不复制纸张等于「换个名字就换版式」，
         用户复制简历最常见的动机就是「同一份内容投另一类岗位，换个纸张/配色」。
         D5.2：`theme` 同理——复制简历就是为了「同内容、换风格」，落下配色等于白复制。
+        D5.3：`layout_config` 必须 **`deepcopy`**（ADR-007 §6.8(5)）。直接赋引用会让
+        两个 ORM 实例指向同一个 dict 对象：任何一方「原地改一下顺序」都会污染另一方，
+        而 SQLAlchemy 又不会追踪 JSON 内部变更，症状是「改了副本，源文件跟着变，
+        但刷新后又变回去」——排查成本极高。深拷贝在这里是硬要求，不是优化。
         """
         now = utc_now()
         target = StudentProfile(
@@ -368,6 +394,7 @@ class StudentProfileRepository:
             deleted_at=None,
             paper_size=source.paper_size,
             theme=source.theme,
+            layout_config=deepcopy(source.layout_config),
             full_name=source.full_name,
             email=source.email,
             grade=source.grade,
@@ -440,6 +467,9 @@ class StudentProfileRepository:
         `paper_size`（D5.1）**在这里改**：它属于内容，和文字一起保存，
         否则「改了纸张 → 保存 → 刷新又变回 A4」。
         `theme`（D5.2）同理：改颜色不落库等于用户白点。
+        `layout_config`（D5.3）也是**整份赋值**，绝不原地改 `profile.layout_config`
+        内部的 list/dict —— SQLAlchemy 不追踪 JSON 内部的可变对象，
+        原地改会「保存成功但顺序没变」（ADR-007 §6.8(5)）。
         """
         now = utc_now()
         profile.full_name = draft.full_name
@@ -447,6 +477,7 @@ class StudentProfileRepository:
         profile.contact = draft.contact
         profile.paper_size = draft.paper_size
         profile.theme = draft.theme
+        profile.layout_config = draft.layout_config
         profile.updated_at = now
         self._session.flush()
 

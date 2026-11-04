@@ -58,12 +58,15 @@ import { defineStore } from 'pinia'
 import { profilesApi, resumesApi } from '@/api'
 import type {
   Degree,
+  LayoutConfig,
+  LayoutSection,
   PaperSize,
   ProfileRead,
   ProfileSortField,
   ProfileSummary,
   ProfileUpsertRequest,
   ResumeRead,
+  SectionId,
   ThemeId,
 } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
@@ -119,6 +122,109 @@ export const THEME_OPTIONS: readonly ThemeOption[] = [
 
 /** 缺省主题：与后端 `DEFAULT_THEME`、迁移的 `server_default` 三处同源。 */
 export const DEFAULT_THEME: ThemeId = 'forest'
+
+/**
+ * 排版默认顺序与默认标题（D5.3）。
+ *
+ * 与后端 `app/core/document_style.py::DEFAULT_SECTIONS` **逐字一致**，由
+ * `tests/test_profile_contract.py::test_default_layout_matches_frontend` 比对。
+ * 两处都有的原因：前端在「还没有后端响应」的空白骨架阶段就要渲染，不能等接口；
+ * 而生成器在 `layout=None` 时也要有默认值。契约测试保证它们不会各说各话。
+ */
+export const DEFAULT_LAYOUT_SECTIONS: readonly LayoutSection[] = [
+  { id: 'educations', title: '教育经历' },
+  { id: 'skills', title: '技能' },
+  { id: 'experiences', title: '项目经历' },
+]
+
+/** 后端 `LAYOUT_VERSION` 的同源常量；版本不匹配时后端会整份回退默认顺序。 */
+export const LAYOUT_VERSION = 1
+
+/**
+ * 标题长度上限（ADR-007 §6.8(4)）：`h2` 在 360px 视口最多 15 字不折行，取 12 留余量。
+ * 输入框的 `maxlength` 与后端 `LayoutSectionInput.title` 的 `max_length` 用的是同一个数。
+ */
+export const LAYOUT_TITLE_MAX_LENGTH = 12
+
+/** 已知模块 id，用于把脏数据里的未知 id 挡在外面（顺序同默认）。 */
+const SECTION_IDS = DEFAULT_LAYOUT_SECTIONS.map((section) => section.id)
+
+/** id → 默认标题；标题被清空或类型不对时回落到它。 */
+const DEFAULT_SECTION_TITLES: Record<SectionId, string> = {
+  educations: '教育经历',
+  skills: '技能',
+  experiences: '项目经历',
+}
+
+/**
+ * 按**码点**截断标题。
+ *
+ * 不用 `String.prototype.slice`：它会按 UTF-16 码元切，正好切在代理对中间时
+ * 会留下半个 emoji（渲染成 �）。后端 Python 的 `str[:12]` 是按码点的，
+ * 两边口径要一致，否则「输入框里 12 个字、生成物里 11 个字」这种差异无法解释。
+ */
+function clampTitle(value: string): string {
+  return Array.from(value).slice(0, LAYOUT_TITLE_MAX_LENGTH).join('')
+}
+
+/** 一份全新的默认排版（每次返回新对象，避免多份草稿共享同一个数组）。 */
+function createDefaultLayout(): LayoutConfig {
+  return {
+    version: LAYOUT_VERSION,
+    sections: DEFAULT_LAYOUT_SECTIONS.map((section) => ({ ...section })),
+  }
+}
+
+/**
+ * 把任意来源的 `layout_config` 收敛成**可直接渲染**的配置。
+ *
+ * 三个来源都可能是脏的：`localStorage` 里的旧草稿、D5.3 之前的后端响应
+ * （没有这个字段）、以及「将来删除某个模块又回滚」的残留。
+ *
+ * 注意这里**不是**后端 `resolve_layout()` 的完整复刻：后端读接口已经保证
+ * 返回合法配置，前端的这层只是兜底（未知 id 丢弃 / 重复丢弃 / 缺的补到末尾 /
+ * 空标题回落默认）。完整降级矩阵只在后端维护一份，避免两套实现漂移。
+ */
+function toLayoutConfig(value: unknown): LayoutConfig {
+  const rawSections = (value as { sections?: unknown } | null | undefined)?.sections
+  if (!Array.isArray(rawSections)) return createDefaultLayout()
+
+  const sections: LayoutSection[] = []
+  for (const entry of rawSections) {
+    if (!entry || typeof entry !== 'object') continue
+    const { id, title } = entry as Partial<LayoutSection>
+    if (!id || !SECTION_IDS.includes(id)) continue
+    if (sections.some((section) => section.id === id)) continue
+    const normalized = typeof title === 'string' ? clampTitle(title.trim()) : ''
+    sections.push({ id, title: normalized || DEFAULT_SECTION_TITLES[id] })
+  }
+  for (const fallback of DEFAULT_LAYOUT_SECTIONS) {
+    if (!sections.some((section) => section.id === fallback.id)) {
+      sections.push({ ...fallback })
+    }
+  }
+  return { version: LAYOUT_VERSION, sections }
+}
+
+/**
+ * 当前排版是否就是「默认顺序 + 默认标题」。
+ *
+ * 保存时用它决定发 `null` 还是发完整快照：发 `null` 让库里的 `layout_config`
+ * 保持 `NULL`（= 「从未自定义」），将来默认顺序升级时这份简历能自动跟上。
+ * 若一律发快照，用户哪怕只是顺手点了保存，也会被钉死在今天的默认顺序上。
+ */
+function isDefaultLayout(value: LayoutConfig): boolean {
+  if (value.sections.length !== DEFAULT_LAYOUT_SECTIONS.length) return false
+  return value.sections.every((section, index) => {
+    const expected = DEFAULT_LAYOUT_SECTIONS[index]
+    return section.id === expected.id && section.title.trim() === expected.title
+  })
+}
+
+/** 排版进入可比序列：只投影 id 与标题，不投影 version（它恒定）。 */
+function layoutComparable(value: unknown): [SectionId, string][] {
+  return toLayoutConfig(value).sections.map((section) => [section.id, section.title.trim()])
+}
 
 /**
  * 把某个主题刷到整个 Web UI 上（D5.2 补充）。
@@ -219,6 +325,16 @@ export interface ProfileDraft {
    * 否则「改了颜色不算未保存修改」，切简历时颜色还会串到下一份。
    */
   theme: ThemeId
+  /**
+   * 排版（D5.3）：模块顺序 + 每段的自定义标题。
+   *
+   * 同样必须在 draft 里（而不是单独的 ref）：`comparableOf()` 只投影 draft 的字段，
+   * 放外面会导致「调了顺序不算未保存修改」，切简历时顺序还会串到下一份。
+   *
+   * 只放元信息，绝不把 `skills` / `experiences` 数组复制进来——
+   * 那会立刻出现「两份内容、以谁为准」的问题。
+   */
+  layout_config: LayoutConfig
   skills: SkillDraft[]
   experiences: ExperienceDraft[]
   educations: EducationDraft[]
@@ -292,6 +408,7 @@ function createEmptyDraft(): ProfileDraft {
     contact: '',
     paper_size: 'A4',
     theme: DEFAULT_THEME,
+    layout_config: createDefaultLayout(),
     skills: Array.from({ length: 3 }, () => ({
       name: '',
       self_rating: DEFAULT_SKILL_RATING,
@@ -317,6 +434,8 @@ function draftFromProfile(profile: ProfileRead): ProfileDraft {
     // 后端保证读侧是具体值；`??` 只是为了兼容「D5.1 之前缓存的响应对象」。
     paper_size: profile.paper_size ?? 'A4',
     theme: toTheme(profile.theme),
+    // D5.3：后端读侧恒返回解析后的配置；`?? null` 只是兼容「D5.2 之前缓存的响应」。
+    layout_config: toLayoutConfig(profile.layout_config),
     skills: profile.skills.map((skill) => ({
       name: skill.name,
       self_rating: skill.self_rating,
@@ -397,7 +516,13 @@ function isProfileDraft(value: unknown): value is ProfileDraft {
       candidate.paper_size === 'Letter') &&
     // D5.2 的 theme 同理：D5.1 及更早的草稿没有它，缺省合法。
     (candidate.theme === undefined ||
-      THEME_OPTIONS.some((option) => option.id === candidate.theme))
+      THEME_OPTIONS.some((option) => option.id === candidate.theme)) &&
+    // D5.3 的 layout_config 同理：D5.2 及更早的草稿没有它，缺省合法。
+    // 有则必须是对象（不能是数组 / 字符串）——否则说明草稿被改坏，宁可当作没有草稿。
+    (candidate.layout_config === undefined ||
+      (typeof candidate.layout_config === 'object' &&
+        candidate.layout_config !== null &&
+        !Array.isArray(candidate.layout_config)))
   )
 }
 
@@ -496,6 +621,8 @@ function normalizeDraft(raw: ProfileDraft): ProfileDraft {
     contact: raw.contact ?? '',
     paper_size: toPaperSize(raw.paper_size),
     theme: toTheme(raw.theme),
+    // D5.3 之前的草稿没有 layout_config，补齐默认排版（同上）。
+    layout_config: toLayoutConfig(raw.layout_config),
     skills: (raw.skills ?? [])
       .filter((skill) => skill && typeof skill.name === 'string')
       .map((skill) => ({ name: skill.name, self_rating: DEFAULT_SKILL_RATING })),
@@ -561,6 +688,8 @@ function comparableOf(source: ProfileDraft): string {
     paper_size: toPaperSize(source.paper_size),
     // 同上，`theme` 缺省要与服务端默认一致，否则改颜色会被判成「没改」。
     theme: toTheme(source.theme),
+    // 排版（D5.3）：顺序与标题都要参与比较，否则「只调顺序」会被判成没有修改。
+    layout_config: layoutComparable(source.layout_config),
     skills: meaningfulSkills(source).map((skill) => skill.name.trim()),
     experiences: meaningfulExperiences(source).map((experience) => [
       experience.title,
@@ -608,9 +737,9 @@ export const useResumeStore = defineStore('resume', () => {
   const pageCount = ref(1)
 
   /**
-   * 样式类改动（目前是配色）把「已生成简历」顶掉之后的提示（D5.2）。
+   * 样式 / 排版类改动（配色、模块顺序、标题）把「已生成简历」顶掉之后的提示（D5.2 / D5.3）。
    *
-   * 放在 store 而不是组件里：改主题的入口将来可能不止一处（面板、顶栏、快捷键），
+   * 放在 store 而不是组件里：改动的入口可能不止一处（面板、顶栏、快捷键），
    * 提示文案必须只有一份，否则「有的入口提示、有的入口静默」会被当成 bug。
    */
   const styleNotice = ref<string | null>(null)
@@ -704,6 +833,7 @@ export const useResumeStore = defineStore('resume', () => {
     draft.contact = next.contact
     draft.paper_size = next.paper_size
     draft.theme = next.theme
+    draft.layout_config = next.layout_config
     // 全局换肤跟着**数据**走，而不是跟着点击走：切简历 / 首次加载 / 恢复草稿
     // 都会经过这里，一处同步就够；否则切到 B 时按钮还停在 A 的颜色。
     syncGlobalTheme(next.theme)
@@ -745,10 +875,71 @@ export const useResumeStore = defineStore('resume', () => {
     draft.theme = theme
     syncGlobalTheme(theme)
     markDirty()
-    if (generatedHtml.value !== null) {
-      showLivePreview()
-      styleNotice.value = '主题已修改，需重新生成简历。'
-    }
+    invalidateGeneratedResult('主题已修改，需重新生成简历。')
+  }
+
+  /**
+   * 样式类改动（配色 / 排版）把「已生成简历」顶掉时的统一处理。
+   *
+   * 生成物里的颜色与顺序都是**生成那一刻**内联进 HTML 的快照，不会跟着 draft 变。
+   * 继续停在生成结果视图里，用户会以为「点了没反应」；所以切回实时预览并留一条提示。
+   * 两个入口共用这一处，避免「配色有提示、排版静默」这种不一致。
+   */
+  function invalidateGeneratedResult(message: string): void {
+    if (generatedHtml.value === null) return
+    showLivePreview()
+    styleNotice.value = message
+  }
+
+  /* ------------------------------ 排版（D5.3） ------------------------------ */
+
+  /** 当前模块顺序 + 标题；面板与预览都只读它，不各自去翻 `draft.layout_config`。 */
+  const layoutSections = computed(() => draft.layout_config.sections)
+
+  /** 把某个模块上移 / 下移一格；到边界就什么都不做（按钮本身也会禁用）。 */
+  function moveSection(id: SectionId, offset: -1 | 1): void {
+    const sections = draft.layout_config.sections
+    const index = sections.findIndex((section) => section.id === id)
+    const target = index + offset
+    if (index < 0 || target < 0 || target >= sections.length) return
+    const [moved] = sections.splice(index, 1)
+    sections.splice(target, 0, moved)
+    markDirty()
+    invalidateGeneratedResult('排版已修改，需重新生成简历。')
+  }
+
+  function moveSectionUp(id: SectionId): void {
+    moveSection(id, -1)
+  }
+
+  function moveSectionDown(id: SectionId): void {
+    moveSection(id, 1)
+  }
+
+  /**
+   * 改模块标题（面板输入框逐字触发）。
+   *
+   * 刻意**不 trim、也不回落默认值**：用户正在输入时，把「项目 」的尾空格当场裁掉
+   * 会让下一个字直接贴到「项目」后面，空格永远敲不进去（输入框的 value 被重渲染）。
+   * 空白与空标题的兜底放在 `toUpsertPayload()`（提交那一刻）和渲染层
+   * （`section.title || 默认标题`），输入过程保持"所见即所打"。
+   *
+   * 长度只做码点级截断兜底：`maxlength` 已经挡在前面，这里防的是粘贴 / 输入法
+   * 一次性灌入超长文本时 `maxlength` 在某些浏览器上的失效。
+   */
+  function updateSectionTitle(id: SectionId, title: string): void {
+    const section = draft.layout_config.sections.find((item) => item.id === id)
+    if (!section) return
+    const next = clampTitle(title)
+    if (section.title === next) return
+    section.title = next
+    markDirty()
+    invalidateGeneratedResult('排版已修改，需重新生成简历。')
+  }
+
+  /** 渲染层用：空标题不能让纸面上出现一个空 `h2`。 */
+  function sectionTitle(section: LayoutSection): string {
+    return section.title.trim() || DEFAULT_SECTION_TITLES[section.id]
   }
 
   function updateSkill(index: number, field: keyof SkillDraft, value: string | number): void {
@@ -840,6 +1031,26 @@ export const useResumeStore = defineStore('resume', () => {
       paper_size: draft.paper_size,
       // 同上：配色也显式传，理由与纸张一致。
       theme: draft.theme,
+      /*
+       * 排版（D5.3）：**是默认顺序就发 null，否则发完整快照**。
+       *
+       * 不一律发快照的理由：`layout_config = NULL` 的语义是「从未自定义」，
+       * 将来默认顺序升级（新增第 4 个模块）时这类简历能自动跟上；
+       * 而「自定义成今天的默认顺序」会被钉死。用户只是顺手保存一次就永久失去
+       * 这条升级路径，代价和收益完全不成比例。
+       *
+       * 标题在这里兜底成默认值：输入框允许暂时为空（正在删改），
+       * 但库里的标题不能为空——后端 `LayoutSectionInput.title` 会 422。
+       */
+      layout_config: isDefaultLayout(draft.layout_config)
+        ? null
+        : {
+            version: LAYOUT_VERSION,
+            sections: draft.layout_config.sections.map((section) => ({
+              id: section.id,
+              title: sectionTitle(section),
+            })),
+          },
       skills: meaningfulSkills(draft).map((skill) => ({
         name: skill.name.trim(),
         // 后端 `SkillInput.self_rating` 仍必填（1–5），但 UI 不再采集，统一写 3。
@@ -1472,6 +1683,12 @@ export const useResumeStore = defineStore('resume', () => {
     updateTheme,
     styleNotice,
     dismissStyleNotice,
+    /* 排版（D5.3） */
+    layoutSections,
+    sectionTitle,
+    moveSectionUp,
+    moveSectionDown,
+    updateSectionTitle,
     /* 多份简历 */
     profiles,
     currentProfile,

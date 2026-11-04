@@ -13,7 +13,7 @@
 
 import re
 
-from app.core.document_style import DEFAULT_THEME, normalize_theme
+from app.core.document_style import DEFAULT_THEME, normalize_theme, resolve_layout
 from app.repositories.student_profile_repository import (
     EducationDraft,
     ExperienceDraft,
@@ -26,6 +26,7 @@ from app.schemas.profile import (
     DEFAULT_PAPER_SIZE,
     EducationRead,
     ExperienceRead,
+    LayoutConfigRead,
     ProfileCreateRequest,
     ProfileRead,
     ProfileSummary,
@@ -247,6 +248,7 @@ class ProfileService:
                 contact=payload.contact,
                 paper_size=self._resolve_paper_size(profile, payload),
                 theme=self._resolve_theme(profile, payload),
+                layout_config=self._resolve_layout_config(profile, payload),
             ),
             [
                 SkillDraft(name=skill.name, self_rating=skill.self_rating)
@@ -309,6 +311,33 @@ class ProfileService:
             return normalize_theme(profile.theme)
         return payload.theme or DEFAULT_THEME
 
+    @staticmethod
+    def _resolve_layout_config(
+        profile: StudentProfile, payload: ProfileUpsertRequest
+    ) -> dict[str, object] | None:
+        """把 `layout_config` 的三态语义解析成「要写进库里的那份快照」。
+
+        | 请求体 | 结果 |
+        |---|---|
+        | 不含该键 | 库里原值（旧客户端安全：它压根不知道有这列） |
+        | `null` | `None` → 库里写 NULL，读侧按默认顺序解析 |
+        | 对象 | 校验过的完整快照（`model_dump()` 成纯 dict） |
+
+        为什么「对象」要 `model_dump()` 而不是把 pydantic 实例塞进 JSON 列：
+        SQLAlchemy 的 `JSON` 类型用 `json.dumps` 序列化，pydantic 实例不是
+        JSON 原生类型，会抛 `TypeError`。这里转一次，写入的永远是纯 dict/list/str。
+
+        另外「传对象」这一支返回的是 `model_dump()` 出来的**新 dict**：仓储只做整体赋值
+        （ADR-007 §6.8(5)），新对象才会被 SQLAlchemy 判定为变更并写进 UPDATE。
+        反过来说，「不含该键」这一支刻意返回原对象——同一对象赋值等于「没有变更」，
+        不需要（也不应该）为此写库或推进 `updated_at`。
+        """
+        if "layout_config" not in payload.model_fields_set:
+            return profile.layout_config
+        if payload.layout_config is None:
+            return None
+        return payload.layout_config.model_dump()
+
     def _ensure_default(self, user_id: str) -> None:
         """保证「每个用户至少一份默认简历」。
 
@@ -354,6 +383,9 @@ class ProfileService:
             deleted_at=profile.deleted_at,
             paper_size=normalize_paper_size(profile.paper_size),
             theme=normalize_theme(profile.theme),
+            # 读侧给**解析后**的结果：脏配置在这里就退化为默认顺序，
+            # 前端拿到的顺序与生成器用的是同一份（不需要前端再实现一遍降级矩阵）。
+            layout_config=LayoutConfigRead.from_sections(resolve_layout(profile.layout_config)),
             full_name=profile.full_name,
             email=profile.email,
             grade=profile.grade,

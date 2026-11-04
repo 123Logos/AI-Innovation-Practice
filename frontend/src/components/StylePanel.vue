@@ -2,8 +2,8 @@
 import { computed, ref } from 'vue'
 
 import { isApiError } from '@/api'
-import type { PaperSize, ThemeId } from '@/api/types'
-import { THEME_OPTIONS, useResumeStore } from '@/stores/resume'
+import type { PaperSize, SectionId, ThemeId } from '@/api/types'
+import { LAYOUT_TITLE_MAX_LENGTH, THEME_OPTIONS, useResumeStore } from '@/stores/resume'
 
 const store = useResumeStore()
 
@@ -41,6 +41,18 @@ function handlePaperChange(event: Event): void {
 function handleThemeChange(theme: ThemeId): void {
   feedback.value = null
   store.updateTheme(theme)
+}
+
+/**
+ * 改模块标题（D5.3）。
+ *
+ * 用 `:value` + `@input` 而不是 `v-model`：标题存在 Pinia 里，必须经过
+ * `updateSectionTitle()` 才能置 `dirty`（否则「改了标题但按钮还写着已保存」）。
+ * 输入过程不 trim、不截断成默认值 —— 理由见 store 里的注释。
+ */
+function handleSectionTitle(id: SectionId, event: Event): void {
+  feedback.value = null
+  store.updateSectionTitle(id, (event.target as HTMLInputElement).value)
 }
 
 /**
@@ -153,6 +165,52 @@ function printResume(): void {
       </p>
     </div>
 
+    <!--
+      排版（D5.3）：只做「顺序 + 标题」，不做显隐（ADR-007 §6.8(6)）。
+      交互刻意用上下箭头而不是拖拽：纸面上有 13 处 contenteditable，
+      mousedown+mousemove 会被浏览器解释成「选文字」，拖拽与编辑必然抢手势
+      （ADR-007 §8.1）；而且这里明确不引入任何拖拽库。
+    -->
+    <div class="panel-section">
+      <p class="panel-label">排版与标题</p>
+      <div v-for="(section, index) in store.layoutSections" :key="section.id" class="layout-row">
+        <input
+          class="layout-title"
+          type="text"
+          :value="section.title"
+          :maxlength="LAYOUT_TITLE_MAX_LENGTH"
+          :aria-label="`${store.sectionTitle(section)}的标题`"
+          spellcheck="false"
+          @input="handleSectionTitle(section.id, $event)"
+        />
+        <div class="layout-actions">
+          <button
+            class="layout-arrow"
+            type="button"
+            :disabled="index === 0"
+            :aria-label="`上移${store.sectionTitle(section)}`"
+            title="上移"
+            @click="store.moveSectionUp(section.id)"
+          >
+            ↑
+          </button>
+          <button
+            class="layout-arrow"
+            type="button"
+            :disabled="index === store.layoutSections.length - 1"
+            :aria-label="`下移${store.sectionTitle(section)}`"
+            title="下移"
+            @click="store.moveSectionDown(section.id)"
+          >
+            ↓
+          </button>
+        </div>
+      </div>
+      <p class="layout-hint">
+        顺序即纸面顺序；标题最多 {{ LAYOUT_TITLE_MAX_LENGTH }} 字（超过会折行挤乱版式）。
+      </p>
+    </div>
+
     <div class="panel-section">
       <p class="panel-label">数据状态</p>
       <div class="status-row"><span>档案</span><strong>{{ profileStatus }}</strong></div>
@@ -222,6 +280,40 @@ h2 { font-size: 18px; }
 .swatch:hover { box-shadow: 0 0 0 2px #a9b6b3; }
 .swatch--active { box-shadow: 0 0 0 2px #263330; }
 .swatch:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
+/* 排版（D5.3）：一行 = 标题输入框 + 上下箭头。窄侧栏里也不换行。 */
+.layout-row { display: flex; align-items: center; gap: 6px; }
+.layout-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid #d6dfdc;
+  border-radius: 0;
+  padding: 4px 6px;
+  color: #263330;
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+}
+.layout-title:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
+.layout-actions { display: flex; flex: 0 0 auto; gap: 4px; }
+.layout-arrow {
+  width: 26px;
+  height: 26px;
+  border: 1px solid #d6dfdc;
+  border-radius: 0;
+  padding: 0;
+  color: var(--theme-primary);
+  background: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+}
+.layout-arrow:hover:not(:disabled) { border-color: var(--theme-primary); background: var(--theme-bg-light); }
+/* 到边界时禁用：一眼可见「已经到顶 / 到底」，不必点了才知道没反应。 */
+.layout-arrow:disabled { color: #c2ccc9; cursor: not-allowed; }
+.layout-arrow:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 1px; }
+.layout-hint { color: #8fa5a1; font-size: 11px; line-height: 1.5; }
 /* 样式改动把「已生成简历」顶掉后的提示：琥珀色，与「未保存」同色系但不抢眼。 */
 .notice {
   display: flex;
@@ -271,6 +363,11 @@ h2 { font-size: 18px; }
   .swatch { border-color: #1b2523; box-shadow: 0 0 0 1px #52635f; }
   .swatch:hover { box-shadow: 0 0 0 2px #8fa5a1; }
   .swatch--active { box-shadow: 0 0 0 2px #e8eae9; }
+  .layout-title { border-color: #52635f; color: #e8eae9; background: #1f2a28; }
+  .layout-arrow { border-color: #52635f; color: #cfd8d4; background: #1f2a28; }
+  .layout-arrow:hover:not(:disabled) { color: #e8eae9; background: #2a3733; }
+  .layout-arrow:disabled { color: #5d6b67; }
+  .layout-hint { color: #8fa5a1; }
   .notice { border-left-color: #c9a227; color: #e2cf8a; background: #2a2417; }
   .notice__close { color: #e2cf8a; }
 }

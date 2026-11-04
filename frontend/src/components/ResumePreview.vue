@@ -427,145 +427,168 @@ function updateExpDate(
             </p>
           </header>
 
-          <section v-if="displayEducations.length" class="paper-section">
-            <h2>教育经历</h2>
-            <article
-              v-for="row in displayEducations"
-              :key="`edu-${row.index}`"
-              class="paper-experience"
-            >
-              <h3
-                class="education-school"
-                contenteditable="true"
-                spellcheck="false"
-                data-placeholder="学校名称"
-                @blur="
-                  commitText($event, row.education.school, (value) => {
-                    store.updateEducation(row.index, 'school', value)
-                    return value
-                  })
-                "
-              >{{ row.education.school }}</h3>
-              <p class="education-meta">
-                <span
-                  class="edu-major"
-                  contenteditable="true"
-                  spellcheck="false"
-                  data-placeholder="专业"
-                  @blur="
-                    commitText($event, row.education.major, (value) => {
-                      store.updateEducation(row.index, 'major', value)
-                      return value
-                    })
-                  "
-                >{{ row.education.major }}</span>
-                <span class="edu-divider"> ｜ </span>
-                <span class="edu-degree">{{ row.education.degree }}</span>
-                <span class="edu-divider"> ｜ </span>
-                <span
-                  class="edu-start"
-                  contenteditable="true"
-                  spellcheck="false"
-                  data-placeholder="入学时间"
-                  @blur="commitEducationMonth(row.index, 'edu_start', $event)"
-                >{{ displayMonth(row.education.edu_start) }}</span>
-                <span class="edu-divider"> — </span>
-                <span
-                  class="edu-end"
-                  contenteditable="true"
-                  spellcheck="false"
-                  data-placeholder="至今"
-                  @blur="commitEducationMonth(row.index, 'edu_end', $event)"
-                >{{ displayMonth(row.education.edu_end) || '至今' }}</span>
-              </p>
-            </article>
-          </section>
+          <!--
+            排版（D5.3）：三个 `<section>` 不再按模板位置固定顺序，而是按
+            `store.layoutSections`（= 后端解析后的 `layout_config`）逐个匹配渲染。
+            标题取 layout 里的自定义标题，空标题回落默认值。
 
-          <section class="paper-section">
-            <h2>技能</h2>
-            <div class="skill-list">
-              <span v-for="(skill, index) in store.draft.skills" :key="index" class="skill-item">
-                <span
-                  contenteditable="true"
-                  spellcheck="false"
-                  data-placeholder="技能"
-                  @blur="
-                    commitText($event, skill.name, (value) => {
-                      store.updateSkill(index, 'name', value)
-                      return value
-                    })
-                  "
-                >{{ skill.name }}</span>
-              </span>
-            </div>
-          </section>
+            为什么用 `v-for` + `v-if` 三连而不是「动态组件」：
+            每段内部有十几处 `contenteditable` 与失焦回写，拆成子组件会多一层
+            props/emit，也容易把「纸面编辑」的原始下标搞错（教育经历还要按入学时间排序）。
+            这里只是把「外层顺序」交出去，内部保持原样。
 
-          <section class="paper-section">
-            <h2>项目经历</h2>
-            <article
-              v-for="(experience, index) in store.draft.experiences"
-              :key="index"
-              class="paper-experience"
+            `v-else-if` 链必须紧邻（中间不能插注释），否则 Vue 编译报错。
+          -->
+          <template v-for="section in store.layoutSections" :key="section.id">
+            <section
+              v-if="section.id === 'educations' && displayEducations.length"
+              class="paper-section"
             >
-              <div class="experience-heading">
+              <h2>{{ store.sectionTitle(section) }}</h2>
+              <article
+                v-for="row in displayEducations"
+                :key="`edu-${row.index}`"
+                class="paper-experience"
+              >
                 <h3
-                  class="experience-title"
+                  class="education-school"
                   contenteditable="true"
                   spellcheck="false"
-                  data-placeholder="项目名称"
+                  data-placeholder="学校名称"
                   @blur="
-                    commitText($event, experience.title, (value) => {
-                      store.updateExperience(index, 'title', value)
+                    commitText($event, row.education.school, (value) => {
+                      store.updateEducation(row.index, 'school', value)
                       return value
                     })
                   "
-                >{{ experience.title }}</h3>
-                <!--
-                  时间拆成「开始 / 分隔符 / 结束」三段独立节点，各自可点编辑。
-                  外层仍用 .date，保证与后端生成器的 `<span class="date">…</span>` 视觉一致。
-                -->
-                <span class="date date-range">
+                >{{ row.education.school }}</h3>
+                <p class="education-meta">
                   <span
-                    class="date-start"
+                    class="edu-major"
                     contenteditable="true"
                     spellcheck="false"
-                    data-placeholder="开始"
-                    @blur="updateExpDate($event, index, 'start_date')"
-                  >{{ formatDate(experience.start_date) }}</span>
-                  <span class="date-divider"> — </span>
+                    data-placeholder="专业"
+                    @blur="
+                      commitText($event, row.education.major, (value) => {
+                        store.updateEducation(row.index, 'major', value)
+                        return value
+                      })
+                    "
+                  >{{ row.education.major }}</span>
+                  <span class="edu-divider"> ｜ </span>
+                  <span class="edu-degree">{{ row.education.degree }}</span>
+                  <span class="edu-divider"> ｜ </span>
                   <span
-                    class="date-end"
+                    class="edu-start"
+                    contenteditable="true"
+                    spellcheck="false"
+                    data-placeholder="入学时间"
+                    @blur="commitEducationMonth(row.index, 'edu_start', $event)"
+                  >{{ displayMonth(row.education.edu_start) }}</span>
+                  <span class="edu-divider"> — </span>
+                  <span
+                    class="edu-end"
                     contenteditable="true"
                     spellcheck="false"
                     data-placeholder="至今"
-                    @blur="updateExpDate($event, index, 'end_date')"
-                  >{{ formatDate(experience.end_date) || '至今' }}</span>
+                    @blur="commitEducationMonth(row.index, 'edu_end', $event)"
+                  >{{ displayMonth(row.education.edu_end) || '至今' }}</span>
+                </p>
+              </article>
+            </section>
+
+            <section
+              v-else-if="section.id === 'skills' && store.draft.skills.length"
+              class="paper-section"
+            >
+              <h2>{{ store.sectionTitle(section) }}</h2>
+              <div class="skill-list">
+                <span v-for="(skill, index) in store.draft.skills" :key="index" class="skill-item">
+                  <span
+                    contenteditable="true"
+                    spellcheck="false"
+                    data-placeholder="技能"
+                    @blur="
+                      commitText($event, skill.name, (value) => {
+                        store.updateSkill(index, 'name', value)
+                        return value
+                      })
+                    "
+                  >{{ skill.name }}</span>
                 </span>
               </div>
-              <p
-                class="experience-description"
-                contenteditable="true"
-                spellcheck="false"
-                @blur="
-                  commitText($event, experience.description, (value) => {
-                    store.updateExperience(index, 'description', value)
-                    return value
-                  })
-                "
-              >{{ experience.description }}</p>
-              <p
-                class="experience-responsibility"
-                contenteditable="true"
-                spellcheck="false"
-                @blur="
-                  commitText($event, experience.responsibility, (value) => {
-                    store.updateExperience(index, 'responsibility', value)
-                    return value
-                  })
-                "
-              >{{ experience.responsibility }}</p>
-            </article>
-          </section>
+            </section>
+
+            <section
+              v-else-if="section.id === 'experiences' && store.draft.experiences.length"
+              class="paper-section"
+            >
+              <h2>{{ store.sectionTitle(section) }}</h2>
+              <article
+                v-for="(experience, index) in store.draft.experiences"
+                :key="index"
+                class="paper-experience"
+              >
+                <div class="experience-heading">
+                  <h3
+                    class="experience-title"
+                    contenteditable="true"
+                    spellcheck="false"
+                    data-placeholder="项目名称"
+                    @blur="
+                      commitText($event, experience.title, (value) => {
+                        store.updateExperience(index, 'title', value)
+                        return value
+                      })
+                    "
+                  >{{ experience.title }}</h3>
+                  <!--
+                    时间拆成「开始 / 分隔符 / 结束」三段独立节点，各自可点编辑。
+                    外层仍用 .date，保证与后端生成器的 `<span class="date">…</span>` 视觉一致。
+                  -->
+                  <span class="date date-range">
+                    <span
+                      class="date-start"
+                      contenteditable="true"
+                      spellcheck="false"
+                      data-placeholder="开始"
+                      @blur="updateExpDate($event, index, 'start_date')"
+                    >{{ formatDate(experience.start_date) }}</span>
+                    <span class="date-divider"> — </span>
+                    <span
+                      class="date-end"
+                      contenteditable="true"
+                      spellcheck="false"
+                      data-placeholder="至今"
+                      @blur="updateExpDate($event, index, 'end_date')"
+                    >{{ formatDate(experience.end_date) || '至今' }}</span>
+                  </span>
+                </div>
+                <p
+                  class="experience-description"
+                  contenteditable="true"
+                  spellcheck="false"
+                  @blur="
+                    commitText($event, experience.description, (value) => {
+                      store.updateExperience(index, 'description', value)
+                      return value
+                    })
+                  "
+                >{{ experience.description }}</p>
+                <p
+                  class="experience-responsibility"
+                  contenteditable="true"
+                  spellcheck="false"
+                  @blur="
+                    commitText($event, experience.responsibility, (value) => {
+                      store.updateExperience(index, 'responsibility', value)
+                      return value
+                    })
+                  "
+                >{{ experience.responsibility }}</p>
+              </article>
+            </section>
+          </template>
         </article>
 
         <!-- 水印：绝对定位在纸张右下角，pointer-events:none 不干扰纸面编辑。 -->
