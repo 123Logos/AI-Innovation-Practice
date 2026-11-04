@@ -13,6 +13,7 @@ JSON 形状原样喂给后端模型**，让契约断裂在 CI 里就炸，而不
 """
 
 import os
+import re
 from collections.abc import Iterator
 from pathlib import Path
 from uuid import uuid4
@@ -29,6 +30,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from alembic import command
+from app.core.document_style import THEMES
 from app.main import app
 from app.repositories.user_repository import dispose_engine, get_engine
 from app.schemas.profile import ProfileUpsertRequest
@@ -41,10 +43,15 @@ PASSWORD = "Passw0rd!2026"
 CLEAN_ORDER = ("resumes", "educations", "skills", "experiences", "student_profiles", "users")
 
 #: 前端 `ProfileUpsertRequest` 接口（`frontend/src/api/types.ts`）的字段全集。
+#: D5.1 补 `paper_size`、D5.2 补 `theme`：这两者都是 `toUpsertPayload()` **显式传值**
+#: 的字段（不是省略），所以必须出现在这份「前端真实会发的 JSON」里，
+#: 否则三态语义的「不传即保留」分支就永远测不到真实调用形态。
 FRONTEND_PAYLOAD_KEYS = {
     "full_name",
     "email",
     "contact",
+    "paper_size",
+    "theme",
     "skills",
     "experiences",
     "educations",
@@ -65,6 +72,9 @@ def _frontend_payload() -> dict[str, object]:
         "full_name": "张三",
         "email": "zhangsan@example.com",
         "contact": "13800000000",
+        # 这两项由 `toUpsertPayload()` 显式带上（当前草稿里的值，不是省略）。
+        "paper_size": "A4",
+        "theme": "forest",
         "skills": [
             {"name": "Python", "self_rating": 3},
             {"name": "SQL", "self_rating": 3},
@@ -96,6 +106,8 @@ def _empty_draft_payload() -> dict[str, object]:
         "full_name": "",
         "email": None,
         "contact": "",
+        "paper_size": "A4",
+        "theme": "forest",
         "skills": [],
         "experiences": [],
         "educations": [],
@@ -115,6 +127,8 @@ def test_frontend_payload_is_accepted_by_backend_model() -> None:
     assert parsed.experiences[0].end_date is None
     assert parsed.educations[0].edu_start.isoformat() == "2021-09-01"
     assert parsed.educations[0].edu_end is None
+    assert parsed.paper_size == "A4"
+    assert parsed.theme == "forest"
 
 
 def test_empty_draft_payload_is_accepted() -> None:
@@ -237,3 +251,49 @@ def test_empty_draft_saves_and_generate_returns_400(client: TestClient) -> None:
     generated = client.post(GENERATE_URL, json={"title": "我的简历"}, headers=_headers(token))
     assert generated.status_code == 400, generated.text
     assert generated.json()["error"]["code"] == "CLIENT_ERROR"
+
+
+# --------------------------------------------------------------------------- #
+# D5.2：8 套配色必须双端同源
+# --------------------------------------------------------------------------- #
+
+FRONTEND_RESUME_STORE = Path(__file__).parents[1] / "frontend" / "src" / "stores" / "resume.ts"
+
+#: 匹配 `THEME_OPTIONS` 里的一行一条：`{ id: 'navy', name: '藏青', accent: '#2F4A6B', rule: '#78899F' }`
+_THEME_ENTRY_PATTERN = re.compile(
+    r"\{\s*id:\s*'(?P<id>[a-z]+)',\s*name:\s*'(?P<name>[^']+)',\s*"
+    r"accent:\s*'(?P<accent>#[0-9A-Fa-f]{6})',\s*rule:\s*'(?P<rule>#[0-9A-Fa-f]{6})'\s*,?\s*\}"
+)
+
+
+def test_theme_palette_matches_frontend() -> None:
+    """后端的 8 套色值必须与前端 `THEME_OPTIONS` 逐字一致。
+
+    这是「选预设」能保证双端一致的前提（ADR-007 §5.2）：预设靠的是**同一张静态表**，
+    两边各写一份 hex 就是两张表。改了后端忘了前端时，预览色与导出色会不同，
+    而前端没有测试框架、肉眼也几乎看不出这点色差——所以把「同一张表」变成 CI 断言。
+    """
+    if not FRONTEND_RESUME_STORE.exists():
+        pytest.skip("前端源码不在当前检出中（后端单独部署的场景）")
+
+    source = FRONTEND_RESUME_STORE.read_text(encoding="utf-8")
+    start = source.find("export const THEME_OPTIONS")
+    assert start != -1, "前端 `stores/resume.ts` 里找不到 `export const THEME_OPTIONS`"
+
+    entries = {
+        match.group("id"): (
+            match.group("name"),
+            match.group("accent").upper(),
+            match.group("rule").upper(),
+        )
+        for match in _THEME_ENTRY_PATTERN.finditer(source[start:])
+    }
+    assert len(entries) == len(THEMES), f"前端主题数量 {len(entries)} ≠ 后端 {len(THEMES)}"
+
+    for theme in THEMES.values():
+        assert theme.id in entries, f"前端缺少主题 {theme.id}"
+        name, accent, rule = entries[theme.id]
+        expected = (theme.name, theme.accent.upper(), theme.rule.upper())
+        assert (name, accent, rule) == expected, (
+            f"{theme.id} 双端不一致：后端 {expected} vs 前端 {(name, accent, rule)}"
+        )

@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from datetime import date
 from html import escape
 
+from app.core.document_style import DEFAULT_THEME, ThemeId, get_theme
 from app.schemas.profile import EducationInput
 from app.schemas.resume import ExperienceInput, ProfileInput, SkillInput
 
@@ -26,6 +27,7 @@ class ResumeGenerator(ABC):
         experiences: Sequence[ExperienceInput],
         title: str,
         educations: Sequence[EducationInput] = (),
+        theme: ThemeId = DEFAULT_THEME,
     ) -> str:
         """Generate HTML from structured student information."""
 
@@ -45,11 +47,20 @@ class TemplateResumeGenerator(ResumeGenerator):
         div.experience-heading > h3.experience-title + span.date（经历）
 
     文档标题仍放在 `<head><title>`，不进正文——正文第一行是姓名。
+
+    **配色（D5.2）**：正文外面包一层 `<div class="paper-doc" style="--paper-accent:
+    …; --paper-rule: …">`，把主题写成**内联 CSS 变量**。为什么不用 `<style>` 也不写
+    在 `body` 上：前端只取 `body.innerHTML` 塞进 `.paper`，写在 `head` 的样式会丢；
+    写在 `body` 上则会被前端那层 `.paper` 覆盖。包一层 div 的好处是——导出 / 分享
+    这份 HTML 时它自带配色，不依赖页面样式表；同时前端「实时预览」用同一对变量名，
+    于是「改主题 → 预览立刻变」和「生成物自带主题」是同一套机制。
     """
 
     def __init__(self, template: str | None = None) -> None:
         self._template = template or (
             '<html><head><meta charset="utf-8"><title>{title}</title></head><body>'
+            '<div class="paper-doc"'
+            ' style="--paper-accent: {accent}; --paper-rule: {rule};">'
             '<header class="paper-header">'
             '<h1 class="resume-name">{full_name}</h1>'
             '<p class="contact">{contact_items}</p>'
@@ -57,6 +68,7 @@ class TemplateResumeGenerator(ResumeGenerator):
             "{education_section}"
             "{skill_section}"
             "{experience_section}"
+            "</div>"
             "</body></html>"
         )
 
@@ -67,6 +79,7 @@ class TemplateResumeGenerator(ResumeGenerator):
         experiences: Sequence[ExperienceInput],
         title: str,
         educations: Sequence[EducationInput] = (),
+        theme: ThemeId = DEFAULT_THEME,
     ) -> str:
         # 联系方式：手机号 + 可选邮箱，结构与预览页的 `.contact` 内部完全一致。
         contact_items = f'<span class="contact-phone">{escape(profile.contact)}</span>'
@@ -132,6 +145,7 @@ class TemplateResumeGenerator(ResumeGenerator):
             else ""
         )
 
+        palette = get_theme(theme)
         return self._template.format(
             title=escape(title),
             full_name=escape(profile.full_name),
@@ -139,6 +153,8 @@ class TemplateResumeGenerator(ResumeGenerator):
             education_section=education_section,
             skill_section=skill_section,
             experience_section=experience_section,
+            accent=palette.accent,
+            rule=palette.rule,
         )
 
 
@@ -151,5 +167,6 @@ class DeepSeekResumeGenerator(ResumeGenerator):
         experiences: Sequence[ExperienceInput],
         title: str,
         educations: Sequence[EducationInput] = (),
+        theme: ThemeId = DEFAULT_THEME,
     ) -> str:
         raise NotImplementedError("PHASE-2: not wired")

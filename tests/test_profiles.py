@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from alembic import command
+from app.core.document_style import DEFAULT_THEME, THEME_IDS, THEMES
 from app.main import app
 from app.repositories.user_repository import dispose_engine, get_engine
 
@@ -1314,3 +1315,162 @@ def test_unknown_paper_size_in_db_falls_back_to_a4(client: TestClient) -> None:
         )
 
     assert _read_profile(client, token, created["id"])["paper_size"] == "A4"
+
+
+# --------------------------------------------------------------------------- #
+# D5.2：配色主题（theme）
+# --------------------------------------------------------------------------- #
+
+
+def _relative_luminance(hex_color: str) -> float:
+    """WCAG 2.x 相对亮度（ADR-007 §5.4 的公式）。"""
+    digits = hex_color.lstrip("#")
+    channels = [int(digits[index : index + 2], 16) / 255 for index in (0, 2, 4)]
+    linear = [
+        channel / 12.92 if channel <= 0.03928 else ((channel + 0.055) / 1.055) ** 2.4
+        for channel in channels
+    ]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def _contrast_on_white(hex_color: str) -> float:
+    """白纸（#FFFFFF，亮度恒为 1）上的对比度。"""
+    return 1.05 / (_relative_luminance(hex_color) + 0.05)
+
+
+def test_theme_palette_has_eight_safe_presets() -> None:
+    """8 套预设的对比度是**离线保证**的，这条用例把它变成回归红线。
+
+    `accent` 染 13px 的 h2（正文级 → ≥4.5:1），`rule` 染 2px 页眉线（UI → ≥3:1）。
+    以后谁想调色，先得让这两条断言过——避免「用户挑到一套看不清的配色」。
+    """
+    assert len(THEME_IDS) == 8
+    assert [theme.id for theme in THEMES.values()] == list(THEME_IDS)
+    assert DEFAULT_THEME == "forest"
+
+    for theme in THEMES.values():
+        assert _contrast_on_white(theme.accent) >= 4.5, f"{theme.id} 的 accent 未过 AA 正文"
+        assert _contrast_on_white(theme.rule) >= 3.0, f"{theme.id} 的 rule 未过 UI 3:1"
+        assert theme.accent.startswith("#") and len(theme.accent) == 7, theme.accent
+        assert theme.rule.startswith("#") and len(theme.rule) == 7, theme.rule
+
+
+def test_theme_column_is_not_null_with_forest_default() -> None:
+    """迁移只加一列：`varchar(20) NOT NULL DEFAULT 'forest'`。
+
+    存的是预设 id 而不是 hex：换色只需改代码里的预设表，不用迁移；
+    且「任意 hex」无法保证对比度（ADR-007 §5.2）。
+    """
+    with get_engine().connect() as connection:
+        row = connection.execute(
+            text(
+                "SELECT COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'student_profiles' "
+                "AND COLUMN_NAME = 'theme'"
+            )
+        ).one()
+
+    assert str(row.COLUMN_TYPE).lower() == "varchar(20)"
+    assert row.IS_NULLABLE == "NO"
+    assert row.COLUMN_DEFAULT == "forest"
+
+
+def test_theme_defaults_to_forest(client: TestClient) -> None:
+    """新建简历默认 forest；读接口必须给出具体值（不是 null）。"""
+    token = _register_and_login(client)
+    created = _create(client, token)
+
+    assert created["theme"] == "forest"
+    assert _read_profile(client, token, created["id"])["theme"] == "forest"
+    me = client.get(PROFILES_URL, headers=_headers(token))
+    assert me.status_code == 200, me.text
+    assert me.json()["data"]["profile"]["theme"] == "forest"
+
+
+def test_theme_can_be_switched_to_wine(client: TestClient) -> None:
+    """写入预设 id 后立刻生效，且重新读取仍是它。"""
+    token = _register_and_login(client)
+    created = _create(client, token)
+
+    updated = _put_content(client, token, created["id"], theme="wine")
+
+    assert updated["theme"] == "wine"
+    assert _read_profile(client, token, created["id"])["theme"] == "wine"
+
+
+def test_put_without_theme_keeps_existing(client: TestClient) -> None:
+    """【关键防御】旧客户端（请求体里没有 `theme`）不能把配色清回 forest。
+
+    `PUT` 是整体替换，若按「None 即默认」处理，任何缓存了旧版 JS 的标签页
+    点一次保存就会把用户挑的颜色悄悄改掉——与 D5.1 的纸张是同一个坑。
+    """
+    token = _register_and_login(client)
+    created = _create(client, token)
+    _put_content(client, token, created["id"], theme="navy")
+
+    # `_profile_payload()` 不含 theme —— 等价于 D5.2 之前的客户端。
+    assert "theme" not in _profile_payload()
+    repainted = _put_content(client, token, created["id"], full_name="李四")
+
+    assert repainted["full_name"] == "李四"
+    assert repainted["theme"] == "navy", "没传 theme 时应保留原值"
+    assert _read_profile(client, token, created["id"])["theme"] == "navy"
+
+
+def test_explicit_null_theme_resets_to_forest(client: TestClient) -> None:
+    """显式传 null = 恢复默认（与「没传」区分开）。"""
+    token = _register_and_login(client)
+    created = _create(client, token)
+    _put_content(client, token, created["id"], theme="plum")
+
+    reset = _put_content(client, token, created["id"], theme=None)
+
+    assert reset["theme"] == "forest"
+
+
+def test_invalid_theme_is_rejected(client: TestClient) -> None:
+    """枚举外的值 422，且不落库（库里仍是原值）。
+
+    特别包含 `#527873`：**不允许用户自己发 HEX**，颜色只能来自预设表。
+    """
+    token = _register_and_login(client)
+    created = _create(client, token)
+
+    for value in ("Forest", "red", "#527873", "navy2", ""):
+        response = client.put(
+            f"{PROFILES_BASE}/{created['id']}",
+            json=_profile_payload(theme=value),
+            headers=_headers(token),
+        )
+        assert response.status_code == 422, f"{value!r} -> {response.text}"
+        assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    assert _read_profile(client, token, created["id"])["theme"] == "forest"
+
+
+def test_copy_from_copies_theme(client: TestClient) -> None:
+    """深拷贝必须带上配色：复制简历的动机就是「同内容、换风格再投」。"""
+    token = _register_and_login(client)
+    source = _create(client, token, title="投国企")
+    _put_content(client, token, source["id"], theme="wine")
+
+    copied = _create(client, token, title="投国企 副本", copy_from_id=source["id"])
+
+    assert copied["theme"] == "wine"
+    assert copied["id"] != source["id"]
+
+
+def test_unknown_theme_in_db_falls_back_to_forest(client: TestClient) -> None:
+    """读路径永不因装饰性字段失败：库里被手工写成非法值时回落 forest，而不是 500。
+
+    写路径仍然严格（上一个用例证明 422），这个不对称是 ADR-007 §10.4 定的。
+    """
+    token = _register_and_login(client)
+    created = _create(client, token)
+    with get_engine().begin() as connection:
+        connection.execute(
+            text("UPDATE student_profiles SET theme = 'sunset' WHERE id = :id"),
+            {"id": created["id"]},
+        )
+
+    assert _read_profile(client, token, created["id"])["theme"] == "forest"

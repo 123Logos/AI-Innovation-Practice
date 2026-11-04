@@ -64,6 +64,7 @@ import type {
   ProfileSummary,
   ProfileUpsertRequest,
   ResumeRead,
+  ThemeId,
 } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { currentMonthValue, todayIsoDate } from '@/utils/datetime'
@@ -86,6 +87,37 @@ export const PAPER_SPECS: Record<PaperSize, { label: string; widthMm: number; he
 
 /** 1mm 在 CSS 里恒等于 96/25.4 px（CSS 规范定义，与设备 DPI 无关）。 */
 export const PX_PER_MM = 96 / 25.4
+
+/**
+ * 配色预设（D5.2）。与后端 `app/core/document_style.py::THEMES` **逐字一致**，
+ * 由 `tests/test_profile_contract.py::test_theme_palette_matches_frontend` 比对。
+ *
+ * `accent` 只染 `h2`（13px 正文级字号 → 必须 ≥4.5:1），`rule` 只染页眉下边框
+ * （2px 非文本 UI → ≥3:1）。8 套都是离线挑好并实测过的，所以这里没有、也不要加
+ * 「随便输入一个颜色」的入口：那样就必须在运行时判断对比度，而双端钳制必然漂移。
+ */
+export interface ThemeOption {
+  id: ThemeId
+  /** 面板上展示的名字（与后端 `DocumentTheme.name` 同源）。 */
+  name: string
+  accent: string
+  rule: string
+}
+
+/** 展示顺序即后端 `THEME_IDS` 的顺序。 */
+export const THEME_OPTIONS: readonly ThemeOption[] = [
+  { id: 'forest', name: '青绿', accent: '#527873', rule: '#6B8F8A' },
+  { id: 'ink', name: '墨黑', accent: '#263330', rule: '#727A78' },
+  { id: 'navy', name: '藏青', accent: '#2F4A6B', rule: '#78899F' },
+  { id: 'wine', name: '酒红', accent: '#7A3B3B', rule: '#A98080' },
+  { id: 'plum', name: '深紫', accent: '#4B3A6B', rule: '#8A7F9F' },
+  { id: 'cocoa', name: '深棕', accent: '#6B4A2F', rule: '#9F8978' },
+  { id: 'slate', name: '石板灰蓝', accent: '#3D4F5C', rule: '#818D95' },
+  { id: 'olive', name: '橄榄', accent: '#4A5A32', rule: '#89947A' },
+]
+
+/** 缺省主题：与后端 `DEFAULT_THEME`、迁移的 `server_default` 三处同源。 */
+export const DEFAULT_THEME: ThemeId = 'forest'
 
 /** 与后端 `ProfileUpsertRequest` 的 Field 约束保持一致（只有上限，保存不拦必填）。 */
 export const SKILL_LIMIT = { min: 0, max: 8 } as const
@@ -169,6 +201,11 @@ export interface ProfileDraft {
    * 放外面会导致「改纸张不触发 dirty、切简历纸张残留」（ADR-007 §3.3）。
    */
   paper_size: PaperSize
+  /**
+   * 配色主题（D5.2）。与 `paper_size` 同理必须在 draft 里：
+   * 否则「改了颜色不算未保存修改」，切简历时颜色还会串到下一份。
+   */
+  theme: ThemeId
   skills: SkillDraft[]
   experiences: ExperienceDraft[]
   educations: EducationDraft[]
@@ -207,6 +244,18 @@ function toPaperSize(value: unknown): PaperSize {
   return value === 'Letter' ? 'Letter' : 'A4'
 }
 
+/**
+ * 把任意值收敛到 8 套预设之一，未知值回落 `forest`。
+ *
+ * 三个来源都可能是脏的：`localStorage` 里的旧草稿、还没升级的后端响应、
+ * 以及「支持过第 9 套主题又回滚」的残留。配色是装饰性字段，
+ * 不能因为它让整份草稿恢复失败或整页崩掉。
+ */
+function toTheme(value: unknown): ThemeId {
+  const found = THEME_OPTIONS.find((option) => option.id === value)
+  return found ? found.id : DEFAULT_THEME
+}
+
 function createEmptyEducation(): EducationDraft {
   return {
     school: '',
@@ -229,6 +278,7 @@ function createEmptyDraft(): ProfileDraft {
     email: '',
     contact: '',
     paper_size: 'A4',
+    theme: DEFAULT_THEME,
     skills: Array.from({ length: 3 }, () => ({
       name: '',
       self_rating: DEFAULT_SKILL_RATING,
@@ -253,6 +303,7 @@ function draftFromProfile(profile: ProfileRead): ProfileDraft {
     contact: profile.contact,
     // 后端保证读侧是具体值；`??` 只是为了兼容「D5.1 之前缓存的响应对象」。
     paper_size: profile.paper_size ?? 'A4',
+    theme: toTheme(profile.theme),
     skills: profile.skills.map((skill) => ({
       name: skill.name,
       self_rating: skill.self_rating,
@@ -330,7 +381,10 @@ function isProfileDraft(value: unknown): value is ProfileDraft {
     // 会被判定成「没有草稿」，正在编辑的内容就悄悄丢了。有则必须是两档之一。
     (candidate.paper_size === undefined ||
       candidate.paper_size === 'A4' ||
-      candidate.paper_size === 'Letter')
+      candidate.paper_size === 'Letter') &&
+    // D5.2 的 theme 同理：D5.1 及更早的草稿没有它，缺省合法。
+    (candidate.theme === undefined ||
+      THEME_OPTIONS.some((option) => option.id === candidate.theme))
   )
 }
 
@@ -419,7 +473,8 @@ function readRememberedProfileId(ownerId: string): string | null {
  * - T7.5 之前的草稿没有 `educations`，补空数组而不是报错；
  * - 用户反馈轮之前的草稿没有 `email`，补空串；
  * - D5.1 之前的草稿没有 `paper_size`，补 A4（否则升级后弹出的「恢复草稿」
- *   横幅会带着 `undefined` 一路飘到请求体里，被后端 422 拒掉）。
+ *   横幅会带着 `undefined` 一路飘到请求体里，被后端 422 拒掉）；
+ * - D5.2 之前的草稿没有 `theme`，补 `forest`（同上）。
  */
 function normalizeDraft(raw: ProfileDraft): ProfileDraft {
   return {
@@ -427,6 +482,7 @@ function normalizeDraft(raw: ProfileDraft): ProfileDraft {
     email: raw.email ?? '',
     contact: raw.contact ?? '',
     paper_size: toPaperSize(raw.paper_size),
+    theme: toTheme(raw.theme),
     skills: (raw.skills ?? [])
       .filter((skill) => skill && typeof skill.name === 'string')
       .map((skill) => ({ name: skill.name, self_rating: DEFAULT_SKILL_RATING })),
@@ -490,6 +546,8 @@ function comparableOf(source: ProfileDraft): string {
     // `?? 'A4'`：D5.1 之前的草稿没有这个键，缺省必须与服务器默认值一致，
     // 否则「什么都没改」的旧草稿会立刻被判成「有未保存的修改」（ADR-007 §11.5）。
     paper_size: toPaperSize(source.paper_size),
+    // 同上，`theme` 缺省要与服务端默认一致，否则改颜色会被判成「没改」。
+    theme: toTheme(source.theme),
     skills: meaningfulSkills(source).map((skill) => skill.name.trim()),
     experiences: meaningfulExperiences(source).map((experience) => [
       experience.title,
@@ -536,8 +594,30 @@ export const useResumeStore = defineStore('resume', () => {
    */
   const pageCount = ref(1)
 
+  /**
+   * 样式类改动（目前是配色）把「已生成简历」顶掉之后的提示（D5.2）。
+   *
+   * 放在 store 而不是组件里：改主题的入口将来可能不止一处（面板、顶栏、快捷键），
+   * 提示文案必须只有一份，否则「有的入口提示、有的入口静默」会被当成 bug。
+   */
+  const styleNotice = ref<string | null>(null)
+
+  function dismissStyleNotice(): void {
+    styleNotice.value = null
+  }
+
   /** 当前纸张的物理尺寸（mm）；预览与面板共用，避免两处各写一份数字。 */
   const paperSpec = computed(() => PAPER_SPECS[draft.paper_size])
+
+  /**
+   * 当前主题的色值（D5.2）。
+   *
+   * `draft.theme` 已经过 `toTheme()` 收敛，理论上必然命中；`?? THEME_OPTIONS[0]`
+   * 只是让「将来删掉某套主题但有人还存着旧草稿」时不会拿到 `undefined`。
+   */
+  const themeSpec = computed(
+    () => THEME_OPTIONS.find((option) => option.id === draft.theme) ?? THEME_OPTIONS[0],
+  )
 
   function setPageCount(value: number): void {
     pageCount.value = Math.max(1, Math.round(value))
@@ -610,11 +690,14 @@ export const useResumeStore = defineStore('resume', () => {
     draft.email = next.email
     draft.contact = next.contact
     draft.paper_size = next.paper_size
+    draft.theme = next.theme
     draft.skills = next.skills
     draft.experiences = next.experiences
     draft.educations = next.educations
     savedProfile.value = profile
     dirty.value = false
+    // 换了一份数据，上一条样式提示就过期了（否则切到 B 还挂着 A 的提示）。
+    styleNotice.value = null
   }
 
   function updateProfileField(field: 'full_name' | 'email' | 'contact', value: string): void {
@@ -630,6 +713,24 @@ export const useResumeStore = defineStore('resume', () => {
     if (draft.paper_size === size) return
     draft.paper_size = size
     markDirty()
+  }
+
+  /**
+   * 切换配色（D5.2）。
+   *
+   * 和改纸张一样只写 `draft`，跟着「保存修改」一起落库。额外的一条联动：
+   * 「已生成简历」里的颜色是**生成那一刻**内联进 HTML 的，不会跟着 draft 变；
+   * 继续停在这个视图里，用户会以为「点了圆点没反应」。
+   * 所以直接切回实时预览，并留一条提示说明要重新生成才会更新生成物。
+   */
+  function updateTheme(theme: ThemeId): void {
+    if (draft.theme === theme) return
+    draft.theme = theme
+    markDirty()
+    if (generatedHtml.value !== null) {
+      showLivePreview()
+      styleNotice.value = '主题已修改，需重新生成简历。'
+    }
   }
 
   function updateSkill(index: number, field: keyof SkillDraft, value: string | number): void {
@@ -719,6 +820,8 @@ export const useResumeStore = defineStore('resume', () => {
       // 显式传值（而不是省略）：前端永远知道当前选的是哪档纸，
       // 省略只会让后端走「保留原值」分支，万一本地和服务端不同步就再也改不回来。
       paper_size: draft.paper_size,
+      // 同上：配色也显式传，理由与纸张一致。
+      theme: draft.theme,
       skills: meaningfulSkills(draft).map((skill) => ({
         name: skill.name.trim(),
         // 后端 `SkillInput.self_rating` 仍必填（1–5），但 UI 不再采集，统一写 3。
@@ -1165,6 +1268,8 @@ export const useResumeStore = defineStore('resume', () => {
       generatedHtml.value = resume.content_html
       generatedResumeId.value = resume.resume_id
       generatedTitle.value = resume.title
+      // 生成物已经带上最新配色，「需重新生成」的提示到此为止。
+      styleNotice.value = null
       return resume
     } finally {
       generating.value = false
@@ -1344,6 +1449,11 @@ export const useResumeStore = defineStore('resume', () => {
     paperSpec,
     setPageCount,
     updatePaperSize,
+    /* 配色（D5.2） */
+    themeSpec,
+    updateTheme,
+    styleNotice,
+    dismissStyleNotice,
     /* 多份简历 */
     profiles,
     currentProfile,

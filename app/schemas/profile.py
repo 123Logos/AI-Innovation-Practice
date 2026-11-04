@@ -39,6 +39,7 @@ from pydantic import (
 )
 
 from app.core.datetime_display import format_shanghai_datetime, shanghai_today
+from app.core.document_style import DEFAULT_THEME, ThemeId
 from app.schemas.resume import ExperienceInput, SkillInput
 
 #: 学历枚举，与 `ck_educations_degree` 约束保持一致。
@@ -50,6 +51,11 @@ PaperSize = Literal["A4", "Letter"]
 
 #: 缺省纸张：与迁移里的 `server_default` 和前端 `createEmptyDraft()` 同源。
 DEFAULT_PAPER_SIZE: PaperSize = "A4"
+
+#: 配色主题（D5.2）。枚举本体在 `app/core/document_style.py`（含 8 套色值与
+#: 实测对比度），这里只做类型引用——色板是「文档样式」的职责，不是 schema 的。
+#: 存 id 而不是 hex：任意颜色无法保证对比度，且双端派生必然漂移（ADR-007 §5.2）。
+Theme = ThemeId
 
 
 def normalize_paper_size(value: object) -> PaperSize:
@@ -146,6 +152,9 @@ class ProfileUpsertRequest(BaseModel):
     实现靠 `model_fields_set`：只有「请求体真的出现过这个键」才算用户意图。
     若按「None 即默认」处理，任何缓存了旧版 JS 的浏览器点一次保存
     就会把用户选的纸张悄悄清回 A4。
+
+    D5.2 的 `theme` 沿用同一套三态语义（不传保留 / null 回 `forest` / 传 id 设置），
+    理由完全相同：装饰性字段最容易被旧客户端「顺手清空」。
     """
 
     full_name: str = Field(default="", max_length=100)
@@ -157,6 +166,8 @@ class ProfileUpsertRequest(BaseModel):
     contact: str = Field(default="", max_length=255)
     #: 纸张尺寸；缺省 = 不改动（不是重置），显式 null = 回到 A4。
     paper_size: PaperSize | None = None
+    #: 配色主题（8 套预设之一）；缺省 = 不改动，显式 null = 回到 `forest`。
+    theme: Theme | None = None
     skills: list[SkillInput] = Field(default_factory=list, max_length=8)
     experiences: list[ExperienceInput] = Field(default_factory=list, max_length=3)
     #: 教育经历 0–5 段；为空时不渲染教育区块，缺省值兼容尚未升级的旧客户端。
@@ -264,6 +275,8 @@ class ProfileRead(BaseModel):
     #: D5.1：纸张尺寸。**读侧恒为具体值**（库里 NOT NULL + server_default）——
     #: 三态只存在于写侧，读接口给 `null` 只会让前端多一层兜底，没有任何收益。
     paper_size: PaperSize = DEFAULT_PAPER_SIZE
+    #: D5.2：配色主题，同上，读侧恒为 8 套之一（库里非法值已在服务层收敛）。
+    theme: Theme = DEFAULT_THEME
     full_name: str
     email: str | None = None
     grade: str

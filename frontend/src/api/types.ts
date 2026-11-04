@@ -101,6 +101,16 @@ export type Degree = '专科' | '本科' | '硕士' | '博士'
  */
 export type PaperSize = 'A4' | 'Letter'
 
+/**
+ * 配色主题（D5.2）。8 套预设，与后端 `app/core/document_style.py::ThemeId` 同源。
+ *
+ * 存的是**预设 id 而不是 hex**：任意颜色无法保证在白色纸张上的对比度，
+ * 而「前端算一遍、后端算一遍」的钳制算法必然漂移（ADR-007 §5.2）。
+ * 色值本身在 `stores/resume.ts` 的 `THEME_OPTIONS`，与后端 `THEMES` 由
+ * `tests/test_profile_contract.py` 逐字比对。
+ */
+export type ThemeId = 'forest' | 'ink' | 'navy' | 'wine' | 'plum' | 'cocoa' | 'slate' | 'olive'
+
 /** 后端 `EducationInput`：日期为 `YYYY-MM-DD`，`edu_end` 为 null 表示「至今」。 */
 export interface EducationInput {
   school: string
@@ -183,6 +193,11 @@ export interface ProfileUpsertRequest {
    * 不传 = 保留库里原值（旧客户端安全）；`null` = 恢复默认 A4；枚举值 = 设置。
    */
   paper_size?: PaperSize | null
+  /**
+   * 配色主题（D5.2）。**三态语义**与 `paper_size` 完全一致：
+   * 不传 = 保留库里原值；`null` = 恢复默认 forest；预设 id = 设置。
+   */
+  theme?: ThemeId | null
   skills: SkillInput[]
   experiences: ExperienceInput[]
   educations: EducationInput[]
@@ -198,6 +213,8 @@ export interface ProfileRead {
   deleted_at: string | null
   /** D5.1：纸张尺寸。后端保证读侧恒为具体值（不是 null）。 */
   paper_size: PaperSize
+  /** D5.2：配色主题。同上，读侧恒为 8 套之一（后端已收敛非法值）。 */
+  theme: ThemeId
   full_name: string
   email: string | null
   grade: string

@@ -13,6 +13,7 @@
 
 import re
 
+from app.core.document_style import DEFAULT_THEME, normalize_theme
 from app.repositories.student_profile_repository import (
     EducationDraft,
     ExperienceDraft,
@@ -245,6 +246,7 @@ class ProfileService:
                 # 年级列仍在库里但产品已移除该字段：不再写入任何业务值（见仓储）。
                 contact=payload.contact,
                 paper_size=self._resolve_paper_size(profile, payload),
+                theme=self._resolve_theme(profile, payload),
             ),
             [
                 SkillDraft(name=skill.name, self_rating=skill.self_rating)
@@ -290,6 +292,23 @@ class ProfileService:
             return profile.paper_size
         return payload.paper_size or DEFAULT_PAPER_SIZE
 
+    @staticmethod
+    def _resolve_theme(profile: StudentProfile, payload: ProfileUpsertRequest) -> str:
+        """把 `theme` 的三态语义解析成一个具体值（D5.2，与纸张完全同构）。
+
+        | 请求体 | 结果 |
+        |---|---|
+        | 不含该键 | 库里原值（旧客户端安全） |
+        | `null` | 回到默认 `forest` |
+        | 预设 id | 该主题 |
+
+        同样用 `model_fields_set` 判定：把「没传」当成「重置」，
+        会让任何一个还没升级的前端标签页在保存时把用户挑的配色清掉。
+        """
+        if "theme" not in payload.model_fields_set:
+            return normalize_theme(profile.theme)
+        return payload.theme or DEFAULT_THEME
+
     def _ensure_default(self, user_id: str) -> None:
         """保证「每个用户至少一份默认简历」。
 
@@ -334,6 +353,7 @@ class ProfileService:
             is_default=profile.is_default,
             deleted_at=profile.deleted_at,
             paper_size=normalize_paper_size(profile.paper_size),
+            theme=normalize_theme(profile.theme),
             full_name=profile.full_name,
             email=profile.email,
             grade=profile.grade,

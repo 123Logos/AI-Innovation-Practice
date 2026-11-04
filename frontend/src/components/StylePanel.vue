@@ -2,8 +2,8 @@
 import { computed, ref } from 'vue'
 
 import { isApiError } from '@/api'
-import type { PaperSize } from '@/api/types'
-import { useResumeStore } from '@/stores/resume'
+import type { PaperSize, ThemeId } from '@/api/types'
+import { THEME_OPTIONS, useResumeStore } from '@/stores/resume'
 
 const store = useResumeStore()
 
@@ -28,6 +28,19 @@ function handlePaperChange(event: Event): void {
   const value = (event.target as HTMLSelectElement).value
   const size: PaperSize = value === 'Letter' ? 'Letter' : 'A4'
   store.updatePaperSize(size)
+}
+
+/**
+ * 切换配色（D5.2）。
+ *
+ * 只把 id 交给 store：色值、脏标记、以及「已生成简历」视图的自动退出
+ * （含提示文案）都在 store 里统一处理，面板只负责展示。
+ * 这里**不接受任何自定义色值**——8 套预设是离线验过对比度的，
+ * 放开 HEX 输入就等于把对比度问题甩给运行时（ADR-007 §5.2）。
+ */
+function handleThemeChange(theme: ThemeId): void {
+  feedback.value = null
+  store.updateTheme(theme)
 }
 
 /**
@@ -115,7 +128,29 @@ function printResume(): void {
       </div>
       <p class="status-hint">{{ paperSizeText }}</p>
       <div class="status-row"><span>页数</span><strong>{{ store.pageCount }} 页</strong></div>
-      <div class="status-row"><span>配色</span><strong>青绿</strong></div>
+      <div class="status-row"><span>配色</span><strong>{{ store.themeSpec.name }}</strong></div>
+      <!-- 8 套预设：圆点用 `accent`（真正染在 h2 上的那个色）做预览。 -->
+      <div class="theme-swatches" role="radiogroup" aria-label="配色主题">
+        <button
+          v-for="option in THEME_OPTIONS"
+          :key="option.id"
+          class="swatch"
+          :class="{ 'swatch--active': store.draft.theme === option.id }"
+          type="button"
+          role="radio"
+          :aria-checked="store.draft.theme === option.id"
+          :aria-label="option.name"
+          :title="option.name"
+          :style="{ background: option.accent }"
+          @click="handleThemeChange(option.id)"
+        />
+      </div>
+      <p v-if="store.styleNotice" class="notice">
+        {{ store.styleNotice }}
+        <button class="notice__close" type="button" @click="store.dismissStyleNotice()">
+          知道了
+        </button>
+      </p>
     </div>
 
     <div class="panel-section">
@@ -172,6 +207,47 @@ h2 { font-size: 18px; }
 .paper-select:focus-visible { outline: 2px solid #6b8f8a; outline-offset: 2px; }
 /* 物理尺寸小字：让「A4 / Letter 到底差多少」一眼可见，不用去查。 */
 .status-hint { margin: -6px 0 0; color: #8fa5a1; font-size: 11px; text-align: right; }
+/* 8 个色点：外圈用 box-shadow 做选中环，避免 border 改变尺寸导致换选时抖动。 */
+.theme-swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+.swatch {
+  width: 22px;
+  height: 22px;
+  border: 1px solid #fff;
+  border-radius: 50%;
+  padding: 0;
+  box-shadow: 0 0 0 1px #d6dfdc;
+  cursor: pointer;
+  transition: box-shadow .12s ease;
+}
+.swatch:hover { box-shadow: 0 0 0 2px #a9b6b3; }
+.swatch--active { box-shadow: 0 0 0 2px #263330; }
+.swatch:focus-visible { outline: 2px solid #6b8f8a; outline-offset: 2px; }
+/* 样式改动把「已生成简历」顶掉后的提示：琥珀色，与「未保存」同色系但不抢眼。 */
+.notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  border-left: 3px solid #c9a227;
+  padding: 6px 0 6px 8px;
+  color: #7a6414;
+  background: #fbf6e4;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.notice__close {
+  flex: 0 0 auto;
+  border: 0;
+  padding: 2px 4px;
+  color: #7a6414;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  text-decoration: underline;
+}
+.notice__close:focus-visible { outline: 2px solid #c9a227; outline-offset: 1px; }
 .panel-label { color: #527873; font-size: 12px; }
 .hint { color: #687875; font-size: 13px; line-height: 1.6; }
 /* 浏览器打印页眉/页脚（日期、URL）无法用代码关掉，只能提示用户自己取消勾选。 */
@@ -192,6 +268,11 @@ h2 { font-size: 18px; }
   .status-row strong { color: #e8eae9; }
   .paper-select { border-color: #52635f; color: #e8eae9; background: #1f2a28; }
   .status-hint { color: #8fa5a1; }
+  .swatch { border-color: #1b2523; box-shadow: 0 0 0 1px #52635f; }
+  .swatch:hover { box-shadow: 0 0 0 2px #8fa5a1; }
+  .swatch--active { box-shadow: 0 0 0 2px #e8eae9; }
+  .notice { border-left-color: #c9a227; color: #e2cf8a; background: #2a2417; }
+  .notice__close { color: #e2cf8a; }
 }
 @media print {
   .style-panel { display: none; }

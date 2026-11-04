@@ -82,6 +82,22 @@ const stageStyle = computed<Record<string, string>>(() => ({
 
 const paperMeta = computed(() => `${store.paperSpec.label} · ${pageCount.value} 页`)
 
+/**
+ * 主题色下发（D5.2）。
+ *
+ * 只挂在**实时预览**那张纸上：`.paper` 里声明了 8 个变量的默认值（= forest），
+ * 这里把当前预设的 `accent` / `rule` 覆盖上去，纸面样式统一用 `var(--paper-*)`，
+ * 于是「换主题」只是换两个变量，不需要任何 DOM 重排。
+ *
+ * 为什么「已生成简历」那张纸不绑：它的配色是生成时**内联进 HTML** 的
+ * （`resume_generator.py` 的 `.paper-doc` 包装层）。生成物应当忠实反映
+ * 「生成那一刻是什么样」；改主题后 store 会自动切回实时预览并提示重新生成。
+ */
+const paperThemeStyle = computed<Record<string, string>>(() => ({
+  '--paper-accent': store.themeSpec.accent,
+  '--paper-rule': store.themeSpec.rule,
+}))
+
 function measurePaper(): void {
   const element = paperRef.value
   if (!element) return
@@ -368,7 +384,7 @@ function updateExpDate(
           v-html="generatedBody"
         />
 
-        <article v-else ref="paperRef" class="paper" aria-label="简历预览">
+        <article v-else ref="paperRef" class="paper" aria-label="简历预览" :style="paperThemeStyle">
           <header class="paper-header">
             <h1
               class="resume-name"
@@ -691,7 +707,22 @@ function updateExpDate(
   padding: 14mm 13mm;
   transform: scale(var(--paper-zoom, 1));
   transform-origin: top left;
-  color: #263330;
+  /*
+   * 纸面配色（D5.2）：这 8 个变量的默认值就是 forest，与 D5.1 之前的观感逐像素相同。
+   *
+   * - 实时预览：父层把 `--paper-accent` / `--paper-rule` 以内联样式覆盖成当前预设；
+   * - 已生成简历：生成物自带 `.paper-doc` 内联变量，优先级更高。
+   * 两条路径用同一组变量名，所以下面那套规则只需要维护一份。
+   */
+  --paper-accent: #527873;
+  --paper-rule: #6b8f8a;
+  --paper-ink: #263330;
+  --paper-body: #52635f;
+  --paper-muted: #687875;
+  --paper-faint: #8fa5a1;
+  --paper-line: #b8c8c4;
+  --paper-focus: #eaf1ef;
+  color: var(--paper-ink);
   background: #fff;
   box-shadow: 0 14px 36px #2633301c;
 }
@@ -746,34 +777,34 @@ function updateExpDate(
   所有选择器都以 `.paper` 开头，不会污染页面其他区域。
 -->
 <style>
-.paper .paper-header { border-bottom: 2px solid #6b8f8a; padding-bottom: 24px; }
+.paper .paper-header { border-bottom: 2px solid var(--paper-rule); padding-bottom: 24px; }
 .paper .paper-header h1,
 .paper .resume-name { margin: 0 0 8px; font-size: 32px; font-weight: 700; line-height: 1.2; }
-.paper .contact { margin: 4px 0 0; color: #52635f; font-family: "SF Mono", Consolas, monospace; font-size: 12px; }
-.paper .contact-separator { padding: 0 6px; color: #8fa5a1; }
+.paper .contact { margin: 4px 0 0; color: var(--paper-body); font-family: "SF Mono", Consolas, monospace; font-size: 12px; }
+.paper .contact-separator { padding: 0 6px; color: var(--paper-faint); }
 .paper .paper-section { margin-top: 28px; }
-.paper .paper-section > h2 { margin: 0 0 14px; color: #527873; font-size: 13px; font-weight: 650; letter-spacing: .14em; }
+.paper .paper-section > h2 { margin: 0 0 14px; color: var(--paper-accent); font-size: 13px; font-weight: 650; letter-spacing: .14em; }
 .paper .skill-list { display: flex; flex-wrap: wrap; gap: 10px 18px; }
-.paper .skill-item { display: inline-flex; align-items: baseline; gap: 6px; border-bottom: 1px solid #b8c8c4; padding-bottom: 3px; font-size: 13px; }
+.paper .skill-item { display: inline-flex; align-items: baseline; gap: 6px; border-bottom: 1px solid var(--paper-line); padding-bottom: 3px; font-size: 13px; }
 .paper .paper-experience { margin-bottom: 20px; }
 .paper .paper-experience:last-child { margin-bottom: 0; }
 .paper .education-school,
 .paper .experience-title { margin: 0; font-size: 15px; font-weight: 650; }
-.paper .education-meta { margin: 6px 0 0; color: #52635f; font-size: 12px; line-height: 1.6; }
+.paper .education-meta { margin: 6px 0 0; color: var(--paper-body); font-size: 12px; line-height: 1.6; }
 .paper .experience-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.paper .date { color: #687875; font-family: "SF Mono", Consolas, monospace; font-size: 11px; white-space: nowrap; }
+.paper .date { color: var(--paper-muted); font-family: "SF Mono", Consolas, monospace; font-size: 11px; white-space: nowrap; }
 /* 时间拆成三段可编辑节点后，分隔符要淡一点，避免和数字抢视线。 */
-.paper .date-divider { color: #8fa5a1; }
-.paper .paper-experience p { margin: 6px 0 0; color: #52635f; font-size: 12px; line-height: 1.6; }
+.paper .date-divider { color: var(--paper-faint); }
+.paper .paper-experience p { margin: 6px 0 0; color: var(--paper-body); font-size: 12px; line-height: 1.6; }
 /* 失焦回写后文本节点被重绘，靠 pre-wrap 保住用户敲的换行。 */
 .paper [contenteditable] { outline: 0; }
-.paper [contenteditable]:focus { background: #eaf1ef; }
+.paper [contenteditable]:focus { background: var(--paper-focus); }
 .paper .experience-description[contenteditable],
 .paper .experience-responsibility[contenteditable] { white-space: pre-wrap; }
 /* 空单元格用灰色占位，不用把占位文字写进 value（否则会被人当成内容保存下来）。 */
 .paper [contenteditable]:empty::before {
   content: attr(data-placeholder);
-  color: #b8c8c4;
+  color: var(--paper-line);
   pointer-events: none;
 }
 </style>

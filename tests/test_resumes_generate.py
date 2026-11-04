@@ -483,3 +483,63 @@ def test_generate_rejects_profile_in_trash(client: TestClient) -> None:
 
     assert response.status_code == 404, response.text
     assert _count("resumes") == 0
+
+
+# --------------------------------------------------------------------------- #
+# D5.2：配色内联到生成物
+# --------------------------------------------------------------------------- #
+
+
+def test_generate_inlines_default_theme_into_content_html(client: TestClient) -> None:
+    """默认主题 forest 的色值必须**写进生成物**，而不是只存在前端样式表里。
+
+    ADR-007 §5.6 的两个落点：前端 `.paper` 上的变量管「预览」，生成物里的内联
+    变量管「导出 / 分享」。少了后者，导出的 HTML 换个环境就丢配色。
+    """
+    token = _register_and_login(client)
+    client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token))
+
+    response = client.post(GENERATE_URL, json={"title": "默认配色"}, headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    content_html = response.json()["data"]["content_html"]
+    assert "--paper-accent: #527873" in content_html
+    assert "--paper-rule: #6B8F8A" in content_html
+    assert '<div class="paper-doc"' in content_html
+
+
+def test_generate_uses_profile_theme(client: TestClient) -> None:
+    """换成酒红后，生成物里必须出现酒红的一组色值（跟着简历走，不跟用户走）。"""
+    token = _register_and_login(client)
+    client.put(
+        PROFILES_URL,
+        json=_profile_payload(theme="wine"),
+        headers=_headers(token),
+    )
+
+    response = client.post(GENERATE_URL, json={"title": "酒红版"}, headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    content_html = response.json()["data"]["content_html"]
+    assert "--paper-accent: #7A3B3B" in content_html
+    assert "--paper-rule: #A98080" in content_html
+    # 旧默认色不能残留，否则说明内联变量没真正覆盖
+    assert "#527873" not in content_html
+
+
+def test_generate_falls_back_to_forest_when_db_theme_is_unknown(client: TestClient) -> None:
+    """库里的非法主题不能让生成 500，也不能生成一份没有配色的 HTML。"""
+    token = _register_and_login(client)
+    saved = client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token)).json()[
+        "data"
+    ]["profile"]
+    with get_engine().begin() as connection:
+        connection.execute(
+            text("UPDATE student_profiles SET theme = 'sunset' WHERE id = :id"),
+            {"id": saved["id"]},
+        )
+
+    response = client.post(GENERATE_URL, json={"title": "脏数据"}, headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    assert "--paper-accent: #527873" in response.json()["data"]["content_html"]

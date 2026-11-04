@@ -5,6 +5,7 @@
 指定用哪一份生成；不传则用默认简历（兼容只发 `title` 的旧前端）。
 """
 
+from app.core.document_style import normalize_theme
 from app.integrations.resume_generator import ResumeGenerator
 from app.repositories.resume_repository import ResumeRepository
 from app.repositories.student_profile_repository import StudentProfile, StudentProfileRepository
@@ -75,6 +76,9 @@ class ResumeService:
                 )
                 for education in educations
             ],
+            # 配色跟着**这份简历**走（D5.2）：生成物把主题写成内联 CSS 变量，
+            # 导出 / 分享出去也带着配色，不依赖页面样式表。
+            theme=normalize_theme(profile.theme),
         )
         resume = self._resume_repository.create_resume(
             student_profile_id=profile.id,
