@@ -12,27 +12,14 @@ JSON 形状原样喂给后端模型**，让契约断裂在 CI 里就炸，而不
    `validateForSave()` 拦的是同一批规则，而不是各说各话。
 """
 
-import os
 import re
-from collections.abc import Iterator
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
-
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
-if TEST_DATABASE_URL:
-    # 必须早于任何 app.* 导入，否则 get_settings() 会缓存 .env 里的开发库连接串。
-    os.environ["DATABASE_URL"] = TEST_DATABASE_URL
-
-from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import text
 
-from alembic import command
 from app.core.document_style import DEFAULT_SECTIONS, THEMES
-from app.main import app
-from app.repositories.user_repository import dispose_engine, get_engine
 from app.schemas.profile import ProfileUpsertRequest
 
 PROFILES_URL = "/api/v1/profiles/me"
@@ -40,7 +27,6 @@ GENERATE_URL = "/api/v1/resumes/generate"
 REGISTER_URL = "/api/v1/auth/register"
 LOGIN_URL = "/api/v1/auth/login"
 PASSWORD = "Passw0rd!2026"
-CLEAN_ORDER = ("resumes", "educations", "skills", "experiences", "student_profiles", "users")
 
 #: 前端 `ProfileUpsertRequest` 接口（`frontend/src/api/types.ts`）的字段全集。
 #: D5.1 补 `paper_size`、D5.2 补 `theme`：这两者都是 `toUpsertPayload()` **显式传值**
@@ -217,12 +203,6 @@ def test_backend_still_rejects_inputs_frontend_precheck_blocks() -> None:
         ProfileUpsertRequest.model_validate(empty_edu_start)
 
 
-def _delete_all_rows() -> None:
-    with get_engine().begin() as connection:
-        for table in CLEAN_ORDER:
-            connection.execute(text(f"DELETE FROM {table}"))
-
-
 def _register_and_login(client: TestClient) -> str:
     username = f"contract_{uuid4().hex[:10]}"
     registered = client.post(
@@ -238,32 +218,6 @@ def _register_and_login(client: TestClient) -> str:
 
 def _headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _schema() -> Iterator[None]:
-    if not TEST_DATABASE_URL:
-        raise RuntimeError("TEST_DATABASE_URL must be set for profile contract tests")
-    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
-    command.downgrade(config, "base")
-    command.upgrade(config, "head")
-    try:
-        yield
-    finally:
-        command.downgrade(config, "base")
-        dispose_engine()
-
-
-@pytest.fixture(autouse=True)
-def _clean_tables() -> Iterator[None]:
-    _delete_all_rows()
-    yield
-    _delete_all_rows()
-
-
-@pytest.fixture
-def client() -> TestClient:
-    return TestClient(app)
 
 
 def test_frontend_payload_saves_over_http(client: TestClient) -> None:

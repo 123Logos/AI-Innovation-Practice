@@ -73,6 +73,10 @@ forbidden_modules = ["app.services"]
 [tool.ruff]
 line-length = 100
 target-version = "py313"
+# `docs/` 是决策记录，不是源码：`ruff format` 会顺带格式化 Markdown 里围栏的
+# Python 代码块（0.15 起的 Markdown 支持），把 ADR 的示例代码重排成「今天的风格」。
+# 历史文档应保持写入时的样子，因此整目录排除，避免每次格式化都改到 ADR。
+extend-exclude = ["docs/"]
 
 [tool.mypy]
 python_version = "3.13"

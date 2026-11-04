@@ -1,30 +1,21 @@
 """T7.1 集成测试：注册 / 登录 / JWT 鉴权，连接真实 MySQL（TEST_DATABASE_URL）。
 
-铁律要求不得用 SQLite 顶替：本文件先把 TEST_DATABASE_URL 注入 DATABASE_URL，
-再导入应用，因此应用内所有连接都指向测试库；测试前后自动建表与清理。
+铁律要求不得用 SQLite 顶替：测试库连接串、建表与用例间清理统一由
+`tests/conftest.py` 负责（注入 `DATABASE_URL`、会话级 `upgrade head`、逐用例清表），
+本文件只写用例，不再自己建表/删表。
 """
 
 import hashlib
-import os
-from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 from uuid import uuid4
-
-import pytest
-
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
-if TEST_DATABASE_URL:
-    # 必须早于任何 app.* 导入，否则 get_settings() 会缓存 .env 里的开发库连接串。
-    os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 
 import jwt
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from app.core.security import create_access_token, create_refresh_token
-from app.main import app
-from app.repositories.user_repository import Base, dispose_engine, get_engine
+from app.repositories.user_repository import get_engine
 
 REGISTER_URL = "/api/v1/auth/register"
 LOGIN_URL = "/api/v1/auth/login"
@@ -117,38 +108,10 @@ def _sha256(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _schema() -> Iterator[None]:
-    if not TEST_DATABASE_URL:
-        raise RuntimeError("TEST_DATABASE_URL must be set for auth integration tests")
-    engine = get_engine()
-    Base.metadata.create_all(engine)
-    try:
-        yield
-    finally:
-        Base.metadata.drop_all(engine)
-        dispose_engine()
-
-
-@pytest.fixture(autouse=True)
-def _clean_users() -> Iterator[None]:
-    with get_engine().begin() as connection:
-        connection.execute(text("DELETE FROM users"))
-    yield
-    with get_engine().begin() as connection:
-        connection.execute(text("DELETE FROM users"))
-
-
-@pytest.fixture
-def client() -> TestClient:
-    return TestClient(app)
-
-
-def test_engine_points_to_mysql_test_database() -> None:
+def test_engine_points_to_mysql_test_database(test_database_url: str) -> None:
     """证明测试跑在 TEST_DATABASE_URL 指向的真实 MySQL 上，不是 SQLite。"""
-    assert TEST_DATABASE_URL is not None
     engine = get_engine()
-    expected_database = urlsplit(TEST_DATABASE_URL.split("?")[0]).path.lstrip("/")
+    expected_database = urlsplit(test_database_url.split("?")[0]).path.lstrip("/")
 
     assert engine.dialect.name == "mysql"
     with engine.connect() as connection:
@@ -403,7 +366,9 @@ def test_refresh_rejects_reused_token(client: TestClient) -> None:
     user = _register(client, username)
     first = _login_tokens(client, username)
 
-    assert client.post(REFRESH_URL, json={"refresh_token": first["refresh_token"]}).status_code == 200
+    assert (
+        client.post(REFRESH_URL, json={"refresh_token": first["refresh_token"]}).status_code == 200
+    )
 
     replay = client.post(REFRESH_URL, json={"refresh_token": first["refresh_token"]})
 

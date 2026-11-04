@@ -17,7 +17,11 @@ config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # `fileConfig` 默认 `disable_existing_loggers=True`，会把**进程里已存在的**
+    # 应用 logger 全部静默禁用：在已导入 `app.*` 的进程里跑迁移（测试、CI、
+    # 运维脚本）之后，`app.core.*` 的 warning 就再也打不出来，
+    # 排查时像是「日志凭空消失」。uvicorn 自己也是显式关掉这个行为的。
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = None
 
@@ -65,9 +69,7 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
+        context.configure(connection=connection, target_metadata=target_metadata)
 
         with context.begin_transaction():
             context.run_migrations()

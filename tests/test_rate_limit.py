@@ -4,52 +4,21 @@
 本文件用 `enabled_limiter` 夹具临时打开，验证真实的「第 6 次被拦」行为。
 
 连真实 MySQL（`TEST_DATABASE_URL`）：登录要查 `users`，注册要写 `users`，
-不能用假的。与 `test_auth.py` 一样，先注入 `DATABASE_URL` 再导入 app。
+不能用假的。建表与清理由 `tests/conftest.py` 的夹具统一负责。
 """
 
-import os
 from collections.abc import Iterator
 from uuid import uuid4
 
 import pytest
-
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
-if TEST_DATABASE_URL:
-    # 必须早于任何 app.* 导入，否则 get_settings() 会缓存 .env 里的开发库连接串。
-    os.environ["DATABASE_URL"] = TEST_DATABASE_URL
-
 from fastapi.testclient import TestClient
-from sqlalchemy import text
 
 from app.core.rate_limit import AUTH_RATE_LIMIT, limiter
 from app.main import app
-from app.repositories.user_repository import Base, dispose_engine, get_engine
 
 REGISTER_URL = "/api/v1/auth/register"
 LOGIN_URL = "/api/v1/auth/login"
 PASSWORD = "Passw0rd!2026"
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _schema() -> Iterator[None]:
-    if not TEST_DATABASE_URL:
-        raise RuntimeError("TEST_DATABASE_URL must be set for rate limit integration tests")
-    engine = get_engine()
-    Base.metadata.create_all(engine)
-    try:
-        yield
-    finally:
-        Base.metadata.drop_all(engine)
-        dispose_engine()
-
-
-@pytest.fixture(autouse=True)
-def _clean_users() -> Iterator[None]:
-    with get_engine().begin() as connection:
-        connection.execute(text("DELETE FROM users"))
-    yield
-    with get_engine().begin() as connection:
-        connection.execute(text("DELETE FROM users"))
 
 
 @pytest.fixture

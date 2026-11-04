@@ -2,31 +2,19 @@
 
 链路：注册 → 登录 → PUT 档案 → POST 生成 → 校验 `resumes` 表内的 HTML 与归属。
 同时验证：未登录 401、无档案 400、请求体不能覆盖库内数据、标题缺失 422。
+建表与用例间清理由 `tests/conftest.py` 统一负责。
 
 D4.1 起补充「按 profile_id 指定简历生成」的用例（文件末尾）：
 指定生效、不指定走默认、他人 id 与回收站 id 都是 404。
 """
 
-import os
 import re
-from collections.abc import Iterator
-from pathlib import Path
 from uuid import uuid4
 
-import pytest
-
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
-if TEST_DATABASE_URL:
-    # 必须早于任何 app.* 导入，否则 get_settings() 会缓存 .env 里的开发库连接串。
-    os.environ["DATABASE_URL"] = TEST_DATABASE_URL
-
-from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from alembic import command
-from app.main import app
-from app.repositories.user_repository import dispose_engine, get_engine
+from app.repositories.user_repository import get_engine
 
 GENERATE_URL = "/api/v1/resumes/generate"
 PROFILES_URL = "/api/v1/profiles/me"
@@ -34,20 +22,6 @@ PROFILES_BASE = "/api/v1/profiles"
 REGISTER_URL = "/api/v1/auth/register"
 LOGIN_URL = "/api/v1/auth/login"
 PASSWORD = "Passw0rd!2026"
-CLEAN_ORDER = (
-    "resumes",
-    "educations",
-    "skills",
-    "experiences",
-    "student_profiles",
-    "users",
-)
-
-
-def _delete_all_rows() -> None:
-    with get_engine().begin() as connection:
-        for table in CLEAN_ORDER:
-            connection.execute(text(f"DELETE FROM {table}"))
 
 
 def _register_and_login(client: TestClient) -> str:
@@ -122,32 +96,6 @@ def _current_profile(client: TestClient, token: str) -> dict[str, object]:
 def _count(table: str) -> int:
     with get_engine().connect() as connection:
         return int(connection.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar_one())
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _schema() -> Iterator[None]:
-    if not TEST_DATABASE_URL:
-        raise RuntimeError("TEST_DATABASE_URL must be set for resume integration tests")
-    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
-    command.downgrade(config, "base")
-    command.upgrade(config, "head")
-    try:
-        yield
-    finally:
-        command.downgrade(config, "base")
-        dispose_engine()
-
-
-@pytest.fixture(autouse=True)
-def _clean_tables() -> Iterator[None]:
-    _delete_all_rows()
-    yield
-    _delete_all_rows()
-
-
-@pytest.fixture
-def client() -> TestClient:
-    return TestClient(app)
 
 
 def test_generate_requires_authentication(client: TestClient) -> None:

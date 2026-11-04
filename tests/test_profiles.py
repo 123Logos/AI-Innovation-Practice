@@ -2,54 +2,26 @@
 
 覆盖：鉴权 → 未填写档案返回空结构 → PUT 落库（profiles/skills/experiences/educations）
 → 二次 PUT 全量替换 → 跨用户隔离 → 请求校验边界。
-建表走 Alembic 迁移（与生产同一条链路），测试前后 upgrade head / downgrade base。
+建表与用例间清理由 `tests/conftest.py` 统一负责（会话级 `upgrade head` + 逐用例清表）。
 
 D4.1 起补充「多份简历 + 回收站」的用例（文件末尾）：越权、默认简历规则、
 软删除/恢复/彻底删除、过期惰性清理。
 """
 
-import os
-from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
 from uuid import uuid4
 
-import pytest
-
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
-if TEST_DATABASE_URL:
-    # 必须早于任何 app.* 导入，否则 get_settings() 会缓存 .env 里的开发库连接串。
-    os.environ["DATABASE_URL"] = TEST_DATABASE_URL
-
-from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from alembic import command
 from app.core.document_style import DEFAULT_THEME, THEME_IDS, THEMES
-from app.main import app
-from app.repositories.user_repository import dispose_engine, get_engine
+from app.repositories.user_repository import get_engine
 
 PROFILES_URL = "/api/v1/profiles/me"
 PROFILES_BASE = "/api/v1/profiles"
 REGISTER_URL = "/api/v1/auth/register"
 LOGIN_URL = "/api/v1/auth/login"
 PASSWORD = "Passw0rd!2026"
-# 外键为 RESTRICT，清理必须从子表到父表。
-CLEAN_ORDER = (
-    "resumes",
-    "educations",
-    "skills",
-    "experiences",
-    "student_profiles",
-    "users",
-)
-
-
-def _delete_all_rows() -> None:
-    with get_engine().begin() as connection:
-        for table in CLEAN_ORDER:
-            connection.execute(text(f"DELETE FROM {table}"))
 
 
 def _register_and_login(client: TestClient) -> str:
@@ -123,32 +95,6 @@ def _profile_payload(**overrides: object) -> dict[str, object]:
 def _count(table: str) -> int:
     with get_engine().connect() as connection:
         return int(connection.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar_one())
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _schema() -> Iterator[None]:
-    if not TEST_DATABASE_URL:
-        raise RuntimeError("TEST_DATABASE_URL must be set for profile integration tests")
-    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
-    command.downgrade(config, "base")
-    command.upgrade(config, "head")
-    try:
-        yield
-    finally:
-        command.downgrade(config, "base")
-        dispose_engine()
-
-
-@pytest.fixture(autouse=True)
-def _clean_tables() -> Iterator[None]:
-    _delete_all_rows()
-    yield
-    _delete_all_rows()
-
-
-@pytest.fixture
-def client() -> TestClient:
-    return TestClient(app)
 
 
 def test_profiles_require_authentication(client: TestClient) -> None:

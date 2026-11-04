@@ -19,7 +19,11 @@ depends_on: str | Sequence[str] | None = None
 
 
 def _table_args() -> dict[str, str]:
-    return {"mysql_engine": "InnoDB", "mysql_charset": "utf8mb4", "mysql_collate": "utf8mb4_0900_ai_ci"}
+    return {
+        "mysql_engine": "InnoDB",
+        "mysql_charset": "utf8mb4",
+        "mysql_collate": "utf8mb4_0900_ai_ci",
+    }
 
 
 def upgrade() -> None:

@@ -1,8 +1,19 @@
+"""迁移可逆性与库结构契约。
+
+**这是唯一允许 `downgrade base` 的地方**：降级本身就是被测对象（验证每一条
+`downgrade()` 真的把表/列/约束删干净），不是给别的用例做清理的清理手段。
+用例间的清理由 `tests/conftest.py` 统一负责，见那里的说明。
+
+降级会把库清空，所以用例用 `finally` 把库恢复到 head：否则后续用例会跑在
+一个「只有 alembic_version」的空库上，只能靠调整文件执行顺序来掩盖。
+"""
+
 import os
 from pathlib import Path
 
 from alembic.config import Config
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 
 from alembic import command
 
@@ -24,20 +35,12 @@ def _database_url() -> str:
     return value
 
 
-def _alembic_config(database_url: str) -> Config:
-    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
-    os.environ["DATABASE_URL"] = database_url
-    return config
+def _alembic_config() -> Config:
+    """`alembic/env.py` 从 `DATABASE_URL` 读连接串；conftest 已把它指向测试库。"""
+    return Config(str(Path(__file__).parents[1] / "alembic.ini"))
 
 
-def test_upgrade_schema_constraints_and_downgrade() -> None:
-    database_url = _database_url()
-    config = _alembic_config(database_url)
-    engine = create_engine(database_url, pool_pre_ping=True)
-
-    command.downgrade(config, "base")
-    command.upgrade(config, "head")
-
+def _assert_schema_after_upgrade(engine: Engine) -> None:
     with engine.connect() as connection:
         tables = set(
             connection.execute(
@@ -169,8 +172,8 @@ def test_upgrade_schema_constraints_and_downgrade() -> None:
         ).all()
         assert relevant_checks == []
 
-    command.downgrade(config, "base")
 
+def _assert_schema_removed(engine: Engine) -> None:
     with engine.connect() as connection:
         remaining_tables = set(
             connection.execute(
@@ -184,6 +187,23 @@ def test_upgrade_schema_constraints_and_downgrade() -> None:
                 )
             ).scalars()
         )
-        assert remaining_tables == {"alembic_version"}
-        # T7.5 的 downgrade 必须真的把 educations 删掉，而不是留在库里。
-        assert "educations" not in remaining_tables
+    assert remaining_tables == {"alembic_version"}
+    # T7.5 的 downgrade 必须真的把 educations 删掉，而不是留在库里。
+    assert "educations" not in remaining_tables
+
+
+def test_upgrade_schema_constraints_and_downgrade() -> None:
+    config = _alembic_config()
+    engine = create_engine(_database_url(), pool_pre_ping=True)
+
+    try:
+        command.downgrade(config, "base")
+        command.upgrade(config, "head")
+        _assert_schema_after_upgrade(engine)
+
+        command.downgrade(config, "base")
+        _assert_schema_removed(engine)
+    finally:
+        # 无论断言是否失败，都把库交回 head（见模块 docstring）。
+        command.upgrade(config, "head")
+        engine.dispose()
