@@ -64,7 +64,7 @@ Copy-Item .env.example .env
 
 ## 🚀 本地一键启动 (Windows)
 
-这是当前**唯一承诺可用**的启动方式，不需要 Docker。
+这是当前**唯一承诺可用**的启动方式，不需要 Docker，也**不需要管理员权限**。
 
 前置条件（只需装一次）：
 
@@ -75,7 +75,16 @@ Copy-Item .env.example .env
 
 准备完成后：
 
-> **在项目根目录右键 `start-local.ps1` → 选择「使用 PowerShell 运行」。**
+> **在项目根目录双击 `start.bat`（Windows 一键启动）。**
+
+`start.bat` 是 `start-local.ps1` 的安全唤起壳，只多做一件事——用
+`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-local.ps1"` 启动脚本。
+
+- `Bypass` **仅对这一个 PowerShell 进程生效**（Process 作用域）：不写注册表，不改机器级
+  `LocalMachine` 或用户级 `CurrentUser` 策略，窗口一关就消失，也无法覆盖组策略（GPO）下发的限制。
+- 全程运行在**普通权限**下：脚本只做 TCP 端口探测和开新窗口，没有任何需要管理员的命令，
+  也不读写系统盘。
+- 出错时 `pause` 会把黑窗口停住，方便截图。
 
 脚本会依次做四件事，全程有彩色提示：
 
@@ -96,8 +105,10 @@ Copy-Item .env.example .env
 
 常见问题：
 
-- **右键没有「使用 PowerShell 运行」，或提示执行策略**：在项目目录打开 PowerShell 执行
+- **在 PowerShell 里手动运行 `start-local.ps1` 被执行策略拦截**：改用 `start.bat` 入口就行；
+  或者只对当前这一次、当前进程绕过：
   `powershell -NoProfile -ExecutionPolicy Bypass -File .\start-local.ps1`。
+  两者都不需要管理员权限，也不需要把全局 `ExecutionPolicy` 改成别的值。
 - **提示 MySQL 没有在 127.0.0.1:3306 上运行**：按 `Win+R` 输入 `services.msc`，找到 MySQL 服务右键「启动」；
   或在管理员 PowerShell 执行 `net start MySQL80`。
 - **后端窗口显示「数据库迁移失败」**：九成是 `.env` 里的 `DATABASE_URL` 账号、密码或库名不对，改完重跑脚本。

@@ -2,8 +2,8 @@
 <#
     start-local.ps1 —— 本地一键启动（Windows 原生，不依赖 Docker）
 
-    用法：在项目目录右键本文件 → 「使用 PowerShell 运行」
-    如果右键菜单启动失败，改用：
+    用法：在项目目录双击 start.bat（推荐，普通权限即可，不需要改全局执行策略）。
+    也可以手动执行，效果与 start.bat 相同，只影响这一个进程：
         powershell -NoProfile -ExecutionPolicy Bypass -File .\start-local.ps1
 
     它会做四件事：
@@ -33,8 +33,8 @@ function Write-Ok { param([string]$Text) Write-Host "[+] $Text" -ForegroundColor
 function Write-Warn { param([string]$Text) Write-Host "[!] $Text" -ForegroundColor Yellow }
 function Write-Bad { param([string]$Text) Write-Host "[x] $Text" -ForegroundColor Red }
 
-# 右键「使用 PowerShell 运行」时，窗口会在脚本退出后立刻消失，
-# 所以所有失败出口都先按提示打印原因，再等一次回车。
+# 双击 start.bat 或右键「使用 PowerShell 运行」时，窗口会在脚本退出后立刻消失，
+# 所以所有失败出口都先按提示打印原因，再等一次回车（start.bat 里还有一层 pause）。
 function Stop-WithError {
     param([string]$Message, [string]$Hint)
     Write-Host ''
@@ -81,7 +81,7 @@ function Start-ToolWindow {
     $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($ScriptText))
     Start-Process -FilePath 'powershell.exe' -WorkingDirectory $ProjectRoot `
         -ArgumentList @('-NoExit', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded) | Out-Null
-    Write-Ok "已打开$Title窗口。"
+    Write-Ok "已打开${Title}窗口。"
 }
 
 Write-Host ''
