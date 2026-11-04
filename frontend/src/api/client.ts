@@ -129,8 +129,70 @@ export function clearStoredToken(): void {
   removeItem(TOKEN_EXPIRES_AT_KEY)
 }
 
-type UnauthorizedHandler = () => void
+/* -------------------------------- BYOK ---------------------------------- */
 
+/**
+ * 用户自带的 DeepSeek Key（ADR-009）。
+ *
+ * 存 `sessionStorage` 而不是 `localStorage`：标签页关掉即消失，不落盘、不同步、
+ * 不会被别的标签页读到。它仍然是「能被 XSS 读到」的存储 —— 之所以可以接受，
+ * 是因为生成物的注入路径只有一条（`ResumePreview.vue` 的 `v-html`），
+ * 而那条路径上的每个用户字段都经过后端 `escape()`，AI 也只被允许产出纯文本文案。
+ * 想更保守，就改成每次生成时手输 Key（不存储），代价是体验。
+ */
+export const DEEPSEEK_KEY_STORAGE_KEY = 'deepseek-api-key'
+
+/** 内存镜像：隐私模式下 `sessionStorage` 写不进去，本次会话内仍要能用。 */
+let memoryDeepSeekKey = ''
+
+export function getDeepSeekKey(): string {
+  try {
+    const stored = window.sessionStorage.getItem(DEEPSEEK_KEY_STORAGE_KEY)?.trim()
+    if (stored) return stored
+  } catch {
+    // 读不到就当没有，回落到内存镜像。
+  }
+  return memoryDeepSeekKey
+}
+
+export function setDeepSeekKey(value: string): void {
+  const trimmed = value.trim()
+  memoryDeepSeekKey = trimmed
+  if (!trimmed) {
+    try {
+      window.sessionStorage.removeItem(DEEPSEEK_KEY_STORAGE_KEY)
+    } catch {
+      // 忽略：内存镜像已经清掉了。
+    }
+    return
+  }
+  try {
+    window.sessionStorage.setItem(DEEPSEEK_KEY_STORAGE_KEY, trimmed)
+  } catch {
+    // 隐私模式下写不进去：只在本次标签页的内存里保留，刷新即失。
+  }
+}
+
+export function clearDeepSeekKey(): void {
+  memoryDeepSeekKey = ''
+  try {
+    window.sessionStorage.removeItem(DEEPSEEK_KEY_STORAGE_KEY)
+  } catch {
+    // 同上，忽略。
+  }
+}
+
+export function hasDeepSeekKey(): boolean {
+  return getDeepSeekKey().length > 0
+}
+
+/** 生成请求才带 Key：其他接口带一个无关的鉴权头毫无意义，还多一处泄漏面。 */
+function isResumeGenerateRequest(url: string | undefined): boolean {
+  if (!url) return false
+  return url.includes('/resumes/generate')
+}
+
+type UnauthorizedHandler = () => void
 let unauthorizedHandler: UnauthorizedHandler | null = null
 
 /** 由 `router/index.ts` 注入「跳转登录页」的实现。 */
@@ -305,6 +367,14 @@ http.interceptors.request.use(async (config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
+
+  // BYOK：只有生成简历这一个接口需要用户自带的 DeepSeek Key（ADR-009）。
+  if (isResumeGenerateRequest(config.url)) {
+    const deepSeekKey = getDeepSeekKey()
+    if (deepSeekKey) {
+      config.headers['X-DeepSeek-Key'] = deepSeekKey
+    }
+  }
   return config
 })
 
@@ -314,6 +384,13 @@ http.interceptors.response.use(
     const apiError = toApiError(error)
 
     if (apiError.status !== 401) {
+      return Promise.reject(apiError)
+    }
+
+    // BYOK 的 401 说的是「你的 DeepSeek Key 无效/欠费」，与登录态无关。
+    // 不先分流就会走进下面的刷新重放，最坏情况是把用户踢回登录页，
+    // 而他要修的其实是 AI 设置里的 Key。
+    if (apiError.code === 'AI_KEY_INVALID') {
       return Promise.reject(apiError)
     }
 

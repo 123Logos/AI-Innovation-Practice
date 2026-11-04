@@ -9,5 +9,13 @@ export * as authApi from './auth'
 export * as profilesApi from './profiles'
 export * as resumesApi from './resumes'
 
-export { ApiError, isApiError, TOKEN_STORAGE_KEY } from './client'
+export {
+  ApiError,
+  clearDeepSeekKey,
+  getDeepSeekKey,
+  hasDeepSeekKey,
+  isApiError,
+  setDeepSeekKey,
+  TOKEN_STORAGE_KEY,
+} from './client'
 export type * from './types'

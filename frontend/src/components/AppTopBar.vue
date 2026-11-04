@@ -14,7 +14,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { isApiError } from '@/api'
+import { clearDeepSeekKey, hasDeepSeekKey, isApiError, setDeepSeekKey } from '@/api'
 import type { ProfileSortField, ProfileSummary } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { useResumeStore } from '@/stores/resume'
@@ -286,6 +286,48 @@ watch(
   },
 )
 
+/* ------------------------------ AI 设置（ADR-009 BYOK） ----------------- */
+
+const aiSettingsVisible = ref(false)
+/**
+ * 输入框草稿：打开弹窗时**不回填**已存的 Key。
+ * Key 只在 sessionStorage 里活着，没必要再把它显示到屏幕上（肩窥 / 屏幕录制 / 截图）。
+ */
+const aiKeyDraft = ref('')
+const aiKeySaved = ref(hasDeepSeekKey())
+const aiSettingsError = ref('')
+
+function openAiSettings(): void {
+  aiKeyDraft.value = ''
+  aiSettingsError.value = ''
+  aiKeySaved.value = hasDeepSeekKey()
+  aiSettingsVisible.value = true
+}
+
+function closeAiSettings(): void {
+  aiSettingsVisible.value = false
+}
+
+function submitAiKey(): void {
+  const value = aiKeyDraft.value.trim()
+  if (!value) {
+    aiSettingsError.value = '请粘贴一个非空的 DeepSeek API Key。'
+    return
+  }
+  setDeepSeekKey(value)
+  aiKeySaved.value = true
+  // 保存后立刻清空输入框：屏幕上看不到完整 Key，也避免下次打开时留着一份明文。
+  aiKeyDraft.value = ''
+  aiSettingsError.value = ''
+}
+
+function forgetAiKey(): void {
+  clearDeepSeekKey()
+  aiKeySaved.value = false
+  aiKeyDraft.value = ''
+  aiSettingsError.value = ''
+}
+
 async function handleLogout(): Promise<void> {
   // 先清业务数据再清登录态，避免下一个账号短暂看到上一个人的档案。
   resume.reset()
@@ -450,10 +492,56 @@ async function handleLogout(): Promise<void> {
 
       <span v-if="resume.dirty" class="dirty-dot" title="有未保存的修改">未保存</span>
       <span class="user-name">{{ auth.displayName || '已登录用户' }}</span>
+      <button class="ai-settings-button" type="button" @click="openAiSettings">AI 设置</button>
       <button class="logout-button" type="button" :disabled="auth.signingOut" @click="handleLogout">
         {{ auth.signingOut ? '退出中…' : '退出登录' }}
       </button>
     </div>
+
+    <!-- AI 设置弹窗：BYOK（ADR-009），Key 只进 sessionStorage。 -->
+    <Teleport to="body">
+      <div v-if="aiSettingsVisible" class="modal-mask" @click.self="closeAiSettings">
+        <section
+          class="modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="ai-settings-heading"
+        >
+          <h2 id="ai-settings-heading" class="modal-title">AI 设置</h2>
+          <p class="modal-intro">
+            生成简历时使用你自己的 DeepSeek API Key（模型 <code>deepseek-flash</code>，非流式）。
+            Key 只保存在当前标签页的 <code>sessionStorage</code>：关闭标签页即清除，
+            不写 localStorage、不落数据库；服务端只在本次请求的内存里持有它，不写日志。
+          </p>
+
+          <p class="ai-settings-status">
+            {{ aiKeySaved ? '当前标签页已配置 Key' : '当前标签页还没有 Key' }}
+          </p>
+
+          <label class="modal-field">
+            <span>DeepSeek API Key</span>
+            <input
+              v-model="aiKeyDraft"
+              type="password"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="sk-……"
+              @keydown.enter.prevent="submitAiKey"
+            />
+          </label>
+
+          <p v-if="aiSettingsError" class="modal-error" role="alert">{{ aiSettingsError }}</p>
+
+          <div class="modal-actions">
+            <button class="modal-button" type="button" @click="forgetAiKey">清除 Key</button>
+            <button class="modal-button" type="button" @click="closeAiSettings">关闭</button>
+            <button class="modal-button modal-button--primary" type="button" @click="submitAiKey">
+              保存 Key
+            </button>
+          </div>
+        </section>
+      </div>
+    </Teleport>
 
     <!-- 新建简历弹窗：用 Teleport 到 body，避免被顶栏的 backdrop-filter 裁剪。 -->
     <Teleport to="body">
@@ -527,9 +615,13 @@ async function handleLogout(): Promise<void> {
 .user-area { display: flex; align-items: center; gap: 12px; }
 .user-name { color: #52635f; font-size: 13px; }
 .dirty-dot { border: 1px solid #c9a227; padding: 2px 7px; color: #94781a; font-size: 11px; }
+.ai-settings-button,
 .logout-button { border: 1px solid #d6dfdc; padding: 7px 14px; color: #52635f; background: transparent; cursor: pointer; font: inherit; font-size: 12px; }
+.ai-settings-button:hover:not(:disabled),
 .logout-button:hover:not(:disabled) { border-color: var(--theme-rule); color: var(--theme-primary); }
+.ai-settings-button:disabled,
 .logout-button:disabled { opacity: .6; cursor: progress; }
+.ai-settings-status { margin: 0; color: #879692; font-size: 12px; }
 
 /* ---- 简历切换器 ---- */
 .profile-switcher { position: relative; }
@@ -631,7 +723,9 @@ async function handleLogout(): Promise<void> {
   .brand-title { color: #e8eae9; }
   .brand-sub { color: #8ea09c; }
   .user-name { color: #b7c3c0; }
+  .ai-settings-button,
   .logout-button { border-color: #52635f; color: #b7c3c0; }
+  .ai-settings-status { color: #8ea09c; }
   .switcher-trigger { border-color: #52635f; color: #e8eae9; background: #263330; }
   .switcher-default { border-color: var(--theme-rule); color: var(--theme-primary-strong); background: var(--theme-bg-light); }
   .switcher-menu { border-color: #52635f; background: #263330; }

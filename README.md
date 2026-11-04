@@ -50,6 +50,11 @@ Copy-Item .env.example .env
 
 真实 `.env`、数据库备份、对象存储密钥和 JWT 密钥不得提交到代码仓库。DeepSeek Key 只允许后端使用，不能写入 Vue 环境变量或浏览器代码。
 
+**AI 生成的 Key 走 BYOK（ADR-009）**：用户在顶栏「AI 设置」里填入自己的 DeepSeek Key，
+它只存在于浏览器 `sessionStorage`（关标签页即清除，不写 `localStorage`）和单次请求的
+`X-DeepSeek-Key` 头里；服务端只在本次请求内存中持有，**不落库、不写日志**，
+因此 `.env` 里的 `DEEPSEEK_API_KEY` 已不再被任何代码读取。
+
 ## 设计原则
 
 1. 前后端职责分离，所有敏感业务校验在后端执行。

@@ -55,10 +55,16 @@
 
 ## 三、技术架构与规范（优先级：低，持续改进）
 
-- [ ] **接入真实的 AI 大模型**
-  - 现状：`TemplateResumeGenerator` 仍是模板拼装，不是真正的大模型生成。
-  - 需求：替换为真实的 DeepSeek 调用。
-  - 前置：需撰写新 ADR，明确 API Key 管理、Prompt 设计与约束、超时与重试策略、Token 计费与成本上限。
+- [x] **接入真实的 AI 大模型**（2026-11-04 完成，见 [ADR-009](adr/ADR-009-deepseek-byok-nonstream.md)）
+  - 现状：文案润色走真实 DeepSeek `deepseek-flash`（BYOK：用户自带 Key，服务端不落库、不写日志、
+    非流式、thinking 关闭、30 秒预算、`max_retries=0`）；**排版仍由 `TemplateResumeGenerator` 负责**，
+    模型只产出经历文案与技能排序的 JSON，服务层按四条合并规则回贴后套模板——这样 `v-html` 注入路径上
+    的每个字段依旧 `escape()`，A4 一页与主题/顺序契约不受模型影响。
+  - 前置已满足：ADR-009 写清了 Key 管理（BYOK + CORS 白名单 + 第三方 logger 压级）、Prompt 约束
+    （禁止新增技能/经历/改时间）、超时与重试（30s / 不重试）、失败分流（400/401/502 三码）与降级
+    （必须用户点出来）。
+  - **仍待人类做的一件事**：Token 计费与成本上限没有服务端强制（Key 是用户的，成本由用户自负），
+    且真实 Key 下的端到端效果、429 的真实形态尚未手测。
 
 - [ ] **测试隔离问题修复**
   - 现状：`tests/test_auth.py` 使用 `drop_all` 清理，与 `test_migrations` 共库时会产生 3730 冲突，须先手动 `alembic downgrade base`。

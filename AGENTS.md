@@ -23,7 +23,7 @@
 2. **`docs/design/schema-draft.sql` 是领域设计草案，不是迁移源。** 禁止把它当作数据库真相；实际迁移以 Alembic 迁移文件为准。
 3. **现有 `tests/` 只覆盖健康检查。** “测试通过”目前只证明进程能启动，不证明任何业务行为正确。
 4. **`PROJECT_STATUS.md` 中“已完成”的部分，多数是“已声明/已设计”，不是“已实现/已验证”。** 不要把它当作你继续扩写的许可。
-5. **Redis、ARQ/Celery、S3、WebRTC、真实 DeepSeek 调用，在 Phase 1 一律不接入。** 它们只允许以接口/占位形式存在，且必须被标注为 `# PHASE-2: not wired`。
+5. **Redis、ARQ/Celery、S3、WebRTC 在 Phase 1 一律不接入。** 它们只允许以接口/占位形式存在，且必须被标注为 `# PHASE-2: not wired`。**真实 DeepSeek 调用已按 §3.2 的书面批准机制解除冻结**（2026-11-04 人类负责人批准，实现与取舍见 `docs/adr/ADR-009-deepseek-byok-nonstream.md`：BYOK、非流式、模型 `deepseek-flash`、Key 不落库不写日志），其余各项状态不变。
 
 ---
 
@@ -68,7 +68,7 @@
 - 标准化题库测评、AI 用户画像
 - 行业标杆人物库
 - 教师端学情看板、学校课程反哺报告
-- 真实 DeepSeek / 任何真实外部 AI 服务调用
+- ~~真实 DeepSeek / 任何真实外部 AI 服务调用~~ → **Phase 2 已解除：采用 BYOK 模式接入真实 DeepSeek**（2026-11-04 人类负责人书面批准，凭证与实现见 `docs/adr/ADR-009-deepseek-byok-nonstream.md`）。例外只覆盖 DeepSeek 这一家、且只覆盖「生成简历的文案润色」；OpenAI 或其它任何外部 AI 服务、以及把 AI 用于模拟面试/匹配/画像，仍在冻结之列。
 - Redis、ARQ、Celery、S3、消息队列、任何后台任务框架
 - 小程序 / 原生 App
 

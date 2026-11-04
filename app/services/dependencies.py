@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 
+from app.integrations.copy_writer import DeepSeekCopyWriter
 from app.integrations.resume_generator import TemplateResumeGenerator
 from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.resume_repository import ResumeRepository
@@ -26,6 +27,9 @@ from app.services.profile_service import ProfileService
 from app.services.resume_service import ResumeService
 
 UNAUTHORIZED_MESSAGE = "无效或已过期的访问令牌。"
+
+#: BYOK 请求头（ADR-009）：Key 由客户端每次带来，服务端只在本次请求的内存里持有。
+DEEPSEEK_KEY_HEADER = "X-DeepSeek-Key"
 
 
 def get_auth_service() -> Iterator[AuthService]:
@@ -48,12 +52,21 @@ def get_profile_service() -> Iterator[ProfileService]:
         yield ProfileService(StudentProfileRepository(session))
 
 
-def get_resume_service() -> Iterator[ResumeService]:
+def get_resume_service(request: Request) -> Iterator[ResumeService]:
+    """装配简历服务。
+
+    Key 在这里取而不是在路由里取，有两个既有依据：路由拿不到 `ResumeService` 内部的
+    generator（它在依赖里被 new 出来），而「缺鉴权材料就 4xx」也已经是本文件的既有分工
+    ——`get_current_user` 就是在依赖里抛 401 的。Key 是否**必需**留给服务层判断，
+    因为它还得看 `use_fallback`。
+    """
+    api_key = request.headers.get(DEEPSEEK_KEY_HEADER, "").strip()
     with session_scope() as session:
         yield ResumeService(
             profile_repository=StudentProfileRepository(session),
             resume_repository=ResumeRepository(session),
             generator=TemplateResumeGenerator(),
+            copy_writer=DeepSeekCopyWriter(api_key) if api_key else None,
         )
 
 

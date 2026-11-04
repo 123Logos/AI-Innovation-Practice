@@ -19,6 +19,7 @@ dependencies = [
     # 锁在 4.0.x 是 passlib 停更下的唯一干净组合。
     "bcrypt>=4.0.1,<4.1.0",
     "slowapi>=0.1.9",
+    "openai>=3.45.0",
 ]
 
 [dependency-groups]

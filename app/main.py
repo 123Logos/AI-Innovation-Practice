@@ -23,13 +23,27 @@ from app.api.router import router
 from app.core.config import Settings, get_settings
 from app.core.errors import error_response
 from app.core.rate_limit import limiter
+from app.services.resume_service import (
+    ResumeApiKeyMissingError,
+    ResumeCopyRejectedError,
+    ResumeCopyUnavailableError,
+)
 
 logger = logging.getLogger(__name__)
 
+# BYOK 架构下 Key 只允许在本次请求的内存里存在（ADR-009）。`openai` SDK 在 DEBUG 级别
+# 会把整个 request options —— 包含 `Authorization: Bearer <key>` —— 打出来，一旦有人
+# 用 `--log-level debug` 起服务，用户自带的 Key 就落进了日志文件。在这里按库压级，
+# 比在业务代码里小心更可靠：它挡住的是第三方库的日志，不是我们的。
+for _sdk_logger in ("openai", "httpx2", "httpcore", "httpx"):
+    logging.getLogger(_sdk_logger).setLevel(logging.WARNING)
+
 #: 前端实际用到的 HTTP 方法，显式列出而不放通配符 `*`。
 CORS_ALLOW_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
-#: 前端实际会带的请求头：JWT、JSON、以及 `X-Request-ID`（前端可透传追踪 id）。
-CORS_ALLOW_HEADERS = ["Authorization", "Content-Type", "X-Request-ID"]
+#: 前端实际会带的请求头：JWT、JSON、`X-Request-ID`（追踪 id），以及 BYOK 的
+#: `X-DeepSeek-Key`。少列一个，浏览器预检就会在跨源部署（手机走局域网 IP 访问）时
+#: 直接拒掉这个头；本地 Vite 代理同源，测不出来。
+CORS_ALLOW_HEADERS = ["Authorization", "Content-Type", "X-Request-ID", "X-DeepSeek-Key"]
 
 #: 迁移脚本在项目根目录的 `alembic/`，用绝对路径解析，避免从别的工作目录启动时找不到。
 ALEMBIC_INI_PATH = Path(__file__).resolve().parents[1] / "alembic.ini"
@@ -220,6 +234,43 @@ def create_app() -> FastAPI:
                 retryable=True,
             ),
             headers={"Retry-After": "60"},
+        )
+
+    # ADR-009 的三个 AI 分支。走专用处理器而不是在路由里 raise HTTPException，
+    # 是因为通用 4xx 处理器会把 code 统一压成 CLIENT_ERROR，而前端需要按
+    # `AI_KEY_MISSING` / `AI_KEY_INVALID` / `AI_SERVICE_UNAVAILABLE` 区分动作：
+    # 补 Key、修 Key、还是问用户要不要改用模板。
+    # 消息一律用固定文案，不拼 `str(exc)`：上游异常文本可能带 request_id、
+    # 甚至带用户自己的 Key，不该原样回显到浏览器。
+
+    @app.exception_handler(ResumeApiKeyMissingError)
+    async def resume_api_key_missing(_: Request, __: ResumeApiKeyMissingError) -> JSONResponse:
+        return JSONResponse(
+            status_code=400,
+            content=error_response(_, "AI_KEY_MISSING", "请先在设置中配置 DeepSeek API Key。"),
+        )
+
+    @app.exception_handler(ResumeCopyRejectedError)
+    async def resume_copy_rejected(_: Request, __: ResumeCopyRejectedError) -> JSONResponse:
+        return JSONResponse(
+            status_code=401,
+            content=error_response(
+                _,
+                "AI_KEY_INVALID",
+                "您的 DeepSeek API Key 无效或已欠费，请前往「AI 设置」检查后重试。",
+            ),
+        )
+
+    @app.exception_handler(ResumeCopyUnavailableError)
+    async def resume_copy_unavailable(_: Request, __: ResumeCopyUnavailableError) -> JSONResponse:
+        return JSONResponse(
+            status_code=502,
+            content=error_response(
+                _,
+                "AI_SERVICE_UNAVAILABLE",
+                "AI 服务当前不可用（超时或上游异常），你可以重试，或改用基础模板生成。",
+                retryable=True,
+            ),
         )
 
     app.include_router(router, prefix="/api/v1")

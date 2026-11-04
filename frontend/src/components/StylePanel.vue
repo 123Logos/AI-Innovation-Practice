@@ -100,17 +100,55 @@ async function handleGenerate(): Promise<void> {
   }
 
   try {
-    const resume = await store.generate('我的简历')
+    const resume = await runGenerate(false)
     feedback.value = {
       tone: 'ok',
       text: `已生成并保存到数据库（#${resume.resume_id.slice(0, 8)}）。`,
     }
   } catch (error) {
+    if (isApiError(error) && error.code === 'AI_SERVICE_UNAVAILABLE') {
+      // AI 挂了不替用户决定：把「改用基础模板」做成一次明确询问（ADR-009）。
+      // 服务端静默降级会让人以为拿到的是 AI 结果，那比失败更难排查。
+      const useTemplate = window.confirm(
+        'AI 服务当前开小差了（超时或暂时不可用）。\n\n确定 = 改用基础模板为你生成这份简历；\n取消 = 保留现状，你稍后可以再试一次。',
+      )
+      if (!useTemplate) {
+        feedback.value = { tone: 'error', text: error.message }
+        return
+      }
+      try {
+        const fallbackResume = await runGenerate(true)
+        feedback.value = {
+          tone: 'ok',
+          text: `AI 暂不可用，已改用基础模板生成并保存（#${fallbackResume.resume_id.slice(0, 8)}）。`,
+        }
+      } catch (fallbackError) {
+        feedback.value = {
+          tone: 'error',
+          text: isApiError(fallbackError)
+            ? `模板生成也失败了：${fallbackError.message}`
+            : '生成失败，请稍后重试。',
+        }
+      }
+      return
+    }
+    if (isApiError(error) && error.code === 'AI_KEY_INVALID') {
+      feedback.value = {
+        tone: 'error',
+        text: '您的 DeepSeek API Key 无效或已欠费，请打开右上角「AI 设置」检查后重试。',
+      }
+      return
+    }
     feedback.value = {
       tone: 'error',
       text: isApiError(error) ? error.message : '生成失败，请稍后重试。',
     }
   }
+}
+
+/** 一次生成调用，抽出来是因为「改用模板」要用同样的参数再走一遍。 */
+async function runGenerate(useFallback: boolean) {
+  return store.generate('我的简历', { useFallback })
 }
 
 function printResume(): void {
@@ -223,7 +261,7 @@ function printResume(): void {
 
     <div class="panel-section">
       <button class="generate-button" type="button" :disabled="store.generating" @click="handleGenerate">
-        {{ store.generating ? '生成中…' : '生成简历' }}
+        {{ store.generating ? 'AI 生成中，请稍候…' : '生成简历' }}
       </button>
       <p v-if="feedback" :class="['feedback', `feedback--${feedback.tone}`]">{{ feedback.text }}</p>
     </div>

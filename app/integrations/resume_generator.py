@@ -170,18 +170,3 @@ class TemplateResumeGenerator(ResumeGenerator):
             accent=palette.accent,
             rule=palette.rule,
         )
-
-
-class DeepSeekResumeGenerator(ResumeGenerator):
-    # PHASE-2: not wired
-    def generate(
-        self,
-        profile: ProfileInput,
-        skills: Sequence[SkillInput],
-        experiences: Sequence[ExperienceInput],
-        title: str,
-        educations: Sequence[EducationInput] = (),
-        theme: ThemeId = DEFAULT_THEME,
-        layout: Sequence[Section] | None = None,
-    ) -> str:
-        raise NotImplementedError("PHASE-2: not wired")

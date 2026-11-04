@@ -10,7 +10,10 @@
 注册/登录 → 保存学生档案（`student_profiles` + `skills` + `experiences` + `educations`）
 → 生成简历写入 `resumes`，前端「实时预览」与「已生成简历」共用同一套版式与类名。
 
-简历正文仍由 `TemplateResumeGenerator` 模板拼装，**不是 AI 生成**；
+简历正文的**文案**已可走真实 DeepSeek 润色（ADR-009：BYOK，用户自带 Key），
+**排版仍由 `TemplateResumeGenerator` 模板拼装**——AI 不产出 HTML，只产出经历文案与技能排序，
+再由模板套版、转义、落库；未配置 Key 或用户显式点「改用基础模板」时走纯模板路径。
+真实 Key 下的端到端效果**尚未验证**（本轮不持有任何真实凭据）。
 已有一轮以上小范围人工测试反馈（时区、版式对齐、手机号校验、结束时间未来限制等）
 并已修复，但尚无规模化真实用户数据。
 
@@ -75,10 +78,10 @@ Phase 2 已启动，按 `docs/PHASE2_BACKLOG.md` 优先级推进：
 | 双 Token 与刷新 | **已验证** | `POST /auth/login` 返回 `access_token` + `refresh_token`（`expires_in` 仍为 access 的 900 秒）；库内 `refresh_tokens.token_hash` = `sha256(明文)`（64 位，明文不落库）；`POST /auth/refresh` 换发新双 Token 并把旧记录置 `revoked_at`；同一 refresh token 二次使用 401；`POST /auth/logout` 返回 204 且撤销后不可再刷新 |
 | JWT 生产 fail-fast | **已验证** | `Settings(environment="production")` 缺 `jwt_secret_key` 或不足 32 位均抛 `ValueError` |
 | 档案读写写入真实 MySQL | **已验证** | `uv run pytest tests/test_profiles.py -v` 14 passed：PUT 后 `student_profiles` 1 行 / `skills` 3 行 / `experiences` 1 行 / `educations` 1 行；教育经历 2 段再改 1 段时旧行被物理删除；二次 PUT 技能/经历全量替换且 profile id 不变；两用户互不可见 |
-| 简历生成写入真实 MySQL | **已验证** | `uv run pytest tests/test_resumes_generate.py -v` 8 passed：注册→PUT 档案→生成，断言 `resumes` 行的 id / student_profile_id / title / content_html 与响应一致；教育区块含学校/专业/学历/起止时间且按入学时间倒序，无教育经历时整块不渲染；未登录 401；无档案 400 |
+| 简历生成写入真实 MySQL | **已验证** | `uv run pytest tests/test_resumes_generate.py -v` 8 passed（**历史记录：当时 8 例，现为 22 例** —— D4.1/D5.2/D5.3 陆续补了多简历、配色与排版用例；ADR-009 后这 22 例统一改为显式携带 `use_fallback=true` 的模板路径，AI 路径另有 `tests/test_resume_ai_copywriting.py` 16 例）：注册→PUT 档案→生成，断言 `resumes` 行的 id / student_profile_id / title / content_html 与响应一致；教育区块含学校/专业/学历/起止时间且按入学时间倒序，无教育经历时整块不渲染；未登录 401；无档案 400 |
 | 业务链路可跑通 | **已验证（前端 + 后端）** | T7.3 起前后端全链路联调：登录态（JWT）→ 档案保存 → A4 实时预览 → 生成简历落真实 `resumes` 表；`uv run pytest -q` 69 passed 覆盖后端链路，前端 `typecheck` / `build` 通过 |
 | 手机/电脑可用 | **部分验证** | 已在小范围人工测试中跑通主流程（并据此修复 10 项体验问题）；无规模化真实用户数据 |
-| AI 生成简历 | **未验证** | 仍是 `TemplateResumeGenerator` 模板拼装 |
+| AI 生成简历 | **已接入，真实调用未验证** | ADR-009：DeepSeek `deepseek-flash` BYOK 文案润色已接入（非流式、thinking 关闭、Key 不落库不写日志），排版仍由 `TemplateResumeGenerator` 负责。`uv run pytest -q` 182 passed，其中 `tests/test_resume_ai_copywriting.py` 16 例用 `httpx2.MockTransport` 断言线级请求参数与四类失败分流；前端 `byok.spec.ts` 7 例盯死 sessionStorage 口径与 401 分流。**用手测的缺口**：真实 Key 下的延迟、模型 JSON 输出的遵循度、429 的真实形态尚未验证（本轮不持有任何真实凭据） |
 
 ## 4. 当前阻塞项
 

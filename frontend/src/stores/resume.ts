@@ -55,7 +55,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 
-import { profilesApi, resumesApi } from '@/api'
+import { ApiError, hasDeepSeekKey, profilesApi, resumesApi } from '@/api'
 import type {
   Degree,
   LayoutConfig,
@@ -1486,13 +1486,27 @@ export const useResumeStore = defineStore('resume', () => {
    * 标题优先用当前简历的 `title`（「投后端」生成出来就叫《投后端》），
    * 传参只在「还没有任何简历」时兜底——`StylePanel` 仍在传 '我的简历'，
    * 保持旧调用点不动，但不再用它覆盖真实的简历标题。
+   *
+   * ADR-009：默认走 DeepSeek 润色，Key 由拦截器从 `sessionStorage` 注入。
+   * 这里先本地拦一道：没 Key 就别把请求发出去——后端同样会 400，但前拦能给出
+   * 准确的下一步（去「AI 设置」），也省一次必然失败的往返。
+   * `useFallback` 只允许由用户在提示框里点出来，服务端不会静默降级。
    */
-  async function generate(title?: string): Promise<ResumeRead> {
+  async function generate(
+    title?: string,
+    options: { useFallback?: boolean } = {},
+  ): Promise<ResumeRead> {
+    const useFallback = options.useFallback === true
+    if (!useFallback && !hasDeepSeekKey()) {
+      throw new ApiError('请先在右上角「AI 设置」中填写你的 DeepSeek API Key。', 400, 'AI_KEY_MISSING')
+    }
+
     generating.value = true
     try {
       const resume = await resumesApi.generateResume({
         title: currentProfileTitle.value || title?.trim() || DEFAULT_PROFILE_TITLE,
         profile_id: currentProfileId.value,
+        use_fallback: useFallback,
       })
       generatedHtml.value = resume.content_html
       generatedResumeId.value = resume.resume_id

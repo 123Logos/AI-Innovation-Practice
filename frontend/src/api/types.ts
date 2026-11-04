@@ -278,6 +278,11 @@ export interface ResumeGenerateRequest {
   title: string
   /** D4.1：指定用哪一份简历生成；省略则后端取默认简历。 */
   profile_id?: string | null
+  /**
+   * ADR-009：用户在「AI 服务不可用」提示里点了「改用基础模板」时置 true，
+   * 后端据此跳过 DeepSeek、不发外呼。省略即走 AI，缺 Key 会被 400 拦下。
+   */
+  use_fallback?: boolean
 }
 
 export interface ResumeRead {

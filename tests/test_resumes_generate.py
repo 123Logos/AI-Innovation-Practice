@@ -41,6 +41,16 @@ def _headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _payload(title: str, **extra: object) -> dict[str, object]:
+    """模板路径用例的统一请求体。
+
+    ADR-009 之后 `POST /resumes/generate` 默认要调 DeepSeek，不带 Key 会被 400 拦住。
+    本文件验的是**排版契约**（主题、顺序、转义、落库归属），与 AI 无关，所以每条用例
+    显式声明 `use_fallback=True` —— 而不是塞一个假上游让「模板测试」其实测的是 AI 路径。
+    """
+    return {"use_fallback": True, "title": title, **extra}
+
+
 def _educations() -> list[dict[str, object]]:
     """两段学历：硕士在读（较新）+ 本科（较早），用于验证倒序渲染。"""
     return [
@@ -99,7 +109,7 @@ def _count(table: str) -> int:
 
 
 def test_generate_requires_authentication(client: TestClient) -> None:
-    response = client.post(GENERATE_URL, json={"title": "我的简历"})
+    response = client.post(GENERATE_URL, json=_payload("我的简历"))
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "CLIENT_ERROR"
@@ -109,7 +119,7 @@ def test_generate_requires_authentication(client: TestClient) -> None:
 def test_generate_returns_400_when_profile_is_missing(client: TestClient) -> None:
     token = _register_and_login(client)
 
-    response = client.post(GENERATE_URL, json={"title": "我的简历"}, headers=_headers(token))
+    response = client.post(GENERATE_URL, json=_payload("我的简历"), headers=_headers(token))
 
     assert response.status_code == 400
     body = response.json()
@@ -125,7 +135,7 @@ def test_generate_persists_resume_for_current_user(client: TestClient) -> None:
     assert saved.status_code == 200, saved.text
     profile_id = saved.json()["data"]["profile"]["id"]
 
-    response = client.post(GENERATE_URL, json={"title": "我的第一份简历"}, headers=_headers(token))
+    response = client.post(GENERATE_URL, json=_payload("我的第一份简历"), headers=_headers(token))
 
     assert response.status_code == 200, response.text
     data = response.json()["data"]
@@ -193,7 +203,7 @@ def test_generate_skips_education_section_when_profile_has_none(client: TestClie
         headers=_headers(token),
     )
 
-    response = client.post(GENERATE_URL, json={"title": "无学历简历"}, headers=_headers(token))
+    response = client.post(GENERATE_URL, json=_payload("无学历简历"), headers=_headers(token))
 
     assert response.status_code == 200, response.text
     content_html = response.json()["data"]["content_html"]
@@ -208,12 +218,12 @@ def test_generate_ignores_profile_fields_sent_in_request_body(client: TestClient
 
     response = client.post(
         GENERATE_URL,
-        json={
-            "title": "被污染？",
-            "full_name": "李四",
-            "skills": [{"name": "伪造技能", "self_rating": 5}],
-            "experiences": [{"title": "伪造经历"}],
-        },
+        json=_payload(
+            "被污染？",
+            full_name="李四",
+            skills=[{"name": "伪造技能", "self_rating": 5}],
+            experiences=[{"title": "伪造经历"}],
+        ),
         headers=_headers(token),
     )
 
@@ -230,7 +240,7 @@ def test_generate_renders_ongoing_experience(client: TestClient) -> None:
     token = _register_and_login(client)
     client.put(PROFILES_URL, json=_profile_payload(end_date=None), headers=_headers(token))
 
-    response = client.post(GENERATE_URL, json={"title": "在读经历"}, headers=_headers(token))
+    response = client.post(GENERATE_URL, json=_payload("在读经历"), headers=_headers(token))
 
     assert response.status_code == 200, response.text
     content_html = response.json()["data"]["content_html"]
@@ -247,7 +257,7 @@ def test_generate_omits_email_span_when_profile_has_none(client: TestClient) -> 
     token = _register_and_login(client)
     client.put(PROFILES_URL, json=_profile_payload(email=None), headers=_headers(token))
 
-    response = client.post(GENERATE_URL, json={"title": "没填邮箱"}, headers=_headers(token))
+    response = client.post(GENERATE_URL, json=_payload("没填邮箱"), headers=_headers(token))
 
     assert response.status_code == 200, response.text
     content_html = response.json()["data"]["content_html"]
@@ -266,7 +276,7 @@ def test_generate_requires_at_least_one_skill_and_experience(client: TestClient)
     )
     assert put.status_code == 200, put.text
 
-    response = client.post(GENERATE_URL, json={"title": "空档案"}, headers=_headers(token))
+    response = client.post(GENERATE_URL, json=_payload("空档案"), headers=_headers(token))
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "CLIENT_ERROR"
@@ -290,8 +300,8 @@ def test_each_generate_creates_a_new_resume_row(client: TestClient) -> None:
     token = _register_and_login(client)
     client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token))
 
-    first = client.post(GENERATE_URL, json={"title": "第一版"}, headers=_headers(token))
-    second = client.post(GENERATE_URL, json={"title": "第二版"}, headers=_headers(token))
+    first = client.post(GENERATE_URL, json=_payload("第一版"), headers=_headers(token))
+    second = client.post(GENERATE_URL, json=_payload("第二版"), headers=_headers(token))
 
     assert first.status_code == 200
     assert second.status_code == 200
@@ -332,7 +342,7 @@ def test_generate_uses_requested_profile(client: TestClient) -> None:
 
     response = client.post(
         GENERATE_URL,
-        json={"title": "算法版", "profile_id": algorithm["id"]},
+        json=_payload("算法版", profile_id=algorithm["id"]),
         headers=_headers(token),
     )
 
@@ -352,7 +362,7 @@ def test_generate_uses_requested_profile(client: TestClient) -> None:
     )
     response = client.post(
         GENERATE_URL,
-        json={"title": "算法版", "profile_id": algorithm["id"]},
+        json=_payload("算法版", profile_id=algorithm["id"]),
         headers=_headers(token),
     )
 
@@ -378,7 +388,7 @@ def test_generate_without_profile_id_uses_default_profile(client: TestClient) ->
         headers=_headers(token),
     )
 
-    response = client.post(GENERATE_URL, json={"title": "默认那份"}, headers=_headers(token))
+    response = client.post(GENERATE_URL, json=_payload("默认那份"), headers=_headers(token))
 
     assert response.status_code == 200, response.text
     content_html = response.json()["data"]["content_html"]
@@ -407,7 +417,7 @@ def test_generate_rejects_profile_of_another_user(client: TestClient) -> None:
 
     response = client.post(
         GENERATE_URL,
-        json={"title": "越权尝试", "profile_id": a_profile["id"]},
+        json=_payload("越权尝试", profile_id=a_profile["id"]),
         headers=_headers(token_b),
     )
 
@@ -426,7 +436,7 @@ def test_generate_rejects_profile_in_trash(client: TestClient) -> None:
 
     response = client.post(
         GENERATE_URL,
-        json={"title": "已删除的简历", "profile_id": saved["id"]},
+        json=_payload("已删除的简历", profile_id=saved["id"]),
         headers=_headers(token),
     )
 
@@ -448,7 +458,7 @@ def test_generate_inlines_default_theme_into_content_html(client: TestClient) ->
     token = _register_and_login(client)
     client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token))
 
-    response = client.post(GENERATE_URL, json={"title": "默认配色"}, headers=_headers(token))
+    response = client.post(GENERATE_URL, json=_payload("默认配色"), headers=_headers(token))
 
     assert response.status_code == 200, response.text
     content_html = response.json()["data"]["content_html"]
@@ -466,7 +476,7 @@ def test_generate_uses_profile_theme(client: TestClient) -> None:
         headers=_headers(token),
     )
 
-    response = client.post(GENERATE_URL, json={"title": "酒红版"}, headers=_headers(token))
+    response = client.post(GENERATE_URL, json=_payload("酒红版"), headers=_headers(token))
 
     assert response.status_code == 200, response.text
     content_html = response.json()["data"]["content_html"]
@@ -488,7 +498,7 @@ def test_generate_falls_back_to_forest_when_db_theme_is_unknown(client: TestClie
             {"id": saved["id"]},
         )
 
-    response = client.post(GENERATE_URL, json={"title": "脏数据"}, headers=_headers(token))
+    response = client.post(GENERATE_URL, json=_payload("脏数据"), headers=_headers(token))
 
     assert response.status_code == 200, response.text
     assert "--paper-accent: #527873" in response.json()["data"]["content_html"]
@@ -513,7 +523,7 @@ def test_generate_uses_default_layout_when_never_customized(client: TestClient) 
     token = _register_and_login(client)
     client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token))
 
-    response = client.post(GENERATE_URL, json={"title": "默认排版"}, headers=_headers(token))
+    response = client.post(GENERATE_URL, json=_payload("默认排版"), headers=_headers(token))
 
     assert response.status_code == 200, response.text
     assert _h2_titles(response.json()["data"]["content_html"]) == ["教育经历", "技能", "项目经历"]
@@ -534,7 +544,7 @@ def test_generate_follows_layout_order_and_titles(client: TestClient) -> None:
         headers=_headers(token),
     )
 
-    response = client.post(GENERATE_URL, json={"title": "自定义排版"}, headers=_headers(token))
+    response = client.post(GENERATE_URL, json=_payload("自定义排版"), headers=_headers(token))
 
     assert response.status_code == 200, response.text
     html = response.json()["data"]["content_html"]
@@ -561,7 +571,7 @@ def test_generate_skips_empty_module_even_when_it_is_first(client: TestClient) -
         headers=_headers(token),
     )
 
-    response = client.post(GENERATE_URL, json={"title": "无学历"}, headers=_headers(token))
+    response = client.post(GENERATE_URL, json=_payload("无学历"), headers=_headers(token))
 
     assert response.status_code == 200, response.text
     html = response.json()["data"]["content_html"]
@@ -590,7 +600,7 @@ def test_generate_escapes_custom_layout_title(client: TestClient) -> None:
             },
         )
 
-    response = client.post(GENERATE_URL, json={"title": "转义"}, headers=_headers(token))
+    response = client.post(GENERATE_URL, json=_payload("转义"), headers=_headers(token))
 
     assert response.status_code == 200, response.text
     html = response.json()["data"]["content_html"]
@@ -615,7 +625,7 @@ def test_generate_falls_back_to_default_layout_for_broken_config(client: TestCli
                 {"raw": raw, "id": saved["id"]},
             )
 
-        response = client.post(GENERATE_URL, json={"title": "坏排版"}, headers=_headers(token))
+        response = client.post(GENERATE_URL, json=_payload("坏排版"), headers=_headers(token))
 
         assert response.status_code == 200, f"{raw} -> {response.text}"
         assert _h2_titles(response.json()["data"]["content_html"]) == [

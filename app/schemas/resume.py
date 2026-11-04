@@ -55,15 +55,44 @@ class ExperienceInput(BaseModel):
         return self
 
 
+class PolishedExperience(BaseModel):
+    """模型对**一段**既有经历的改写结果。
+
+    `index` 是输入经历列表里的下标，不是数据库 id：让模型复述 id 既没必要也容易出错，
+    而下标由我们自己在 prompt 里编号，回贴时不会错位。
+    标题与起止时间属于库里的既有事实，模型无权改动，因此这里刻意不接受。
+    """
+
+    index: int = Field(ge=0)
+    description: str = Field(min_length=1, max_length=600)
+    responsibility: str = Field(min_length=1, max_length=300)
+
+
+class ResumeCopy(BaseModel):
+    """AI 产出的文案契约（ADR-009）。
+
+    只有经历文案与技能顺序两项：主题、模块顺序、区块标题都由 `student_profiles`
+    决定，姓名/联系方式/教育经历是库里的原始事实——这些都不经过模型，
+    模型也就无法把它们改坏或塞进 HTML。
+    """
+
+    skills: list[str] = Field(default_factory=list, max_length=50)
+    experiences: list[PolishedExperience] = Field(default_factory=list, max_length=20)
+
+
 class ResumeGenerateRequest(BaseModel):
     """生成请求体只剩标题 + 可选的目标简历；档案内容由服务层按登录用户从库中读取。
 
     D4.1 起一个用户有多份简历，`profile_id` 指定用哪一份生成；
     不传则用默认简历 —— 旧前端（D4.2 之前）只发 `title`，必须继续可用。
+
+    ADR-009 起新增 `use_fallback`：默认走 AI 润色；用户在提示框里确认「改用基础模板」
+    后才置 true。**降级必须是用户点出来的**，服务端不静默代劳。
     """
 
     title: str = Field(min_length=1, max_length=200)
     profile_id: str | None = Field(default=None, max_length=36)
+    use_fallback: bool = False
 
 
 class ResumeRead(BaseModel):
