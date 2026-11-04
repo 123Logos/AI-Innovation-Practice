@@ -22,8 +22,17 @@
 - 文件：S3 兼容私有对象存储
 - 部署：本地开发用 `start-local.ps1` 一键启动；`docker-compose.yml` 已入库但**未经验证**（见 [ADR-008](docs/adr/ADR-008-docker-configs-unverified.md)）
 
-当前项目使用 MySQL 数据库 `ai_innovation_practice`。本地配置请以 `.env.example` 为模板，
-并通过 `DATABASE_URL` 指向该数据库。
+当前项目本地与演示环境使用 MySQL 数据库 `resume_mvp_dev`，集成测试使用 `resume_mvp_test`
+（与 CI 的 MySQL service 同名）。本地配置请以 `.env.example` 为模板，并把 `DATABASE_URL`
+指向同一个库。两个库只需建一次：
+
+```sql
+CREATE DATABASE IF NOT EXISTS resume_mvp_dev  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE IF NOT EXISTS resume_mvp_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
+
+> `MYSQL_DATABASE` 只是写给人看的记录字段，没有任何代码读取它；真正决定连哪个库的是
+> `DATABASE_URL`（`app/core/config.py:22`、`alembic/env.py:12`）。两者保持一致是为了不让人误判。
 
 ## 配置安全
 
