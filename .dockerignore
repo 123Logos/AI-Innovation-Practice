@@ -1,0 +1,37 @@
+# NOT VERIFIED: Docker is not installed on the development host.
+# Applies to the repo-root build context used by Dockerfile.backend and
+# Dockerfile.frontend. Keeping .venv and node_modules out of the context is what
+# makes the images build dependencies from the lockfiles instead of inheriting
+# whatever host binaries happen to be sitting there.
+
+.git
+.github
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.import_linter_cache
+.venv
+venv
+__pycache__
+*.py[oc]
+.coverage
+htmlcov
+
+# Local secrets: images must never bake these in, they are injected at run time.
+.env
+.env.*
+!.env.example
+
+node_modules
+frontend/node_modules
+frontend/dist
+frontend/.vite
+
+# Not needed at runtime.
+tests
+docs
+.workbuddy
+.vscode
+*.docx
+*.md
+!README.md

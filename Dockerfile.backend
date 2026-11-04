@@ -1,0 +1,42 @@
+# NOT VERIFIED: Docker is not installed on the development host.
+# See docs/adr/ADR-008-docker-configs-unverified.md. This image has never been built;
+# treat it as a deployment-ready draft, not as a working deployment.
+
+FROM python:3.13-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    PYTHONPATH=/app \
+    PATH=/opt/venv/bin:/root/.local/bin:$PATH
+
+WORKDIR /app
+
+# Same uv version the CI pipeline pins (.github/workflows/ci.yml).
+COPY --from=ghcr.io/astral-sh/uv:0.9.13 /uv /usr/local/bin/uv
+
+# Dependency layer first, so a source-only change reuses it.
+# README.md is copied because pyproject.toml declares `readme = "README.md"`.
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --frozen --no-install-project --no-dev
+
+COPY alembic.ini ./
+COPY alembic ./alembic
+COPY app ./app
+
+RUN uv sync --frozen --no-dev --no-install-project
+
+# Run as a non-root user: uv only reads the venv at runtime (`--no-sync`),
+# so the files can stay root-owned and world-readable.
+RUN useradd --create-home --uid 10001 appuser
+USER appuser
+
+EXPOSE 8000
+
+# /api/v1/health is the canonical readiness endpoint (app/api/router.py:10).
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=6 \
+    CMD ["python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=4).status == 200 else 1)"]
+
+# Alembic migrations are run here rather than baked into the image, so the same
+# image can be pointed at a fresh or an already-migrated database.
+CMD ["sh", "-c", "uv run --no-sync alembic upgrade head && exec uv run --no-sync uvicorn app.main:app --host 0.0.0.0 --port 8000"]

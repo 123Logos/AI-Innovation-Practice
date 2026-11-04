@@ -1,0 +1,77 @@
+# NOT VERIFIED: Docker is not installed on the development host.
+# See docs/adr/ADR-008-docker-configs-unverified.md. Nothing below has been run;
+# the first real `docker compose up` is expected to need fixes.
+#
+# Secrets are never written in this file. Docker Compose auto-loads the repo root
+# `.env`, which already defines MYSQL_USER / MYSQL_PASSWORD / MYSQL_DATABASE /
+# JWT_SECRET_KEY, so `docker compose up` works on a machine that has run
+# `Copy-Item .env.example .env` and filled it in. The `:?` guards below make an
+# unset variable fail loudly instead of starting a half-configured container.
+
+name: ai-career-platform
+
+services:
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is not set - create .env from .env.example}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?MYSQL_DATABASE is not set - create .env from .env.example}
+    # The app writes resume HTML and Chinese profile text; utf8mb4 is the charset the
+    # Alembic migrations and models assume.
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    environment:
+      # Built from service coordinates on purpose: the host DATABASE_URL in `.env`
+      # points at 127.0.0.1, which is this container itself and has no MySQL on it.
+      # So DATABASE_URL is assembled here instead of being taken from `.env`.
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-root}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE}?charset=utf8mb4
+      # development, not production: app/core/config.py only enforces the strong-JWT
+      # and database_url rules in production, and the startup migration check refuses
+      # to boot an out-of-date database there.
+      ENVIRONMENT: development
+      APP_HOST: 0.0.0.0
+      APP_PORT: "8000"
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY is not set - create .env from .env.example}
+      # nginx proxies /api on the same origin, so these only affect redirects and
+      # the docs page; they match the published frontend port below.
+      FRONTEND_URL: http://localhost:8080
+      ALLOWED_ORIGINS: http://localhost:8080
+      RATE_LIMIT_ENABLED: "true"
+    # Migrations run at container start, so a fresh volume becomes usable without a
+    # separate step. Downgrades stay a manual operation, as in local development.
+    command: sh -c "uv run --no-sync alembic upgrade head && exec uv run --no-sync uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      # Published as 8080 so it cannot collide with a dev server already running on
+      # the host, and so both entry points can stay up at the same time.
+      - "8080:80"
+
+volumes:
+  mysql-data:

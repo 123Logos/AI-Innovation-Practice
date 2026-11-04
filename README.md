@@ -20,7 +20,7 @@
 - AI：后端服务端调用 DeepSeek API
 - 异步任务：Redis + Worker
 - 文件：S3 兼容私有对象存储
-- 部署：Docker Compose + 反向代理 + HTTPS
+- 部署：本地开发用 `start-local.ps1` 一键启动；`docker-compose.yml` 已入库但**未经验证**（见 [ADR-008](docs/adr/ADR-008-docker-configs-unverified.md)）
 
 当前项目使用 MySQL 数据库 `ai_innovation_practice`。本地配置请以 `.env.example` 为模板，
 并通过 `DATABASE_URL` 指向该数据库。
@@ -52,6 +52,49 @@ Copy-Item .env.example .env
 ## 研究与治理基线
 
 项目设计参考 NIST AI RMF、OWASP API Security Top 10、W3C WebRTC、ISO/IEC 25010:2023，以及 RAG 和 FActScore 相关论文。具体落地要求与引用见 [产品需求文档](docs/PRD.md)、[开发与架构文档](docs/DEVELOPMENT.md) 和 [测试文档](docs/TESTING.md)。
+
+## 🚀 本地一键启动 (Windows)
+
+这是当前**唯一承诺可用**的启动方式，不需要 Docker。
+
+前置条件（只需装一次）：
+
+- [Node.js](https://nodejs.org/zh-cn) 22 或更高（自带 npm）
+- [uv](https://docs.astral.sh/uv/)（Python 包管理器）
+- 本机 MySQL 8 正在运行（默认端口 3306）
+- 项目根目录有 `.env`，其中 `DATABASE_URL` 指向你的 MySQL
+
+准备完成后：
+
+> **在项目根目录右键 `start-local.ps1` → 选择「使用 PowerShell 运行」。**
+
+脚本会依次做四件事，全程有彩色提示：
+
+1. 检查 `uv` / `npm` 是否安装、`.env` 是否存在、MySQL 端口是否可连；
+2. 新开一个窗口跑后端：先 `uv run alembic upgrade head` 同步表结构，再 `uv run uvicorn app.main:app --reload`；
+3. 新开一个窗口跑前端：进入 `frontend`，首次运行会先 `npm install`，然后 `npm run dev`；
+4. 轮询 `http://127.0.0.1:8000/api/v1/health` 和 `http://localhost:5173`，等两个服务真的能响应后自动用默认浏览器打开页面。
+
+启动完成后：
+
+| 入口 | 地址 |
+|---|---|
+| 网页 | http://localhost:5173 |
+| 后端健康检查 | http://127.0.0.1:8000/api/v1/health |
+| 接口文档 | http://127.0.0.1:8000/docs |
+
+停止服务：直接关掉「后端」和「前端」两个窗口。
+
+常见问题：
+
+- **右键没有「使用 PowerShell 运行」，或提示执行策略**：在项目目录打开 PowerShell 执行
+  `powershell -NoProfile -ExecutionPolicy Bypass -File .\start-local.ps1`。
+- **提示 MySQL 没有在 127.0.0.1:3306 上运行**：按 `Win+R` 输入 `services.msc`，找到 MySQL 服务右键「启动」；
+  或在管理员 PowerShell 执行 `net start MySQL80`。
+- **后端窗口显示「数据库迁移失败」**：九成是 `.env` 里的 `DATABASE_URL` 账号、密码或库名不对，改完重跑脚本。
+- **页面打得开但接口报错**：先看后端窗口的报错，不要改前端代码。
+- 脚本里为什么要「导出 `DATABASE_URL`」：`alembic/env.py` 只读进程环境变量、不读 `.env`，
+  不注入就会在第一步抛 `RuntimeError`（见下方「本地开发约定」）。
 
 ## 本地开发约定
 
@@ -98,3 +141,34 @@ npm run dev
 ```
 
 部署、迁移、测试、监控和接口联调要求以 [开发与架构文档](docs/DEVELOPMENT.md) 和 [接口文档](docs/API.md) 为准。
+
+## 🐳 Docker 启动 (可选)
+
+> ⚠️ 注意：此 Docker 配置在当前开发环境中尚未经过实际运行验证，仅作工程化结构参考。
+> 开发主机未安装 Docker，`Dockerfile.backend` / `Dockerfile.frontend` / `docker-compose.yml` /
+> `docker/nginx.conf` 一次都没有构建或启动过，每个文件头部都写有 `NOT VERIFIED` 声明。
+> 决策背景与后果见 [ADR-008](docs/adr/ADR-008-docker-configs-unverified.md)。
+> 日常开发请使用上一节的 `start-local.ps1`。
+
+前置条件：已安装 Docker Desktop，且项目根目录存在 `.env`。`docker compose` 会自动读取根目录
+`.env` 里的 `MYSQL_USER`、`MYSQL_PASSWORD`、`MYSQL_DATABASE`、`JWT_SECRET_KEY`；缺失时
+compose 会带着 `:?` 提示直接失败，不会拉起半配置的服务。
+
+```powershell
+# 只做解析和变量插值检查，不构建镜像
+docker compose config
+
+# 构建并启动 db + backend + frontend
+docker compose up --build
+```
+
+启动后访问 **http://localhost:8080**（前端由 nginx 托管静态文件，并把 `/api/` 反代到
+`backend:8000`，与浏览器同源，因此不需要额外配置 CORS）。后端容器启动命令是
+`alembic upgrade head && uvicorn ...`，空数据库卷会自动建表。
+
+```powershell
+docker compose down      # 停止服务，保留 MySQL 数据卷
+docker compose down -v   # 连数据卷一起删除，数据会丢失
+```
+
+第一次在真实 Docker 宿主上完整跑通 `build` + `up` 之后，应回来把 ADR-008 的状态改为「已验证」。

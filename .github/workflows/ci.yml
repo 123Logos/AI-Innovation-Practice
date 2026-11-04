@@ -45,3 +45,30 @@ jobs:
       # test_migrations covers upgrade/downgrade against the MySQL service.
       - name: Test and migration check
         run: uv run pytest -q
+
+      # Node 22 matches the local development version (v22.x), so a green run here
+      # means the same thing it means on a developer machine.
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          # The lockfile lives in frontend/, not at the repo root; without this the
+          # cache lookup fails before npm runs.
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Frontend unit tests
+        run: npm run test
+        working-directory: frontend
+
+      - name: Frontend type check
+        run: npm run typecheck
+        working-directory: frontend
+
+      - name: Frontend build
+        run: npm run build
+        working-directory: frontend
