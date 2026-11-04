@@ -187,7 +187,7 @@ function printResume(): void {
 <style scoped>
 .style-panel { min-width: 0; color: #263330; }
 .panel-heading { border-bottom: 1px solid #dbe4e1; padding-bottom: 16px; }
-.eyebrow { margin: 0 0 8px; color: #6b8f8a; font-size: 12px; letter-spacing: .12em; }
+.eyebrow { margin: 0 0 8px; color: var(--theme-rule); font-size: 12px; letter-spacing: .12em; }
 h2, p { margin: 0; }
 h2 { font-size: 18px; }
 .panel-section { display: grid; gap: 10px; border-bottom: 1px solid #dbe4e1; padding: 18px 0; }
@@ -204,7 +204,7 @@ h2 { font-size: 18px; }
   font: inherit;
   font-size: 13px;
 }
-.paper-select:focus-visible { outline: 2px solid #6b8f8a; outline-offset: 2px; }
+.paper-select:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
 /* 物理尺寸小字：让「A4 / Letter 到底差多少」一眼可见，不用去查。 */
 .status-hint { margin: -6px 0 0; color: #8fa5a1; font-size: 11px; text-align: right; }
 /* 8 个色点：外圈用 box-shadow 做选中环，避免 border 改变尺寸导致换选时抖动。 */
@@ -221,7 +221,7 @@ h2 { font-size: 18px; }
 }
 .swatch:hover { box-shadow: 0 0 0 2px #a9b6b3; }
 .swatch--active { box-shadow: 0 0 0 2px #263330; }
-.swatch:focus-visible { outline: 2px solid #6b8f8a; outline-offset: 2px; }
+.swatch:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
 /* 样式改动把「已生成简历」顶掉后的提示：琥珀色，与「未保存」同色系但不抢眼。 */
 .notice {
   display: flex;
@@ -248,19 +248,19 @@ h2 { font-size: 18px; }
   text-decoration: underline;
 }
 .notice__close:focus-visible { outline: 2px solid #c9a227; outline-offset: 1px; }
-.panel-label { color: #527873; font-size: 12px; }
+.panel-label { color: var(--theme-primary); font-size: 12px; }
 .hint { color: #687875; font-size: 13px; line-height: 1.6; }
 /* 浏览器打印页眉/页脚（日期、URL）无法用代码关掉，只能提示用户自己取消勾选。 */
 .print-tip { color: #8a7c3f; font-size: 12px; }
 .warning { color: #94781a; font-size: 11px; line-height: 1.5; }
-.generate-button { width: 100%; border: 0; padding: 11px; color: #fff; background: #527873; cursor: pointer; font: inherit; font-size: 13px; }
-.generate-button:hover:not(:disabled) { background: #3f635e; }
+.generate-button { width: 100%; border: 0; padding: 11px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: 13px; }
+.generate-button:hover:not(:disabled) { background: var(--theme-primary-hover); }
 .generate-button:disabled { opacity: .6; cursor: progress; }
 .feedback { font-size: 12px; line-height: 1.5; }
 .feedback--ok { color: #3f7a5f; }
 .feedback--error { color: #9a5e58; }
-.print-button { width: 100%; margin-top: 20px; border: 1px solid #6b8f8a; border-radius: 0; padding: 10px; color: #527873; background: transparent; cursor: pointer; font: inherit; font-size: 13px; }
-.print-button:hover { color: #fff; background: #6b8f8a; }
+.print-button { width: 100%; margin-top: 20px; border: 1px solid var(--theme-rule); border-radius: 0; padding: 10px; color: var(--theme-primary); background: transparent; cursor: pointer; font: inherit; font-size: 13px; }
+.print-button:hover { color: var(--theme-on-primary); background: var(--theme-primary); }
 @media (prefers-color-scheme: dark) {
   .style-panel { color: #e8eae9; }
   .panel-heading, .panel-section { border-color: #52635f; }

@@ -588,20 +588,20 @@ function updateExpDate(
   flex: 0 0 auto;
   align-items: center;
   gap: 8px;
-  border: 1px solid #9fbab4;
-  border-left: 4px solid #527873;
+  border: 1px solid var(--theme-rule-soft);
+  border-left: 4px solid var(--theme-primary);
   padding: 7px 14px;
-  color: #2f4f4a;
-  background: #edf4f2;
+  color: var(--theme-primary-strong);
+  background: var(--theme-bg-light);
   font-size: 16px;
   font-weight: 700;
   letter-spacing: .02em;
   line-height: 1.25;
   white-space: nowrap;
 }
-.mode-badge__dot { width: 8px; height: 8px; border-radius: 50%; background: #527873; }
-.mode-badge--generated { border-color: #6b8f8a; border-left-color: #3f635e; color: #26433e; background: #dceae6; }
-.mode-badge--generated .mode-badge__dot { background: #3f635e; }
+.mode-badge__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--theme-primary); }
+.mode-badge--generated { border-color: var(--theme-rule); border-left-color: var(--theme-primary-deep); color: var(--theme-primary-strong); background: var(--theme-bg-light); }
+.mode-badge--generated .mode-badge__dot { background: var(--theme-primary-deep); }
 /*
  * 唯一保存入口。两种状态刻意做出明显反差：
  * dirty → 低饱和青绿底 + 琥珀色小圆点（「有事没做完」的警示感）；
@@ -624,17 +624,17 @@ function updateExpDate(
   white-space: nowrap;
 }
 .save-button--dirty {
-  border-color: #4f8d7d;
-  color: #1f4a3f;
-  background: #d7ebe4;
-  box-shadow: 0 0 0 3px #4f8d7d1f;
+  border-color: var(--theme-primary);
+  color: var(--theme-primary-strong);
+  background: var(--theme-bg-light);
+  box-shadow: 0 0 0 3px var(--theme-fade);
   cursor: pointer;
 }
-.save-button--dirty:hover:not(:disabled) { background: #c5e0d7; }
-.save-button--dirty:active:not(:disabled) { background: #b6d6cb; }
+.save-button--dirty:hover:not(:disabled) { background: var(--theme-bg-strong); }
+.save-button--dirty:active:not(:disabled) { background: var(--theme-bg-strong); }
 /* 保存中：保留高亮外观（否则会闪一下灰），只把光标换成等待态。 */
 .save-button--dirty:disabled { cursor: progress; opacity: .8; }
-.save-button:focus-visible { outline: 2px solid #6b8f8a; outline-offset: 2px; }
+.save-button:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
 .save-button__dot { width: 7px; height: 7px; border-radius: 50%; background: #c9a227; }
 .save-error { max-width: 220px; margin: 0; color: #9a5e58; font-size: 12px; line-height: 1.4; }
 /*
@@ -650,20 +650,20 @@ function updateExpDate(
   min-width: 180px;
   /* 上限避免在宽屏下拉成超宽扁条，同时仍明显大于旧版。 */
   max-width: 280px;
-  border: 1px solid #6b8f8a;
+  border: 1px solid var(--theme-rule);
   border-radius: 0;
   padding: 11px 20px;
-  color: #3f635e;
-  background: #e8f0ee;
+  color: var(--theme-primary-deep);
+  background: var(--theme-bg-light);
   cursor: pointer;
   font: inherit;
   font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
 }
-.preview-button:hover { border-color: #527873; background: #d5e5e1; }
-.preview-button:active { background: #c6dbd6; }
-.preview-button:focus-visible { outline: 2px solid #6b8f8a; outline-offset: 2px; }
+.preview-button:hover { border-color: var(--theme-primary); background: var(--theme-bg-hover); }
+.preview-button:active { background: var(--theme-bg-strong); }
+.preview-button:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
 .preview-button__icon { font-size: 16px; line-height: 1; }
 .paper-frame { position: relative; }
 /*

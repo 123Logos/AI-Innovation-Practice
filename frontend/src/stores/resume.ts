@@ -67,6 +67,7 @@ import type {
   ThemeId,
 } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
+import { applyTheme } from '@/stores/theme'
 import { currentMonthValue, todayIsoDate } from '@/utils/datetime'
 
 /**
@@ -118,6 +119,18 @@ export const THEME_OPTIONS: readonly ThemeOption[] = [
 
 /** 缺省主题：与后端 `DEFAULT_THEME`、迁移的 `server_default` 三处同源。 */
 export const DEFAULT_THEME: ThemeId = 'forest'
+
+/**
+ * 把某个主题刷到整个 Web UI 上（D5.2 补充）。
+ *
+ * 唯一入口：`applyDraft()`（切简历 / 首次加载 / 恢复草稿）与 `updateTheme()`。
+ * 拒绝在组件里直接 `setProperty`——那样「当前主题」就有了两个来源，
+ * 切简历时必然出现「纸变了、按钮没变」的错位。
+ */
+function syncGlobalTheme(themeId: ThemeId): void {
+  const option = THEME_OPTIONS.find((item) => item.id === themeId) ?? THEME_OPTIONS[0]
+  applyTheme({ accent: option.accent, rule: option.rule })
+}
 
 /** 与后端 `ProfileUpsertRequest` 的 Field 约束保持一致（只有上限，保存不拦必填）。 */
 export const SKILL_LIMIT = { min: 0, max: 8 } as const
@@ -691,6 +704,9 @@ export const useResumeStore = defineStore('resume', () => {
     draft.contact = next.contact
     draft.paper_size = next.paper_size
     draft.theme = next.theme
+    // 全局换肤跟着**数据**走，而不是跟着点击走：切简历 / 首次加载 / 恢复草稿
+    // 都会经过这里，一处同步就够；否则切到 B 时按钮还停在 A 的颜色。
+    syncGlobalTheme(next.theme)
     draft.skills = next.skills
     draft.experiences = next.experiences
     draft.educations = next.educations
@@ -718,14 +734,16 @@ export const useResumeStore = defineStore('resume', () => {
   /**
    * 切换配色（D5.2）。
    *
-   * 和改纸张一样只写 `draft`，跟着「保存修改」一起落库。额外的一条联动：
-   * 「已生成简历」里的颜色是**生成那一刻**内联进 HTML 的，不会跟着 draft 变；
-   * 继续停在这个视图里，用户会以为「点了圆点没反应」。
-   * 所以直接切回实时预览，并留一条提示说明要重新生成才会更新生成物。
+   * 和改纸张一样只写 `draft`，跟着「保存修改」一起落库。两条额外联动：
+   * 1. 整个 Web UI 立即换肤（按钮 / 顶栏 / 选中态 / Element Plus 主色）；
+   * 2. 「已生成简历」里的颜色是**生成那一刻**内联进 HTML 的，不会跟着 draft 变；
+   *    继续停在这个视图里，用户会以为「点了圆点没反应」。
+   *    所以直接切回实时预览，并留一条提示说明要重新生成才会更新生成物。
    */
   function updateTheme(theme: ThemeId): void {
     if (draft.theme === theme) return
     draft.theme = theme
+    syncGlobalTheme(theme)
     markDirty()
     if (generatedHtml.value !== null) {
       showLivePreview()

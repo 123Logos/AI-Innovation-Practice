@@ -97,17 +97,17 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: 12px 16px;
   border: 1px solid #b8c8c4;
-  border-left: 4px solid #527873;
+  border-left: 4px solid var(--theme-primary);
   padding: 12px 16px;
-  background: #edf4f2;
+  background: var(--theme-bg-light);
 }
-.draft-banner__text { margin: 0; color: #2f4f4a; font-size: 13px; line-height: 1.5; }
+.draft-banner__text { margin: 0; color: var(--theme-primary-strong); font-size: 13px; line-height: 1.5; }
 .draft-banner__actions { display: flex; gap: 8px; }
-.draft-banner__restore { border: 1px solid #527873; padding: 8px 16px; color: #fff; background: #527873; cursor: pointer; font: inherit; font-size: 13px; }
-.draft-banner__restore:hover { background: #3f635e; }
+.draft-banner__restore { border: 1px solid var(--theme-primary); padding: 8px 16px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: 13px; }
+.draft-banner__restore:hover { background: var(--theme-primary-hover); }
 .draft-banner__discard { border: 1px solid #b8c8c4; padding: 8px 16px; color: #52635f; background: #fff; cursor: pointer; font: inherit; font-size: 13px; }
 .draft-banner__discard:hover { border-color: #c9b1ae; color: #9a5e58; }
-.draft-banner__restore:focus-visible, .draft-banner__discard:focus-visible { outline: 2px solid #6b8f8a; outline-offset: 2px; }
+.draft-banner__restore:focus-visible, .draft-banner__discard:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
 @media (max-width: 1100px) {
   .resume-workspace { grid-template-columns: 300px minmax(380px, 1fr); gap: 24px; padding: 24px 28px 56px; }
   .style-panel { grid-column: 1 / -1; }
@@ -120,6 +120,17 @@ onUnmounted(() => {
   .load-error, .load-hint, .draft-banner-shell { padding: 12px 16px 0; }
   .draft-banner { flex-direction: column; align-items: stretch; }
   .draft-banner__actions { justify-content: flex-end; }
+}
+@media (prefers-color-scheme: dark) {
+  /*
+   * 页面底色必须一起进暗色。`ResumeEditor.vue` / `StylePanel.vue` 的暗色规则
+   * 早就把文字改成了浅色，但根容器一直停在 `#f4f6f5`（浅灰）——
+   * 结果就是「浅底浅字」，左侧表单在暗色下几乎读不出来。
+   * 这里取与顶栏 / 登录页同源的深墨绿，保持整站一个底色。
+   */
+  .app-shell { background: #1b2421; }
+  .footer-hint, .load-hint { color: #8ea09c; }
+  .draft-banner { border-color: #52635f; }
 }
 @media print {
   .app-shell { background: #fff; }

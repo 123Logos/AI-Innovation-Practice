@@ -278,7 +278,7 @@ function onExperienceInput(
 <style scoped>
 .editor-panel { min-width: 0; }
 .panel-heading { margin-bottom: 20px; }
-.eyebrow { margin: 0 0 8px; color: #6b8f8a; font-size: 12px; letter-spacing: .12em; }
+.eyebrow { margin: 0 0 8px; color: var(--theme-rule); font-size: 12px; letter-spacing: .12em; }
 h1, h2, p { margin: 0; }
 h1 { font-size: 24px; font-weight: 650; }
 .panel-intro { margin-top: 8px; color: #687875; font-size: 13px; line-height: 1.5; }
@@ -289,17 +289,17 @@ h1 { font-size: 24px; font-weight: 650; }
 .field { display: grid; gap: 6px; min-width: 0; }
 .field span { color: #687875; font-size: 12px; }
 input, textarea, select { width: 100%; border: 1px solid #d6dfdc; border-radius: 0; padding: 9px 10px; color: #243330; background: #fff; font: inherit; font-size: 13px; outline: 0; }
-input:focus, textarea:focus, select:focus { border-color: #6b8f8a; box-shadow: 0 0 0 2px #6b8f8a22; }
+input:focus, textarea:focus, select:focus { border-color: var(--theme-rule); box-shadow: 0 0 0 2px var(--theme-fade); }
 textarea { min-height: 58px; resize: vertical; line-height: 1.45; }
 .field-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.text-button { justify-self: start; border: 0; padding: 0; color: #527873; background: transparent; cursor: pointer; font-size: 12px; }
+.text-button { justify-self: start; border: 0; padding: 0; color: var(--theme-primary); background: transparent; cursor: pointer; font-size: 12px; }
 .text-button:disabled { color: #a9b6b3; cursor: not-allowed; }
 .skill-row { display: grid; grid-template-columns: minmax(0, 1fr) 20px; align-items: center; gap: 8px; }
 .remove-button { border: 0; padding: 0 4px; color: #9a5e58; background: transparent; cursor: pointer; font-size: 18px; line-height: 1; }
 .remove-button:disabled { color: #c9d2d0; cursor: not-allowed; }
 .experience-form, .education-form { display: grid; gap: 10px; border-top: 1px solid #dde5e2; padding-top: 12px; }
 .required { color: #9a5e58; font-weight: 400; }
-.item-index { color: #6b8f8a; font-family: "SF Mono", Consolas, monospace; font-size: 12px; }
+.item-index { color: var(--theme-rule); font-family: "SF Mono", Consolas, monospace; font-size: 12px; }
 .hint { color: #879692; font-size: 11px; line-height: 1.5; }
 @media (prefers-color-scheme: dark) {
   .editor-panel { color: #e8eae9; }
