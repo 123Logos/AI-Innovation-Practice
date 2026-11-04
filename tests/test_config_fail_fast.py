@@ -101,5 +101,21 @@ def test_migration_check_warns_in_development(capsys: pytest.CaptureFixture[str]
 
 
 def test_migration_check_blocks_startup_in_production() -> None:
+    """生产环境下迁移落后必须阻断启动。
+
+    这里构造的是一个**合法**的 production `Settings`，因为断言针对的是
+    `check_migration_state`，而不是配置校验本身。所以两个 production 必填项
+    都必须显式给齐，否则在没有 `.env` 的 CI 裸环境里会先在 `Settings()`
+    抛 `jwt_secret_key is required`（注入了 DATABASE_URL 时）或
+    `database_url is required`（连它也没有时），用例根本走不到断言。
+
+    `database_url` 是占位值：本用例传入的是 `_FakeConnection`，不会真的连库。
+    """
+    settings = Settings(
+        environment="production",
+        database_url="mysql+pymysql://test",
+        jwt_secret_key="fake-secret-for-testing-only-1234567890",
+    )
+
     with pytest.raises(main_module.DatabaseSchemaOutOfDateError, match="迁移|版本不一致"):
-        main_module.check_migration_state(_FakeConnection([]), Settings(environment="production"))
+        main_module.check_migration_state(_FakeConnection([]), settings)
