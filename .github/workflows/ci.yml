@@ -33,6 +33,12 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
+      # 格式化闸。基线是 c9f935a 那一次全仓 `ruff format`，所以这一步从上线那天起就是绿的：
+      # 它挡的是**此后**新提交的风格发散，不是替历史债还钱。
+      # 版本由 uv.lock 钉住，不会出现「本地 ruff 与 CI ruff 判得不一样」这种扯皮。
+      - name: Format check
+        run: uv run ruff format --check app tests alembic
+
       - name: Lint
         run: uv run ruff check app tests
 
