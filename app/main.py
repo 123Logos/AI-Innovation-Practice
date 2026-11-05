@@ -236,13 +236,18 @@ def create_app() -> FastAPI:
             headers={"Retry-After": "60"},
         )
 
-    # ADR-009 的三个 AI 分支（ADR-010 起只在 `/resumes/polish` 上可达）。
+    # ADR-009 的三个 AI 分支（ADR-010 起在 `/resumes/polish` 上可达；ADR-011 的 C1 起
+    # 在 `/jobs/extract-skills` 上同样可达）。
     # 走专用处理器而不是在路由里 raise HTTPException，
     # 是因为通用 4xx 处理器会把 code 统一压成 CLIENT_ERROR，而前端需要按
     # `AI_KEY_MISSING` / `AI_KEY_INVALID` / `AI_SERVICE_UNAVAILABLE` 区分动作：
     # 补 Key、修 Key、还是提示重试。
     # 消息一律用固定文案，不拼 `str(exc)`：上游异常文本可能带 request_id、
     # 甚至带用户自己的 Key，不该原样回显到浏览器。
+    # 措辞必须**作用域中性**，这条不看代码推不出来：提取侧刻意复用润色的异常族、
+    # 一个错误码都没新增（ADR-011 2.F），于是 Starlette 按 MRO 把两个端点的失败
+    # 都送进同一个处理器。任何「润色 / 简历」专属的句子都会在岗位录入页说出
+    # 一句与用户当前操作无关、甚至为假的话（他此刻在录岗位，不在生成简历）。
 
     @app.exception_handler(ResumeApiKeyMissingError)
     async def resume_api_key_missing(_: Request, __: ResumeApiKeyMissingError) -> JSONResponse:
@@ -269,7 +274,10 @@ def create_app() -> FastAPI:
             content=error_response(
                 _,
                 "AI_SERVICE_UNAVAILABLE",
-                "AI 服务当前不可用（超时或上游异常），请稍后重试润色。生成简历不受影响。",
+                # 「本次请求未被保存」不是含糊话而是真话：润色与提取两端都是纯计算
+                # （ADR-010 §5 / ADR-011 2.A），失败时库里和表单里都不会多出东西。
+                "AI 服务当前不可用（超时或上游异常），"
+                "本次请求未被保存，您的资料不受影响。请稍后重试。",
                 retryable=True,
             ),
         )

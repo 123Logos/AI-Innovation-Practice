@@ -71,6 +71,27 @@ MAX_PAGE_SIZE = 100
 MAX_SALARY = Decimal("99999999.99")
 
 
+def skill_name_key(name: str) -> str:
+    """「这两条是不是同一个技能」的判定键：NFKC（全角→半角）+ casefold，只有两步。
+
+    为什么**不是** §2.D.1 的 `normalize_for_trace()`（四步，多去空白与去标点）：
+    那套是给 `evidence` 的子串核验用的，第 4 步删标点这一刀砍在技能名上会误并真实条目——
+    `#` 的类别是 `Po`，于是 `C#` 与 `C` 折成同一个键；`_` 是 `Pc`，`user_id` 与
+    `userid` 同理。对核验来说这点宽容是划算的（误杀集中在信息量最低的标点差异上），
+    但技能名被这样合并掉的是一条真实的岗位要求，而且用户在结果里看不出少了东西。
+    （`+` 的类别是 `Sm`、不删，所以 `C++` 与 `C` 两种口径下都分得开。）
+
+    为什么两处必须共用这一个函数：提取侧的重名合并与写侧的「技能名称重复」422 回答的是
+    同一个问题。各写一份就会出现「提取时已经合并了、点保存却报重复」这种用户没法理解的
+    抖动；数据库那侧的宽容度由 `utf8mb4_0900_ai_ci` 提供，这里只是把它提前成可读的报错
+    与一条干净的结果。
+
+    不含去空白：两端空白归各自的入口负责（写侧 `JobSkillInput.normalize_name`、
+    提取侧 `_verify_item`），在这里再 strip 一次只会让「谁负责什么」变得不可查。
+    """
+    return unicodedata.normalize("NFKC", name).casefold()
+
+
 class JobSkillInput(BaseModel):
     """一条岗位技能（写入）。
 
@@ -125,15 +146,13 @@ class JobSkillInput(BaseModel):
 
     @property
     def dedup_key(self) -> str:
-        """与应用层重名判断同口径的键：NFKC（全角→半角）+ casefold。
+        """与应用层重名判断同口径的键，实现只有一个：`skill_name_key`。
 
-        这是 ADR-011 §2.D.1 归一化函数的**子集**（去空白与去标点那两步只用于
-        `evidence_text` 的子串核验，见 `skill_extractor.normalize_for_trace()`）：
-        技能名里 `C++` 的 `+` 是名字的一部分，
-        删标点会把 `C++` 与 `C` 混为一谈。数据库那侧由排序规则负责同样的宽容度，
-        这里只是把它的报错提前成一条可读的 422。
+        口径为什么只有两步（NFKC + casefold，不删标点）、以及为什么和 §2.D.1 的
+        归一化必须是两个函数，全部写在 `skill_name_key` 上：这里再抄一遍，
+        两处就会各漂移各的。
         """
-        return unicodedata.normalize("NFKC", self.name).casefold()
+        return skill_name_key(self.name)
 
 
 class JobWriteRequest(BaseModel):
@@ -332,7 +351,7 @@ class ExtractedSkillRead(BaseModel):
 class ExtractSkillsMeta(BaseModel):
     """核验计数与溯源信息（2.D「核验计数必须可见」——本端点最重要的一条产品承诺）。
 
-    六个字段逐个为什么必须在（`docs/API.md` 修订清单 #3 要求逐字段写进契约，
+    七个字段逐个为什么必须在（`docs/API.md` 修订清单 #3 要求逐字段写进契约，
     缺一份字段契约，将来只剩端点名，语义会丢）：
 
     - `model` / `prompt_version`：这一批结果是哪一版指令产出的（PRD FR-03 L105）；
@@ -340,6 +359,11 @@ class ExtractSkillsMeta(BaseModel):
     - `dropped_count`：其中几条因**无法回溯 JD 原文**被剔除——前端把它读成
       「AI 给出 20 条，其中 14 条无法在 JD 原文中找到依据，已剔除」，
       也是「子串核验误伤合理归纳」唯一的可读数来源（无凭据环境下测不出来，只能靠它）；
+    - `deduped_count`：其中几条与前面的条目重名、被合并掉——前端读成「另有 N 条重名已合并」。
+      它**必须与 `dropped_count` 分开**而不是并成一个数：两者是两种不同的失败，用户看到的
+      下一步动作也不同——「无法回溯原文」意味着该怀疑核验规则或换一份 JD，
+      「重名合并」什么都不用做（模型自己把同一个技能拆成两种写法，合并正是我们想要的）。
+      并成一个数会让那句「什么都不用做」被混进那句「该怀疑规则」；
     - `truncated`：条数封顶（15）是否真的切掉了东西。**只在确实切的时候为真**：
       给了 20 条但 12 条没通过核验、剩下 12 条全部返回时，并没有「只保留前 15 条」，
       此时报 `true` 会让前端说出一句假话；
@@ -351,6 +375,7 @@ class ExtractSkillsMeta(BaseModel):
     prompt_version: str
     received_count: int
     dropped_count: int
+    deduped_count: int
     truncated: bool
     finish_reason: str | None = None
 

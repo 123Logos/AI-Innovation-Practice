@@ -68,6 +68,7 @@ from app.schemas.job import (
     JobSkillRead,
     JobSummary,
     JobWriteRequest,
+    skill_name_key,
 )
 from app.services.resume_service import (
     ResumeApiKeyMissingError,
@@ -216,7 +217,7 @@ class JobService:
     def _verify_extraction(
         self, extraction: SkillExtraction, description: str, request_id: str
     ) -> ExtractSkillsResult:
-        """2.D 的七条服务端强制（**不指望 Prompt**），逐条对应 ADR 的编号。
+        """2.D 的七条服务端强制（**不指望 Prompt**）+ 重名合并，逐条对应 ADR 的编号。
 
         1. 锚点核验：`evidence` 与 `description` 各过 §2.D.1 的归一化函数，
            前者必须是后者的子串；不是子串 → **丢弃该条**（第 2 条）。
@@ -224,22 +225,43 @@ class JobService:
         3. `type` 不在 `hard/soft/domain` 内 → **保留该条**、`type` 置 NULL（第 5 条）。
         4. 条数 > 15 → 截断到 15，`meta.truncated = true`（第 4 条）。
         5. 一条都不剩 → 抛 502，**绝不返回空列表**（第 3 条，也是七条失败语义的第 5 情形）。
-        6. `received_count` / `dropped_count` 进响应，同时进日志——日志里只有两个计数、
-           `finish_reason` 与 `request_id`，**没有 Key、没有 JD 正文、没有 evidence 内容**
+        6. `received_count` / `dropped_count` / `deduped_count` 进响应，同时进日志——
+           日志里只有这几个计数、`finish_reason` 与 `request_id`，
+           **没有 Key、没有 JD 正文、没有 evidence 内容**
            （2.D「核验计数必须可见」+ 附录的脱敏要求）。
+        7. **重名合并**（ADR-011 2.D 没写、C1 之后才暴露的缺口）：模型常把同一个技能拆成
+           `Python` / `python` / `Ｐython` 两条以上。这里不合并，后果不是难看而是必败——
+           用户点「保存岗位」时 `JobWriteRequest.validate_unique_skill_names` 会报 422
+           「技能名称重复」，库的 `UNIQUE (job_id, name)` 也会拦，等于我们把一个
+           注定失败的 payload 交给了用户。合并键用 `skill_name_key`（与写侧同一个口径），
+           **不是** §2.D.1 那个四步函数（理由写在 `app/schemas/job.py` 那里）。
+           重名的那条**丢弃后来者、保留第一次出现的**：模型自己给的优先级顺序和
+           原始大小写都在第一条上，后来者只是同一种东西的另一种写法。
 
         先核验、后截断是有意的：`dropped_count` 要对**全部** received 条数说话
         （前端文案是「AI 给出 20 条，其中 14 条无法回溯，已剔除」），
         先截断会让这个数变成「前 15 条里有几条不合格」，与用户看到的那句话不一致。
+        重名合并同样在截断**之前**：放在后面，`deduped_count` 说的就变成
+        「返回的那 15 条里有几条重名」，而封顶切掉的条目根本没进结果——两个数会互相吃掉，
+        前端那两句计数文案也就都成了假话。
         """
         received = len(extraction.skills)
         kept: list[ExtractedSkillRead] = []
+        seen: set[str] = set()
         dropped = 0
+        deduped = 0
         for item in extraction.skills:
             verified = self._verify_item(item, description)
             if verified is None:
                 dropped += 1
                 continue
+            name_key = skill_name_key(verified.name)
+            if name_key in seen:
+                # 只对**已通过核验**的条目判重名：核验失败的条目落在 `dropped_count` 里，
+                # 不进这个集合、也不增加 `deduped_count`——两个数各说各的，互不串味。
+                deduped += 1
+                continue
+            seen.add(name_key)
             kept.append(verified)
 
         truncated = len(kept) > MAX_EXTRACTED_SKILLS
@@ -258,10 +280,12 @@ class JobService:
             raise ResumeCopyUnavailableError("AI 给出的技能条目都无法回溯到 JD 原文。")
 
         logger.info(
-            "岗位技能提取完成（request_id=%s, received=%s, dropped=%s, truncated=%s, finish_reason=%s）",
+            "岗位技能提取完成（request_id=%s, received=%s, dropped=%s, deduped=%s, "
+            "truncated=%s, finish_reason=%s）",
             request_id,
             received,
             dropped,
+            deduped,
             truncated,
             extraction.finish_reason,
         )
@@ -272,6 +296,7 @@ class JobService:
                 prompt_version=EXTRACT_PROMPT_VERSION,
                 received_count=received,
                 dropped_count=dropped,
+                deduped_count=deduped,
                 truncated=truncated,
                 finish_reason=extraction.finish_reason,
             ),

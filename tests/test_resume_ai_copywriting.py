@@ -537,7 +537,10 @@ def test_other_upstream_status_maps_to_service_unavailable(
     body = response.json()
     assert body["error"]["code"] == "AI_SERVICE_UNAVAILABLE"
     assert body["error"]["retryable"] is True
-    assert "生成简历不受影响" in body["error"]["message"]
+    # 服务端文案是**作用域中性**的（`app/main.py` 同一个处理器也服务 `/jobs/extract-skills`），
+    # 所以这里只钉住中性句子里对两端都为真的那半句，不抄整句当字符串钉子。
+    # 「润色失败不影响生成」那句 guidance 由前端 `StylePanel.vue` 按 code 自己补。
+    assert "您的资料不受影响" in body["error"]["message"]
 
 
 def test_upstream_timeout_maps_to_service_unavailable(

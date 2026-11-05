@@ -4,10 +4,13 @@
 
 1. **七条失败语义**（附录表 1–7 行）：本文件里每条都有独立用例，第 7 与第 4 还互为反向，
    防止后来人把「我们的 token 上限切断」和「模型不守格式」合并成一条 JSON 解析失败；
+   第 5 情形顺带钉住一件事——走 `app/main.py` 全局处理器的那句 502 文案**不得**出现
+   「润色」或「简历」，因为同一个处理器同时服务两个端点（提取侧复用润色的异常族、不新建错误码）；
 2. **输出封顶参数**：`max_tokens=1500`、`thinking.disabled`、`stream=False`、`max_retries=0`
    在 `MockTransport` 捕获的**真实请求体**里逐条可验，不是看源码；
 3. **服务端核验**（2.D 的 1–6 条）：子串核验、name/evidence 长度、type 白名单、
-   15 条截断、`received_count` / `dropped_count` 计数；
+   15 条截断、`received_count` / `dropped_count` / `deduped_count` 计数（重名合并是
+   C1 之后补的一条：不合并就会把「保存岗位」必败的 payload 交给用户）；
 4. **零写入证明**：按附录指定的方式在 **Engine**（不是 Session——挂 Session 会抛
    `InvalidRequestError`，那是 SQLAlchemy 2 的事件层级）上挂 `before_cursor_execute`，
    收集本次请求执行过的全部语句，断言其中没有 INSERT / UPDATE / DELETE。
@@ -396,11 +399,11 @@ def test_title_is_omitted_from_the_payload_when_absent(
 
 
 # --------------------------------------------------------------------------- #
-# 三、成功路径与 `meta` 六字段契约（2.A / 2.D 的「计数必须可见」）
+# 三、成功路径与 `meta` 七字段契约（2.A / 2.D 的「计数必须可见」）
 # --------------------------------------------------------------------------- #
 
 
-def test_extract_returns_skills_and_all_six_meta_fields(
+def test_extract_returns_skills_and_all_seven_meta_fields(
     client: TestClient, fake_deepseek: FakeDeepSeek
 ) -> None:
     token = _register_and_login(client)
@@ -420,6 +423,7 @@ def test_extract_returns_skills_and_all_six_meta_fields(
         },
     ]
     assert sorted(data["meta"]) == [
+        "deduped_count",
         "dropped_count",
         "finish_reason",
         "model",
@@ -427,11 +431,23 @@ def test_extract_returns_skills_and_all_six_meta_fields(
         "received_count",
         "truncated",
     ], "meta 少一个字段，API.md 的契约就只剩端点名"
+    # 字段顺序即响应 JSON 顺序：`deduped_count` 紧跟 `dropped_count`（两个计数并排读），
+    # 挪到末尾会让「合并了几条」离「剔除几条」整整一个契约的距离。
+    assert list(data["meta"]) == [
+        "model",
+        "prompt_version",
+        "received_count",
+        "dropped_count",
+        "deduped_count",
+        "truncated",
+        "finish_reason",
+    ]
     assert data["meta"] == {
         "model": "deepseek-flash",
         "prompt_version": "v1",
         "received_count": 4,
         "dropped_count": 0,
+        "deduped_count": 0,
         "truncated": False,
         "finish_reason": "stop",
     }
@@ -594,6 +610,184 @@ def test_truncated_is_false_when_drops_already_leave_fifteen_or_fewer(
     assert data["meta"]["truncated"] is False
     assert data["meta"]["received_count"] == 18
     assert data["meta"]["dropped_count"] == 5
+
+
+# --------------------------------------------------------------------------- #
+# 四·补、重名合并（键口径 = `skill_name_key`，与写侧「技能名称重复」422 同一个函数）
+#
+# 为什么这一组用例存在：模型经常把同一个技能拆成 `Python` / `python` 两条。不合并的
+# 后果不是难看，而是**必败**——用户点「保存岗位」时 `JobWriteRequest` 会报 422、
+# 库的 `UNIQUE (job_id, name)` 也会拦，等于我们主动把一个打不进去的 payload 交给用户。
+# --------------------------------------------------------------------------- #
+
+
+def test_duplicate_names_collapse_to_the_first_occurrence(
+    client: TestClient, fake_deepseek: FakeDeepSeek
+) -> None:
+    """三种写法（`Python` / `python` / ` Python `）合成一条，留下的是**第一条**。
+
+    保留首条而不是末条：模型给的优先级顺序与原始大小写都落在第一条上，
+    后来者只是同一种东西的另一种写法，没有信息可取。
+    """
+    token = _register_and_login(client)
+    fake_deepseek.items_payload = {
+        "skills": [
+            {"name": "Python", "type": "hard", "evidence": "熟练掌握 Python", "confidence": 0.9},
+            {"name": "python", "type": "domain", "evidence": "熟悉 FastAPI", "confidence": 0.5},
+            {"name": "  Python  ", "type": "soft", "evidence": "熟悉 Docker", "confidence": 0.4},
+        ]
+    }
+
+    response = _extract(client, token)
+
+    assert response.status_code == 200, response.text
+    data = _data(response)
+    assert data["skills"] == [
+        {"name": "Python", "type": "hard", "evidence": "熟练掌握 Python", "confidence": 0.9}
+    ]
+    meta = data["meta"]
+    assert meta["received_count"] == 3
+    assert meta["deduped_count"] == 2
+    assert meta["dropped_count"] == 0
+    assert meta["truncated"] is False
+    # 三个数在没被封顶切的时候必须闭合，否则「AI 给出 3 条」这句话对不上结果。
+    assert meta["dropped_count"] + meta["deduped_count"] + len(data["skills"]) == 3
+
+
+def test_cpp_csharp_and_c_are_three_different_skills(
+    client: TestClient, fake_deepseek: FakeDeepSeek
+) -> None:
+    """去重键**不是** §2.D.1 那套四步归一化的回归护栏，两种写法都要钉。
+
+    为什么非得带上 `C#`：`+` 的 Unicode 类别是 `Sm`，四步归一化的第 4 步（删标点）删不到它，
+    所以「`C++` vs `C`」在两种键下都分得开——只测它，键写错了这条用例照样绿。
+    `#` 的类别是 `Po`、会被删，`C#` 与 `C` 只有在 `skill_name_key` 下才是两门语言；
+    同理 `_`（`Pc`）会让 `user_id` 与 `userid` 在四步口径下并成一条。
+    """
+    token = _register_and_login(client)
+    jd = "精通 C++，熟悉 C 语言。有 C# 桌面端开发经验。"
+    fake_deepseek.items_payload = {
+        "skills": [
+            {"name": "C++", "type": "hard", "evidence": "精通 C++", "confidence": 0.9},
+            {"name": "C", "type": "hard", "evidence": "熟悉 C", "confidence": 0.8},
+            {"name": "C#", "type": "hard", "evidence": "有 C# 桌面端开发经验", "confidence": 0.7},
+        ]
+    }
+
+    response = client.post(EXTRACT_URL, json={"description": jd}, headers=_byok(token))
+
+    assert response.status_code == 200, response.text
+    data = _data(response)
+    assert [skill["name"] for skill in data["skills"]] == ["C++", "C", "C#"]
+    assert data["meta"]["deduped_count"] == 0
+    assert data["meta"]["dropped_count"] == 0
+
+
+def test_fullwidth_name_merges_with_the_halwidth_one(
+    client: TestClient, fake_deepseek: FakeDeepSeek
+) -> None:
+    """全角首字母 `Ｐython` 与半角 `Python` 是同一条（NFKC 生效），留下的是全角那条。
+
+    「留下先出现的那条」在这里有个副作用要写明：库里存的会是全角写法。这是模型自己的
+    输出顺序决定的，不是合并规则的错——用户在草稿态逐条过目（2.A）时看到的也是这一条。
+    """
+    token = _register_and_login(client)
+    fake_deepseek.items_payload = {
+        "skills": [
+            {"name": "Ｐython", "type": "hard", "evidence": "熟练掌握 Python", "confidence": 0.9},
+            {"name": "Python", "type": "hard", "evidence": "熟悉 FastAPI", "confidence": 0.6},
+        ]
+    }
+
+    response = _extract(client, token)
+
+    assert response.status_code == 200, response.text
+    data = _data(response)
+    assert [skill["name"] for skill in data["skills"]] == ["Ｐython"]
+    assert data["meta"]["deduped_count"] == 1
+    assert data["meta"]["dropped_count"] == 0
+
+
+def test_dropped_and_deduped_do_not_leak_into_each_other(
+    client: TestClient, fake_deepseek: FakeDeepSeek
+) -> None:
+    """一条不可回溯 + 一条重名 → `dropped_count=1` 且 `deduped_count=1`，各说各的。
+
+    两个数合并成一个（或让重名的那条也进 dropped）会让前端两句文案都说错话：
+    「无法回溯原文」该让人怀疑核验规则、换一份 JD，「重名已合并」什么都不用做。
+    反方向也要成立：核验失败的条目**不进**重名集合，所以两条同名的幻觉是 dropped=2、
+    deduped=0（同一个 JD 里两次都找不到依据，跟重名无关）。
+    """
+    token = _register_and_login(client)
+    fake_deepseek.items_payload = {
+        "skills": [
+            VERIFIED_ITEMS[0],
+            {"name": "python", "type": "hard", "evidence": "熟悉 FastAPI", "confidence": 0.4},
+            HALLUCINATED_ITEM,
+        ]
+    }
+
+    response = _extract(client, token)
+
+    assert response.status_code == 200, response.text
+    data = _data(response)
+    assert [skill["name"] for skill in data["skills"]] == ["Python"]
+    meta = data["meta"]
+    assert meta["received_count"] == 3
+    assert meta["dropped_count"] == 1
+    assert meta["deduped_count"] == 1
+    assert meta["dropped_count"] + meta["deduped_count"] + len(data["skills"]) == 3
+
+    fake_deepseek.items_payload = {
+        "skills": [VERIFIED_ITEMS[0], HALLUCINATED_ITEM, dict(HALLUCINATED_ITEM)]
+    }
+
+    two_hallucinations = _extract(client, token)
+
+    assert two_hallucinations.status_code == 200, two_hallucinations.text
+    second_meta = _data(two_hallucinations)["meta"]
+    assert (second_meta["dropped_count"], second_meta["deduped_count"]) == (2, 0)
+
+
+def test_duplicates_are_merged_before_the_fifteen_item_cap(
+    client: TestClient, fake_deepseek: FakeDeepSeek
+) -> None:
+    """合并跑在截断**之前**：20 条里 3 条重名、0 条不可回溯 → 17 条幸存者 → 返回 15 条。
+
+    若反过来（先切 15 再合并），`deduped_count` 说的就变成「返回的那 15 条里有几条重名」，
+    而封顶切掉的条目根本没进结果，两个数互相吃掉；用户还会看到「只保留了前 15 条」
+    却只拿到 12 条这种没法解释的结果。
+    """
+    token = _register_and_login(client)
+    unique_items = _valid_items(MAX_EXTRACTED_SKILLS + 2)
+    fake_deepseek.items_payload = {
+        "skills": [
+            *unique_items,
+            dict(unique_items[0]),
+            dict(unique_items[3]),
+            dict(unique_items[9]),
+        ]
+    }
+
+    response = _extract(client, token)
+
+    assert response.status_code == 200, response.text
+    data = _data(response)
+    meta = data["meta"]
+    assert meta["received_count"] == 20
+    assert meta["dropped_count"] == 0
+    assert meta["deduped_count"] == 3
+    assert meta["truncated"] is True
+    assert len(data["skills"]) == MAX_EXTRACTED_SKILLS == 15
+    assert data["skills"][-1]["name"] == "技能14", "合并过的名单里仍按模型顺序取前 15 条"
+    # 被 15 条上限切掉的那 2 条不进任何一格，所以「`dropped + deduped + len(skills)`
+    # 加起来等于 received」这条本该闭合的等式，在 `truncated` 为真时**不成立**，
+    # 差值恰好是封顶吃掉的数量。把差值钉成字面量而不是删掉这条断言：将来谁给封顶
+    # 补了第四个计数，这条会红并逼他同步改这段注释，而不是让等式悄悄失效。
+    cut_by_cap = (
+        meta["received_count"] - meta["dropped_count"] - meta["deduped_count"] - len(data["skills"])
+    )
+    assert cut_by_cap == 2
 
 
 # --------------------------------------------------------------------------- #
@@ -800,6 +994,40 @@ def test_failure_5_every_evidence_failing_verification_is_502(
     assert "skills" not in response.text or "[]" not in response.text
 
 
+def test_global_handler_502_message_is_scoped_neutral(
+    client: TestClient, fake_deepseek: FakeDeepSeek
+) -> None:
+    """走 `app/main.py` 全局处理器的那句 502 文案，不许出现「润色」或「简历」。
+
+    为什么钉在第 5 情形而不是伪造上游：它是七条里唯一由**我们自己的规则**触发的 502，
+    不需要 Mock 出抖动就能稳定命中处理器（`job_service` 抛 `ResumeCopyUnavailableError`，
+    api 层不 catch）。
+    为什么这件事必须写在测试里而不是只写在注释里：提取侧刻意复用润色的异常族、
+    一个错误码都没新增（ADR-011 2.F），所以**同一个处理器同时服务两个端点**——
+    上一轮的文案让岗位录入页说出「请稍后重试润色。生成简历不受影响。」，
+    两句都与用户当前操作无关，第二句还是假的。
+    「本次请求未被保存」对两端都是真话（两端都纯计算：ADR-010 §5 / ADR-011 2.A），
+    所以断言它存在，而不是只断言两句否定。
+
+    第 7 情形**不在**本条范围内：它的文案在 api 层就地组装
+    （`app/api/v1/jobs.py` 的 `EXTRACT_TRUNCATED_MESSAGE`），是刻意专属的，
+    也不含「未被保存」这句——正因如此它不会被这条用例误当成中性文案放过。
+    """
+    token = _register_and_login(client)
+    fake_deepseek.items_payload = {"skills": [HALLUCINATED_ITEM]}
+
+    response = _extract(client, token)
+
+    assert response.status_code == 502, response.text
+    body = _error_body(response)
+    assert body["error"]["code"] == "AI_SERVICE_UNAVAILABLE"
+    assert body["error"]["retryable"] is True
+    message = body["error"]["message"]
+    assert "润色" not in message, f"文案串到了另一个端点上：{message}"
+    assert "简历" not in message, f"文案串到了另一个端点上：{message}"
+    assert "未被保存" in message, message
+
+
 def test_failure_5_empty_skill_list_is_502(client: TestClient, fake_deepseek: FakeDeepSeek) -> None:
     """模型给一个空数组同样是「没有可用结果」：不许静默 200 + 空列表。"""
     token = _register_and_login(client)
@@ -955,7 +1183,8 @@ def test_api_key_never_reaches_response_or_logs(
 def test_logs_carry_counts_and_finish_reason_but_not_the_jd_or_evidence(
     client: TestClient, fake_deepseek: FakeDeepSeek, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """2.D 的日志口径：只有两个计数、`finish_reason` 与 `request_id`。
+    """2.D 的日志口径：只有三个计数（received / dropped / deduped）、`finish_reason`
+    与 `request_id`。
 
     JD 正文与 evidence 内容都不许进日志（它们是大段用户粘进来的第三方文本，
     而且「模型答了什么」本就该由 `dropped_count` 这个数回答，不是由日志正文回答）。
@@ -971,6 +1200,7 @@ def test_logs_carry_counts_and_finish_reason_but_not_the_jd_or_evidence(
     assert response.status_code == 200, response.text
     assert "received=2" in caplog.text
     assert "dropped=1" in caplog.text
+    assert "deduped=0" in caplog.text, "重名合并是第三个必须能读数的失败桶"
     assert "finish_reason=stop" in caplog.text
     assert "req-counts-7" in caplog.text
     assert JD not in caplog.text, "JD 正文不得进日志"

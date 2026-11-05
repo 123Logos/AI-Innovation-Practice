@@ -5,14 +5,17 @@
 API 行为在 `tests/test_jobs.py`，这里一律绕过 HTTP 直接写 SQL ——
 否则「应用层校验」会把数据库的洞遮起来，测试绿了但约束并不存在。
 
-四件必须钉住的事：
+五件必须钉住的事：
 
 1. `ck_jobs_status` 只有 `draft`/`published`，审核态写不进去（1.A/1.B）；
 2. `ck_job_skills_origin` **只有两个值**（`jd_verifiable` / `unverified`，1.D v7 改名），
    v1 的 `user_edited` 已经删掉；
 3. `UNIQUE (job_id, name)` 在 `utf8mb4_0900_ai_ci` 下真的把
    `Python` / `python` / `Ｐython`（首字母全角）折成同一行（1.D 的假设，必须实测）；
-4. 两条外键的删除规则不同：删账号挡住（RESTRICT），删岗位连带技能（CASCADE）。
+4. 两条外键的删除规则不同：删账号挡住（RESTRICT），删岗位连带技能（CASCADE）；
+5. 「同一个技能」的判定在应用层与数据库必须同口径：`skill_name_key` 相等 ⟹ 撞
+   `UNIQUE (job_id, name)`，`skill_name_key` 不等 ⟹ 库里真的留两行（C1 补正：
+   提取端要按这个键做重名合并，两处判断不一致就会把注定失败的 payload 交给用户）。
 
 另有一条架构断言：`app/services/job_service.py` 里不出现 `HTTPException` / `fastapi`
 （AGENTS.md §4.1 + ADR-011 1.F）——这条纪律不能只写在 docstring 里。
@@ -29,8 +32,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import event, text
 from sqlalchemy.exc import DatabaseError, IntegrityError
 
+from app.integrations.skill_extractor import normalize_for_trace
 from app.repositories import job_repository
 from app.repositories.user_repository import get_engine
+from app.schemas.job import skill_name_key
 from app.services import job_service
 
 JOB_COLUMNS = {
@@ -408,6 +413,82 @@ def test_unique_key_collapses_three_spellings_to_one_row() -> None:
     # 反面对照：真正不同的技能名不该被误折叠（唯一键不是模糊匹配）
     _insert_skill(job_id, "PyTorch")
     assert _skill_count(job_id) == 2
+
+
+#: 「这两条写法是不是同一个技能」必须由应用层与数据库给出同一个答案。
+#: 上游是提取端点的重名合并键（`skill_name_key`）与 `UNIQUE (job_id, name)`；
+#: 两边判断不一致时，用户会碰到「提取时已经合并了、点保存却报技能名称重复」
+#: 或者反过来「提取给了两条、落库撞 1062 变成 500」。
+#: 每一对都在这里实测，不靠对 `utf8mb4_0900_ai_ci` 语义的推断。
+_NAME_PAIRS_SAME_SKILL = [
+    ("Python", "python"),
+    ("Python", "PYTHON"),
+    ("Python", "Ｐython"),  # Ｐ = U+FF30，首字母全角
+    ("C++", "c++"),
+]
+_NAME_PAIRS_DIFFERENT_SKILL = [
+    ("C#", "C"),  # # 是 U+0023，类别 Po：四步归一化会把它删掉并成一条，库不会
+    ("C++", "C"),  # + 的类别是 Sm，两种口径都删不掉，本来就分得开
+    ("user_id", "userid"),  # _ 是 Pc：四步归一化删下划线，会误并
+    ("python.", "python"),  # 尾点是 Po，同上
+    ("Web  开发", "Web 开发"),  # 内部两个空格：四步归一化去空白会误并
+    ("  C  ", "C"),  # 列是 NO PAD，首尾空格参与比较
+]
+
+
+@pytest.mark.parametrize(("first", "second"), _NAME_PAIRS_SAME_SKILL)
+def test_skill_name_key_matches_unique_key_for_equivalent_spellings(
+    first: str, second: str
+) -> None:
+    """`skill_name_key` 判为同一个技能 ⟹ `UNIQUE (job_id, name)` 也判同一个（第二行被拒）。"""
+    assert skill_name_key(first) == skill_name_key(second), (
+        f"用例前提：应用层键应把 {first!r} 与 {second!r} 折成同一个键"
+    )
+    user_id = _insert_user()
+    job_id = _insert_job(user_id)
+    _insert_skill(job_id, first)
+    with pytest.raises(IntegrityError):
+        _insert_skill(job_id, second)
+    assert _skill_count(job_id) == 1
+
+
+@pytest.mark.parametrize(("first", "second"), _NAME_PAIRS_DIFFERENT_SKILL)
+def test_skill_name_key_matches_unique_key_for_distinct_names(
+    first: str, second: str
+) -> None:
+    """`skill_name_key` 判为两个技能 ⟹ 库里必须真的留下两行（这才是同一个答案）。
+
+    反向护栏由 `test_four_step_normalization_is_not_a_valid_skill_name_key` 单独测：
+    这一批里 `C#`、`user_id`、`python.`、内部双空格那几对，若改用 §2.D.1 的四步归一化
+    做合并键会被判成同一个技能，而数据库认为它们是两行。
+    """
+    assert skill_name_key(first) != skill_name_key(second)
+    user_id = _insert_user()
+    job_id = _insert_job(user_id)
+    _insert_skill(job_id, first)
+    _insert_skill(job_id, second)
+    assert _skill_count(job_id) == 2, f"{first!r} 与 {second!r} 在库里必须是两行"
+
+
+def test_four_step_normalization_is_not_a_valid_skill_name_key() -> None:
+    """四步归一化**不能**当技能名合并键：它比数据库宽，会静默吞掉一条岗位要求。
+
+    这是 C1 补正里真发生过的口径错误（提取端去重最初被建议按 §2.D.1 的函数做），
+    所以留一条正向断言而不是只留注释：`normalize_for_trace` 在下列这些对上等于 True，
+    而 `utf8mb4_0900_ai_ci` 判它们不相等（上一条用例已实测）。两者一旦合成一个函数，
+    「重名合并」就会吃掉真实条目，且用户在结果里看不出少了东西。
+    """
+    would_falsely_merge = [
+        ("C#", "C"),
+        ("user_id", "userid"),
+        ("python.", "python"),
+        ("Web  开发", "Web 开发"),
+    ]
+    for first, second in would_falsely_merge:
+        assert normalize_for_trace(first) == normalize_for_trace(second), (
+            f"用例前提：四步口径会把 {first!r} 与 {second!r} 误并"
+        )
+        assert skill_name_key(first) != skill_name_key(second)
 
 
 def test_unique_key_is_scoped_per_job() -> None:
