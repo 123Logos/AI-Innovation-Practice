@@ -10,17 +10,24 @@
  *
  * 组件仍然只负责交互与文案：切简历、改名、删除全部委托给 store，
  * 未保存拦截与并发保护都在 `stores/resume.ts` 里（见 `activateProfile`）。
+ *
+ * B3 依据 ADR-011 议题 3.D 重排了窄屏的入口组织：`≤760px` 时「AI 设置 / 退出登录」
+ * 收进一个「更多」菜单（一级项 5 → 3），「岗位库」保持文字入口不收；宽屏布局不变。
+ * 登出时除 `resume.reset()` 外还要 `job.reset()`——先清业务数据再清登录态这条不变量
+ * 涵盖岗位数据（`stores/job.ts` 里每个 `load*()` 前的清空只是缓解，不替代它）。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 
 import { clearDeepSeekKey, hasDeepSeekKey, isApiError, setDeepSeekKey } from '@/api'
 import type { ProfileSortField, ProfileSummary } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
+import { useJobStore } from '@/stores/job'
 import { useResumeStore } from '@/stores/resume'
 
 const auth = useAuthStore()
 const resume = useResumeStore()
+const job = useJobStore()
 const router = useRouter()
 
 /* -------------------------------- 下拉菜单 -------------------------------- */
@@ -49,6 +56,8 @@ function toggleMenu(): void {
     closeMenu()
     return
   }
+  // 与「更多」菜单互斥：两个弹层都贴在顶栏下沿同一位置（见 `toggleMoreMenu`）。
+  closeMoreMenu()
   menuError.value = ''
   menuOpen.value = true
 }
@@ -254,9 +263,14 @@ async function goTrash(): Promise<void> {
 /* -------------------------------- 全局交互 -------------------------------- */
 
 function handleDocumentPointerDown(event: PointerEvent): void {
-  if (!menuOpen.value) return
-  const root = menuRoot.value
-  if (root && !root.contains(event.target as Node)) closeMenu()
+  if (menuOpen.value) {
+    const root = menuRoot.value
+    if (root && !root.contains(event.target as Node)) closeMenu()
+  }
+  if (moreOpen.value) {
+    const root = moreRoot.value
+    if (root && !root.contains(event.target as Node)) closeMoreMenu()
+  }
 }
 
 function handleKeydown(event: KeyboardEvent): void {
@@ -265,6 +279,7 @@ function handleKeydown(event: KeyboardEvent): void {
     closeCreate()
     return
   }
+  if (moreOpen.value) closeMoreMenu()
   if (menuOpen.value) closeMenu()
 }
 
@@ -328,9 +343,43 @@ function forgetAiKey(): void {
   aiSettingsError.value = ''
 }
 
+/* ------------------------- 「更多」菜单（ADR-011 议题 3.D） ---------------------- */
+
+/**
+ * 窄屏（`≤760px`）才出现的入口：把「AI 设置」「退出登录」收进一个「更多」菜单，
+ * 顶栏一级项从 5 个降到 3 个（岗位库 / 简历切换器 / 更多）。
+ *
+ * 「岗位库」**不进来**：学生主力在手机上，藏进菜单等于没有入口（3.D 裁定的核心）。
+ *
+ * 宽屏为什么不用 JS 判断视口：这两个按钮所在的 `.user-actions` 与它的父级
+ * `.user-more` 在 `≥761px` 都是 `display: contents`（不生成盒子），
+ * 于是两个按钮仍然是 `.user-area` 的直接 flex 项，位置 / gap / 换行行为与本次改动前
+ * 逐像素一致，触发按钮则 `display: none` 根本不出现。菜单状态只在窄屏被点到。
+ *
+ * 焦点管理照 `profile-switcher` 的既有做法：原生 `<button>` 本身可聚焦，
+ * 打开后不移交焦点，Tab 顺序即 DOM 顺序；差异只在弹层挂谁身上（见 CSS 段的注释）。
+ */
+const moreOpen = ref(false)
+const moreRoot = ref<HTMLElement | null>(null)
+
+function closeMoreMenu(): void {
+  moreOpen.value = false
+}
+
+function toggleMoreMenu(): void {
+  if (moreOpen.value) {
+    closeMoreMenu()
+    return
+  }
+  // 两个弹层都挂在顶栏下沿同一位置，同时开着会叠在一起：开一个就关另一个。
+  closeMenu()
+  moreOpen.value = true
+}
+
 async function handleLogout(): Promise<void> {
-  // 先清业务数据再清登录态，避免下一个账号短暂看到上一个人的档案。
+  // 先清业务数据再清登录态，避免下一个账号短暂看到上一个人的档案与岗位数据。
   resume.reset()
+  job.reset()
   auth.logout()
   await router.replace({ name: 'login' })
 }
@@ -347,6 +396,16 @@ async function handleLogout(): Promise<void> {
     </div>
 
     <div class="user-area">
+      <!--
+        岗位库入口（ADR-011 议题 3.A）：顶栏一条文字入口，不加侧边栏。
+        与「AI 设置 / 退出登录」同一套 32px 控件规格与 `--ui-*` 令牌。
+        岗位自己的回收站不在这里（顶栏的「回收站」属于简历，两个混在一层会让人
+        分不清删掉的是什么），入口在 `/jobs` 列表页顶部的「我的删除」。
+        议题 3.D 明确它「不进更多菜单、也不降级成图标」：手机是学生的主力设备，
+        这条功能的入口藏起来等于没有；窄屏省下的宽度预算从「AI 设置 / 退出登录」出。
+      -->
+      <RouterLink class="jobs-entry" :to="{ name: 'job-board' }">岗位库</RouterLink>
+
       <!-- 简历切换器 -->
       <div ref="menuRoot" class="profile-switcher">
         <button
@@ -492,10 +551,40 @@ async function handleLogout(): Promise<void> {
 
       <span v-if="resume.dirty" class="dirty-dot" title="有未保存的修改">未保存</span>
       <span class="user-name">{{ auth.displayName || '已登录用户' }}</span>
-      <button class="ai-settings-button" type="button" @click="openAiSettings">AI 设置</button>
-      <button class="logout-button" type="button" :disabled="auth.signingOut" @click="handleLogout">
-        {{ auth.signingOut ? '退出中…' : '退出登录' }}
-      </button>
+
+      <!--
+        「更多」菜单（ADR-011 议题 3.D）：窄屏把下面两个动作收进一级项「更多」，
+        宽屏两个包装成 `display: contents`，两个按钮回到改动前的一级项位置。
+        没有给面板加 `role="menu"` / 行加 `role="menuitem"`：同一批 `<button>` 在宽屏
+        仍是一级工具栏项，声明成菜单项会在宽屏留下「没有菜单的 menuitem」。
+      -->
+      <div ref="moreRoot" class="user-more">
+        <button
+          class="more-trigger"
+          type="button"
+          :aria-expanded="moreOpen"
+          aria-controls="user-more-menu"
+          @click="toggleMoreMenu"
+        >
+          <span>更多</span>
+          <span class="more-caret" :class="{ 'more-caret--open': moreOpen }" aria-hidden="true">
+            ▾
+          </span>
+        </button>
+
+        <div
+          id="user-more-menu"
+          class="user-actions"
+          :class="{ 'user-actions--open': moreOpen }"
+          role="group"
+          aria-label="更多操作"
+        >
+          <button class="ai-settings-button" type="button" @click="openAiSettings">AI 设置</button>
+          <button class="logout-button" type="button" :disabled="auth.signingOut" @click="handleLogout">
+            {{ auth.signingOut ? '退出中…' : '退出登录' }}
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- AI 设置弹窗：BYOK（ADR-009），Key 只进 sessionStorage。 -->
@@ -636,7 +725,29 @@ async function handleLogout(): Promise<void> {
 .logout-button:hover:not(:disabled) { border-color: var(--theme-rule); color: var(--theme-primary); }
 .ai-settings-button:disabled,
 .logout-button:disabled { opacity: .6; cursor: progress; }
+/*
+ * 岗位库入口：与上面两个控件同规格（32px 高、`--ui-radius`、`--ui-*` 令牌），
+ * 但它是导航而不是动作，所以底色留空、hover 只加下划线级别的提示。
+ */
+.jobs-entry { display: inline-flex; flex: 0 0 auto; align-items: center; height: 32px; border: 1px solid transparent; border-radius: var(--ui-radius); padding: 0 10px; color: var(--ui-ink-muted); font-size: 12px; text-decoration: none; white-space: nowrap; }
+.jobs-entry:hover { border-color: var(--theme-rule); color: var(--theme-primary); }
+.jobs-entry[aria-current='page'] { border-color: var(--ui-border-strong); color: var(--theme-primary-deep); background: var(--theme-bg-light); font-weight: 600; }
 .ai-settings-status { margin: 0; color: var(--ui-ink-faint); font-size: 12px; }
+/*
+ * 「更多」菜单的两个包装层在宽屏**不生成盒子**（`display: contents`）：
+ * `.ai-settings-button` / `.logout-button` 因此仍然是 `.user-area` 的直接 flex 项，
+ * 顺序、gap（12px）、`flex-wrap` 断行行为都与本次改动前完全一致 ——
+ * 「≥761px 的现有布局不得变化」这条只能这么满足，写成嵌套 flex 容器会改变
+ * 中等宽度下哪一项先换行。触发按钮 `display: none`，宽屏看不到、Tab 也跳不到。
+ * 窄屏（下面 `@media`）把 `.user-actions` 变成挂在顶栏下沿的弹层。
+ */
+.user-more { display: contents; }
+.user-actions { display: contents; }
+.more-trigger { display: none; flex: 0 0 auto; align-items: center; gap: 6px; height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 12px; color: var(--ui-ink); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 12px; white-space: nowrap; }
+.more-trigger:hover { border-color: var(--theme-rule); color: var(--theme-primary); }
+.more-trigger:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
+.more-caret { flex: 0 0 auto; color: var(--ui-ink-faint); font-size: 11px; line-height: 1; transition: transform .15s ease; }
+.more-caret--open { transform: rotate(180deg); }
 
 /* ---- 简历切换器 ---- */
 .profile-switcher { position: relative; flex: 0 1 auto; min-width: 0; }
@@ -752,6 +863,18 @@ async function handleLogout(): Promise<void> {
    */
   .profile-switcher { position: static; }
   .switcher-menu { top: 100%; left: 0; right: 0; width: auto; }
+  /*
+   * 「更多」在这里才出现（宽屏由上面的 `display: none` / `display: contents` 保证一级项不变）。
+   * 弹层与 `.switcher-menu` 同一个理由、同一个解法：挂在**顶栏**而不是挂在触发按钮上——
+   * 挂按钮上时右对齐的锚点会把弹层推到视口左边缘之外，而负向滚动不存在，行就够不着了。
+   * `left:0 / right:0 / top:100%` 不写死任何像素值（`display: contents` 的父级不生成盒子，
+   * 包含块因此仍是 `position: sticky` 的 `.app-topbar`）。
+   */
+  .more-trigger { display: inline-flex; }
+  .user-actions { display: none; position: absolute; top: 100%; left: 0; right: 0; z-index: 30; flex-direction: column; gap: 8px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 10px; background: var(--ui-surface); box-shadow: var(--ui-shadow-menu); }
+  .user-actions--open { display: flex; }
+  /* 菜单里的两行保持 32px 控件规格（议题 3.A），只撑满一行、文字居中，手机上更好点。 */
+  .user-actions .ai-settings-button, .user-actions .logout-button { width: 100%; justify-content: center; }
 }
 @media print {
   .app-topbar { display: none; }

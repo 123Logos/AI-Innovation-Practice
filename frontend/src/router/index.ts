@@ -2,6 +2,10 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 
 import { setUnauthorizedHandler } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
+import JobBoardView from '@/views/JobBoardView.vue'
+import JobCreateView from '@/views/JobCreateView.vue'
+import JobDetailView from '@/views/JobDetailView.vue'
+import JobTrashView from '@/views/JobTrashView.vue'
 import LoginView from '@/views/LoginView.vue'
 import RecycleBinView from '@/views/RecycleBinView.vue'
 import RegisterView from '@/views/RegisterView.vue'
@@ -27,6 +31,39 @@ const routes: RouteRecordRaw[] = [
     path: '/trash',
     name: 'recycle-bin',
     component: RecycleBinView,
+    meta: { requiresAuth: true },
+  },
+  /*
+   * 岗位库四条路由（ADR-011 议题 3.B）。
+   *
+   * 声明顺序是硬要求：`/jobs/new`、`/jobs/trash` 这类静态段必须排在 `/jobs/:id`
+   * **之前**。Vue Router 本身按段的静态/动态权重打分排序，写错顺序未必立刻出问题，
+   * 但 `/jobs/trash` 一旦落到 `/:id` 后面，就会被当成「id = trash 的详情页」——
+   * 后端 `app/api/v1/jobs.py:3-5` 记录过同一个坑，这里按同一条规则排布，
+   * 并在 `stores/__tests__/job.spec.ts` 里留一条 `resolve()` 断言钉住它。
+   */
+  {
+    path: '/jobs',
+    name: 'job-board',
+    component: JobBoardView,
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/jobs/new',
+    name: 'job-create',
+    component: JobCreateView,
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/jobs/trash',
+    name: 'job-trash',
+    component: JobTrashView,
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/jobs/:id',
+    name: 'job-detail',
+    component: JobDetailView,
     meta: { requiresAuth: true },
   },
   {
