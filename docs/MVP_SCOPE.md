@@ -50,7 +50,7 @@
 
 冻结项只允许以文档、接口占位、`# PHASE-2: not wired` 形式存在。
 
-## 6. 数据范围（Phase 1 只建 5 张表）
+## 6. 数据范围（Phase 1 建 5 张表；后续阶段新增表必须走 ADR）
 
 `users`、`student_profiles`、`skills`、`experiences`、`resumes`
 

@@ -24,6 +24,7 @@
 3. **现有 `tests/` 只覆盖健康检查。** “测试通过”目前只证明进程能启动，不证明任何业务行为正确。
 4. **`PROJECT_STATUS.md` 中“已完成”的部分，多数是“已声明/已设计”，不是“已实现/已验证”。** 不要把它当作你继续扩写的许可。
 5. **Redis、ARQ/Celery、S3、WebRTC 在 Phase 1 一律不接入。** 它们只允许以接口/占位形式存在，且必须被标注为 `# PHASE-2: not wired`。**真实 DeepSeek 调用已按 §3.2 的书面批准机制解除冻结**（2026-11-04 人类负责人批准，实现与取舍见 `docs/adr/ADR-009-deepseek-byok-nonstream.md`：BYOK、非流式、模型 `deepseek-flash`、Key 不落库不写日志），其余各项状态不变。
+6. **现库有 7 张表，不是 5 张。** `educations`（`d02b176`，2026-11-02）、`refresh_tokens`（`6e2f2c7`，2026-11-03）、多档案与回收站列（`76e23ce`，2026-11-03）、主题（`fe21c8b`，2026-11-04）、排版（`a7a1fe2`，2026-11-04）均已随 Phase 2/3 提交入库。§4.2 的「5 张表」只描述 Phase 1 基线，不构成对后续新增表的禁令；后续表按 §4.2 走 ADR。
 
 ---
 
@@ -91,7 +92,7 @@ api/ → services/ → repositories/ → integrations/
 ### 4.2 数据库与迁移
 
 - 只允许通过 Alembic 迁移修改数据库结构；禁止手写 DDL 直接执行；
-- Phase 1 只建 5 张表：`users`、`student_profiles`、`skills`、`experiences`、`resumes`；
+- Phase 1 建 5 张表（`users`/`student_profiles`/`skills`/`experiences`/`resumes`）；Phase 2 起新增表必须先有 ADR（见 `docs/MVP_SCOPE.md` §6）。
 - 每个迁移必须有对应的 `downgrade`；
 - 必须有一个测试验证“空库 → upgrade head → downgrade base”可跑通。
 
