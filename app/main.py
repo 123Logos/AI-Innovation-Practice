@@ -236,10 +236,11 @@ def create_app() -> FastAPI:
             headers={"Retry-After": "60"},
         )
 
-    # ADR-009 的三个 AI 分支。走专用处理器而不是在路由里 raise HTTPException，
+    # ADR-009 的三个 AI 分支（ADR-010 起只在 `/resumes/polish` 上可达）。
+    # 走专用处理器而不是在路由里 raise HTTPException，
     # 是因为通用 4xx 处理器会把 code 统一压成 CLIENT_ERROR，而前端需要按
     # `AI_KEY_MISSING` / `AI_KEY_INVALID` / `AI_SERVICE_UNAVAILABLE` 区分动作：
-    # 补 Key、修 Key、还是问用户要不要改用模板。
+    # 补 Key、修 Key、还是提示重试。
     # 消息一律用固定文案，不拼 `str(exc)`：上游异常文本可能带 request_id、
     # 甚至带用户自己的 Key，不该原样回显到浏览器。
 
@@ -268,7 +269,7 @@ def create_app() -> FastAPI:
             content=error_response(
                 _,
                 "AI_SERVICE_UNAVAILABLE",
-                "AI 服务当前不可用（超时或上游异常），你可以重试，或改用基础模板生成。",
+                "AI 服务当前不可用（超时或上游异常），请稍后重试润色。生成简历不受影响。",
                 retryable=True,
             ),
         )

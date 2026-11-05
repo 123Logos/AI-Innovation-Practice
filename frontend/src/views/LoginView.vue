@@ -128,15 +128,21 @@ async function submit(): Promise<void> {
 </template>
 
 <style scoped>
-.auth-page { display: grid; min-height: 100vh; padding: 32px 20px; background: #f4f6f5; place-items: center; }
-.auth-card { width: min(420px, 100%); border: 1px solid #dde5e2; padding: 40px 36px; background: #fff; }
+/*
+ * 居中用 flex + `margin:auto`，不用 `grid + place-items:center`。
+ * 注册页的卡片比登录页高，在 375×667 这类矮视口上会超过一屏；
+ * `place-items:center` 此时让卡片**向上溢出且滚不到**（标题被切掉），
+ * 而 `margin:auto` 在放不下时自动退化成顶部对齐，滚动照常。
+ */
+.auth-page { display: flex; min-height: 100vh; padding: 32px 20px; background: var(--ui-canvas); }
+.auth-card { margin: auto; width: min(420px, 100%); border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 40px 36px; background: var(--ui-surface); }
 .eyebrow { margin: 0 0 12px; color: var(--theme-rule); font-size: 12px; letter-spacing: .12em; }
 h1 { margin: 0; font-size: 24px; font-weight: 650; }
-.intro { margin: 10px 0 26px; color: #687875; font-size: 13px; line-height: 1.6; }
+.intro { margin: 10px 0 26px; color: var(--ui-ink-muted); font-size: 13px; line-height: 1.6; }
 .auth-form { display: grid; gap: 16px; }
 .field { display: grid; gap: 6px; }
-.field span { color: #687875; font-size: 12px; }
-input { width: 100%; border: 1px solid #d6dfdc; padding: 11px 12px; color: #243330; background: #fff; font: inherit; font-size: 14px; outline: 0; }
+.field span { color: var(--ui-ink-muted); font-size: 12px; }
+input { width: 100%; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 11px 12px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: 14px; outline: 0; }
 input:focus { border-color: var(--theme-rule); box-shadow: 0 0 0 2px var(--theme-fade); }
 
 /* ---- 密码可见性切换（常驻） ---- */
@@ -162,21 +168,13 @@ input:focus { border-color: var(--theme-rule); box-shadow: 0 0 0 2px var(--theme
   cursor: pointer;
 }
 .password-toggle:hover { color: var(--theme-primary-deep); }
-.password-toggle:active { color: #243330; }
+.password-toggle:active { color: var(--ui-ink); }
 .password-toggle:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 1px; }
-.primary-button { border: 0; padding: 12px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: 14px; }
+.primary-button { border: 0; border-radius: var(--ui-radius); padding: 12px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: 14px; line-height: 1.4; }
 .primary-button:hover:not(:disabled) { background: var(--theme-primary-hover); }
 .primary-button:disabled { opacity: .6; cursor: progress; }
 .feedback { margin: 0; font-size: 13px; line-height: 1.5; }
-.feedback--error { color: #9a5e58; }
-.switch-hint { margin: 22px 0 0; color: #687875; font-size: 13px; }
+.feedback--error { color: var(--ui-danger); }
+.switch-hint { margin: 22px 0 0; color: var(--ui-ink-muted); font-size: 13px; }
 .switch-hint a { color: var(--theme-primary); }
-@media (prefers-color-scheme: dark) {
-  .auth-page { background: #1f2a28; }
-  .auth-card { border-color: #52635f; background: #263330; color: #e8eae9; }
-  .intro, .field span, .switch-hint { color: #b7c3c0; }
-  input { border-color: #52635f; color: #e8eae9; background: #1f2a28; }
-  .password-toggle { color: var(--theme-rule); }
-  .password-toggle:hover, .password-toggle:active { color: var(--theme-primary-strong); }
-}
 </style>

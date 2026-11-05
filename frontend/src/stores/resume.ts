@@ -50,21 +50,31 @@
  *
  * 保存入口自 D3 起只有一个：纸面编辑与左侧表单都只改 Pinia，
  * `dirty` 为真即「未落库」，由 `ResumePreview.vue` 工具栏的按钮统一提交。
+ *
+ * AI 润色（ADR-010）是**第三条路**，与上面两个动作都不同：
+ * `polish()` 把草稿态文案发给后端（服务端不落库），结果存进 `polishResult`，
+ * 用户在对照弹窗里点「接受并同步到表单」才由 `applyPolish()` 改写 `draft` 并置 `dirty`；
+ * 点「放弃」则一个字段都不动。接受之后**仍然要用户自己点「保存修改」才落库**，
+ * 润色永远既不落库、也不覆盖表单。
  */
 
 import { computed, reactive, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 
 import { ApiError, hasDeepSeekKey, profilesApi, resumesApi } from '@/api'
+import { DEFAULT_POLISH_MAX_WORDS } from '@/api/types'
 import type {
   Degree,
   LayoutConfig,
   LayoutSection,
   PaperSize,
+  PolishExperienceInput,
+  PolishMode,
   ProfileRead,
   ProfileSortField,
   ProfileSummary,
   ProfileUpsertRequest,
+  ResumeCopy,
   ResumeRead,
   SectionId,
   ThemeId,
@@ -338,6 +348,23 @@ export interface ProfileDraft {
   skills: SkillDraft[]
   experiences: ExperienceDraft[]
   educations: EducationDraft[]
+}
+
+/**
+ * 一次 AI 润色的完整结果（ADR-010 §5 的「草稿态确认」载体）。
+ *
+ * - `copy`：模型产出并经服务端洗过的候选文案；
+ * - `originals`：**发出去那一刻**的草稿片段快照，对照弹窗的左栏就是它。
+ *   留快照而不是让弹窗去读 `draft`，是为了「所见即所比」：万一用户在弹窗开着时
+ *   动了别的地方，左栏也不会跟着变，用户比对的一定是模型实际改写的那份文字。
+ * - `mode`：这一档是哪个档位，弹窗标题与提示要按它显示。
+ */
+export interface PolishResult {
+  copy: ResumeCopy
+  originals: PolishExperienceInput[]
+  /** 发送时的技能名顺序：弹窗要如实展示「顺序会被改成什么样」，不能悄悄重排。 */
+  originalSkills: string[]
+  mode: PolishMode
 }
 
 /**
@@ -714,6 +741,15 @@ export const useResumeStore = defineStore('resume', () => {
   const loading = ref(false)
   const saving = ref(false)
   const generating = ref(false)
+  /** AI 润色请求进行中（与 `generating` 分开：两个按钮各自 disable，互不牵连）。 */
+  const polishing = ref(false)
+  /**
+   * 待用户确认的润色结果；`null` = 没有待决定的候选文案。
+   *
+   * 存进 store 而不是留在组件里：对照弹窗与表单是同一份数据的两面，
+   * 「接受 / 放弃」必须原子地改写 `draft`，放在组件里就得把 draft 传来传去。
+   */
+  const polishResult = ref<PolishResult | null>(null)
   const dirty = ref(false)
   const lastSavedAt = ref<string | null>(null)
 
@@ -1285,6 +1321,8 @@ export const useResumeStore = defineStore('resume', () => {
     stopDraftAutosave()
     // 2. 丢掉属于「上一份」的瞬时状态。
     pendingDraft.value = null
+    // 待确认的润色结果也必须跟着丢：A 的候选文案绝不能被「接受」到 B 的表单上。
+    polishResult.value = null
     showLivePreview()
     // 3. 换指针。
     currentProfileId.value = targetId
@@ -1481,32 +1519,22 @@ export const useResumeStore = defineStore('resume', () => {
   }
 
   /**
-   * 生成简历：内容由后端按 `profile_id` 从库里组装。
+   * 生成简历：**纯模板**路径（ADR-010）。
+   *
+   * 内容由后端按 `profile_id` 从库里组装，不调 AI、不要 DeepSeek Key，
+   * 所以这里既没有「没 Key 先拦一道」，也没有「AI 挂了要不要改用模板」的询问 ——
+   * 它本来就是模板。润色是另一件事，走 `polish()`。
    *
    * 标题优先用当前简历的 `title`（「投后端」生成出来就叫《投后端》），
    * 传参只在「还没有任何简历」时兜底——`StylePanel` 仍在传 '我的简历'，
    * 保持旧调用点不动，但不再用它覆盖真实的简历标题。
-   *
-   * ADR-009：默认走 DeepSeek 润色，Key 由拦截器从 `sessionStorage` 注入。
-   * 这里先本地拦一道：没 Key 就别把请求发出去——后端同样会 400，但前拦能给出
-   * 准确的下一步（去「AI 设置」），也省一次必然失败的往返。
-   * `useFallback` 只允许由用户在提示框里点出来，服务端不会静默降级。
    */
-  async function generate(
-    title?: string,
-    options: { useFallback?: boolean } = {},
-  ): Promise<ResumeRead> {
-    const useFallback = options.useFallback === true
-    if (!useFallback && !hasDeepSeekKey()) {
-      throw new ApiError('请先在右上角「AI 设置」中填写你的 DeepSeek API Key。', 400, 'AI_KEY_MISSING')
-    }
-
+  async function generate(title?: string): Promise<ResumeRead> {
     generating.value = true
     try {
       const resume = await resumesApi.generateResume({
         title: currentProfileTitle.value || title?.trim() || DEFAULT_PROFILE_TITLE,
         profile_id: currentProfileId.value,
-        use_fallback: useFallback,
       })
       generatedHtml.value = resume.content_html
       generatedResumeId.value = resume.resume_id
@@ -1517,6 +1545,123 @@ export const useResumeStore = defineStore('resume', () => {
     } finally {
       generating.value = false
     }
+  }
+
+  /**
+   * AI 润色：把**草稿态**的经历文案交给后端，拿回一份候选文案。
+   *
+   * 三条边界（ADR-010 §2、§5）：
+   * 1. 服务端不落库，本函数也不碰 `draft` —— 结果先进 `polishResult`，
+   *    由用户在对照弹窗里点「接受并同步到表单」才走 `applyPolish()`；
+   * 2. 没 Key 就地拦下，不发那次必然 400 的往返（后拦也是同样的码，只是多跑一趟）；
+   * 3. 失败直接抛给调用方去提示重试，**没有模板兜底**这条路可走。
+   */
+  async function polish(options: { mode: PolishMode; maxWords?: number | null }): Promise<PolishResult> {
+    if (!hasDeepSeekKey()) {
+      throw new ApiError('请先在右上角「AI 设置」中填写你的 DeepSeek API Key。', 400, 'AI_KEY_MISSING')
+    }
+
+    // 只发「有效行」：空技能行与没填标题的经历行对模型没有意义，还会白烧额度。
+    const skills = meaningfulSkills(draft).map((skill) => ({
+      name: skill.name.trim(),
+      self_rating: skill.self_rating,
+    }))
+    const experiences = meaningfulExperiences(draft).map((experience) => ({
+      title: experience.title.trim(),
+      description: experience.description,
+      responsibility: experience.responsibility,
+    }))
+    // 左栏要展示「发出去的那一版」，所以与请求体同源快照，而不是接受时再读一次 draft。
+    const originals: PolishExperienceInput[] = experiences.map((experience) => ({ ...experience }))
+
+    polishing.value = true
+    try {
+      const copy = await resumesApi.polishResume({
+        profile: {
+          full_name: draft.full_name,
+          contact: draft.contact,
+          email: draft.email.trim() || null,
+        },
+        skills,
+        experiences,
+        mode: options.mode,
+        // 只有 `expand` 带字数上限；其它档位显式传 null，别让人以为设了却没生效。
+        max_words:
+          options.mode === 'expand' ? (options.maxWords ?? DEFAULT_POLISH_MAX_WORDS) : null,
+      })
+      const result: PolishResult = {
+        copy,
+        originals,
+        originalSkills: skills.map((skill) => skill.name),
+        mode: options.mode,
+      }
+      polishResult.value = result
+      return result
+    } finally {
+      polishing.value = false
+    }
+  }
+
+  /**
+   * 采纳润色结果：把候选文案写进 `draft`，并置 `dirty`。
+   *
+   * 这是**唯一**一处让 AI 产出进入用户数据的地方，且必须由用户点出来。
+   * 对齐靠 `index`（服务端已保证 index 集合与发送时的经历列表一一对应），
+   * 因此这里只改写描述与职责，标题与日期一个字段都不碰。
+   *
+   * 对照弹窗是模态的，用户在「接受 / 放弃」之前改不了表单，所以 `index`
+   * 与 `meaningfulExperiences(draft)` 的顺序在这两次调用之间不会漂移。
+   */
+  function applyPolish(result: PolishResult): void {
+    const targets = meaningfulExperiences(draft)
+    for (const item of result.copy.experiences) {
+      const target = targets[item.index]
+      if (!target) continue
+      target.description = item.description
+      target.responsibility = item.responsibility
+    }
+
+    // 技能：服务端已保证 `copy.skills` 是「输入里的技能名」的一个排列
+    // （不新增、不丢、回贴用户写过的写法），这里按它重排有效行，
+    // 空白占位行原样留在尾部，不因为一次润色就多出或丢掉一行。
+    const named = meaningfulSkills(draft)
+    const blanks = draft.skills.filter((skill) => skill.name.trim() === '')
+    const ordered: SkillDraft[] = []
+    const remaining = [...named]
+    for (const name of result.copy.skills) {
+      const position = remaining.findIndex((skill) => skill.name.trim().toLowerCase() === name.trim().toLowerCase())
+      if (position < 0) continue
+      ordered.push(...remaining.splice(position, 1))
+    }
+    ordered.push(...remaining, ...blanks)
+    draft.skills.splice(0, draft.skills.length, ...ordered)
+
+    markDirty()
+    polishResult.value = null
+  }
+
+  /** 放弃这次润色结果：只清快照，表单一个字段都不动。 */
+  function discardPolish(): void {
+    polishResult.value = null
+  }
+
+  /**
+   * 润色前的最低门槛：比 `validateForGenerate()` 松得多。
+   *
+   * 姓名/手机号/日期/学历都不要求——本接口只改写文案，且服务端不落库。
+   * 但「一段描述都没有」也要发一次 AI 请求就是纯烧用户的额度，所以这里拦一道。
+   */
+  function validateForPolish(): string | null {
+    if (meaningfulSkills(draft).length < 1) return '至少填写 1 条技能，再让 AI 润色。'
+    const experiences = meaningfulExperiences(draft)
+    if (experiences.length < 1) return '至少填写 1 段项目经历（要有标题），再让 AI 润色。'
+    const nothingToPolish = experiences.every(
+      (experience) => !experience.description.trim() && !experience.responsibility.trim(),
+    )
+    if (nothingToPolish) {
+      return '项目经历还没有任何文字：先写几句做过什么，AI 才有东西可改。'
+    }
+    return null
   }
 
   /** 回到「实时预览」模式，丢掉已生成的 HTML（不影响数据库里的简历）。 */
@@ -1669,6 +1814,8 @@ export const useResumeStore = defineStore('resume', () => {
     trashProfiles.value = []
     applyDraft(createEmptyDraft(), null)
     lastSavedAt.value = null
+    // 待确认的候选文案属于上一个人的账号，登出后绝不能还挂在弹窗里。
+    polishResult.value = null
     showLivePreview()
   }
 
@@ -1678,11 +1825,13 @@ export const useResumeStore = defineStore('resume', () => {
     loading,
     saving,
     generating,
+    polishing,
     dirty,
     lastSavedAt,
     generatedHtml,
     generatedResumeId,
     generatedTitle,
+    polishResult,
     pendingDraft,
     autosavedAt,
     hasSavedProfile,
@@ -1743,10 +1892,14 @@ export const useResumeStore = defineStore('resume', () => {
     removeEducation,
     validateForGenerate,
     validateForSave,
+    validateForPolish,
     toUpsertPayload,
     loadFromServer,
     save,
     generate,
+    polish,
+    applyPolish,
+    discardPolish,
     showLivePreview,
     startDraftAutosave,
     stopDraftAutosave,

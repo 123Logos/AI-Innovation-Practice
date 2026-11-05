@@ -1,21 +1,76 @@
+/*
+ * 全局样式：设计令牌 → Element Plus 桥接 → 弹窗几何。
+ *
+ * 分三层，改动请按层来，别在组件里重新发明色值：
+ * 1. `--ui-*`   中性色 / 圆角 / 阴影。**亮色定义在 `:root`，暗色整块覆盖在下面的
+ *    `@media (prefers-color-scheme: dark)` 里**，组件只要引用令牌，就不必再各自写一份
+ *    暗色 hex（历史问题：同一个「淡灰提示色」有 `#879692` / `#8fa5a1` 两份，
+ *    页面底色有 `#1b2421` / `#1f2a28` 两份）。
+ * 2. `--theme-*` 主题色，由 `stores/theme.ts` 按 8 套预设实时改写（这里只留 forest 兜底）。
+ * 3. `--el-*`   把上面两套**桥接**给 Element Plus。EP 的暗色主题需要 `html.dark`
+ *    外加它自己的 `dark/css-vars.css`，本项目没走那条链路，所以暗色下的中性色
+ *    必须在这里自己声明——否则 `el-dialog` 在暗色下仍是一块 `#fff` 白底，
+ *    而组件里的浅色文字压上去只有 1.2:1 的对比度。
+ */
 :root {
-  color: #263330;
-  background: #f4f6f5;
+  /*
+   * 「本页面深浅色都支持」：浏览器据此决定原生滚动条、表单控件、默认画布。
+   * 暗色判定与 `theme.ts::paint()` 同源（同一个 `prefers-color-scheme`），不会打架。
+   */
+  color-scheme: light dark;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 
+  /* ---------------- 中性色 / 圆角 / 阴影（亮色） ---------------- */
+  --ui-canvas: #f4f6f5; /* 页面底 */
+  --ui-surface: #ffffff; /* 卡片、弹窗、下拉 */
+  --ui-surface-soft: #f7faf9; /* 表面内的一层浅底（对照栏、hover） */
+  --ui-surface-sunken: #eef2f1; /* 分隔线、禁用底 */
+  --ui-ink: #243330; /* 正文与标题 */
   /*
-   * 全局换肤变量（D5.2 补充）。
-   *
-   * 这里的值只是 **forest 的静态兜底**：脚本跑起来之前、以及 JS 被禁用时用。
-   * 运行时由 `stores/theme.ts::applyTheme()` 把 `document.documentElement` 的
-   * 内联变量改写成当前主题，内联样式优先级高于 `:root`，所以两边不会打架。
-   *
+   * 次要文字实测要在**两种底色**上都过 WCAG AA 4.5:1：白表面，以及被主题染过的
+   * `--theme-bg-light`（选中卡片、徽标）。原来的 `#687875` 在白底上 4.63，
+   * 落到 forest 的浅青底上只剩 4.00，所以整体压深一档到 `#5d6c69`
+   * （白底 5.50 / 浅青底 4.75）。层级靠字号与字重表达，不靠把颜色调淡。
+   */
+  --ui-ink-muted: #5d6c69;
+  /*
+   * 淡灰提示色：压深到在**文字真正会落的两种底**上都过 AA 4.5:1。
+   * 你建议的 `#6b7a76` 在白表面 4.50，但提示文字大半落在页面画布 `#f4f6f5` 上
+   * （`.status-hint` / `.layout-hint` / `.counter` / `.footer-hint` / `.code`），
+   * 那里只有 4.14，仍然不达标。`#637370`：白底 4.98 / 画布 4.59。
+   * 唯一落在主题浅底（`--theme-bg-light`，4.30）上的用法是菜单行里的重命名/删除
+   * **图标**，那属于 WCAG 1.4.11 非文本对比（阈值 3:1），已经过。
+   * 代价：faint 与 muted 的明度差被压掉，三级灰度实际变成两级，
+   * 层级从此只由字号与字重表达。
+   */
+  --ui-ink-faint: #637370;
+  --ui-border: #dde5e2; /* 卡片 / 弹窗描边 */
+  --ui-border-strong: #d6dfdc; /* 输入框描边（比卡片略深一档） */
+  --ui-danger: #9a5e58;
+  --ui-danger-soft: #fbf1f0;
+  --ui-danger-border: #d8c3c0;
+  --ui-success: #3f7a5f;
+  --ui-warning: #7a6414;
+  --ui-warning-border: #c9a227;
+  --ui-warning-soft: #fdf8e8;
+  /*
+   * 圆角取 2px（= EP 的 `--el-border-radius-small`）：
+   * 本项目原本全是直角（含 A4 纸面），而 EP 的输入框/按钮/弹窗默认 4px，
+   * 两套并排时「润色弹窗里的输入框」比「表单里的输入框」圆，就是走查里那种没对齐的感觉。
+   * 2px 比 0 稍微柔和，又不会破坏纸张那种直角语言。**一个令牌管全部**，要改只改这里。
+   */
+  --ui-radius: 2px;
+  --ui-shadow-menu: 0 12px 28px rgba(38, 51, 48, 0.12);
+  --ui-shadow-dialog: 0 20px 48px rgba(31, 42, 40, 0.2);
+
+  /* ---------------- 主题色（forest 静态兜底，运行时由 theme.ts 改写） ---------------- */
+  /*
    * 分工（不要混用）：
    * - `--theme-*`   → Web UI（按钮、链接、选中态、输入框聚焦框）
    * - `--paper-*`   → A4 纸面（见 `ResumePreview.vue`），纸张是独立介质，
-   *                   打印出来不该带 Web UI 的背景色
+   *                   打印出来不该带上 Web UI 的背景色
    */
   --theme-primary: #527873;
   --theme-primary-hover: #48786a;
@@ -29,8 +84,9 @@
   --theme-fade: rgba(82, 120, 115, 0.13);
   --theme-on-primary: #ffffff;
 
+  /* ---------------- Element Plus 桥接 ---------------- */
   /*
-   * Element Plus 主色覆盖：只覆盖 primary 系列，其余交给它自己的亮/暗主题。
+   * Element Plus 主色覆盖：只覆盖 primary 系列，其余交给中性色令牌。
    * `-light-N` 是「主色向背景色混合 N0%」，明色主题下背景是白，
    * 所以 light-9 最浅、常被 el-button/el-tag 用作底色。
    */
@@ -41,6 +97,67 @@
   --el-color-primary-light-8: #e1e8e7;
   --el-color-primary-light-9: #eef2f1;
   --el-color-primary-dark-2: #42605c;
+
+  /*
+   * EP 的中性色原本是蓝灰（`#dcdfe6` / `#303133`），和本项目的墨绿灰放在同一屏里
+   * 会显得「弹窗的边框比表单的边框冷」。这里全部改指回 `--ui-*`，一处改两套跟着变。
+   */
+  --el-border-radius-base: var(--ui-radius);
+  --el-border-radius-small: var(--ui-radius);
+  --el-bg-color-page: var(--ui-canvas);
+  --el-bg-color: var(--ui-surface);
+  --el-bg-color-overlay: var(--ui-surface);
+  --el-text-color-primary: var(--ui-ink);
+  --el-text-color-regular: var(--ui-ink-muted);
+  --el-text-color-secondary: var(--ui-ink-faint);
+  --el-text-color-placeholder: var(--ui-ink-faint);
+  --el-text-color-disabled: #a9b6b3;
+  --el-border-color: var(--ui-border-strong);
+  --el-border-color-darker: var(--ui-border-strong);
+  --el-border-color-dark: var(--ui-border-strong);
+  --el-border-color-light: var(--ui-border);
+  --el-border-color-lighter: var(--ui-border);
+  --el-border-color-extra-light: var(--ui-surface-sunken);
+  --el-fill-color: var(--ui-surface-sunken);
+  --el-fill-color-light: var(--ui-surface-soft);
+  --el-fill-color-lighter: var(--ui-surface-soft);
+  --el-fill-color-blank: var(--ui-surface);
+  --el-box-shadow: var(--ui-shadow-dialog);
+  --el-box-shadow-light: var(--ui-shadow-menu);
+  --el-mask-color: rgba(24, 33, 30, 0.55);
+
+  background: var(--ui-canvas);
+  color: var(--ui-ink);
+}
+
+/*
+ * 暗色：只覆盖中性色 + EP 桥接。
+ * `--theme-*` 不在这里写，因为 `theme.ts` 会按当前预设重新推导主色档位
+ * （暗底上的主色要提亮到 ≥4.5:1，静态覆盖会跟它打架）。
+ */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ui-canvas: #1b2421;
+    --ui-surface: #263330;
+    --ui-surface-soft: #2c3a37;
+    --ui-surface-sunken: #1f2a28;
+    --ui-ink: #e8eae9;
+    --ui-ink-muted: #b7c3c0;
+    --ui-ink-faint: #8ea09c;
+    --ui-border: #3d4d49;
+    --ui-border-strong: #52635f;
+    --ui-danger: #d9a19a;
+    --ui-danger-soft: #3a2a28;
+    --ui-danger-border: #7a534e;
+    --ui-success: #8fbfa4;
+    --ui-warning: #e2cf8a;
+    --ui-warning-border: #a08a30;
+    --ui-warning-soft: #2a2417;
+    --ui-shadow-menu: 0 12px 28px rgba(0, 0, 0, 0.45);
+    --ui-shadow-dialog: 0 20px 48px rgba(0, 0, 0, 0.55);
+    --el-text-color-disabled: #5d6b67;
+    --el-mask-color: rgba(0, 0, 0, 0.72);
+  }
 }
 
 * { box-sizing: border-box; }
@@ -55,4 +172,117 @@ button, input, textarea { font: inherit; }
 :where(a, button, [role='button'], input, select, textarea):focus-visible {
   outline: 2px solid var(--theme-rule);
   outline-offset: 2px;
+}
+
+/*
+ * EP 主色按钮 → 本项目按钮的桥接。
+ *
+ * `el-button type="primary"` 的文字写死为 `--el-color-white`，hover 底色取
+ * `--el-color-primary-light-3`（= 朝**背景**混合，暗色下是朝深底混合，即变暗）。
+ * 而手工按钮（「生成简历」）用的是 `--theme-on-primary` + `--theme-primary-hover`
+ * （暗色下主色被提亮、文字翻成深墨绿）。两套并排时同一个弹窗里会出现
+ * 「白字浅绿」和「深字浅绿」两种主按钮——所以这里把 EP 也接到主题令牌上。
+ */
+.el-button--primary {
+  --el-button-text-color: var(--theme-on-primary);
+  --el-button-bg-color: var(--el-color-primary);
+  --el-button-border-color: var(--el-color-primary);
+  --el-button-hover-text-color: var(--theme-on-primary);
+  --el-button-hover-bg-color: var(--theme-primary-hover);
+  --el-button-hover-border-color: var(--theme-primary-hover);
+  --el-button-active-text-color: var(--theme-on-primary);
+  --el-button-active-bg-color: var(--theme-primary-deep);
+  --el-button-active-border-color: var(--theme-primary-deep);
+}
+
+/*
+ * ------------------------------------------------------------------
+ * 弹窗规范（`el-dialog`）
+ * ------------------------------------------------------------------
+ * 三个约定，写在 `class="ui-dialog"` 上，两个润色弹窗共用：
+ *
+ * 1. **宽度用 `%`，不用 `vw`。** EP 把 `width` 属性写成内联 `--el-dialog-width`，
+ *    一旦给了 `92vw` 就会盖掉这里的值，而且 `vw` 含滚动条宽度：遮罩层
+ *    `.el-overlay-dialog` 自己是 `overflow:auto` 的滚动容器，`vw` 比它的
+ *    内容宽度大，弹窗会顶出负 margin（实测 375px 下 `margin-right: -8.1px`、
+ *    `scrollWidth 1581 > clientWidth 797`，整页横向撑破）。所以组件里
+ *    **不要再传 `width` 属性**，只在这里改 `--el-dialog-width`。
+ * 2. **超高时滚弹窗内部，不滚页面。** 弹窗改成纵向 flex：标题与底部按钮固定，
+ *    `__body` 自己滚动。500 字的长文案下「接受/放弃」仍然看得见、点得到。
+ * 3. 上下各留 8vh，`max-height` 由这两个值算出来，三者永远自洽。
+ */
+.ui-dialog {
+  --el-dialog-width: min(520px, calc(100% - 24px));
+  --el-dialog-margin-top: 8vh;
+  --el-dialog-padding-primary: 20px;
+
+  display: flex;
+  flex-direction: column;
+  /* 100vh - 上 8vh - 下 8vh：内容再长也顶不出视口。 */
+  max-height: 84vh;
+  margin-bottom: 8vh;
+  overflow: hidden;
+}
+
+.ui-dialog .el-dialog__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  /* 滚到底不要把背景也带着一起滚（对照弹窗里嵌着滚动区）。 */
+  overscroll-behavior: contain;
+}
+
+/* 窄屏（手机 375px）：弹窗几乎铺满，左右各留 12px。 */
+@media (max-width: 768px) {
+  .ui-dialog {
+    --el-dialog-width: calc(100% - 24px);
+    --el-dialog-margin-top: 5vh;
+    --el-dialog-padding-primary: 16px;
+    max-height: 90vh;
+    margin-bottom: 5vh;
+  }
+}
+
+/* 宽弹窗专用（左右对照）：只改宽度，几何规则继承上面的。 */
+.ui-dialog--wide {
+  --el-dialog-width: min(900px, calc(100% - 24px));
+}
+
+/*
+ * 细滚动条：暗色下 Windows 的原生滚动条是一条浅灰粗条，
+ * 在深墨绿弹窗里比内容还抢眼。`color-scheme` 已经让它变色，这里再收细。
+ */
+.ui-dialog .el-dialog__body,
+.ui-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ui-border-strong) transparent;
+}
+
+/*
+ * 自建弹窗（`AppTopBar.vue` 的 AI 设置 / 新建简历）与登录卡片共用的居中方式。
+ *
+ * 为什么不用 `display:grid; place-items:center`：内容比视口高时，居中的元素
+ * 会**向上溢出且滚不到**（滚动容器只能看到下半部分），标题被切掉。
+ * flex + `margin:auto` 才有「放不下就退化成顶部对齐、其余照常滚动」的行为。
+ */
+.ui-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  overflow: auto;
+  padding: 24px 16px;
+  background: var(--el-mask-color);
+}
+
+.ui-panel {
+  margin: auto;
+  width: min(420px, 100%);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius);
+  /* 与 `.ui-dialog` 的内容内缩一致（`--el-dialog-padding-primary: 20px`）。 */
+  padding: 20px;
+  color: var(--ui-ink);
+  background: var(--ui-surface);
+  box-shadow: var(--ui-shadow-dialog);
 }

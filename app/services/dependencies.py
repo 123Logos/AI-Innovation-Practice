@@ -57,8 +57,11 @@ def get_resume_service(request: Request) -> Iterator[ResumeService]:
 
     Key 在这里取而不是在路由里取，有两个既有依据：路由拿不到 `ResumeService` 内部的
     generator（它在依赖里被 new 出来），而「缺鉴权材料就 4xx」也已经是本文件的既有分工
-    ——`get_current_user` 就是在依赖里抛 401 的。Key 是否**必需**留给服务层判断，
-    因为它还得看 `use_fallback`。
+    ——`get_current_user` 就是在依赖里抛 401 的。
+
+    ADR-010 起「有没有 Key」只决定 `copy_writer` 装不装：`/generate` 走纯模板，
+    不看这个头；`/polish` 拿不到 Key 时由服务层抛 `ResumeApiKeyMissingError`（400）。
+    在这里不提前 4xx，是为了让「不需要 Key 的生成路径」保持零成本。
     """
     api_key = request.headers.get(DEEPSEEK_KEY_HEADER, "").strip()
     with session_scope() as session:

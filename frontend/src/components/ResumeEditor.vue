@@ -281,33 +281,27 @@ function onExperienceInput(
 .eyebrow { margin: 0 0 8px; color: var(--theme-rule); font-size: 12px; letter-spacing: .12em; }
 h1, h2, p { margin: 0; }
 h1 { font-size: 24px; font-weight: 650; }
-.panel-intro { margin-top: 8px; color: #687875; font-size: 13px; line-height: 1.5; }
+.panel-intro { margin-top: 8px; color: var(--ui-ink-muted); font-size: 13px; line-height: 1.5; }
 .form-section { display: grid; gap: 10px; margin-bottom: 20px; }
 .form-section h2 { font-size: 13px; font-weight: 650; }
 .section-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.counter { color: #879692; font-family: "SF Mono", Consolas, monospace; font-size: 11px; }
+.counter { color: var(--ui-ink-faint); font-family: "SF Mono", Consolas, monospace; font-size: 11px; }
 .field { display: grid; gap: 6px; min-width: 0; }
-.field span { color: #687875; font-size: 12px; }
-input, textarea, select { width: 100%; border: 1px solid #d6dfdc; border-radius: 0; padding: 9px 10px; color: #243330; background: #fff; font: inherit; font-size: 13px; outline: 0; }
+.field span { color: var(--ui-ink-muted); font-size: 12px; }
+/* 圆角与 Element Plus 侧（纸张下拉、润色弹窗里的输入框）统一到 `--ui-radius`。 */
+input, textarea, select { width: 100%; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 9px 10px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: 13px; outline: 0; }
 input:focus, textarea:focus, select:focus { border-color: var(--theme-rule); box-shadow: 0 0 0 2px var(--theme-fade); }
 textarea { min-height: 58px; resize: vertical; line-height: 1.45; }
 .field-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .text-button { justify-self: start; border: 0; padding: 0; color: var(--theme-primary); background: transparent; cursor: pointer; font-size: 12px; }
-.text-button:disabled { color: #a9b6b3; cursor: not-allowed; }
+.text-button:disabled { color: var(--el-text-color-disabled); cursor: not-allowed; }
 .skill-row { display: grid; grid-template-columns: minmax(0, 1fr) 20px; align-items: center; gap: 8px; }
-.remove-button { border: 0; padding: 0 4px; color: #9a5e58; background: transparent; cursor: pointer; font-size: 18px; line-height: 1; }
-.remove-button:disabled { color: #c9d2d0; cursor: not-allowed; }
-.experience-form, .education-form { display: grid; gap: 10px; border-top: 1px solid #dde5e2; padding-top: 12px; }
-.required { color: #9a5e58; font-weight: 400; }
+.remove-button { border: 0; padding: 0 4px; color: var(--ui-danger); background: transparent; cursor: pointer; font-size: 18px; line-height: 1; }
+.remove-button:disabled { color: var(--ui-border); cursor: not-allowed; }
+.experience-form, .education-form { display: grid; gap: 10px; border-top: 1px solid var(--ui-border); padding-top: 12px; }
+.required { color: var(--ui-danger); font-weight: 400; }
 .item-index { color: var(--theme-rule); font-family: "SF Mono", Consolas, monospace; font-size: 12px; }
-.hint { color: #879692; font-size: 11px; line-height: 1.5; }
-@media (prefers-color-scheme: dark) {
-  .editor-panel { color: #e8eae9; }
-  .panel-intro, .field span, .hint { color: #b7c3c0; }
-  input, textarea, select { border-color: #52635f; color: #e8eae9; background: #263330; }
-  .experience-form, .education-form { border-color: #52635f; }
-  .counter { color: #8ea09c; }
-}
+.hint { color: var(--ui-ink-faint); font-size: 11px; line-height: 1.5; }
 @media print {
   .editor-panel { display: none; }
 }

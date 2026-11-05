@@ -132,13 +132,13 @@ export function clearStoredToken(): void {
 /* -------------------------------- BYOK ---------------------------------- */
 
 /**
- * 用户自带的 DeepSeek Key（ADR-009）。
+ * 用户自带的 DeepSeek Key（ADR-009，调用范围见 ADR-010）。
  *
  * 存 `sessionStorage` 而不是 `localStorage`：标签页关掉即消失，不落盘、不同步、
  * 不会被别的标签页读到。它仍然是「能被 XSS 读到」的存储 —— 之所以可以接受，
- * 是因为生成物的注入路径只有一条（`ResumePreview.vue` 的 `v-html`），
- * 而那条路径上的每个用户字段都经过后端 `escape()`，AI 也只被允许产出纯文本文案。
- * 想更保守，就改成每次生成时手输 Key（不存储），代价是体验。
+ * 是因为现在唯一的注入路径是 `ResumePreview.vue` 的 `v-html`，而喂给它的内容由纯模板
+ * 生成器 `escape()` 过；AI 产出的是纯文本文案，进的是 textarea 与对照弹窗的文本插值，
+ * 连到 `v-html` 的机会都没有。想更保守，就改成每次润色时手输 Key（不存储），代价是体验。
  */
 export const DEEPSEEK_KEY_STORAGE_KEY = 'deepseek-api-key'
 
@@ -186,10 +186,11 @@ export function hasDeepSeekKey(): boolean {
   return getDeepSeekKey().length > 0
 }
 
-/** 生成请求才带 Key：其他接口带一个无关的鉴权头毫无意义，还多一处泄漏面。 */
-function isResumeGenerateRequest(url: string | undefined): boolean {
+/** 只有润色请求才带 Key（ADR-010）：`/resumes/generate` 是纯模板，带一个无关的鉴权头
+ * 只会多一处泄漏面。 */
+function isResumePolishRequest(url: string | undefined): boolean {
   if (!url) return false
-  return url.includes('/resumes/generate')
+  return url.includes('/resumes/polish')
 }
 
 type UnauthorizedHandler = () => void
@@ -368,8 +369,8 @@ http.interceptors.request.use(async (config) => {
     config.headers.Authorization = `Bearer ${token}`
   }
 
-  // BYOK：只有生成简历这一个接口需要用户自带的 DeepSeek Key（ADR-009）。
-  if (isResumeGenerateRequest(config.url)) {
+  // BYOK：只有 AI 润色这一个接口需要用户自带的 DeepSeek Key（ADR-010）。
+  if (isResumePolishRequest(config.url)) {
     const deepSeekKey = getDeepSeekKey()
     if (deepSeekKey) {
       config.headers['X-DeepSeek-Key'] = deepSeekKey

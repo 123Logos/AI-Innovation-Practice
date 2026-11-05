@@ -403,7 +403,7 @@ async function handleLogout(): Promise<void> {
             还没有保存过的简历，点下方「新建简历」开始。
           </p>
 
-          <ul v-else class="menu-list">
+          <ul v-else class="menu-list ui-scroll">
             <li v-for="item in resume.profiles" :key="item.id" class="menu-entry">
               <div
                 class="menu-item"
@@ -500,16 +500,17 @@ async function handleLogout(): Promise<void> {
 
     <!-- AI 设置弹窗：BYOK（ADR-009），Key 只进 sessionStorage。 -->
     <Teleport to="body">
-      <div v-if="aiSettingsVisible" class="modal-mask" @click.self="closeAiSettings">
+      <div v-if="aiSettingsVisible" class="ui-overlay" @click.self="closeAiSettings">
         <section
-          class="modal"
+          class="ui-panel"
           role="dialog"
           aria-modal="true"
           aria-labelledby="ai-settings-heading"
         >
           <h2 id="ai-settings-heading" class="modal-title">AI 设置</h2>
           <p class="modal-intro">
-            生成简历时使用你自己的 DeepSeek API Key（模型 <code>deepseek-flash</code>，非流式）。
+            「✨ AI 智能润色」使用你自己的 DeepSeek API Key（模型 <code>deepseek-flash</code>，非流式）；
+            「生成简历」是纯模板，不需要 Key。润色失败只会提示你重试，不会改动表单。
             Key 只保存在当前标签页的 <code>sessionStorage</code>：关闭标签页即清除，
             不写 localStorage、不落数据库；服务端只在本次请求的内存里持有它，不写日志。
           </p>
@@ -545,9 +546,9 @@ async function handleLogout(): Promise<void> {
 
     <!-- 新建简历弹窗：用 Teleport 到 body，避免被顶栏的 backdrop-filter 裁剪。 -->
     <Teleport to="body">
-      <div v-if="createVisible" class="modal-mask" @click.self="closeCreate">
+      <div v-if="createVisible" class="ui-overlay" @click.self="closeCreate">
         <section
-          class="modal"
+          class="ui-panel"
           role="dialog"
           aria-modal="true"
           aria-labelledby="create-profile-heading"
@@ -606,106 +607,124 @@ async function handleLogout(): Promise<void> {
 </template>
 
 <style scoped>
-.app-topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid #dbe4e1; padding: 14px 48px; background: #ffffffeb; backdrop-filter: blur(8px); }
-.brand { display: flex; align-items: center; gap: 12px; }
+/*
+ * 顶栏允许换行：375px 要装「品牌 + 简历切换器 + AI 设置 + 退出登录」四组内容，
+ * 一行放不下。原来的 nowrap flex 让浏览器**逐字**断行，「退出登录」排成 4 行
+ * （实测按钮 47×77，整条顶栏 101px 高）。现在标签一律 `nowrap` 保形状，
+ * 放不下时由 `.user-area` 整组换到第二行。
+ *
+ * 底色两行写法：第一行是不支持 `color-mix` 时的实心底，第二行才是
+ * 「92% 表面色」的半透明底（配 `backdrop-filter`，滚动内容从底下穿过而不是一堵实墙）。
+ */
+.app-topbar { position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; padding: 14px 48px; border-bottom: 1px solid var(--ui-border); background: var(--ui-surface); background: color-mix(in srgb, var(--ui-surface) 92%, transparent); backdrop-filter: blur(8px); }
+.brand { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 12px; }
 .brand-mark { display: grid; width: 34px; height: 34px; color: var(--theme-on-primary); background: var(--theme-primary); font-family: "SF Mono", Consolas, monospace; font-size: 13px; place-items: center; }
-.brand-text { display: grid; gap: 2px; }
-.brand-title { margin: 0; color: #243330; font-size: 14px; font-weight: 650; }
-.brand-sub { margin: 0; color: #879692; font-size: 11px; letter-spacing: .08em; }
-.user-area { display: flex; align-items: center; gap: 12px; }
-.user-name { color: #52635f; font-size: 13px; }
-.dirty-dot { border: 1px solid #c9a227; padding: 2px 7px; color: #94781a; font-size: 11px; }
+.brand-text { display: grid; min-width: 0; gap: 2px; }
+.brand-title { margin: 0; overflow: hidden; color: var(--ui-ink); font-size: 14px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.brand-sub { margin: 0; color: var(--ui-ink-faint); font-size: 11px; letter-spacing: .08em; }
+.user-area { display: flex; flex: 1 1 auto; flex-wrap: wrap; min-width: 0; align-items: center; justify-content: flex-end; gap: 10px 12px; }
+.user-name { overflow: hidden; max-width: 16ch; color: var(--ui-ink-muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.dirty-dot { flex: 0 0 auto; border: 1px solid var(--ui-warning-border); border-radius: var(--ui-radius); padding: 2px 7px; color: var(--ui-warning); font-size: 11px; white-space: nowrap; }
+/*
+ * 顶栏上的三个控件（切换器 / AI 设置 / 退出登录）统一 32px 高：
+ * 与 `el-button`（润色弹窗里）同一档高度，跨弹层看上去才是同一套控件。
+ * 用 `height` 而不是靠 padding 堆，字号变了也不会互相错开。
+ */
 .ai-settings-button,
-.logout-button { border: 1px solid #d6dfdc; padding: 7px 14px; color: #52635f; background: transparent; cursor: pointer; font: inherit; font-size: 12px; }
+.logout-button { display: inline-flex; flex: 0 0 auto; align-items: center; height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 14px; color: var(--ui-ink-muted); background: transparent; cursor: pointer; font: inherit; font-size: 12px; white-space: nowrap; }
 .ai-settings-button:hover:not(:disabled),
 .logout-button:hover:not(:disabled) { border-color: var(--theme-rule); color: var(--theme-primary); }
 .ai-settings-button:disabled,
 .logout-button:disabled { opacity: .6; cursor: progress; }
-.ai-settings-status { margin: 0; color: #879692; font-size: 12px; }
+.ai-settings-status { margin: 0; color: var(--ui-ink-faint); font-size: 12px; }
 
 /* ---- 简历切换器 ---- */
-.profile-switcher { position: relative; }
-.switcher-trigger { display: inline-flex; align-items: center; gap: 8px; max-width: 300px; border: 1px solid #d6dfdc; padding: 6px 12px; color: #243330; background: #fff; cursor: pointer; font: inherit; }
+.profile-switcher { position: relative; flex: 0 1 auto; min-width: 0; }
+.switcher-trigger { display: inline-flex; align-items: center; gap: 8px; max-width: min(300px, 100%); height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 12px; color: var(--ui-ink); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 12px; }
 .switcher-trigger:hover { border-color: var(--theme-rule); }
 .switcher-trigger:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
-.switcher-label { flex: 0 0 auto; color: #879692; font-size: 11px; letter-spacing: .04em; }
-.switcher-title { overflow: hidden; max-width: 150px; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.switcher-default { flex: 0 0 auto; border: 1px solid var(--theme-rule-soft); padding: 0 5px; color: var(--theme-primary-deep); background: var(--theme-bg-light); font-size: 10px; line-height: 1.6; }
-.switcher-caret { color: #879692; font-size: 11px; transition: transform .15s ease; }
+.switcher-label { flex: 0 0 auto; color: var(--ui-ink-faint); font-size: 11px; letter-spacing: .04em; white-space: nowrap; }
+.switcher-title { overflow: hidden; min-width: 0; max-width: 150px; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.switcher-default { flex: 0 0 auto; border: 1px solid var(--theme-rule-soft); border-radius: var(--ui-radius); padding: 0 5px; color: var(--theme-primary-deep); background: var(--theme-bg-light); font-size: 10px; line-height: 1.6; white-space: nowrap; }
+.switcher-caret { flex: 0 0 auto; color: var(--ui-ink-faint); font-size: 11px; line-height: 1; transition: transform .15s ease; }
 .switcher-caret--open { transform: rotate(180deg); }
 
-.switcher-menu { position: absolute; top: calc(100% + 8px); right: 0; z-index: 30; width: 336px; border: 1px solid #d6dfdc; background: #fff; box-shadow: 0 12px 28px #2633301f; }
+.switcher-menu { position: absolute; top: calc(100% + 8px); right: 0; z-index: 30; width: 336px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); background: var(--ui-surface); box-shadow: var(--ui-shadow-menu); }
 
 /* ---- 排序条 ---- */
-.menu-sort { display: flex; align-items: center; gap: 6px; border-bottom: 1px solid #eef2f1; padding: 8px 10px; }
-.menu-sort__label { color: #879692; font-size: 11px; }
-.sort-chip { border: 1px solid #e0e7e5; padding: 3px 8px; color: #687875; background: #fff; cursor: pointer; font: inherit; font-size: 11px; }
+.menu-sort { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; border-bottom: 1px solid var(--ui-surface-sunken); padding: 10px; }
+.menu-sort__label { color: var(--ui-ink-faint); font-size: 11px; }
+.sort-chip { border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 3px 8px; color: var(--ui-ink-muted); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 11px; line-height: 1.5; white-space: nowrap; }
 .sort-chip:hover { border-color: var(--theme-rule-soft); color: var(--theme-primary-deep); }
 .sort-chip--active { border-color: var(--theme-primary); color: var(--theme-primary-strong); background: var(--theme-bg-light); font-weight: 600; }
-.sort-direction { margin-left: auto; width: 26px; border: 1px solid #d6dfdc; padding: 2px 0; color: var(--theme-primary); background: #fff; cursor: pointer; font: inherit; font-size: 12px; line-height: 1.2; }
+.sort-direction { margin-left: auto; width: 26px; height: 24px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0; color: var(--theme-primary); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 12px; line-height: 1; }
 .sort-direction:hover { border-color: var(--theme-rule); background: var(--theme-bg-hover); }
 .sort-chip:focus-visible, .sort-direction:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 1px; }
 
 /* ---- 设为默认横幅（只在当前不是默认时出现） ---- */
-.default-banner { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid #e6ebe9; border-left: 3px solid #c9a227; padding: 8px 10px; background: #fdf8e8; }
-.default-banner__text { color: #7a6414; font-size: 11px; }
-.default-banner__button { border: 1px solid #b8961f; padding: 4px 10px; color: #7a6414; background: #fff; cursor: pointer; font: inherit; font-size: 11px; font-weight: 600; }
-.default-banner__button:hover { background: #f7edc8; }
-.default-banner__button:focus-visible { outline: 2px solid #c9a227; outline-offset: 1px; }
+.default-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--ui-border); border-left: 3px solid var(--ui-warning-border); padding: 10px; background: var(--ui-warning-soft); }
+.default-banner__text { color: var(--ui-warning); font-size: 11px; line-height: 1.5; }
+.default-banner__button { flex: 0 0 auto; border: 1px solid var(--ui-warning-border); border-radius: var(--ui-radius); padding: 4px 10px; color: var(--ui-warning); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.default-banner__button:hover { border-color: var(--ui-warning); background: var(--ui-surface-soft); }
+.default-banner__button:focus-visible { outline: 2px solid var(--ui-warning-border); outline-offset: 1px; }
 
-.menu-hint { margin: 0; padding: 14px 14px; color: #879692; font-size: 12px; line-height: 1.5; }
+.menu-hint { margin: 0; padding: 14px; color: var(--ui-ink-faint); font-size: 12px; line-height: 1.5; }
 .menu-list { margin: 0; padding: 6px; list-style: none; max-height: 44vh; overflow-y: auto; }
 .menu-entry + .menu-entry { margin-top: 2px; }
-.menu-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 8px 8px 10px; cursor: pointer; }
+.menu-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-radius: var(--ui-radius); padding: 8px; cursor: pointer; }
 .menu-item:hover { background: var(--theme-bg-hover); }
 .menu-item:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: -2px; }
 .menu-item--active { background: var(--theme-bg-light); box-shadow: inset 3px 0 0 var(--theme-primary); }
-.menu-item__main { display: flex; min-width: 0; align-items: center; gap: 6px; }
-.menu-item__title { overflow: hidden; color: #243330; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.menu-item__main { display: flex; flex: 1 1 auto; min-width: 0; align-items: center; gap: 6px; }
+.menu-item__title { overflow: hidden; color: var(--ui-ink); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .menu-item--active .menu-item__title { font-weight: 650; }
-.default-tag { flex: 0 0 auto; border: 1px solid var(--theme-rule-soft); padding: 1px 5px; color: var(--theme-primary-deep); background: var(--theme-bg-light); font-size: 10px; line-height: 1.4; }
-.current-tag { flex: 0 0 auto; color: var(--theme-primary); font-size: 10px; }
+.default-tag { flex: 0 0 auto; border: 1px solid var(--theme-rule-soft); border-radius: var(--ui-radius); padding: 1px 5px; color: var(--theme-primary-deep); background: var(--theme-bg-light); font-size: 10px; line-height: 1.4; white-space: nowrap; }
+.current-tag { flex: 0 0 auto; color: var(--theme-primary); font-size: 10px; white-space: nowrap; }
 .menu-item__actions { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; }
-.menu-item__busy { color: #94781a; font-size: 11px; }
+.menu-item__busy { color: var(--ui-warning); font-size: 11px; white-space: nowrap; }
 /* 常驻可见（D4.3 的 bug 就出在「只有 hover 才出现」），hover 时加深以提示可点 */
-.icon-button { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: 1px solid transparent; padding: 0; color: #8fa5a1; background: transparent; cursor: pointer; }
-.icon-button:hover { border-color: var(--theme-rule-soft); color: var(--theme-primary-deep); background: #fff; }
-.icon-button--danger:hover { border-color: #d8c3c0; color: #9a5e58; background: #fbf1f0; }
+.icon-button { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: 1px solid transparent; border-radius: var(--ui-radius); padding: 0; color: var(--ui-ink-faint); background: transparent; cursor: pointer; }
+.icon-button:hover { border-color: var(--theme-rule-soft); color: var(--theme-primary-deep); background: var(--ui-surface); }
+.icon-button--danger:hover { border-color: var(--ui-danger-border); color: var(--ui-danger); background: var(--ui-danger-soft); }
 .icon-button:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 1px; }
 
 /* ---- 行内改名 ---- */
-.rename-row { display: flex; gap: 6px; padding: 2px 8px 8px; }
-.rename-input { flex: 1; min-width: 0; border: 1px solid var(--theme-rule); padding: 5px 8px; color: #243330; background: #fff; font: inherit; font-size: 12px; outline: 0; }
-.rename-button { border: 1px solid var(--theme-primary); padding: 4px 10px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: 11px; }
+.rename-row { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 8px 8px; }
+.rename-input { flex: 1 1 120px; min-width: 0; border: 1px solid var(--theme-rule); border-radius: var(--ui-radius); padding: 5px 8px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: 12px; outline: 0; }
+.rename-button { flex: 0 0 auto; border: 1px solid var(--theme-primary); border-radius: var(--ui-radius); padding: 4px 10px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: 11px; line-height: 1.5; white-space: nowrap; }
 .rename-button:hover:not(:disabled) { background: var(--theme-primary-hover); }
 .rename-button:disabled { opacity: .6; cursor: progress; }
-.rename-button--ghost { border-color: #d6dfdc; color: #52635f; background: #fff; }
+.rename-button--ghost { border-color: var(--ui-border-strong); color: var(--ui-ink-muted); background: var(--ui-surface); }
 .rename-button--ghost:hover:not(:disabled) { border-color: var(--theme-rule-soft); color: var(--theme-primary-deep); background: var(--theme-bg-hover); }
 
-.menu-error { margin: 0; border-top: 1px solid #e6dedc; padding: 8px 14px; color: #9a5e58; font-size: 12px; line-height: 1.5; }
-.menu-footer { display: flex; gap: 8px; border-top: 1px solid #e6ebe9; padding: 8px; }
-.menu-action { flex: 1; border: 1px solid var(--theme-primary); padding: 8px 10px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: 12px; }
+.menu-error { margin: 0; border-top: 1px solid var(--ui-danger-border); padding: 10px 14px; color: var(--ui-danger); font-size: 12px; line-height: 1.5; }
+.menu-footer { display: flex; gap: 8px; border-top: 1px solid var(--ui-border); padding: 10px; }
+.menu-action { flex: 1 1 0; min-width: 0; border: 1px solid var(--theme-primary); border-radius: var(--ui-radius); padding: 8px 10px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: 12px; line-height: 1.4; white-space: nowrap; }
 .menu-action:hover { background: var(--theme-primary-hover); }
-.menu-action--ghost { border-color: #d6dfdc; color: #52635f; background: #fff; }
+.menu-action--ghost { border-color: var(--ui-border-strong); color: var(--ui-ink-muted); background: var(--ui-surface); }
 .menu-action--ghost:hover { border-color: var(--theme-rule); color: var(--theme-primary-deep); background: var(--theme-bg-hover); }
 
-/* ---- 新建简历弹窗 ---- */
-.modal-mask { position: fixed; inset: 0; z-index: 100; display: grid; padding: 20px; background: #1f2a2899; place-items: center; }
-.modal { width: min(420px, 100%); border: 1px solid #dde5e2; padding: 24px 24px 20px; background: #fff; box-shadow: 0 20px 48px #1f2a2833; }
-.modal-title { margin: 0; color: #243330; font-size: 17px; font-weight: 650; }
-.modal-intro { margin: 8px 0 18px; color: #687875; font-size: 12px; line-height: 1.6; }
+/* ---- 自建弹窗（AI 设置 / 新建简历）：外壳用全局的 .ui-overlay / .ui-panel ---- */
+.modal-title { margin: 0; color: var(--ui-ink); font-size: 17px; font-weight: 650; }
+.modal-intro { margin: 8px 0 18px; color: var(--ui-ink-muted); font-size: 12px; line-height: 1.6; }
+.modal-intro code { padding: 1px 4px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); background: var(--ui-surface-soft); font-family: "SF Mono", Consolas, monospace; font-size: 11px; }
 .modal-field { display: grid; gap: 6px; }
-.modal-field span { color: #687875; font-size: 12px; }
-.modal-field input { width: 100%; border: 1px solid #d6dfdc; padding: 10px 12px; color: #243330; background: #fff; font: inherit; font-size: 14px; outline: 0; }
+.modal-field span { color: var(--ui-ink-muted); font-size: 12px; }
+.modal-field input { width: 100%; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 10px 12px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: 14px; outline: 0; }
 .modal-field input:focus { border-color: var(--theme-rule); box-shadow: 0 0 0 2px var(--theme-fade); }
 .modal-modes { display: grid; gap: 8px; margin: 16px 0 0; border: 0; padding: 0; }
-.modal-modes legend { padding: 0 0 6px; color: #687875; font-size: 12px; }
-.modal-radio { display: inline-flex; align-items: center; gap: 8px; color: #243330; font-size: 13px; cursor: pointer; }
+.modal-modes legend { padding: 0 0 6px; color: var(--ui-ink-muted); font-size: 12px; }
+.modal-radio { display: inline-flex; align-items: center; gap: 8px; color: var(--ui-ink); font-size: 13px; cursor: pointer; }
 .modal-radio input { margin: 0; accent-color: var(--theme-primary); }
-.modal-radio--disabled { color: #a9b6b3; cursor: not-allowed; }
-.modal-error { margin: 14px 0 0; color: #9a5e58; font-size: 12px; line-height: 1.5; }
-.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
-.modal-button { border: 1px solid #d6dfdc; padding: 9px 18px; color: #52635f; background: #fff; cursor: pointer; font: inherit; font-size: 13px; }
+.modal-radio--disabled { color: var(--el-text-color-disabled); cursor: not-allowed; }
+.modal-error { margin: 14px 0 0; color: var(--ui-danger); font-size: 12px; line-height: 1.5; }
+.modal-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+/*
+ * 高度写死 32px（= EP `.el-button` 的默认高度）：AI 设置 / 新建简历是手工弹层，
+ * 里面却是 `el-button`（润色两个弹窗）——同一个产品里两种主按钮高度（原 38 vs 32）
+ * 就是「按钮不统一」的来源。用 `height` 而不是 `padding` 推，是为了不受字号影响。
+ */
+.modal-button { flex: 0 0 auto; height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 16px; color: var(--ui-ink-muted); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 13px; line-height: 1; white-space: nowrap; }
 .modal-button:hover:not(:disabled) { border-color: var(--theme-rule); color: var(--theme-primary-deep); }
 .modal-button--primary { border-color: var(--theme-primary); color: var(--theme-on-primary); background: var(--theme-primary); }
 .modal-button--primary:hover:not(:disabled) { background: var(--theme-primary-hover); }
@@ -714,45 +733,25 @@ async function handleLogout(): Promise<void> {
 
 @media (max-width: 760px) {
   .app-topbar { padding: 12px 16px; }
-  .brand-sub, .user-name { display: none; }
+  /*
+   * 手机上只留品牌方块：连同品牌文字实测要 458px（可用 343px），顶栏被挤成两行、
+   * 高 102px，占掉 375×812 视口的 12.6%。收起文字后同一行放得下（~314px），
+   * 顶栏回到 57px；产品名在正文标题里还在，不会因此丢失上下文。
+   */
+  .brand-text { display: none; }
+  .user-name { display: none; }
   .switcher-label, .switcher-default { display: none; }
-  .switcher-menu { width: min(336px, calc(100vw - 32px)); }
-}
-@media (prefers-color-scheme: dark) {
-  .app-topbar { border-color: #52635f; background: #1f2a28eb; }
-  .brand-title { color: #e8eae9; }
-  .brand-sub { color: #8ea09c; }
-  .user-name { color: #b7c3c0; }
-  .ai-settings-button,
-  .logout-button { border-color: #52635f; color: #b7c3c0; }
-  .ai-settings-status { color: #8ea09c; }
-  .switcher-trigger { border-color: #52635f; color: #e8eae9; background: #263330; }
-  .switcher-default { border-color: var(--theme-rule); color: var(--theme-primary-strong); background: var(--theme-bg-light); }
-  .switcher-menu { border-color: #52635f; background: #263330; }
-  .menu-sort { border-color: #3a4a46; }
-  .sort-chip { border-color: #52635f; color: #b7c3c0; background: #263330; }
-  .sort-chip--active { border-color: var(--theme-rule); color: #e8eae9; background: var(--theme-bg-light); }
-  .sort-direction { border-color: #52635f; color: var(--theme-primary-strong); background: #263330; }
-  .default-banner { border-color: #3a4a46; border-left-color: #c9a227; background: #33301f; }
-  .default-banner__text { color: #e0cf8f; }
-  .default-banner__button { border-color: #a08a30; color: #f0e3b0; background: #263330; }
-  .menu-item:hover { background: var(--theme-bg-light); }
-  .menu-item--active { background: var(--theme-bg-light); }
-  .menu-item__title { color: #e8eae9; }
-  .default-tag { border-color: var(--theme-rule); color: var(--theme-primary-strong); background: var(--theme-bg-light); }
-  .current-tag { color: var(--theme-rule); }
-  .icon-button { color: var(--theme-rule); }
-  .icon-button:hover { border-color: #52635f; color: #e8eae9; background: var(--theme-bg-light); }
-  .rename-input { border-color: var(--theme-rule); color: #e8eae9; background: #1f2a28; }
-  .menu-footer { border-color: #52635f; }
-  .menu-error { border-color: #52635f; }
-  .menu-action--ghost { border-color: #52635f; color: #b7c3c0; background: #263330; }
-  .modal { border-color: #52635f; background: #263330; }
-  .modal-title { color: #e8eae9; }
-  .modal-intro, .modal-field span, .modal-modes legend { color: #b7c3c0; }
-  .modal-field input { border-color: #52635f; color: #e8eae9; background: #1f2a28; }
-  .modal-radio { color: #e8eae9; }
-  .modal-button { border-color: #52635f; color: #b7c3c0; background: #263330; }
+  /* 窄屏先压缩简历标题的显示宽度，整条切换器再跟着容器收缩，保证省略号生效而不是撑破顶栏。 */
+  .switcher-trigger { max-width: min(240px, 100%); }
+  .switcher-title { max-width: 120px; }
+  /*
+   * 下拉菜单改挂在顶栏上（`position: sticky` 本身就是包含块），不再挂在切换器上。
+   * 挂在切换器时，菜单右对齐的锚点在 x≈174，336px 宽的列表会伸到 x=-162：
+   * 视口左边没有负向滚动，「新建简历 / 回收站 / 重命名」整块够不着。
+   * `left:0 / right:0 / top:100%` 让它正好贴着顶栏下沿铺满一行，不写死任何像素值。
+   */
+  .profile-switcher { position: static; }
+  .switcher-menu { top: 100%; left: 0; right: 0; width: auto; }
 }
 @media print {
   .app-topbar { display: none; }

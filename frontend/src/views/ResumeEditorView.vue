@@ -81,12 +81,12 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.app-shell { min-height: 100vh; background: #f4f6f5; }
+.app-shell { min-height: 100vh; background: var(--ui-canvas); }
 .resume-workspace { display: grid; grid-template-columns: 340px minmax(420px, 1fr) 220px; align-items: start; gap: 32px; width: min(1440px, 100%); margin: 0 auto; padding: 32px 48px 72px; }
-.footer-hint { grid-column: 1 / -1; margin: 0; color: #879692; font-size: 12px; text-align: center; }
+.footer-hint { grid-column: 1 / -1; margin: 0; color: var(--ui-ink-faint); font-size: 12px; text-align: center; }
 .load-error, .load-hint { width: min(1440px, 100%); margin: 0 auto; padding: 12px 48px 0; font-size: 13px; }
-.load-error { color: #9a5e58; }
-.load-hint { color: #879692; }
+.load-error { color: var(--ui-danger); }
+.load-hint { color: var(--ui-ink-faint); }
 
 /* 本地草稿恢复提示：用页面内联条，不用 window.confirm —— 可样式化、不阻塞、可测。 */
 .draft-banner-shell { width: min(1440px, 100%); margin: 0 auto; padding: 12px 48px 0; }
@@ -96,17 +96,18 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px 16px;
-  border: 1px solid #b8c8c4;
+  border: 1px solid var(--theme-rule-soft);
   border-left: 4px solid var(--theme-primary);
+  border-radius: var(--ui-radius);
   padding: 12px 16px;
   background: var(--theme-bg-light);
 }
 .draft-banner__text { margin: 0; color: var(--theme-primary-strong); font-size: 13px; line-height: 1.5; }
-.draft-banner__actions { display: flex; gap: 8px; }
-.draft-banner__restore { border: 1px solid var(--theme-primary); padding: 8px 16px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: 13px; }
+.draft-banner__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.draft-banner__restore { border: 1px solid var(--theme-primary); border-radius: var(--ui-radius); padding: 8px 16px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: 13px; }
 .draft-banner__restore:hover { background: var(--theme-primary-hover); }
-.draft-banner__discard { border: 1px solid #b8c8c4; padding: 8px 16px; color: #52635f; background: #fff; cursor: pointer; font: inherit; font-size: 13px; }
-.draft-banner__discard:hover { border-color: #c9b1ae; color: #9a5e58; }
+.draft-banner__discard { border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 8px 16px; color: var(--ui-ink-muted); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 13px; }
+.draft-banner__discard:hover { border-color: var(--ui-danger-border); color: var(--ui-danger); }
 .draft-banner__restore:focus-visible, .draft-banner__discard:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
 @media (max-width: 1100px) {
   .resume-workspace { grid-template-columns: 300px minmax(380px, 1fr); gap: 24px; padding: 24px 28px 56px; }
@@ -121,18 +122,8 @@ onUnmounted(() => {
   .draft-banner { flex-direction: column; align-items: stretch; }
   .draft-banner__actions { justify-content: flex-end; }
 }
-@media (prefers-color-scheme: dark) {
-  /*
-   * 页面底色必须一起进暗色。`ResumeEditor.vue` / `StylePanel.vue` 的暗色规则
-   * 早就把文字改成了浅色，但根容器一直停在 `#f4f6f5`（浅灰）——
-   * 结果就是「浅底浅字」，左侧表单在暗色下几乎读不出来。
-   * 这里取与顶栏 / 登录页同源的深墨绿，保持整站一个底色。
-   */
-  .app-shell { background: #1b2421; }
-  .footer-hint, .load-hint { color: #8ea09c; }
-  .draft-banner { border-color: #52635f; }
-}
 @media print {
+  /* 纸张是白色介质：暗色模式的深底不能跟着进打印。 */
   .app-shell { background: #fff; }
   .resume-workspace { display: block; padding: 0; }
   .editor, .style-panel, .footer-hint, .load-error, .load-hint, .draft-banner-shell { display: none; }

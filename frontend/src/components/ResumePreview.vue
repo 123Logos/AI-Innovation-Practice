@@ -600,11 +600,11 @@ function updateExpDate(
 
 <style scoped>
 .preview-column { min-width: 0; }
-.preview-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; color: #687875; font-size: 12px; }
+.preview-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; color: var(--ui-ink-muted); font-size: 12px; }
 /* 右侧占满剩余宽度，让「回到实时预览」能撑开（任务 2）。 */
 .toolbar-right { display: flex; flex: 1; align-items: center; justify-content: flex-end; gap: 12px; }
 .page-count, .date, .code { font-family: "SF Mono", Consolas, monospace; }
-.code { color: #a9b6b3; }
+.code { color: var(--ui-ink-faint); }
 /* 任务 3：状态标识要能一眼看到——16px / 700 / 深墨绿 / 浅底标签。 */
 .mode-badge {
   display: inline-flex;
@@ -613,6 +613,7 @@ function updateExpDate(
   gap: 8px;
   border: 1px solid var(--theme-rule-soft);
   border-left: 4px solid var(--theme-primary);
+  border-radius: var(--ui-radius);
   padding: 7px 14px;
   color: var(--theme-primary-strong);
   background: var(--theme-bg-light);
@@ -635,11 +636,11 @@ function updateExpDate(
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  border: 1px solid #d6dfdc;
-  border-radius: 0;
+  border: 1px solid var(--ui-border-strong);
+  border-radius: var(--ui-radius);
   padding: 9px 18px;
-  color: #a9b6b3;
-  background: #eef1f0;
+  color: var(--ui-ink-faint);
+  background: var(--ui-surface-sunken);
   cursor: not-allowed;
   font: inherit;
   font-size: 13px;
@@ -658,8 +659,8 @@ function updateExpDate(
 /* 保存中：保留高亮外观（否则会闪一下灰），只把光标换成等待态。 */
 .save-button--dirty:disabled { cursor: progress; opacity: .8; }
 .save-button:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
-.save-button__dot { width: 7px; height: 7px; border-radius: 50%; background: #c9a227; }
-.save-error { max-width: 220px; margin: 0; color: #9a5e58; font-size: 12px; line-height: 1.4; }
+.save-button__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ui-warning-border); }
+.save-error { max-width: 220px; margin: 0; color: var(--ui-danger); font-size: 12px; line-height: 1.4; }
 /*
  * 任务 2：尺寸对齐 StylePanel 的 .generate-button（padding 11px / font-size 13px），
  * 并靠 flex:1 撑满工具栏右侧剩余空间，视觉重量与「生成简历」同档。
@@ -674,7 +675,7 @@ function updateExpDate(
   /* 上限避免在宽屏下拉成超宽扁条，同时仍明显大于旧版。 */
   max-width: 280px;
   border: 1px solid var(--theme-rule);
-  border-radius: 0;
+  border-radius: var(--ui-radius);
   padding: 11px 20px;
   color: var(--theme-primary-deep);
   background: var(--theme-bg-light);

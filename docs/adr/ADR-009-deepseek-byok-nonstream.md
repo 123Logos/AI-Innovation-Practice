@@ -1,6 +1,6 @@
 # ADR-009：DeepSeek BYOK 非流式生成（AI 只写文案，模板负责排版）
 
-- 状态：已接受
+- 状态：已接受。**[部分被取代]** 业务流程已由 [ADR-010](ADR-010-decouple-ai-polish-from-generate.md) 更新为「生成与润色解耦」——本 ADR 的「`/generate` 默认走 AI」与「`use_fallback` 模板降级」两条决策已废止；BYOK Key 生命周期、`deepseek-flash` + 非流式 + `thinking=disabled` + 30 秒预算、日志脱敏与「AI 不产 HTML、排版归模板」仍有效并被 ADR-010 继承。
 - 日期：2026-11-04
 - 决策人：本项目人类负责人
 - 相关：ADR-002（AI 先用 stub）、ADR-006（多份简历）、ADR-007（DIY 排版与主题）

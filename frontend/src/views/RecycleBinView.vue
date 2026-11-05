@@ -155,31 +155,31 @@ onMounted(load)
 </template>
 
 <style scoped>
-.app-shell { min-height: 100vh; background: #f4f6f5; }
+.app-shell { min-height: 100vh; background: var(--ui-canvas); }
 .trash-page { width: min(880px, 100%); margin: 0 auto; padding: 32px 48px 72px; }
 .trash-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
 .eyebrow { margin: 0 0 10px; color: var(--theme-rule); font-size: 12px; letter-spacing: .12em; }
-h1 { margin: 0; color: #243330; font-size: 22px; font-weight: 650; }
-.intro { margin: 8px 0 0; color: #687875; font-size: 13px; line-height: 1.6; }
+h1 { margin: 0; color: var(--ui-ink); font-size: 22px; font-weight: 650; }
+.intro { margin: 8px 0 0; color: var(--ui-ink-muted); font-size: 13px; line-height: 1.6; }
 .back-link { flex: 0 0 auto; color: var(--theme-primary); font-size: 13px; text-decoration: none; }
 .back-link:hover { text-decoration: underline; }
 .feedback { margin: 0 0 12px; font-size: 13px; line-height: 1.5; }
-.feedback--error { color: #9a5e58; }
+.feedback--error { color: var(--ui-danger); }
 .feedback--ok { color: var(--theme-primary-deep); }
-.trash-panel { border: 1px solid #dde5e2; background: #fff; }
-.empty { margin: 0; padding: 40px 24px; color: #879692; font-size: 13px; text-align: center; }
+.trash-panel { border: 1px solid var(--ui-border); border-radius: var(--ui-radius); background: var(--ui-surface); }
+.empty { margin: 0; padding: 40px 24px; color: var(--ui-ink-faint); font-size: 13px; text-align: center; }
 .trash-list { margin: 0; padding: 0; list-style: none; }
-.trash-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid #eef2f1; padding: 16px 20px; }
+.trash-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--ui-surface-sunken); padding: 16px 20px; }
 .trash-row:last-child { border-bottom: 0; }
 .trash-main { min-width: 0; }
-.trash-title { margin: 0; overflow: hidden; color: #243330; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.trash-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0 0; color: #879692; font-size: 12px; }
-.dot { color: #c2ccc9; }
-.trash-actions { display: flex; flex: 0 0 auto; gap: 8px; }
-.row-button { border: 1px solid var(--theme-rule); padding: 7px 14px; color: var(--theme-primary-deep); background: #fff; cursor: pointer; font: inherit; font-size: 12px; }
+.trash-title { margin: 0; overflow: hidden; color: var(--ui-ink); font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.trash-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0 0; color: var(--ui-ink-faint); font-size: 12px; }
+.dot { color: var(--ui-border); }
+.trash-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.row-button { border: 1px solid var(--theme-rule); border-radius: var(--ui-radius); padding: 7px 14px; color: var(--theme-primary-deep); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 12px; line-height: 1.4; white-space: nowrap; }
 .row-button:hover:not(:disabled) { background: var(--theme-bg-hover); }
-.row-button--danger { border-color: #d8c3c0; color: #9a5e58; }
-.row-button--danger:hover:not(:disabled) { border-color: #b98c86; background: #fbf1f0; }
+.row-button--danger { border-color: var(--ui-danger-border); color: var(--ui-danger); }
+.row-button--danger:hover:not(:disabled) { border-color: var(--ui-danger); background: var(--ui-danger-soft); }
 .row-button:disabled { opacity: .6; cursor: progress; }
 .row-button:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
 @media (max-width: 760px) {
@@ -187,15 +187,6 @@ h1 { margin: 0; color: #243330; font-size: 22px; font-weight: 650; }
   .trash-heading { flex-direction: column; }
   .trash-row { flex-direction: column; align-items: stretch; }
   .trash-actions { justify-content: flex-end; }
-}
-@media (prefers-color-scheme: dark) {
-  .app-shell { background: #1f2a28; }
-  h1 { color: #e8eae9; }
-  .intro, .trash-meta { color: #b7c3c0; }
-  .trash-panel { border-color: #52635f; background: #263330; }
-  .trash-row { border-color: #3a4a46; }
-  .trash-title { color: #e8eae9; }
-  .row-button { border-color: var(--theme-rule); color: var(--theme-primary-strong); background: #263330; }
 }
 @media print {
   .trash-page { display: none; }

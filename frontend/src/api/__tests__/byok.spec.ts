@@ -1,11 +1,12 @@
 /**
- * BYOK 客户端单测（ADR-009）。
+ * BYOK 客户端单测（ADR-009 的存储与分流 + ADR-010 的注入范围收窄）。
  *
  * 钉住三条最容易静默坏掉、且**只有前端能发现**的链路：
  *
  * 1. Key 只在 `sessionStorage`，绝不进 `localStorage`。写错的后果是关掉浏览器之后
  *    Key 还在磁盘上——那正是这套架构要避免的事，而且没有任何测试会替你发现。
- * 2. `X-DeepSeek-Key` 只挂在生成请求上。挂到全部请求等于把 Key 发给每一个端点。
+ * 2. `X-DeepSeek-Key` 只挂在**润色**请求上（ADR-010）。挂到全部请求等于把 Key 发给
+ *    每一个端点；挂回 `/resumes/generate` 则等于承认「生成还在调 AI」——那条路已经不需要它。
  * 3. DeepSeek 的 401（`AI_KEY_INVALID`）不能被 401 拦截器当成「登录过期」。
  *    弄错的表现为「Key 打错 → 用户被踢回登录页」，而他会以为是自己的账号坏了。
  *
@@ -60,12 +61,14 @@ function fakeAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse>
     )
   }
 
-  if (url.includes('/resumes/generate')) {
+  if (url.includes('/resumes/polish')) {
     const marker = config.headers['X-Stub-401']
     if (typeof marker === 'string' && marker) {
       return Promise.reject(unauthorized(config, marker))
     }
-    return Promise.resolve(response(config, { data: { resume_id: 'r-1' }, meta: { request_id: 'req-test' } }))
+    return Promise.resolve(
+      response(config, { data: { skills: ['Python'], experiences: [] }, meta: { request_id: 'req-test' } }),
+    )
   }
 
   return Promise.resolve(response(config, { data: null, meta: { request_id: 'req-test' } }))
@@ -137,7 +140,7 @@ describe('DeepSeek Key 的存储位置', () => {
 })
 
 describe('X-DeepSeek-Key 的注入范围', () => {
-  it('生成请求带 Key，其他请求不带', async () => {
+  it('润色请求带 Key，生成请求与其他请求都不带', async () => {
     const seen: Record<string, string | undefined> = {}
     http.defaults.adapter = async (config) => {
       seen[config.url ?? ''] = config.headers['X-DeepSeek-Key'] as string | undefined
@@ -145,21 +148,24 @@ describe('X-DeepSeek-Key 的注入范围', () => {
     }
     setDeepSeekKey(TEST_KEY)
 
+    await http.post('/resumes/polish', { mode: 'medium' })
     await http.post('/resumes/generate', { title: 'x' })
     await http.get('/profiles/me')
 
-    expect(seen['/resumes/generate']).toBe(TEST_KEY)
+    expect(seen['/resumes/polish']).toBe(TEST_KEY)
+    // ADR-010 之后生成路径不再调 AI：带上 Key 就是白送一次泄漏面。
+    expect(seen['/resumes/generate']).toBeUndefined()
     expect(seen['/profiles/me']).toBeUndefined()
   })
 
-  it('没有 Key 时生成请求也不带这个头', async () => {
+  it('没有 Key 时润色请求也不带这个头', async () => {
     let header: string | undefined = 'unset'
     http.defaults.adapter = async (config) => {
       header = config.headers['X-DeepSeek-Key'] as string | undefined
       return response(config, { data: null, meta: { request_id: 'r' } })
     }
 
-    await http.post('/resumes/generate', { title: 'x' })
+    await http.post('/resumes/polish', { mode: 'medium' })
 
     expect(header).toBeUndefined()
   })
@@ -179,7 +185,7 @@ describe('401 分流：登录过期 vs Key 无效', () => {
     setUnauthorizedHandler(onUnauthorized)
 
     const error = await http
-      .post('/resumes/generate', { title: 'x' }, { headers: { 'X-Stub-401': 'AI_KEY_INVALID' } })
+      .post('/resumes/polish', { mode: 'medium' }, { headers: { 'X-Stub-401': 'AI_KEY_INVALID' } })
       .catch((caught: unknown) => caught)
 
     expect(error).toBeInstanceOf(ApiError)
@@ -196,10 +202,10 @@ describe('401 分流：登录过期 vs Key 无效', () => {
 
     // 重放的那一次仍带着同一个 stub 头，所以最终还是会失败；这里要的是**调用序列**。
     await http
-      .post('/resumes/generate', { title: 'x' }, { headers: { 'X-Stub-401': 'SESSION_EXPIRED' } })
+      .post('/resumes/polish', { mode: 'medium' }, { headers: { 'X-Stub-401': 'SESSION_EXPIRED' } })
       .catch(() => undefined)
 
     expect(requestedUrls.some((url) => url.includes('/auth/refresh'))).toBe(true)
-    expect(requestedUrls.filter((url) => url.includes('/resumes/generate'))).toHaveLength(2)
+    expect(requestedUrls.filter((url) => url.includes('/resumes/polish'))).toHaveLength(2)
   })
 })

@@ -48,12 +48,13 @@ Copy-Item .env.example .env
 - `S3_ACCESS_KEY_ID`、`S3_SECRET_ACCESS_KEY`
 - `FRONTEND_URL`、`ALLOWED_ORIGINS`
 
-真实 `.env`、数据库备份、对象存储密钥和 JWT 密钥不得提交到代码仓库。DeepSeek Key 只允许后端使用，不能写入 Vue 环境变量或浏览器代码。
+真实 `.env`、数据库备份、对象存储密钥和 JWT 密钥不得提交到代码仓库。服务端配置里的 Key（如有）只允许后端使用，不能写入 Vue 环境变量或浏览器代码。
 
-**AI 生成的 Key 走 BYOK（ADR-009）**：用户在顶栏「AI 设置」里填入自己的 DeepSeek Key，
-它只存在于浏览器 `sessionStorage`（关标签页即清除，不写 `localStorage`）和单次请求的
-`X-DeepSeek-Key` 头里；服务端只在本次请求内存中持有，**不落库、不写日志**，
-因此 `.env` 里的 `DEEPSEEK_API_KEY` 已不再被任何代码读取。
+**AI 润色的 Key 走 BYOK（ADR-009 + ADR-010）**：用户在顶栏「AI 设置」里填入自己的 DeepSeek Key，
+它只存在于浏览器 `sessionStorage`（关标签页即清除，不写 `localStorage`）和**润色请求**
+（`POST /api/v1/resumes/polish`）的 `X-DeepSeek-Key` 头里；服务端只在本次请求内存中持有，
+**不落库、不写日志**，因此 `.env` 里的 `DEEPSEEK_API_KEY` 已不再被任何代码读取。
+「生成简历」是纯模板路径，不需要也不发送这个 Key。
 
 ## 设计原则
 

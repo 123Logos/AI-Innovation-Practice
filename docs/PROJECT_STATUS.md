@@ -2,7 +2,7 @@
 
 > 本文件描述的是“已实现并验证”的状态，不是“已设计”的状态。
 > 任何未附测试输出或手动复现步骤的条目，不得写入“已验证”。
-> 最后更新：2026-11-03（Phase 2 · D2.1 后端双 Token）
+> 最后更新：2026-11-04（Phase 3.1 · AI 润色与生成解耦，ADR-010）
 
 ## 1. 一句话状态
 
@@ -10,10 +10,11 @@
 注册/登录 → 保存学生档案（`student_profiles` + `skills` + `experiences` + `educations`）
 → 生成简历写入 `resumes`，前端「实时预览」与「已生成简历」共用同一套版式与类名。
 
-简历正文的**文案**已可走真实 DeepSeek 润色（ADR-009：BYOK，用户自带 Key），
-**排版仍由 `TemplateResumeGenerator` 模板拼装**——AI 不产出 HTML，只产出经历文案与技能排序，
-再由模板套版、转义、落库；未配置 Key 或用户显式点「改用基础模板」时走纯模板路径。
-真实 Key 下的端到端效果**尚未验证**（本轮不持有任何真实凭据）。
+简历正文的**文案**可走真实 DeepSeek 润色，**排版与生成仍是模板**（ADR-010 把两者拆成两条互不调用的路）：
+「生成简历」= `POST /resumes/generate`，纯模板、不需要 Key、必然成功；
+「✨ AI 智能润色」= `POST /resumes/polish`，四档（细节/中幅/大幅/扩写）只改写经历文案与技能排序，
+**服务端不落库**，用户在对照弹窗点「接受」才写进 Pinia 表单，之后仍需自己点「保存修改」。
+AI 全程不产出 HTML，注入面止于文本插值。真实 Key 下的端到端效果**尚未验证**（本轮不持有任何真实凭据）。
 已有一轮以上小范围人工测试反馈（时区、版式对齐、手机号校验、结束时间未来限制等）
 并已修复，但尚无规模化真实用户数据。
 
@@ -78,10 +79,11 @@ Phase 2 已启动，按 `docs/PHASE2_BACKLOG.md` 优先级推进：
 | 双 Token 与刷新 | **已验证** | `POST /auth/login` 返回 `access_token` + `refresh_token`（`expires_in` 仍为 access 的 900 秒）；库内 `refresh_tokens.token_hash` = `sha256(明文)`（64 位，明文不落库）；`POST /auth/refresh` 换发新双 Token 并把旧记录置 `revoked_at`；同一 refresh token 二次使用 401；`POST /auth/logout` 返回 204 且撤销后不可再刷新 |
 | JWT 生产 fail-fast | **已验证** | `Settings(environment="production")` 缺 `jwt_secret_key` 或不足 32 位均抛 `ValueError` |
 | 档案读写写入真实 MySQL | **已验证** | `uv run pytest tests/test_profiles.py -v` 14 passed：PUT 后 `student_profiles` 1 行 / `skills` 3 行 / `experiences` 1 行 / `educations` 1 行；教育经历 2 段再改 1 段时旧行被物理删除；二次 PUT 技能/经历全量替换且 profile id 不变；两用户互不可见 |
-| 简历生成写入真实 MySQL | **已验证** | `uv run pytest tests/test_resumes_generate.py -v` 8 passed（**历史记录：当时 8 例，现为 22 例** —— D4.1/D5.2/D5.3 陆续补了多简历、配色与排版用例；ADR-009 后这 22 例统一改为显式携带 `use_fallback=true` 的模板路径，AI 路径另有 `tests/test_resume_ai_copywriting.py` 16 例）：注册→PUT 档案→生成，断言 `resumes` 行的 id / student_profile_id / title / content_html 与响应一致；教育区块含学校/专业/学历/起止时间且按入学时间倒序，无教育经历时整块不渲染；未登录 401；无档案 400 |
+| 简历生成写入真实 MySQL | **已验证** | `uv run pytest tests/test_resumes_generate.py -v` 8 passed（**历史记录：当时 8 例，现为 22 例** —— D4.1/D5.2/D5.3 陆续补了多简历、配色与排版用例；ADR-010 起这 22 例就是**纯模板路径**，`use_fallback` 开关已随解耦删除，润色另有 `tests/test_resume_ai_copywriting.py`）：注册→PUT 档案→生成，断言 `resumes` 行的 id / student_profile_id / title / content_html 与响应一致；教育区块含学校/专业/学历/起止时间且按入学时间倒序，无教育经历时整块不渲染；未登录 401；无档案 400 |
 | 业务链路可跑通 | **已验证（前端 + 后端）** | T7.3 起前后端全链路联调：登录态（JWT）→ 档案保存 → A4 实时预览 → 生成简历落真实 `resumes` 表；`uv run pytest -q` 69 passed 覆盖后端链路，前端 `typecheck` / `build` 通过 |
 | 手机/电脑可用 | **部分验证** | 已在小范围人工测试中跑通主流程（并据此修复 10 项体验问题）；无规模化真实用户数据 |
-| AI 生成简历 | **已接入，真实调用未验证** | ADR-009：DeepSeek `deepseek-flash` BYOK 文案润色已接入（非流式、thinking 关闭、Key 不落库不写日志），排版仍由 `TemplateResumeGenerator` 负责。`uv run pytest -q` 182 passed，其中 `tests/test_resume_ai_copywriting.py` 16 例用 `httpx2.MockTransport` 断言线级请求参数与四类失败分流；前端 `byok.spec.ts` 7 例盯死 sessionStorage 口径与 401 分流。**用手测的缺口**：真实 Key 下的延迟、模型 JSON 输出的遵循度、429 的真实形态尚未验证（本轮不持有任何真实凭据） |
+| 生成简历（纯模板） | **已验证** | ADR-010：`POST /resumes/generate` 不再调用 AI，`ResumeGenerateRequest` 只剩 `title` / `profile_id`（`use_fallback` 已删除，OpenAPI 有用例钉住）。带 Key 生成也是零外呼——`tests/test_resume_ai_copywriting.py::test_generate_never_calls_deepseek_even_with_a_key` |
+| AI 润色（独立端点） | **已接入，真实调用未验证** | `POST /resumes/polish`：四档 Prompt、`expand` 的服务端字数硬上限、`index` 一一对应、技能不新增不丢、**不写任何表**、400/401/502/429 分流、Key 不进日志。`uv run pytest -q` 213 passed，其中 `tests/test_resume_ai_copywriting.py` 44 例用 `httpx2.MockTransport`（autouse，结构上不可能真出网）断言线级请求参数与档位指令；前端 `resume-polish.spec.ts` 11 例钉「确认前不改表单、接受才置 dirty、且不发保存」，`byok.spec.ts` 7 例盯 sessionStorage 与 Key 只挂润色。**用手测的缺口**：真实 Key 下的延迟、模型 JSON 输出的遵循度、429 的真实形态、以及两个弹窗在浏览器里的实际交互尚未验证（本轮不持有任何真实凭据） |
 
 ## 4. 当前阻塞项
 
@@ -206,6 +208,24 @@ Phase 2 已启动，按 `docs/PHASE2_BACKLOG.md` 优先级推进：
   验证：`uv run pytest -q` 69 passed；`ruff` / `mypy`(32 文件) / `lint-imports`(5/5) 全绿；
   迁移在测试库跑通 `upgrade head` / `downgrade base`；手工冒烟（登录→刷新→复用→登出）见
   本轮记录；未改前端、未 commit。
+- Phase 3 ·  DeepSeek BYOK（ADR-009）：新增 `app/integrations/copy_writer.py`
+  （`deepseek-flash`、非流式、`thinking=disabled`、`max_retries=0`、30 秒硬超时），
+  `openai` SDK 进依赖；Key 走 `X-DeepSeek-Key` 请求头，服务端不落库、不写日志
+  （`main.py` 按库压级 + 三个专用异常处理器给出 `AI_KEY_MISSING` / `AI_KEY_INVALID` /
+  `AI_SERVICE_UNAVAILABLE`）；前端顶栏「AI 设置」把 Key 存进 `sessionStorage`。
+  验证：`tests/test_resume_ai_copywriting.py` 16 例（`httpx2.MockTransport`，
+  因 pytest-httpx 拦不住 openai 3.x 的 `httpx2`，实测会真出网）+ 前端 `byok.spec.ts` 7 例。
+- Phase 3.1（AI 润色与生成解耦，ADR-010）：`POST /resumes/generate` 退回**纯模板**
+  （`ResumeGenerateRequest` 删掉 `use_fallback`，服务层不再调 writer），新增
+  `POST /resumes/polish`——收前端草稿态、四档 System Prompt（`build_system_prompt(mode, max_words)`）、
+  **不读库也不写库**、必须登录、`POLISH_RATE_LIMIT = "10/minute"`；
+  `_apply_copy` 改名 `_sanitize_copy` 并新增第 5 条规则：`expand` 的字数上限由服务端截断
+  （句末优先），不再「相信模型」。前端拆成两个按钮 + Element Plus 两个弹窗
+  （`PolishSettingsDialog.vue` 选档位与字数、`PolishReviewDialog.vue` 逐段对照，
+  只有「接受并同步到表单」会写 Pinia `draft` 并置 `dirty`，落库仍要用户手动点保存）。
+  验证：`uv run pytest -q` 213 passed（润色 44 例 + 生成 22 例 + 限流 6 例）；
+  前端 `npm run test` 26 passed（新增 `resume-polish.spec.ts` 11 例）、`typecheck` / `build` 通过；
+  `ruff` / `mypy`(34 文件) / `lint-imports`(5/5) 全绿。未新增表、未新增依赖、未 commit。
 
 ## 7. 本轮未做（显式声明）
 
@@ -219,6 +239,13 @@ Phase 2 已启动，按 `docs/PHASE2_BACKLOG.md` 优先级推进：
   未做 `refresh_tokens` 的过期清理任务；未给 `/auth/refresh`、`/auth/logout` 挂限流（理由见 `app/api/v1/auth.py` 模块注释）。
 - D2.1 的 `id` / `user_id` 用 `VARCHAR(36)` 而非设计稿的 `CHAR(36)`：与本库所有主键同型，
   避免外键两侧类型不一致导致的隐式转换与 `CHAR` 补空格问题（见迁移文件说明）。
+- Phase 3.1 未新增数据库表、未新增迁移：`/resumes/polish` 是纯计算端点，`app/repositories/`
+  与模型层一行未动，DeepSeek Key 依然没有任何持久化落点。
+- Phase 3.1 未新增依赖（`openai` 已由 ADR-009 批准），前端只用到仓库里已有的 Element Plus，
+  没有引入第二个组件库。
+- Phase 3.1 **没有在浏览器里跑过两个新弹窗**：润色需要真实 DeepSeek Key，本轮不持有任何凭据，
+  因此弹窗的交互与移动端布局只经过类型检查与构建验证，未做人工点击验收。
+- Phase 3.1 未做「润色结果落库」的任何自动路径：接受只写 Pinia 草稿，保存仍由用户点。
 
 ## 8. 下一阶段
 
@@ -226,3 +253,7 @@ Phase 1（MVP）核心开发已结束，已创建 `docs/PHASE2_BACKLOG.md` 规�
 
 Phase 2 进度：D1（用户名归一）完成 → D3（显式保存按钮）完成 →
 **D2.1（后端双 Token）完成** → 下一步 D2.2（前端 401 拦截器 + 静默续期）。
+
+Phase 3 进度：DeepSeek BYOK 接入（ADR-009）→ **Phase 3.1 生成与润色解耦 + 四档润色（ADR-010）完成**。
+下一步是给润色接一个**真实 Key** 做人工验收（延迟、JSON 遵循度、429 形态、两个弹窗在手机上的排版），
+再决定要不要把档位做成可配置项。

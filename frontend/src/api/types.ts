@@ -4,7 +4,7 @@
  * 字段命名与 `app/schemas/` 下的 Pydantic 模型逐一对应：
  * - `auth.py`      → UserRead / TokenResponse / RegisterRequest / LoginRequest
  * - `profile.py`   → ProfileUpsertRequest / ProfileRead / SkillRead / ExperienceRead / EducationRead
- * - `resume.py`    → SkillInput / ExperienceInput / ResumeRead
+ * - `resume.py`    → SkillInput / ExperienceInput / ResumeRead / ResumePolishRequest / ResumeCopy
  *
  * 所有响应都被 T6 统一响应模型包一层：成功是 `{ data, meta }`，
  * 失败是 `{ error, meta }`，见 `app/core/responses.py`。
@@ -278,11 +278,6 @@ export interface ResumeGenerateRequest {
   title: string
   /** D4.1：指定用哪一份简历生成；省略则后端取默认简历。 */
   profile_id?: string | null
-  /**
-   * ADR-009：用户在「AI 服务不可用」提示里点了「改用基础模板」时置 true，
-   * 后端据此跳过 DeepSeek、不发外呼。省略即走 AI，缺 Key 会被 400 拦下。
-   */
-  use_fallback?: boolean
 }
 
 export interface ResumeRead {
@@ -290,4 +285,84 @@ export interface ResumeRead {
   title: string
   content_html: string
   created_at: string
+}
+
+/* ------------------------------ AI 润色（ADR-010） ------------------------------ */
+
+/**
+ * 润色档位，与后端 `app/schemas/resume.py::PolishMode` 同源。
+ *
+ * `detail` 修语病保长度 / `medium` 提升专业度 / `heavy` 按 STAR 重写 /
+ * `expand` 丰富细节并受 `max_words` 约束。加一档要同时改后端枚举与 Prompt 指令表。
+ */
+export type PolishMode = 'detail' | 'medium' | 'heavy' | 'expand'
+
+/**
+ * 档位的中文名：选择弹窗与对照弹窗共用同一份，避免「同一个档位两个地方叫不同名字」。
+ *
+ * 放在契约文件而不是各自组件里，是因为这两处都要把它显示给用户，
+ * 漂移的后果是用户分不清自己选的是哪一档。
+ */
+export const POLISH_MODE_LABELS: Record<PolishMode, string> = {
+  detail: '细节',
+  medium: '中幅',
+  heavy: '大幅',
+  expand: '扩写',
+}
+
+/**
+ * `expand` 未指定字数上限时的默认值，与后端 `DEFAULT_MAX_WORDS` 及弹窗输入框默认值一致。
+ *
+ * 三处共用一个数字而不是各写各的：服务端会按它截断，前端显示的却是另一个数字的话，
+ * 用户会以为「我写了 300 字怎么被切了」。
+ */
+export const DEFAULT_POLISH_MAX_WORDS = 200
+
+/** `expand` 的字数上限范围，与后端 `Field(ge=40, le=800)` 对齐。 */
+export const POLISH_MAX_WORDS_RANGE = { min: 40, max: 800 } as const
+
+/** 润色用的基本信息：后端只做宽松校验，姓名/联系方式没填也能润色经历。 */
+export interface PolishProfileInput {
+  full_name: string
+  contact: string
+  email?: string | null
+}
+
+/** 参与润色的一段经历：只有 `description` / `responsibility` 会被改写，日期不参与。 */
+export interface PolishExperienceInput {
+  title: string
+  description: string
+  responsibility: string
+}
+
+/** `POST /resumes/polish` 的请求体（数据来自 Pinia 草稿态，允许尚未保存）。
+ *
+ * 刻意不含日期：本接口只改写文案，`start_date` / `end_date` 既不送给模型也不回写，
+ * 所以草稿里一段还没填时间的经历同样可以润色（后端 `PolishExperienceInput` 同口径）。
+ */
+export interface ResumePolishRequest {
+  profile: PolishProfileInput
+  skills: SkillInput[]
+  experiences: PolishExperienceInput[]
+  mode: PolishMode
+  /** 只对 `expand` 有意义；其它档位后端会强制置空。 */
+  max_words?: number | null
+}
+
+/** 一段经历的润色结果，`index` 是前后端对齐的唯一锚点（与请求的 `experiences` 同序）。 */
+export interface PolishedExperience {
+  index: number
+  description: string
+  responsibility: string
+}
+
+/**
+ * AI 产出的文案契约（ADR-009 / ADR-010）。
+ *
+ * 只有经历文案与技能顺序两项：主题、模块顺序、区块标题、姓名、联系方式、教育经历
+ * 都不经过模型。技能名也已被服务端**回贴成用户输入过的写法**，前端可直接比对回填。
+ */
+export interface ResumeCopy {
+  skills: string[]
+  experiences: PolishedExperience[]
 }

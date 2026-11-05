@@ -1,15 +1,17 @@
-"""简历生成业务逻辑：按登录用户取**指定那份**简历 → AI 润色文案 → 套模板 → 落库。
+"""简历业务逻辑：两条**互不调用**的路径（ADR-010）。
 
-与 T5 的差别：不再接收请求体里的档案数据，也不再写内存仓储。
+- `generate()`：按登录用户取指定那份简历 → 从库里读事实 → 纯模板渲染 → 落 `resumes`。
+  不碰 AI，因此不需要 `X-DeepSeek-Key`。
+- `polish()`：收前端草稿态的经历文案 → 调 DeepSeek 按档位润色 → 洗一遍结果 → 返回。
+  不读库也不写库，采纳与保存都由用户在表单侧手动完成。
+
+与 T5 的差别：生成不再接收请求体里的档案数据，也不再写内存仓储。
 与 D4.1 之前的差别：一个用户有多份简历，`ResumeGenerateRequest.profile_id`
 指定用哪一份生成；不传则用默认简历（兼容只发 `title` 的旧前端）。
 
-ADR-009 插入了一步「文案润色」：AI 只改写项目经历的描述与职责、给出技能排序，
-排版仍由 `TemplateResumeGenerator` 负责。因此服务层负责把两者**合并**，
-合并规则是这套架构的安全边界，见 `_apply_copy()` 的注释。
+`_sanitize_copy()` 的五条规则是这套架构的安全边界：模型无法新增技能、无法删段、
+无法改标题与时间，`expand` 的字数上限也由服务端而不是 Prompt 保证。
 """
-
-from collections.abc import Sequence
 
 from app.core.document_style import normalize_theme, resolve_layout
 from app.integrations.copy_writer import (
@@ -23,9 +25,11 @@ from app.repositories.student_profile_repository import StudentProfile, StudentP
 from app.schemas.profile import EducationInput
 from app.schemas.resume import (
     ExperienceInput,
+    PolishedExperience,
     ProfileInput,
     ResumeCopy,
     ResumeGenerateRequest,
+    ResumePolishRequest,
     ResumeRead,
     SkillInput,
 )
@@ -37,15 +41,19 @@ class ProfileIncompleteError(Exception):
 
 
 class ResumeApiKeyMissingError(Exception):
-    """要走 AI 却没带 Key：由客户端负责补，服务端不回退到模板。"""
+    """要润色却没带 Key（ADR-010 里只可能来自 `/resumes/polish`）：由客户端负责补。"""
 
 
 class ResumeCopyRejectedError(Exception):
-    """DeepSeek 判定 Key 无效/欠费：透传 401，用户需要的是修 Key，不是一份模板简历。"""
+    """DeepSeek 判定 Key 无效/欠费：透传 401，用户需要的是修 Key，而不是重试。"""
 
 
 class ResumeCopyUnavailableError(Exception):
-    """上游超时/限流/5xx 或返回内容不合契约：可重试，前端据此提议模板降级。"""
+    """上游超时/限流/5xx 或返回内容不合契约：标记为可重试，让用户自己决定要不要再点一次。
+
+    ADR-010 起**不再有模板降级**这条路：生成接口本来就是纯模板，
+    润色失败时「改用模板」是个无意义的选项。
+    """
 
 
 def _skill_key(name: str) -> str:
@@ -57,55 +65,98 @@ def _skill_key(name: str) -> str:
     return " ".join(name.split()).casefold()
 
 
-def _apply_copy(
-    copy: ResumeCopy,
-    skills: Sequence[SkillInput],
-    experiences: Sequence[ExperienceInput],
-) -> tuple[list[SkillInput], list[ExperienceInput]]:
-    """把 AI 文案合并回原始输入，规则缺一不可：
+def _sanitize_copy(copy: ResumeCopy, request: ResumePolishRequest) -> ResumeCopy:
+    """把模型输出洗成「可以放心交给用户确认」的结果。五条规则缺一不可
+    （前四条继承自 ADR-009，第五条是 ADR-010 为 `expand` 新增的服务端硬保证）。
 
-    1. **技能不新增也不丢**：模型给的每个名字都必须能对上库里的技能（否则丢弃），
-       模型漏掉的按原顺序补在后面。AI 因此无法把「不会的技术」写进简历。
+    1. **技能不新增也不丢**：模型给的每个名字都必须能对上输入里的技能（否则丢弃），
+       模型漏掉的按原顺序补在后面，回给前端的永远是用户自己写过的那个名字。
+       AI 因此无法把「不会的技术」塞进简历。
     2. **经历必须一一对应**：数量和 `index` 集合都要等于输入的 `range(n)`，
-       否则视为上游不合契约 —— 静默少一段就等于悄悄改了用户的事实。
-    3. **只替换文案**：标题与起止时间是库里的既有事实，模型无权改动。
-    4. **空文本回落原值**：模型给出空串/纯空白时保留用户原文，不制造空洞。
+       否则视为上游不合契约——静默少一段就等于悄悄改了用户的事实。
+    3. **只替换文案**：标题与时间是既有事实，`index` 就是前后端对齐的唯一锚点。
+    4. **空文本回落原值**：模型给出纯空白时保留用户原文，不制造空洞。
+    5. **`expand` 的字数上限由服务端兜**：Prompt 里的要求只是建议，
+       模型超了就必须截——用户要的是「不超过」，不是「尽量不超过」。
     """
     catalog: dict[str, SkillInput] = {}
-    for skill in skills:
+    for skill in request.skills:
         catalog.setdefault(_skill_key(skill.name), skill)
 
-    ordered: list[SkillInput] = []
+    ordered: list[str] = []
     seen: set[str] = set()
     for name in copy.skills:
         key = _skill_key(name)
         matched = catalog.get(key)
         if matched is not None and key not in seen:
             seen.add(key)
-            ordered.append(matched)
-    for skill in skills:
+            ordered.append(matched.name)
+    for skill in request.skills:
         key = _skill_key(skill.name)
         if key not in seen:
             seen.add(key)
-            ordered.append(skill)
+            ordered.append(skill.name)
 
-    if len(copy.experiences) != len(experiences) or {
+    originals = list(request.experiences)
+    if len(copy.experiences) != len(originals) or {
         item.index for item in copy.experiences
-    } != set(range(len(experiences))):
-        raise ResumeCopyUnavailableError("AI 返回的经历与档案不一致。")
+    } != set(range(len(originals))):
+        raise ResumeCopyUnavailableError("AI 返回的经历与输入不一致。")
 
-    merged_experiences: list[ExperienceInput] = []
-    for position, original in enumerate(experiences):
-        polished = next(item for item in copy.experiences if item.index == position)
-        merged_experiences.append(
-            original.model_copy(
-                update={
-                    "description": polished.description.strip() or original.description,
-                    "responsibility": polished.responsibility.strip() or original.responsibility,
-                }
+    polished_items = sorted(copy.experiences, key=lambda item: item.index)
+    experiences: list[PolishedExperience] = []
+    for item in polished_items:
+        original = originals[item.index]
+        description = item.description.strip() or original.description
+        responsibility = item.responsibility.strip() or original.responsibility
+        if request.mode == "expand" and request.max_words is not None:
+            description, responsibility = _cap_pair(description, responsibility, request.max_words)
+        experiences.append(
+            PolishedExperience(
+                index=item.index,
+                description=description,
+                responsibility=responsibility,
             )
         )
-    return ordered, merged_experiences
+    return ResumeCopy(skills=ordered, experiences=experiences)
+
+
+#: 截断时给 `responsibility` 留的最小空间：再短就会把一句职责切成分号前面的半个词。
+_RESPONSIBILITY_FLOOR = 10
+_SENTENCE_ENDS = ("。", "！", "？", "；", "\n")
+
+
+def _cap_text(text: str, limit: int) -> str:
+    """把文本截到 `limit` 个字符：优先在句末边界收刀，边界太靠后（不足半程）才硬切。"""
+    if len(text) <= limit:
+        return text
+    window = text[:limit]
+    for mark in _SENTENCE_ENDS:
+        position = window.rfind(mark)
+        if position >= limit // 2:
+            return window[: position + 1]
+    return window.rstrip()
+
+
+def _cap_pair(description: str, responsibility: str, max_words: int) -> tuple[str, str]:
+    """让**一段**（描述 + 职责合计）不超过 `max_words` 字。
+
+    先给职责留一份预算（不超过其自身长度、且不少于下限），剩下的给描述；
+    描述截短之后，再把省下来的额度还给职责。两个字段都保有不小于
+    `_RESPONSIBILITY_FLOOR` 的空间，避免截成空串撞上 `min_length=1`。
+    """
+    if len(description) + len(responsibility) <= max_words:
+        return description, responsibility
+
+    responsibility_budget = max(
+        _RESPONSIBILITY_FLOOR, min(len(responsibility), max_words // 3)
+    )
+    capped_description = _cap_text(description, max(_RESPONSIBILITY_FLOOR, max_words - responsibility_budget))
+    capped_responsibility = _cap_text(
+        responsibility,
+        max(_RESPONSIBILITY_FLOOR, max_words - len(capped_description)),
+    )
+    return capped_description, capped_responsibility
 
 
 class ResumeService:
@@ -154,14 +205,13 @@ class ResumeService:
             )
             for experience in experiences
         ]
-        polished_skills, polished_experiences = self._polish(
-            payload, profile_input, skill_inputs, experience_inputs
-        )
 
+        # ADR-010：生成路径**不再调用 AI**。文案就是库里的事实，
+        # 想润色要走 `POST /resumes/polish`，由用户确认后写进表单再保存。
         content_html = self._generator.generate(
             profile=profile_input,
-            skills=polished_skills,
-            experiences=polished_experiences,
+            skills=skill_inputs,
+            experiences=experience_inputs,
             title=payload.title,
             educations=[
                 EducationInput(
@@ -193,25 +243,27 @@ class ResumeService:
             created_at=resume.created_at,
         )
 
-    def _polish(
-        self,
-        payload: ResumeGenerateRequest,
-        profile_input: ProfileInput,
-        skills: list[SkillInput],
-        experiences: list[ExperienceInput],
-    ) -> tuple[list[SkillInput], list[ExperienceInput]]:
-        """AI 润色一步。`use_fallback=True` 时**原样返回**，即用户点出来的模板降级。"""
-        if payload.use_fallback:
-            return skills, experiences
+    def polish(self, request: ResumePolishRequest) -> ResumeCopy:
+        """ADR-010：纯润色。不读库、不写库，结果只回给前端草稿态。
+
+        异常映射留在服务层，是为了让 API 层只见服务异常、不接触 integrations
+        （import-linter 的 “API cannot depend on integrations” 契约）。
+        """
         if self._copy_writer is None:
             raise ResumeApiKeyMissingError()
         try:
-            copy: ResumeCopy = self._copy_writer.write(profile_input, skills, experiences)
+            copy = self._copy_writer.write(
+                request.profile,
+                request.skills,
+                request.experiences,
+                request.mode,
+                request.max_words,
+            )
         except CopyAuthError as error:
             raise ResumeCopyRejectedError(str(error)) from error
         except CopyUnavailableError as error:
             raise ResumeCopyUnavailableError(str(error)) from error
-        return _apply_copy(copy, skills, experiences)
+        return _sanitize_copy(copy, request)
 
     def _resolve_profile(self, user_id: str, payload: ResumeGenerateRequest) -> StudentProfile:
         """定位要生成的那份简历。

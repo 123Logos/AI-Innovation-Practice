@@ -44,11 +44,11 @@ def _headers(token: str) -> dict[str, str]:
 def _payload(title: str, **extra: object) -> dict[str, object]:
     """模板路径用例的统一请求体。
 
-    ADR-009 之后 `POST /resumes/generate` 默认要调 DeepSeek，不带 Key 会被 400 拦住。
-    本文件验的是**排版契约**（主题、顺序、转义、落库归属），与 AI 无关，所以每条用例
-    显式声明 `use_fallback=True` —— 而不是塞一个假上游让「模板测试」其实测的是 AI 路径。
+    ADR-010 之后 `POST /resumes/generate` 是**纯模板**：不调 AI、不要 Key，所以这里既没有
+    `use_fallback` 开关，也不需要假上游。本文件验的是排版契约（主题、顺序、转义、落库归属），
+    AI 相关的断言全部在 tests/test_resume_ai_copywriting.py。
     """
-    return {"use_fallback": True, "title": title, **extra}
+    return {"title": title, **extra}
 
 
 def _educations() -> list[dict[str, object]]:

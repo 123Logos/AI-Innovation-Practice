@@ -19,6 +19,13 @@ from app.core.config import get_settings
 #: 登录 / 注册的限流规则；认证相关测试也引用这个常量，避免两处硬编码漂移。
 AUTH_RATE_LIMIT = "5/minute"
 
+#: AI 润色接口的限流规则（ADR-010）。
+#: 这条限流保护的不是我们的服务器，而是**用户自己的钱包**：`/resumes/polish` 每次调用都
+#: 花调用者自带 Key 的额度，一个失控的前端循环、一个脚本化的爬虫都能在短时间内烧掉大量 Token。
+#: 10 次/分钟够用一次正常的「润色→不满意→换档位再来」，同时把滥用成本抬到不划算。
+#: 测试引用这个常量，理由与 `AUTH_RATE_LIMIT` 相同。
+POLISH_RATE_LIMIT = "10/minute"
+
 
 def build_limiter() -> Limiter:
     """按配置构造限流器；`enabled=False` 时装饰器直接放行（测试用）。"""
