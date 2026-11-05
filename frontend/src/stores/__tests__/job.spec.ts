@@ -1,32 +1,43 @@
 /**
- * `useJobStore` 与岗位路由表的单测（Phase 4 · B2）。
+ * `useJobStore` 与岗位路由表的单测（Phase 4 · B2 + C2）。
  *
- * 分三半，各自钉住一条「坏了不会报错、只会让用户看见错数据」的链路：
+ * 分四半，各自钉住一条「坏了不会报错、只会让用户看见错数据」的链路：
  *
  * 1. **状态流转**：列表加载 → 创建 → 软删 → 回收站 → 恢复。
  *    这五步各自都会写 store 里的一份列表，任何一步漏刷新，用户就会对着一条
  *    「已经删掉却还在列表里」的岗位反复点。做法同 `api/__tests__/jobs.spec.ts`：
  *    换掉 axios 的 adapter，让真实的 store → api → 拦截器 链路跑一遍。
- * 2. **路由表自证**：四条 jobs 路由存在、`name` 是 kebab-case、`requiresAuth` 都在，
- *    并且 `/jobs/trash`、`/jobs/new` 不会被 `/jobs/:id` 吞掉。
- *    放在这里而不是单开一个 spec 文件：本轮允许新增的测试文件只有这两个，
- *    而这条断言属于「岗位切片能不能走通」，与 store 是同一条验收线。
- * 3. **技能名归一化口径（B3）**：`normalizeSkillName()` 与后端 `dedup_key` 同口径
+ * 2. **AI 提取的草稿态**：合并、判重跳过、计数文案、失败分流，以及**提取之后没有发出任何
+ *    写请求**（那条 spy 断言是本轮的红线：AI 不能只凭一次点击改库）。
+ * 3. **路由表自证**：五条 jobs 路由存在、`name` 是 kebab-case、`requiresAuth` 都在，
+ *    并且 `/jobs/trash`、`/jobs/new` 不会被 `/jobs/:id` 吞掉、`/jobs/:id/edit` 落到编辑态。
+ *    放在这里而不是单开一个 spec 文件：这条断言属于「岗位切片能不能走通」，与 store 同一条验收线。
+ * 4. **技能名归一化口径（B3）**：`normalizeSkillName()` 与后端 `dedup_key` 同口径
  *    （`trim` → NFKC → 小写），并钉住它的两个实际用途——「你已具备」与录入页重名自检。
  *    这条属于「前端放过、后端 422」那一类只有比对两端才能发现的缺陷，所以跟状态流转放一起。
  *
- * 反向断言（请求体里不许出现 `evidence_text` / `confidence` / `origin` / `status`）
- * 用的是「把读模型原样当表单行塞进来」这种真实误用形态——后端是 `extra="ignore"`，
- * 传错了**不报错**，只有这里能发现。
+ * 写侧投影的断言（请求体里不许出现 `origin` / `status`、必须出现确认过的
+ * `evidence_text` / `confidence`）用的是「把读模型原样当表单行塞进来」这种真实误用形态——
+ * 后端是 `extra="ignore"`，传错了**不报错**，只有这里能发现。
  */
 
-import type { AxiosResponse, InternalAxiosRequestConfig } from 'axios'
+import { AxiosError, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios'
 import { createPinia, setActivePinia } from 'pinia'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { http } from '@/api/client'
+import { ApiError, http } from '@/api/client'
 import type { jobsApi as JobsContract } from '@/api'
-import { createEmptyJobForm, normalizeSkillName, useJobStore } from '@/stores/job'
+import {
+  createEmptyJobForm,
+  extractCountLines,
+  extractFailureText,
+  extractMergeLines,
+  jobToFormInput,
+  mergeExtractedSkills,
+  normalizeSkillName,
+  toWritePayload,
+  useJobStore,
+} from '@/stores/job'
 import type { JobFormInput, JobSkillFormRow } from '@/stores/job'
 import { useAuthStore } from '@/stores/auth'
 import router from '@/router'
@@ -91,6 +102,55 @@ function envelope(config: InternalAxiosRequestConfig, data: unknown, status = 20
   return { data, status, statusText: 'OK', headers: {}, config } as AxiosResponse
 }
 
+/* ------------------------- 提取端点的可注入响应 ------------------------- */
+
+/**
+ * 提取响应由用例临时指定：`data.meta` 的七个计数需要逐条摆出来，
+ * 而失败分流要造 400/401/502 三种真实错误形状。`null` = 用默认那份。
+ * 每条用例跑完在 `beforeEach` 里复位，防一份假信封漏进下一个断言。
+ */
+let extractEnvelope: unknown = null
+let extractErrorFactory: ((config: InternalAxiosRequestConfig) => AxiosResponse) | null = null
+
+function extractMetaFixture(
+  overrides: Partial<JobsContract.ExtractSkillsMeta> = {},
+): JobsContract.ExtractSkillsMeta {
+  return {
+    model: 'deepseek-flash',
+    prompt_version: 'v1',
+    received_count: 20,
+    dropped_count: 14,
+    deduped_count: 1,
+    truncated: true,
+    finish_reason: 'stop',
+    ...overrides,
+  }
+}
+
+function extractSkill(
+  name: string,
+  overrides: Partial<JobsContract.ExtractedSkill> = {},
+): JobsContract.ExtractedSkill {
+  return { name, type: 'hard', evidence: `熟练掌握 ${name}`, confidence: 0.9, ...overrides }
+}
+
+/** 默认那份：三条候选 + 一份「AI 给了 20 条、剔了 14 条、合并 1 条、被截断」的计数。 */
+function defaultExtractEnvelope(skills: JobsContract.ExtractedSkill[] = [extractSkill('Python'), extractSkill('FastAPI'), extractSkill('Ｄocker')]): unknown {
+  return {
+    data: { skills, meta: extractMetaFixture({ received_count: 20, dropped_count: 14, deduped_count: 1, truncated: true }) },
+    meta: { request_id: 'req-test' },
+  }
+}
+
+/** 造一次带统一错误体的失败（后端三个 AI 码 + 第 7 情形多带的那个外层 `meta.finish_reason`）。 */
+function aiError(config: InternalAxiosRequestConfig, status: number, code: string, message: string, finishReason?: string): AxiosResponse {
+  const body = {
+    error: { code, message, details: {}, retryable: status === 502 },
+    meta: finishReason ? { request_id: 'req-test', finish_reason: finishReason } : { request_id: 'req-test' },
+  }
+  return envelope(config, body, status)
+}
+
 /**
  * 假的服务端：`server` 里只有「删除过的进回收站」这一条最小状态，
  * 目的是让五条动作在 store 里留下的痕迹可被断言，而不是重做一遍后端。
@@ -140,6 +200,16 @@ function fakeAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse>
     )
   }
 
+  if (method === 'post' && url === '/jobs/extract-skills') {
+    // 提取端点：默认回一份「三条候选 + 七个计数」的信封；用例可以改成任何 AI 失败形状。
+    if (extractErrorFactory) {
+      return Promise.reject(
+        new AxiosError('提取失败', 'ERR_BAD_RESPONSE', config, {}, extractErrorFactory(config)),
+      )
+    }
+    return Promise.resolve(envelope(config, extractEnvelope ?? defaultExtractEnvelope()))
+  }
+
   if (method === 'post' && url === '/jobs') {
     // 一律落 draft：`status` 由服务端写死，与请求体无关（1.F #3）。
     return Promise.resolve(envelope(config, { data: { job: detail('job-new', { status: 'draft' }) }, meta: { request_id: 'req-test' } }, 201))
@@ -151,6 +221,18 @@ function fakeAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse>
 
   if (method === 'put' && url === '/jobs/job-1/unpublish') {
     return Promise.resolve(envelope(config, { data: { job: detail('job-1', { status: 'draft' }) }, meta: { request_id: 'req-test' } }))
+  }
+
+  if (method === 'put' && /^\/jobs\/[^/]+$/.test(url)) {
+    // PUT 是「整体覆盖」：回的是本次提交的内容（这里只把 title 带回去，
+    // 好让「保存后详情页同步成新值」那条断言不是靠假数据蒙对的）。
+    const sent = (body ?? {}) as Record<string, unknown>
+    return Promise.resolve(
+      envelope(config, {
+        data: { job: detail(url.split('/')[2] ?? 'job-1', { title: String(sent.title ?? '') }) },
+        meta: { request_id: 'req-test' },
+      }),
+    )
   }
 
   if (method === 'put' && url.endsWith('/restore')) {
@@ -169,6 +251,8 @@ beforeEach(() => {
   localStorage.clear()
   captured = []
   mySkillNamesFromServer = DEFAULT_MY_SKILL_NAMES
+  extractEnvelope = null
+  extractErrorFactory = null
   savedAdapter = http.defaults.adapter
   http.defaults.adapter = fakeAdapter
   useAuthStore().user = { id: OWN_USER_ID, username: 'tester', email: null, created_at: '2026-11-05T10:00:00+08:00' }
@@ -186,6 +270,25 @@ function lastRequest(): Captured {
   const request = captured[captured.length - 1]
   if (!request) throw new Error('没有任何请求发出')
   return request
+}
+
+/**
+ * 把某条路由记录里的 props（对象或工厂函数）算成**实际传给组件的那份**。
+ *
+ * 为什么不直接断言 `router.resolve()` 的结果：`resolve()` 返回的是路由位置信息，
+ * props 的求值发生在组件匹配那一步，测试里拿不到。这里对着路由表自己算一次，
+ * 断言的就是 `router/index.ts` 里写的那两个工厂的输出。
+ */
+function propsPassedTo(routeName: string, params: Record<string, string> = {}): Record<string, unknown> {
+  const record = router.getRoutes().find((route) => route.name === routeName)
+  const option = record?.props?.default
+  if (typeof option === 'function') {
+    // 先折成一个明确的工厂类型再调：`record.props.default` 的声明是
+    // `Function | ((to) => …)` 这个联合，`Parameters<>` 摊到裸 `Function` 上会直接报 TS2344。
+    const factory = option as (to: unknown) => Record<string, unknown>
+    return factory({ params })
+  }
+  return (option ?? {}) as Record<string, unknown>
 }
 
 /** 一份填好的表单：技能行里**故意带上**读模型才有的三个键，模拟「原样回传」的误用。 */
@@ -295,7 +398,19 @@ describe('useJobStore 的状态流转', () => {
 })
 
 describe('写侧请求体的反向断言', () => {
-  it('创建请求体里没有 evidence_text / confidence / origin / status，空技能行也不提交', async () => {
+  /**
+   * **C2 更新**（ADR-011 1.F v9 放开写回路径，监督者裁定）：
+   * B2 那一条断言的是「`evidence_text` / `confidence` 一律不发」，理由是当时没有 AI 路径、
+   * 接受填值只会落下无法核验的数据。C1 把提取链路接通之后，用户是在草稿态逐条确认过
+   * AI 结果才点保存的，这两格**必须存得进去**——否则 1.D 的 `origin` 派生与 §2.D.1 的核验
+   * 无处落地，徽标永远是「未标注出处」。
+   *
+   * 所以这条用例没有删掉断言，而是**跟着契约搬了一位**：
+   * - `origin` / `status` / `created_by_user_id` 仍然禁止（服务端派生，客户端说了不算）；
+   * - `evidence_text` / `confidence` 改为**必须原样带上**，并断言 `origin` 即使挂在行上
+   *   也进不了请求体（这才是 1.F 那条「不采信客户端」的真实防线）。
+   */
+  it('创建请求体带上确认过的 evidence / confidence，而 origin 即使在行上也被丢掉', async () => {
     const store = useJobStore()
     await store.createJob(filledForm())
 
@@ -304,13 +419,24 @@ describe('写侧请求体的反向断言', () => {
     expect(post, '没有发出 POST /jobs').toBeDefined()
     const body = post?.body as Record<string, unknown> & { skills: Record<string, unknown>[] }
 
-    for (const key of ['status', 'origin', 'evidence_text', 'confidence', 'created_by_user_id']) {
+    for (const key of ['status', 'created_by_user_id', 'origin', 'extract_model', 'extracted_at']) {
       expect(body, `请求体不该带 ${key}`).not.toHaveProperty(key)
     }
     expect(body.skills).toHaveLength(2)
     for (const skill of body.skills) {
-      expect(Object.keys(skill).sort()).toEqual(['name', 'type'])
+      expect(skill, '技能条目不该带 origin').not.toHaveProperty('origin')
     }
+
+    // 第一条：核验锚点与自报把握原样发出去（`filledForm` 里那行确实带着它们）。
+    expect(body.skills[0]).toEqual({
+      name: 'Python',
+      type: 'hard',
+      evidence_text: '熟练掌握 Python',
+      confidence: '0.9',
+    })
+    // 第二条：手填、没有依据 → 只有两个键，空串 `type` 转成 `null`（后端 `''` 会 422）。
+    expect(body.skills[1]).toEqual({ name: '沟通能力强', type: null })
+
     // 空串 → null（后端存 NULL），并且顺手裁掉首尾空格。
     expect(body).toMatchObject({ company_name: '示例科技', location: '上海', experience_required: null })
   })
@@ -433,10 +559,216 @@ describe('技能名归一化口径（与后端 dedup_key 同：trim → NFKC →
   })
 })
 
-describe('岗位路由表（议题 3.B 的自证）', () => {
-  const JOB_ROUTES = ['job-board', 'job-create', 'job-trash', 'job-detail']
+describe('AI 提取：结果只进草稿，绝不自动落库', () => {
+  /**
+   * 本组用例的核心红线（ADR-011 2.A / ADR-010 §5）：提取是**纯计算**端点，
+   * 候选必须停在草稿态直到用户亲手点「保存岗位」。
+   * 谁哪天「顺手」把提取成功后紧接着调一次 createJob，屏幕上看起来更省事，
+   * 但 AI 就只凭一次点击改了库——这条 spy 断言会当场变红。
+   */
+  it('提取成功之后：只有那一次 POST /jobs/extract-skills，一个写请求都没发', async () => {
+    const store = useJobStore()
+    /**
+     * spy 挂在 store 的两个保存动作上：`toHaveBeenCalledTimes(0)` 是本轮的红线本身——
+     * 「提取成功后顺手保存」在代码里读得出来，但只有计数能在有人改完之后继续拦住它。
+     */
+    const createSpy = vi.spyOn(store, 'createJob')
+    const updateSpy = vi.spyOn(store, 'updateJob')
 
-  it('四条 jobs 路由都存在、name 是 kebab-case、全部 requiresAuth', () => {
+    const plan = await store.extractSkills(
+      { description: '负责后端接口开发，熟练掌握 Python 与 FastAPI。', title: '后端实习' },
+      [{ name: '沟通能力强', type: 'soft' }],
+    )
+
+    expect(requestsFor('post', '/jobs/extract-skills')).toHaveLength(1)
+    // 这三行是本轮最重要的断言：提取 ≠ 保存。
+    expect(requestsFor('post', '/jobs')).toHaveLength(0)
+    expect(requestsFor('put')).toEqual([])
+    expect(requestsFor('delete')).toEqual([])
+    expect(createSpy).toHaveBeenCalledTimes(0)
+    expect(updateSpy).toHaveBeenCalledTimes(0)
+    // 也没有偷偷去读库/读列表（提取端点既不读库也不写库，2.A）。
+    expect(requestsFor('get', '/jobs')).toHaveLength(0)
+
+    // 结果进的是 store 的草稿，不是数据库。
+    expect(store.extractDraft?.skills.map((skill) => skill.name)).toEqual(['Python', 'FastAPI', 'Ｄocker'])
+    expect(plan?.added).toHaveLength(3)
+    // 提取请求的载荷只有两格（后端 `ExtractSkillsRequest`），且 `title` 空串转 null。
+    const body = requestsFor('post', '/jobs/extract-skills')[0]?.body as Record<string, unknown>
+    expect(Object.keys(body).sort()).toEqual(['description', 'title'])
+  })
+
+  it('草稿态里的候选不会自己消失，但 `reset()` 连它一起清掉', async () => {
+    const store = useJobStore()
+    await store.extractSkills({ description: '熟练掌握 Python' }, [])
+    expect(store.extractDraft).not.toBeNull()
+    expect(store.extractPlan).not.toBeNull()
+
+    // 登出走这条：草稿带着 JD 原文片段，留给下一个账号就是泄漏。
+    store.reset()
+    expect(store.extractDraft).toBeNull()
+    expect(store.extractPlan).toBeNull()
+    expect(store.extracting).toBe(false)
+  })
+
+  it('在途时重复点击不再发第二次请求（这是烧用户额度的端点，限流 10/minute）', async () => {
+    const store = useJobStore()
+    const pending = store.extractSkills({ description: '熟练掌握 Python' }, [])
+    // 第一次还没落地（adapter 的微任务队列），第二次点击应当被 store 那道闸挡住。
+    const second = await store.extractSkills({ description: '熟练掌握 Python' }, [])
+    expect(second).toBeNull()
+    expect(requestsFor('post', '/jobs/extract-skills')).toHaveLength(0)
+    await pending
+    expect(requestsFor('post', '/jobs/extract-skills')).toHaveLength(1)
+  })
+
+  it('换 JD 时 `clearExtract()` 只清计数说明，不动已经落进表单的行', async () => {
+    const store = useJobStore()
+    const plan = await store.extractSkills({ description: '熟练掌握 Python' }, [])
+    expect(plan?.added).toHaveLength(3)
+
+    store.clearExtract()
+    expect(store.extractDraft).toBeNull()
+    // 反向确认：清草稿不是清表单——视图里的行是用户已经看过并认可的。
+    expect(plan?.rows).toHaveLength(3)
+  })
+})
+
+describe('AI 提取：合并进表单时的判重与上限', () => {
+  /**
+   * `mergeExtractedSkills` 用 `normalizeSkillName()` 判重，与后端 `skill_name_key`
+   * 同口径（NFKC + casefold）。这一条防的不是难看，而是**必败的 payload**：
+   * `JobWriteRequest.validate_unique_skill_names` 对同名技能报 422，
+   * 而报错出现在用户做完全部删改、点保存的那一刻。
+   */
+  it('与已有行重名的候选被跳过并计数（大小写 / 全半角 / 首尾空格都算同名）', () => {
+    const rows: JobSkillFormRow[] = [
+      { name: 'Python', type: 'hard' },
+      { name: ' Web 开发 ', type: 'soft' },
+    ]
+    const skills: JobsContract.ExtractedSkill[] = [
+      { name: 'python', type: 'hard', evidence: '熟悉 python', confidence: 0.8 },
+      { name: 'PYTHON', type: null, evidence: 'PYTHON 基础', confidence: null },
+      { name: 'FastAPI', type: 'hard', evidence: '熟悉 FastAPI', confidence: 0.9 },
+      // 名字里的**空格差一个就是一条**：这与后端 `skill_name_key`（只有 NFKC + casefold、
+      // 不去空白）和 `UNIQUE (job_id, name)` 的实测结论一致（ADR-011 §2.D.2 表第 4 行）。
+      { name: 'Web开发', type: 'soft', evidence: '负责Web开发', confidence: 0.7 },
+      { name: '   ', type: 'hard', evidence: '没有名字', confidence: 0.5 },
+    ]
+
+    const plan = mergeExtractedSkills(rows, skills)
+
+    // 5 条候选：2 条与已有重名、1 条空白名、真正加入 2 条。
+    expect(plan.skippedDuplicate).toBe(2)
+    expect(plan.skippedBlank).toBe(1)
+    expect(plan.skippedLimit).toBe(0)
+    expect(plan.rows.map((row) => row.name)).toEqual(['Python', ' Web 开发 ', 'FastAPI', 'Web开发'])
+    // **跳过而不是覆盖**：已有行是用户手写的，AI 的版本没有资格盖掉他的 `type`。
+    expect(plan.rows[0]).toEqual({ name: 'Python', type: 'hard' })
+    // 新加入的行把 `evidence` 改名为 `evidence_text`（两个名字都是契约，见 2.C / 修订清单 #2）。
+    expect(plan.rows[2]).toEqual({ name: 'FastAPI', type: 'hard', evidence_text: '熟悉 FastAPI', confidence: 0.9 })
+    // `confidence: null` 不该变成行上的键：没给把握就是没给，不是 0。
+    expect(plan.rows[2]).not.toHaveProperty('origin')
+    expect(Object.keys(plan.rows[2] as unknown as Record<string, unknown>).sort()).toEqual([
+      'confidence',
+      'evidence_text',
+      'name',
+      'type',
+    ])
+  })
+
+  it('本批候选内部的重名也只加入第一条（保留模型自己的排序）', () => {
+    const plan = mergeExtractedSkills(
+      [],
+      [
+        { name: 'PyTorch', type: 'hard', evidence: '熟悉 PyTorch', confidence: 0.9 },
+        { name: 'pytorch', type: 'soft', evidence: 'pytorch 训练', confidence: 0.5 },
+      ],
+    )
+    expect(plan.rows.map((row) => row.name)).toEqual(['PyTorch'])
+    expect(plan.skippedDuplicate).toBe(1)
+  })
+
+  it('`C#` 与 `C` 是两条技能（§2.D.2 口径错误的回归护栏）', () => {
+    // 四步归一化（去标点）会把 `C#` 折成 `C`（`#` 是 `Po`），静默吞掉一条真实岗位要求。
+    // 后端为这件事专门写了 `skill_name_key`（只有 NFKC + casefold），前端必须跟同一个口径。
+    const plan = mergeExtractedSkills(
+      [{ name: 'C', type: 'hard' }],
+      [
+        { name: 'C#', type: 'hard', evidence: '熟悉 C# 开发', confidence: 0.9 },
+        { name: 'user_id', type: 'hard', evidence: '熟悉 user_id 设计', confidence: 0.9 },
+      ],
+    )
+    expect(plan.rows.map((row) => row.name)).toEqual(['C', 'C#', 'user_id'])
+    expect(plan.skippedDuplicate).toBe(0)
+    // 反向确认口径没有松成「前缀匹配」：`C` 与 `C#` 不同键，`C++` 与 `C` 也不同。
+    expect(normalizeSkillName('C#')).not.toBe(normalizeSkillName('C'))
+  })
+
+  it('表单已到 15 条上限时停手并报了数（不静默丢，也不塞出一次 422）', () => {
+    const rows: JobSkillFormRow[] = Array.from({ length: 15 }, (_, index) => ({
+      name: `已有技能 ${index}`,
+      type: '' as const,
+    }))
+    const plan = mergeExtractedSkills(rows, [
+      { name: '新来的 1', type: 'hard', evidence: 'e1', confidence: 0.9 },
+      { name: '新来的 2', type: 'hard', evidence: 'e2', confidence: 0.9 },
+    ])
+    expect(plan.rows).toHaveLength(15)
+    expect(plan.added).toHaveLength(0)
+    expect(plan.skippedLimit).toBe(2)
+    expect(extractMergeLines(plan)).toContain(`表单技能已达 15 条上限，本次未加入 2 条`)
+  })
+
+  it('重名跳过的条数在屏幕上是一句独立的话', () => {
+    const plan = mergeExtractedSkills(
+      [{ name: 'Python', type: 'hard' }],
+      [
+        { name: 'python', type: 'hard', evidence: '熟悉 python', confidence: 0.9 },
+        { name: 'Docker', type: 'hard', evidence: '熟悉 Docker', confidence: 0.9 },
+      ],
+    )
+    expect(extractMergeLines(plan)).toEqual(['已跳过 1 条与现有技能重名'])
+    // 0 的时候整句消失：屏幕上不该出现「已跳过 0 条」这种噪音。
+    expect(extractMergeLines(mergeExtractedSkills([], []))).toEqual([])
+  })
+
+  it('放弃提取：撤掉一字未动的候选，保留被用户改过的那条，并且一个请求都不发', async () => {
+    const store = useJobStore()
+    const plan = await store.extractSkills(
+      { description: '负责后端接口开发，熟练掌握 Python 与 FastAPI。' },
+      [{ name: 'Python', type: 'hard' }],
+    )
+    // 默认信封给三条候选（Python / FastAPI / Ｄocker），其中 Python 与已有行重名被跳过。
+    expect(plan?.added.map((row) => row.name)).toEqual(['FastAPI', 'Ｄocker'])
+
+    const rows = plan!.rows.map((row) => ({ ...row }))
+    // 用户改了最后一条（Ｄocker）的分类：这一行已经有他自己的工作，不能被他没点过的按钮撤走。
+    const last = rows.length - 1
+    rows[last] = { ...rows[last]!, type: 'domain' }
+
+    const before = captured.length
+    const undo = store.discardExtraction(rows)
+
+    expect(undo.removed).toBe(1)
+    expect(undo.kept).toBe(1)
+    expect(undo.rows.map((row) => row.name)).toEqual(['Python', 'Ｄocker'])
+    // 「放弃」什么都不改：一个请求都没发（数据库里本来就没有这次提取的痕迹）。
+    expect(captured.length).toBe(before)
+    expect(store.extractDraft).toBeNull()
+    expect(store.extractPlan).toBeNull()
+  })
+})
+
+describe('岗位路由表（议题 3.B 的自证）', () => {
+  /**
+   * **C2 加了第五条**：`/jobs/:id/edit`（ADR-011 议题 3.B v9，B2 裁定归并进 C 轮的那一项）。
+   * 上一版这里写死四条 + 一句「四条 jobs 路由」，加路由必然让它变红——
+   * 这正是这条用例该有的行为：路由表变了一定要写代码的人看一眼，而不是没人记得它在。
+   */
+  const JOB_ROUTES = ['job-board', 'job-create', 'job-edit', 'job-trash', 'job-detail']
+
+  it('五条 jobs 路由都存在、name 是 kebab-case、全部 requiresAuth', () => {
     const records = router.getRoutes().filter((route) => route.path.startsWith('/jobs'))
     const names = records.map((route) => String(route.name ?? '')).sort()
 
@@ -458,5 +790,208 @@ describe('岗位路由表（议题 3.B 的自证）', () => {
     expect(router.resolve('/jobs/trash').params).toEqual({})
     expect(router.resolve('/jobs/job-42').name).toBe('job-detail')
     expect(router.resolve('/jobs/job-42').params).toEqual({ id: 'job-42' })
+    // 编辑态必须落进 `/jobs/:id/edit`，而不是被详情页吃掉（那会渲染成「id = job-42/edit」的 404）。
+    expect(router.resolve('/jobs/job-42/edit').name).toBe('job-edit')
+    expect(router.resolve('/jobs/job-42/edit').params).toEqual({ id: 'job-42' })
+  })
+
+  /**
+   * 两条路由共用一个组件、靠 props 分流。这里读的是**路由表里那份 props 定义本身**
+   * （`router.resolve()` 不回显算好的 props），因为组件行为取决于它：
+   * `mode` 缺失时 `JobCreateView` 默认按 create 走、保存会打 `POST /jobs`——
+   * 也就是说「编辑路由忘了传 mode」的后果不是报错，而是**把一条已有岗位另存成新岗位**。
+   */
+  it('job-create 给 mode=create，job-edit 给 mode=edit + jobId（同一组件的双模式入口）', () => {
+    expect(propsPassedTo('job-create')).toEqual({ mode: 'create' })
+    expect(propsPassedTo('job-edit', { id: 'job-42' })).toEqual({ mode: 'edit', jobId: 'job-42' })
+
+    // 反向：录入路由不该带 jobId（带上了就等于「新建页以为自己在编辑」，会打 PUT）。
+    expect(propsPassedTo('job-create', { id: 'x' })).not.toHaveProperty('jobId')
+  })
+
+  it('录入页与编辑页挂的是同一个组件，而不是复制了一份表单', () => {
+    const byName = (name: string) => router.getRoutes().find((route) => route.name === name)
+    const create = byName('job-create')?.components?.default
+    const edit = byName('job-edit')?.components?.default
+
+    // 引用相等：这两条路由必须指向同一个组件对象。漂移的代价见 JobCreateView 文件头。
+    expect(create).toBeDefined()
+    expect(edit).toBe(create)
+  })
+})
+
+describe('核验计数的三句文案（2.D「计数必须可见」）', () => {
+  it('三个数各成一句、按顺序出现，且 dropped 与 deduped 绝不并成一个数', () => {
+    const lines = extractCountLines(
+      extractMetaFixture({ received_count: 20, dropped_count: 14, deduped_count: 3, truncated: true }),
+    )
+
+    expect(lines).toEqual([
+      'AI 给出 20 条，其中 14 条无法在 JD 原文中找到依据，已剔除',
+      '另有 3 条重名已合并',
+      '模型给出的条目超过 15 条，只保留了前 15 条',
+    ])
+    // 三句彼此独立：合并掉的数量不许混进那句「无法回溯原文」里。
+    expect(lines[0]).not.toContain('重名')
+    expect(lines[1]).not.toContain('无法在 JD 原文中找到依据')
+    // 反向护栏：把两个数相加显示成一个（早期设想过的「共剔除 17 条」）一定通不过这三行。
+    expect(lines.join('')).not.toContain('17')
+  })
+
+  it('每项为 0（`truncated` 为假）时那一句整条消失，三项全 0 时一句都不说', () => {
+    expect(extractCountLines(extractMetaFixture({ dropped_count: 0, deduped_count: 1, truncated: false })))
+      .toEqual(['另有 1 条重名已合并'])
+    expect(extractCountLines(extractMetaFixture({ dropped_count: 3, deduped_count: 0, truncated: false })))
+      .toEqual(['AI 给出 20 条，其中 3 条无法在 JD 原文中找到依据，已剔除'])
+    expect(extractCountLines(extractMetaFixture({ dropped_count: 0, deduped_count: 0, truncated: false })))
+      .toEqual([])
+    // 草稿还没回来（null）时也不能崩，屏幕上什么都不显示。
+    expect(extractCountLines(null)).toEqual([])
+  })
+
+  it('不把三个计数相加去凑 `received_count`（被封顶切掉的那格后端没有字段）', () => {
+    // 这份数字刻意做成「前三项之和 < received_count」：20 ≠ 14 + 1 + 返回 3 条。
+    const meta = extractMetaFixture({ received_count: 20, dropped_count: 14, deduped_count: 1, truncated: true })
+    const rendered = extractCountLines(meta).join(' ')
+
+    // 文案里出现的数只有 20 / 14 / 1 / 15 这几个原值；任何「合计 20 条」式的说法都会在这里变红，
+    // 因为把 dropped + deduped + 返回条数 加起来会得到 18，一个与 20 对不上的数字。
+    expect(rendered).toContain('20')
+    expect(rendered).not.toContain('18')
+    expect(meta.received_count).toBe(20)
+    expect(meta.dropped_count + meta.deduped_count + 3).toBe(18)
+  })
+})
+
+describe('提取失败的分支文案（禁止静默降级）', () => {
+  it('三个 AI 码各给各的下一步，互不混用', () => {
+    const missing = new ApiError('缺少 DeepSeek API Key。', 400, 'AI_KEY_MISSING')
+    const invalid = new ApiError('Key 无效。', 401, 'AI_KEY_INVALID')
+    const unavailable = new ApiError('AI 暂时不可用。', 502, 'AI_SERVICE_UNAVAILABLE')
+
+    // 缺 Key 与 Key 无效都要把用户送去「AI 设置」，但不能是同一句话（一个是去填，一个是去修）。
+    expect(extractFailureText(missing)).toContain('AI 设置')
+    expect(extractFailureText(invalid)).toContain('AI 设置')
+    expect(extractFailureText(missing)).not.toBe(extractFailureText(invalid))
+    // 上游挂了只该让他重试，**不该**让他去动 Key 或重新登录。
+    expect(extractFailureText(unavailable)).toContain('稍后重试')
+    expect(extractFailureText(unavailable)).not.toContain('AI 设置')
+    expect(extractFailureText(unavailable)).not.toContain('重新登录')
+  })
+
+  it('第 7 情形按 `finish_reason` 分流，不是按文案', () => {
+    // 同一个码、同一个 status，差别只在 `finishReason`——这正是后端给的唯一区分手段。
+    const truncated = new ApiError(
+      'AI 输出的技能条目过多，被服务端的 token 上限切断了。请重试，并只粘贴 JD 的核心段落，或减少期望的条数。',
+      502,
+      'AI_SERVICE_UNAVAILABLE',
+      null,
+      'length',
+    )
+    const ordinary = new ApiError('AI 暂时不可用。', 502, 'AI_SERVICE_UNAVAILABLE')
+
+    const truncatedText = extractFailureText(truncated)
+    expect(truncatedText).toContain('请把 JD 里真正想要的技能写清楚')
+    // 与「稍后重试」那条区分开：按第 4 情形的动作去处理第 7 情形，用户会反复点出同一个 502。
+    expect(truncatedText).not.toBe(extractFailureText(ordinary))
+    expect(extractFailureText(ordinary)).toContain('稍后重试')
+
+    // 反向：拿一句**含「切断」字样但没有 finish_reason** 的普通 502 去骗分流逻辑，
+    // 它必须仍走「稍后重试」——证明判据是字段而不是文案（服务端措辞随时会改）。
+    const lookalike = new ApiError('模型输出被切断了。', 502, 'AI_SERVICE_UNAVAILABLE')
+    expect(extractFailureText(lookalike)).toContain('稍后重试')
+    expect(extractFailureText(lookalike)).not.toContain('把 JD 里真正想要的技能写清楚')
+  })
+
+  it('限流 / 校验 / 断网三种非 AI 失败也各有下一步，且都没有「什么都不显示」的分支', () => {
+    expect(extractFailureText(new ApiError('请求太多。', 429, 'RATE_LIMITED'))).toContain('等一分钟')
+    expect(extractFailureText(new ApiError('校验失败。', 422, 'VALIDATION_ERROR'))).toContain('8000')
+    expect(extractFailureText(new ApiError('连不上。', 0, 'NETWORK_ERROR'))).toContain('后端')
+
+    // 兜底：非 ApiError（代码 bug、取消请求之类）也必须出一句人话，不能返回空串。
+    const fallback = extractFailureText(new Error('boom'))
+    expect(fallback).not.toBe('')
+    expect(fallback).toContain('提取失败')
+    // 未知 code 走 default 分支：把服务端的 message 原样带出来，并说明岗位没被动过。
+    expect(extractFailureText(new ApiError('没见过的错。', 500, 'WEIRD'))).toContain('没见过的错。')
+  })
+})
+
+describe('编辑态回填（`jobToFormInput`）', () => {
+  const asJob = (row: Record<string, unknown>) => row as unknown as JobsContract.JobRead
+
+  it('把详情摊平成表单：`origin` 不进表单，`evidence_text` / `confidence` 要带回来', () => {
+    const form = jobToFormInput(
+      asJob(
+        detail('job-1', {
+          skills: [
+            skillRow('s1', 'Python', { origin: 'jd_verifiable', confidence: '0.9000', evidence_text: '熟练掌握 Python' }),
+            skillRow('s2', '沟通能力强', { type: null }),
+          ],
+        }),
+      ),
+    )
+
+    expect(form.company_name).toBe('示例科技')
+    // 详情里 `deadline` 是 `null`（长期有效）→ 表单回到空串：`<input type="date">` 不接受 null。
+    expect(form.deadline).toBe('')
+    expect(form.skills).toHaveLength(2)
+    // `origin` 是服务端的派生结论，不是用户能填的东西：带进表单就等于「我声称我有出处」。
+    expect(form.skills[0]).not.toHaveProperty('origin')
+    // 但依据与把握必须带回来：否则在编辑页点一次保存就把上一次提取的锚点清空了。
+    expect(form.skills[0]).toEqual({
+      name: 'Python',
+      type: 'hard',
+      evidence_text: '熟练掌握 Python',
+      confidence: '0.9000',
+    })
+    // 第二条没有依据 → 两个键，`type` 为 null 转成空串（`<select>` 不接受 null）。
+    expect(form.skills[1]).toEqual({ name: '沟通能力强', type: '' })
+    // 读模型的 `id` 也不许流进表单行（PUT 会把整批技能先删后插，id 没有意义）。
+    expect(form.skills[0]).not.toHaveProperty('id')
+  })
+
+  it('一条技能都没有时补一行空行；再投影回请求体仍是空数组（不会提交一个空名字技能）', () => {
+    const form = jobToFormInput(asJob(detail('job-1', { skills: [] })))
+    expect(form.skills).toHaveLength(1)
+    expect(form.skills[0]).toEqual({ name: '', type: '' })
+
+    // 空行既不提交也不参与重名判断（`meaningfulSkills` 那一条），投影后是空数组。
+    expect(toWritePayload(form).skills).toEqual([])
+  })
+
+  it('编辑保存打 PUT /jobs/{id}，成功后详情页同步成新值', async () => {
+    const store = useJobStore()
+    await store.loadDetail('job-1')
+
+    const saved = await store.updateJob(
+      'job-1',
+      { ...jobToFormInput(store.detail as never), title: '后端实习（改）' },
+    )
+
+    expect(requestsFor('put', '/jobs/job-1')).toHaveLength(1)
+    const body = requestsFor('put', '/jobs/job-1')[0]?.body as Record<string, unknown>
+    expect(body.title).toBe('后端实习（改）')
+    expect(body, 'PUT 不许带 status').not.toHaveProperty('status')
+    expect(saved.title).toBe('后端实习（改）')
+    // 详情页拿的是同一份 store：改完回详情页必须看到新值，而不是上一次 GET 的缓存。
+    expect(store.detail?.title).toBe('后端实习（改）')
+    // 编辑保存**不刷新列表**（见 `updateJob` 注释：列表不在屏幕上，重拉会把用户回来时那一屏换掉）。
+    expect(requestsFor('get', '/jobs')).toHaveLength(0)
+  })
+
+  it('编辑保存同样先过提交前自检：重名技能不发请求', async () => {
+    const store = useJobStore()
+    await store.loadDetail('job-1')
+    const before = captured.length
+
+    await expect(
+      store.updateJob('job-1', {
+        ...jobToFormInput(store.detail as never),
+        skills: [{ name: 'Python', type: 'hard' }, { name: ' python ', type: 'soft' }],
+      }),
+    ).rejects.toThrow('技能名称不能重复，请先合并同名技能。')
+
+    expect(captured.length).toBe(before)
   })
 })

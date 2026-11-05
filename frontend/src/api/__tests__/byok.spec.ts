@@ -1,14 +1,18 @@
 /**
- * BYOK 客户端单测（ADR-009 的存储与分流 + ADR-010 的注入范围收窄）。
+ * BYOK 客户端单测（ADR-009 的存储与分流 + ADR-010 的注入范围 + ADR-011 2.A 的岗位扩展）。
  *
  * 钉住三条最容易静默坏掉、且**只有前端能发现**的链路：
  *
  * 1. Key 只在 `sessionStorage`，绝不进 `localStorage`。写错的后果是关掉浏览器之后
  *    Key 还在磁盘上——那正是这套架构要避免的事，而且没有任何测试会替你发现。
- * 2. `X-DeepSeek-Key` 只挂在**润色**请求上（ADR-010）。挂到全部请求等于把 Key 发给
- *    每一个端点；挂回 `/resumes/generate` 则等于承认「生成还在调 AI」——那条路已经不需要它。
+ * 2. `X-DeepSeek-Key` 只挂在**真正被转发给 DeepSeek 的端点**上：
+ *    `/resumes/polish`（ADR-010）与 `POST /jobs/extract-skills`（ADR-011 2.A）。
+ *    挂到全部请求等于把 Key 发给每一个端点；挂回 `/resumes/generate` 则等于承认
+ *    「生成还在调 AI」——那条路已经不需要它。注入范围的完整矩阵见下面那个 describe。
  * 3. DeepSeek 的 401（`AI_KEY_INVALID`）不能被 401 拦截器当成「登录过期」。
  *    弄错的表现为「Key 打错 → 用户被踢回登录页」，而他会以为是自己的账号坏了。
+ *    分流判据是 code 而不是 URL（ADR-010 §6），所以岗位侧一接上就自动复用同一条分流——
+ *    「自动复用」不能靠读代码宣布，下面有一条用例专门走提取请求证明它。
  *
  * 做法：把 axios 的 adapter 换成假的，让**真实拦截器链**跑一遍但不碰网络；
  * 断言看的是最终发出去的请求头和调用次数，不是内部实现细节。
@@ -22,6 +26,7 @@ import {
 } from 'axios'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { jobsApi } from '@/api'
 import {
   ApiError,
   authHttp,
@@ -168,6 +173,145 @@ describe('X-DeepSeek-Key 的注入范围', () => {
     await http.post('/resumes/polish', { mode: 'medium' })
 
     expect(header).toBeUndefined()
+  })
+})
+
+/**
+ * 本轮（C2）唯一的鉴权面扩张：Key 从「只有润色」扩到「润色 + `POST /jobs/extract-skills`」。
+ * 这条矩阵是本轮最重要的一组断言，**钉满两侧**：
+ *
+ * - 正向两个：漏一个 = 功能直接坏（后端 400 `AI_KEY_MISSING`）。
+ * - 反向八个：多一个 = Key 泄漏面按端点个数扩大。`/jobs` 下那七个端点全部只走我们
+ *   自己的数据库，一个字节都不发往 DeepSeek，带上 Key 纯属白送；而它们都会进
+ *   访问日志、代理日志、异常上报——每一处都是多一份泄漏点。
+ *
+ * 全部通过 `jobsApi` 的**真实封装**发请求，而不是手写 URL 字符串：
+ * 手写 URL 的测试只能证明「匹配器认识我编的那个串」，走封装才能证明
+ * 「`api/jobs.ts` 里那条真实路径确实在白名单里」——两处任一边改动都会让这组断言变红。
+ *
+ * `spy` 记录的是拦截器处理完之后、真正交给 adapter 的请求头（即出线那一刻）。
+ */
+describe('Key 注入矩阵：岗位侧只扩 `/jobs/extract-skills` 这一个 URL', () => {
+  /** url → 出线时看到的 `X-DeepSeek-Key`。用数组而不是对象，避免同 URL 覆盖。 */
+  let sentHeaders: Array<{ url: string; key: string | undefined; method: string }>
+
+  /** 一份能同时喂饱 `listJobs` / `getJob` / `createJob` / `extractJobSkills` 的信封。 */
+  function universalEnvelope(config: InternalAxiosRequestConfig): AxiosResponse {
+    return response(config, {
+      data: {
+        jobs: [],
+        job: { id: 'job-1' },
+        skills: [],
+        // 提取结果的七个计数住在 `data.meta`；这里给最小可用值。
+        meta: {
+          model: 'deepseek-flash',
+          prompt_version: 'v1',
+          received_count: 0,
+          dropped_count: 0,
+          deduped_count: 0,
+          truncated: false,
+          finish_reason: 'stop',
+        },
+      },
+      meta: { request_id: 'r', page: 1, page_size: 50, total: 0 },
+    })
+  }
+
+  beforeEach(() => {
+    sentHeaders = []
+    http.defaults.adapter = async (config) => {
+      sentHeaders.push({
+        url: config.url ?? '',
+        method: (config.method ?? 'get').toLowerCase(),
+        key: config.headers['X-DeepSeek-Key'] as string | undefined,
+      })
+      return universalEnvelope(config)
+    }
+    setDeepSeekKey(TEST_KEY)
+  })
+
+  /** 取某个「方法 + 路径」最后一次出线时的 Key。 */
+  function keyFor(method: string, url: string): string | undefined | 'MISSING' {
+    const hit = sentHeaders.filter((item) => item.method === method && item.url === url).pop()
+    return hit ? hit.key : 'MISSING'
+  }
+
+  it('两个 AI 端点带 Key：/resumes/polish 与 /jobs/extract-skills', async () => {
+    await http.post('/resumes/polish', { mode: 'medium' })
+    await jobsApi.extractJobSkills({ description: '熟练掌握 Python', title: '后端实习' })
+
+    expect(keyFor('post', '/resumes/polish')).toBe(TEST_KEY)
+    expect(keyFor('post', '/jobs/extract-skills')).toBe(TEST_KEY)
+    // 反向确认：这两次确实各发出了一次，不是断言了一个空集合。
+    expect(sentHeaders.map((item) => item.url)).toEqual(['/resumes/polish', '/jobs/extract-skills'])
+  })
+
+  it('`/jobs` 下其余七个端点一律不带 Key', async () => {
+    // 这一串就是「宽判据会把 Key 送到哪儿」的清单：`includes('/jobs')` 会把它们全纳进去。
+    await jobsApi.listJobs({ status: 'draft' })
+    await jobsApi.getJob('job-42')
+    await jobsApi.createJob({ company_name: 'c', title: 't', description: 'd', skills: [] })
+    await jobsApi.updateJob('job-42', { company_name: 'c', title: 't', description: 'd', skills: [] })
+    await jobsApi.publishJob('job-42')
+    await jobsApi.unpublishJob('job-42')
+    await jobsApi.listJobTrash()
+    await jobsApi.restoreJob('job-42')
+    await jobsApi.deleteJob('job-42')
+
+    expect(sentHeaders.length).toBe(9)
+    for (const item of sentHeaders) {
+      expect(item.key, `${item.method} ${item.url} 不该携带 DeepSeek Key`).toBeUndefined()
+    }
+    // 逐条列出被访问过的路径：万一封装改了 URL，上面那个循环会因为集合变了而假绿。
+    expect(sentHeaders.map((item) => `${item.method} ${item.url}`).sort()).toEqual([
+      'delete /jobs/job-42',
+      'get /jobs',
+      'get /jobs/job-42',
+      'get /jobs/trash',
+      'post /jobs',
+      'put /jobs/job-42',
+      'put /jobs/job-42/publish',
+      'put /jobs/job-42/restore',
+      'put /jobs/job-42/unpublish',
+    ])
+  })
+
+  it('近似路径也不带：`/jobs/{id}/extract-skills`、`/jobs/extract-skills/extra`、`/jobs/extract-skills-today`', async () => {
+    // 这三个都是「按 `includes` 写判据时会一起命中」的形状；判据必须做到整段相等。
+    await http.get('/jobs/job-42/extract-skills')
+    await http.post('/jobs/extract-skills/extra', {})
+    await http.post('/jobs/extract-skills-today', {})
+    await http.post('/jobs/extract-skills/', {}) // 尾斜杠归一后**应当**命中，是白名单内的那条
+
+    expect(sentHeaders[0]?.key).toBeUndefined()
+    expect(sentHeaders[1]?.key).toBeUndefined()
+    expect(sentHeaders[2]?.key).toBeUndefined()
+    expect(sentHeaders[3]?.key).toBe(TEST_KEY)
+  })
+
+  it('提取请求撞 AI_KEY_INVALID(401) 时不进刷新重放、不踢下线（复用既有分流）', async () => {
+    localStorage.setItem('ai-career.access-token', 'old-access')
+    localStorage.setItem('ai-career.refresh-token', 'old-refresh')
+    const onUnauthorized = vi.fn()
+    setUnauthorizedHandler(onUnauthorized)
+
+    // 后端第 2 情形的真实形状：401 + `error.code = AI_KEY_INVALID`（`app/main.py` 的处理器）。
+    http.defaults.adapter = async (config) => {
+      requestedUrls.push(config.url ?? '')
+      return Promise.reject(unauthorized(config, 'AI_KEY_INVALID'))
+    }
+
+    const error = await jobsApi.extractJobSkills({ description: '熟练掌握 Python' }).catch((e) => e)
+
+    expect(error).toBeInstanceOf(ApiError)
+    expect((error as ApiError).code).toBe('AI_KEY_INVALID')
+    expect((error as ApiError).status).toBe(401)
+    // 用户要修的是 AI 设置里的 Key，不是重新登录：刷新一次都不该发。
+    expect(requestedUrls.filter((url) => url.includes('/auth/refresh'))).toEqual([])
+    expect(onUnauthorized).not.toHaveBeenCalled()
+    expect(localStorage.getItem('ai-career.access-token')).toBe('old-access')
+    // 原请求也只打了一次（没有重放）。
+    expect(requestedUrls.filter((url) => url.includes('/jobs/extract-skills'))).toHaveLength(1)
   })
 })
 

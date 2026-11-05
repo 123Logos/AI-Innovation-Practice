@@ -41,13 +41,29 @@ export class ApiError extends Error {
   readonly status: number
   readonly code: string
   readonly details: unknown
+  /**
+   * 错误信封**外层** `meta.finish_reason`（正常响应里根本没有这个键）。
+   *
+   * 它唯一的用途是把 `/jobs/extract-skills` 的第 7 情形（输出被服务端 token 上限切断）
+   * 与第 3/4/5/6 情形分开：两者同为 502 + `AI_SERVICE_UNAVAILABLE`，错误码一模一样，
+   * 而用户该做的下一步完全不同（切断 → 少粘点 JD 内容；其余 → 稍后重试）。
+   * 判据只能是这个字段——按文案分支等于把「服务端哪天改措辞」变成一次功能回归。
+   */
+  readonly finishReason: string | null
 
-  constructor(message: string, status: number, code: string, details: unknown = null) {
+  constructor(
+    message: string,
+    status: number,
+    code: string,
+    details: unknown = null,
+    finishReason: string | null = null,
+  ) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.code = code
     this.details = details
+    this.finishReason = finishReason
   }
 }
 
@@ -186,11 +202,30 @@ export function hasDeepSeekKey(): boolean {
   return getDeepSeekKey().length > 0
 }
 
-/** 只有润色请求才带 Key（ADR-010）：`/resumes/generate` 是纯模板，带一个无关的鉴权头
- * 只会多一处泄漏面。 */
-function isResumePolishRequest(url: string | undefined): boolean {
+/**
+ * 哪些请求携带 `X-DeepSeek-Key`（BYOK）。
+ *
+ * 判据是一份**白名单**而不是模式匹配，且只列真正消耗用户 AI 额度的端点：
+ * 目前两个——`/resumes/polish`（ADR-010）与 `POST /jobs/extract-skills`（ADR-011 2.A）。
+ *
+ * 为什么岗位侧只扩 `/jobs/extract-skills` 这一条：`/jobs` 下其余七个端点
+ * （列表 / 创建 / 详情 / 更新 / publish / unpublish / trash / restore）全部走我们自己的
+ * 数据库，一个字节都不发往 DeepSeek。用 `url.includes('/jobs')` 这种宽判据把它们一并纳进来，
+ * 等于把用户的 Key 复制到八个与服务毫无必要的接收方——泄漏面按端点个数翻倍，
+ * 而且这些端点的日志、代理访问日志、任何一处误打请求头都会带上它。
+ * 每扩一个 URL 都必须能回答「这个请求会不会被转发给 DeepSeek」，答不上来就不许加。
+ *
+ * 匹配刻意做到**整段相等**（去掉 baseURL 与查询串后比路径）：
+ * `includes('/jobs')` 会连 `/jobs/trash` 一起命中，而 `includes('/jobs/extract-skills')`
+ * 会连 `/jobs/extract-skills/anything` 一起命中。宁可写死两条精确路径。
+ */
+const BYOK_KEY_PATHS = ['/resumes/polish', '/jobs/extract-skills'] as const
+
+function isDeepSeekKeyRequest(url: string | undefined): boolean {
   if (!url) return false
-  return url.includes('/resumes/polish')
+  // `url` 在这里是 axios 的相对路径（不含 baseURL），可能带查询串；只看路径那一段。
+  const path = url.split('?')[0].replace(/\/+$/, '')
+  return (BYOK_KEY_PATHS as readonly string[]).includes(path)
 }
 
 type UnauthorizedHandler = () => void
@@ -249,7 +284,26 @@ function toApiError(error: AxiosError<ApiErrorBody>): ApiError {
     status,
     payload?.code ?? (status === 0 ? 'NETWORK_ERROR' : 'UNKNOWN_ERROR'),
     payload?.details ?? null,
+    readFinishReason(body),
   )
+}
+
+/**
+ * 从错误信封的**外层** `meta` 里读 `finish_reason`。
+ *
+ * 为什么不去读 `data.meta`：第 7 情形由 `app/api/v1/jobs.py:144-153` 就地组装，走的是
+ * `error_response()`，那个形状里根本没有 `data` 键（`app/core/errors.py:15-23`），
+ * `finish_reason` 被追加在外层 `meta` 上；而成功响应的七个计数在 `data.meta`、
+ * 外层只有 `request_id`（`app/core/responses.py:10-11`）。同一个名字住在两层里，
+ * 读错的那一层拿到 `undefined`，第 7 情形就会被并进「稍后重试」，用户反复重试同一条长 JD。
+ *
+ * `ApiMeta` 类型里没有这个键（它只描述成功信封的 `request_id`），所以在这里做一次
+ * 结构探测而不是改 `types.ts`：那是全局契约，为一个端点的附加字段扩它不值。
+ */
+function readFinishReason(body: ApiErrorBody | undefined): string | null {
+  const meta = (body as { meta?: Record<string, unknown> } | undefined)?.meta
+  const value = meta?.finish_reason
+  return typeof value === 'string' ? value : null
 }
 
 const SESSION_EXPIRED_MESSAGE = '登录状态已失效，请重新登录。'
@@ -369,8 +423,8 @@ http.interceptors.request.use(async (config) => {
     config.headers.Authorization = `Bearer ${token}`
   }
 
-  // BYOK：只有 AI 润色这一个接口需要用户自带的 DeepSeek Key（ADR-010）。
-  if (isResumePolishRequest(config.url)) {
+  // BYOK：只有白名单里的两个 AI 端点携带用户自带的 DeepSeek Key（ADR-010 / ADR-011 2.A）。
+  if (isDeepSeekKeyRequest(config.url)) {
     const deepSeekKey = getDeepSeekKey()
     if (deepSeekKey) {
       config.headers['X-DeepSeek-Key'] = deepSeekKey

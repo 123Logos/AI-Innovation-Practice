@@ -8,8 +8,12 @@
  *    用应用时钟算，前端再实现一遍必然漂移）。
  * 2. **`origin` 徽标只有两态**，文案固定为「可回溯原文」/「未标注出处」，
  *    **不出现「AI 提取」字样**（v7：这一列只证明「这句话在 JD 原文里出现过」，
- *    不证明是谁写的；本轮全部条目都是手填 → 恒为 `unverified`）。
+ *    不证明是谁写的——手动粘一段原文进 `evidence` 也会被派生成同一个值）。
  * 3. **`evidence_text` 为 NULL 时整块不渲染**：不空着一条展开区、也不写「无依据」占位。
+ *    `confidence` 同理：`null` 就不显示那一格，而不是显示「0」或「—」——
+ *    把「模型没给数」画成一个看起来像数值的占位符，是给用户一份不存在的依据。
+ * 4. **确认弹窗一律用页面内的 `.ui-overlay` / `.ui-panel`**，不用 `window.confirm`：
+ *    原生对话框阻塞 CDP，自动化验收走不完（理由与事故记录写在 `askDelete()` 上方）。
  *
  * 「你已具备」是只读比对（2.E）：与当前登录用户默认简历的技能名做归一化等值比较，
  * 不写表、不打分、不排序。
@@ -17,7 +21,7 @@
  * 只有创建者能看到「发布 / 下架 / 删除」——后端对非创建者一律 404（1.F），
  * 摆一个必然失败的按钮比不摆更糟。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
 import AppTopBar from '@/components/AppTopBar.vue'
@@ -74,6 +78,21 @@ function skillTypeLabel(value: string | null): string {
  */
 function originBadge(origin: string): string {
   return JOB_ORIGIN_BADGES[origin as keyof typeof JOB_ORIGIN_BADGES] ?? JOB_ORIGIN_BADGES.unverified
+}
+
+/**
+ * `confidence` 的展示：`0.9000` → `0.90`；`null` → 空串（调用方整块不渲染）。
+ *
+ * 后端列宽是 `DECIMAL(5,4)`、JSON 里是字符串，这里只裁到两位小数：
+ * 第四位没有决策价值，而 ADR-011「后果」章已写明 `confidence` 是不是模型随手填的
+ * 本轮**无法验证**——把一个不确定的自报数显示成 `0.9123` 那种精度，
+ * 反而会让用户以为它有含义。原始串仍然在库里，这里只动显示。
+ */
+function confidenceLabel(value: string | null): string {
+  if (!value) return ''
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return value
+  return parsed.toFixed(2)
 }
 
 /**
@@ -158,12 +177,11 @@ async function handleUnpublish(): Promise<void> {
 async function handleDelete(): Promise<void> {
   const current = job.value
   if (!current || actionBusy.value) return
-  const confirmed = window.confirm('删除后可在「我的删除」里找回，确认删除？')
-  if (!confirmed) return
   actionBusy.value = 'delete'
   actionError.value = ''
   try {
     await store.remove(current.id)
+    deleteConfirmOpen.value = false
     await router.push({ name: 'job-board' })
   } catch (error) {
     actionError.value = describeError(error, '删除失败，请稍后重试。')
@@ -172,9 +190,46 @@ async function handleDelete(): Promise<void> {
   }
 }
 
+/* ------------------------------ 删除确认弹窗 ------------------------------ */
+
+/**
+ * 删除确认用页面内的 `.ui-overlay` / `.ui-panel` 弹层，**不用 `window.confirm`**。
+ *
+ * Why：原生 `window.confirm` 是**同步阻塞**的——它把 JS 主线程钉在那里等鼠标，
+ * 于是浏览器自动化通道（CDP）在这一步既拿不到返回值、也发不出后续指令，整条验收
+ * 流程停在弹窗上不能继续。本轮之前就真发生过：驱动点「删除」后对话框挂死，
+ * 自动化删除流程走不通，只能退回手写 curl 验证。这一条不是风格偏好，是验收能力。
+ *
+ * 换成自建弹层后，「确认」是一次普通 click 事件：可读、可点、可截图、可断言。
+ * 键盘可达性照 `AppTopBar.vue` 的先例补齐：Esc 关、点遮罩关、焦点进得到按钮。
+ */
+const deleteConfirmOpen = ref(false)
+
+function askDelete(): void {
+  if (!job.value || actionBusy.value) return
+  actionError.value = ''
+  deleteConfirmOpen.value = true
+}
+
+function closeDeleteConfirm(): void {
+  // 删除在途时不关：否则用户看见的是「弹窗消失了但按钮还转圈」，
+  // 分不清是删完了还是被自己关掉了。
+  if (actionBusy.value === 'delete') return
+  deleteConfirmOpen.value = false
+}
+
+function onDialogKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && deleteConfirmOpen.value) closeDeleteConfirm()
+}
+
 onMounted(() => {
+  document.addEventListener('keydown', onDialogKeydown)
   void load()
   void loadMine()
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onDialogKeydown)
 })
 </script>
 
@@ -189,6 +244,16 @@ onMounted(() => {
         </div>
         <div class="heading-actions">
           <RouterLink class="text-link" :to="{ name: 'job-board' }">← 返回列表</RouterLink>
+          <!-- 编辑入口只对创建者显示：后端对非创建者的 PUT 一律 404（1.F #4），
+               摆一个必然失败的链接比不摆更糟。`/jobs/:id/edit` 是 ADR-011 议题 3.B v9 补的那一条。 -->
+          <RouterLink
+            v-if="isCreator"
+            class="text-link"
+            data-testid="edit-link"
+            :to="{ name: 'job-edit', params: { id: String(route.params.id ?? '') } }"
+          >
+            编辑
+          </RouterLink>
           <RouterLink class="text-link" :to="{ name: 'job-trash' }">我的删除</RouterLink>
         </div>
       </div>
@@ -258,8 +323,9 @@ onMounted(() => {
             <button
               class="row-button row-button--danger"
               type="button"
+              data-testid="delete-button"
               :disabled="actionBusy !== null || store.submitting"
-              @click="handleDelete"
+              @click="askDelete"
             >
               {{ actionBusy === 'delete' ? '删除中…' : '删除' }}
             </button>
@@ -302,13 +368,66 @@ onMounted(() => {
                 <span class="badge badge--origin">{{ originBadge(skill.origin) }}</span>
                 <span v-if="store.matchesMySkill(skill.name)" class="badge badge--mine">你已具备</span>
               </div>
-              <!-- `evidence_text` 为 NULL（本轮恒为 NULL）时整块不渲染：不留下空的展开区。 -->
-              <p v-if="skill.evidence_text" class="skill-evidence">原文依据：{{ skill.evidence_text }}</p>
+              <!--
+                `evidence_text` 为 NULL 时整块不渲染：不留下空的展开区、也不写「无依据」占位。
+                这里**保持 B2 的直出显示**（议题 3.B「evidence 展开可见」），不改成交互展开：
+                详情页是核对场所，依据默认看得见比少一次点击更重要；录入页才需要收起。
+                `confidence` 是本轮补上的一格——C1 之后它有真值了，而这一页原先根本不显示它。
+              -->
+              <p v-if="skill.evidence_text" class="skill-evidence">
+                原文依据：{{ skill.evidence_text }}
+                <!-- `confidence` 为 null 时这一格整个不出现：留「—」会被读成一个真实数值。 -->
+                <span v-if="confidenceLabel(skill.confidence)" class="skill-confidence">
+                  · 模型把握 {{ confidenceLabel(skill.confidence) }}
+                </span>
+              </p>
             </li>
           </ul>
         </section>
       </template>
     </main>
+
+    <!--
+      删除确认弹层：`Teleport` 到 body（与 `AppTopBar.vue` 的两个自建弹窗同一做法），
+      遮罩用全局 `.ui-overlay`（flex + `margin:auto`）——它刻意不用
+      `grid + place-items:center`：内容比视口高时居中会把面板顶出滚动范围、按钮够不着。
+    -->
+    <Teleport to="body">
+      <div v-if="deleteConfirmOpen" class="ui-overlay" data-testid="delete-dialog" @click.self="closeDeleteConfirm">
+        <section
+          class="ui-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="job-delete-heading"
+        >
+          <h2 id="job-delete-heading" class="dialog-title">删除这条岗位？</h2>
+          <p class="dialog-body">
+            删除后这条岗位进「我的删除」，技能条目一行都不会丢，随时可以恢复。
+            <b>{{ job?.title }}</b>（{{ job?.company_name }}）
+          </p>
+          <div class="dialog-actions">
+            <button
+              class="row-button row-button--ghost"
+              type="button"
+              data-testid="delete-cancel"
+              :disabled="actionBusy === 'delete'"
+              @click="closeDeleteConfirm"
+            >
+              取消
+            </button>
+            <button
+              class="row-button row-button--danger"
+              type="button"
+              data-testid="delete-confirm"
+              :disabled="actionBusy !== null || store.submitting"
+              @click="handleDelete"
+            >
+              {{ actionBusy === 'delete' ? '删除中…' : '确认删除' }}
+            </button>
+          </div>
+        </section>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -360,6 +479,12 @@ onMounted(() => {
 .skill-name { color: var(--ui-ink); font-size: 13px; font-weight: 600; }
 .skill-evidence { margin: 0; border-left: 2px solid var(--theme-rule-soft); padding-left: 8px; color: var(--ui-ink-faint); font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .empty { margin: 0; color: var(--ui-ink-faint); font-size: 13px; }
+
+/* 删除确认弹层：外壳是全局 `.ui-overlay` / `.ui-panel`，这里只补这一页特有的三件。 */
+.dialog-title { margin: 0; color: var(--ui-ink); font-size: 17px; font-weight: 650; }
+.dialog-body { margin: 8px 0 0; color: var(--ui-ink-muted); font-size: 13px; line-height: 1.6; }
+.dialog-body b { color: var(--ui-ink); font-weight: 600; }
+.dialog-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 20px; }
 
 .row-button { height: 32px; border: 1px solid var(--theme-rule); border-radius: var(--ui-radius); padding: 0 14px; color: var(--theme-primary-deep); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 12px; white-space: nowrap; }
 .row-button:hover:not(:disabled) { background: var(--theme-bg-hover); }

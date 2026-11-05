@@ -7,12 +7,17 @@
  * 1. **筛选与分页状态**（`keyword` / `status` / `includeExpired` + `page`）。
  *    放在 store 而不是组件里：从详情页返回列表页时要能接着看到原来那一屏，
  *    组件卸载重挂就丢掉筛选条件是最常见的「我刚才筛的呢」。
- * 2. **写侧载荷的投影**（`toWritePayload()`）。后端 `JobWriteRequest` 只接受技能的
- *    `name` 与 `type`；`origin` / `evidence_text` / `confidence` 与顶层的 `status`
- *    会被 Pydantic `extra="ignore"` **整键丢掉且不报错**（ADR-011 1.F 的 v6 补条）。
- *    「不报错」意味着前端若图省事把读模型原样发回去，用户会以为存进去了。
- *    所以投影只在这里做一次，`stores/__tests__/job.spec.ts` 钉一条反向断言。
- * 3. **「你已具备」的只读比对**（`loadMySkillNames()` + `matchesMySkill()`）。
+ * 2. **写侧载荷的投影**（`toWritePayload()`）。后端 `JobWriteRequest` 的 `skills[]` 只接受
+ *    `name` / `type` / `evidence_text` / `confidence` 四格；`origin` 与三列提取溯源戳
+ *    （`extract_model` / `extract_prompt_version` / `extracted_at`）以及顶层 `status`
+ *    会被 Pydantic `extra="ignore"` **整键丢掉且不报错**（ADR-011 1.D / 1.F v9 第 ①② 条）。
+ *    「不报错」意味着前端若图省事把读模型原样发回去，用户会以为存进去了，而 `origin`
+ *    其实由服务端按本次提交重算。所以投影只在这里做一次（逐键挑，不是逐键删），
+ *    `stores/__tests__/job.spec.ts` 钉一条反向断言。
+ * 3. **AI 提取结果的草稿态**（`extractSkills()` + `mergeExtractedInto()`）。
+ *    提取是纯计算（2.A），结果只存在这个 store 里，表单行由视图承接，
+ *    **库里要到用户点「保存岗位」才被动**；`reset()` 连这份草稿一起清掉。
+ * 4. **「你已具备」的只读比对**（`loadMySkillNames()` + `matchesMySkill()`）。
  *    按 2.E：拿当前登录用户**默认简历**的技能名与 `job_skills.name` 做归一化等值比较
  *    （口径与后端同：`trim` → NFKC → 小写，见 `normalizeSkillName()`），命中就标一下。
  *    不写任何表、不产生匹配分数、不排序——人岗匹配仍在 AGENTS.md §3.2 的冻结清单里。
@@ -28,7 +33,7 @@
 import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import { jobsApi, profilesApi } from '@/api'
+import { jobsApi, profilesApi, isApiError } from '@/api'
 import type { jobsApi as JobsContract } from '@/api'
 import { useAuthStore } from '@/stores/auth'
 
@@ -37,6 +42,7 @@ type JobRead = JobsContract.JobRead
 type JobStatus = JobsContract.JobStatus
 type JobSkillType = JobsContract.JobSkillType
 type EmploymentType = JobsContract.EmploymentType
+type ExtractSkillsResult = JobsContract.ExtractSkillsResult
 
 /* -------------------------------- 展示文案 -------------------------------- */
 
@@ -132,10 +138,22 @@ export interface JobFormInput {
   skills: JobSkillFormRow[]
 }
 
-/** 表单里的一行技能：只有 `name` 与 `type` 两格，**没有** AI 语义字段的输入位。 */
+/** 表单里的一行技能。
+ *
+ * `name` / `type` 是用户直接编辑的两格；`evidence_text` / `confidence` 是
+ * **跟着 AI 结果一起带进来的附注**（ADR-011 v9 放开写回路径）：表单不给它们输入位、
+ * 但提交时要把它们原样发回去，否则详情页的「可回溯原文」徽标与 §2.D.1 的核验无处落地。
+ * 它们只可能由提取写入，手动新增的行永远是 `undefined`。
+ *
+ * **没有 `origin`**：那是服务端的派生结论，表单里出现它只会让人以为可以手填出处。
+ */
 export interface JobSkillFormRow {
   name: string
   type: JobSkillType | ''
+  /** JD 原文片段（≤60 字），来自提取结果；手动行为 `undefined`。 */
+  evidence_text?: string
+  /** 模型自报的把握；提取响应里是数字，编辑态回填时是后端读回的字符串，两种都原样带。 */
+  confidence?: string | number
 }
 
 /** 一行都还没填时的空行；录入页至少留一行，区段才不会消失。 */
@@ -196,9 +214,13 @@ function isNumeric(value: string): boolean {
 /**
  * 把表单状态投影成后端接受的请求体。
  *
- * 两条硬规则：
- * - 技能只取 `name` / `type` 两个键（`origin` / `evidence_text` / `confidence` 一律不发）；
- * - 顶层不写 `status`：发布是 `PUT /jobs/{id}/publish` 的独立动作，不是创建的副作用。
+ * 三条硬规则：
+ * - 技能**逐键挑**而不是原样转发：只发 `name` / `type` / `evidence_text` / `confidence`，
+ *   `origin` 永远不发（服务端按 §2.D.1 现场派生，客户端声称的出处没有分量）；
+ * - 没有值的两格**不写进键集**：后端 `evidence_text` / `confidence` 的默认值就是 `None`，
+ *   手动行发 `null` 与不发是同一件事，但不发能让「这条依据是 AI 给的还是没给」在
+ *   测试里一眼可辨（也避免把空串发过去——空串会先被后端的 `normalize_evidence_text` 折成 NULL）。
+ * - 顶层不写 `status`：发布是 `PUT /jobs/{id}/publish` 的独立动作，不是创建或编辑的副作用。
  */
 export function toWritePayload(form: JobFormInput): JobsContract.JobWriteRequest {
   return {
@@ -211,11 +233,58 @@ export function toWritePayload(form: JobFormInput): JobsContract.JobWriteRequest
     salary_max: form.salary_max.trim() || null,
     experience_required: form.experience_required.trim() || null,
     deadline: form.deadline || null,
-    skills: meaningfulSkills(form.skills).map((row) => ({
-      name: row.name.trim(),
-      // 空串转 null：后端 `type: SkillType | None`，传 `''` 会 422。
-      type: row.type || null,
-    })),
+    skills: meaningfulSkills(form.skills).map((row) => {
+      const evidence = row.evidence_text?.trim()
+      const skill: JobsContract.JobSkillInput = {
+        name: row.name.trim(),
+        // 空串转 null：后端 `type: SkillType | None`，传 `''` 会 422。
+        type: row.type || null,
+      }
+      if (evidence) skill.evidence_text = evidence
+      if (row.confidence !== undefined && row.confidence !== null && row.confidence !== '') {
+        skill.confidence = row.confidence
+      }
+      return skill
+    }),
+  }
+}
+
+/**
+ * 把详情读模型摊平成表单初值（`/jobs/:id/edit` 的回填）。
+ *
+ * 与 `toWritePayload()` 是同一枚硬币的两面，所以放在同一个文件里：
+ * - **`origin` 不落进表单行**：它是服务端的派生结论，不是用户能填的东西；
+ *   带进表单只会在下一次 PUT 时变成一个「看起来是我选的出处」的假事实。
+ * - `id` / `status` / 三列溯源戳 / `created_*` 同理丢掉：请求体里没有这些键。
+ * - `evidence_text` / `confidence` 反过来**要带回来**：编辑态把技能删到只剩名字再保存，
+ *   等于把上一次提取的核验锚点清空，徽标会从「可回溯原文」掉成「未标注出处」，
+ *   而用户在屏幕上什么提示都没拿到。
+ * - `salary_*` 读回来是字符串（`"8000.00"`），原样填进 `<input>`，不做数值转换。
+ * - 技能为空时补一行空行：与 `createEmptyJobForm()` 同一约定，区段不能整个消失。
+ */
+export function jobToFormInput(job: JobRead): JobFormInput {
+  return {
+    company_name: job.company_name,
+    title: job.title,
+    location: job.location ?? '',
+    employment_type: (job.employment_type as EmploymentType) ?? '',
+    description: job.description,
+    salary_min: job.salary_min ?? '',
+    salary_max: job.salary_max ?? '',
+    experience_required: job.experience_required ?? '',
+    // `deadline` 是 `YYYY-MM-DD`，与 `<input type="date">` 的取值格式一致，不需要换算。
+    deadline: job.deadline ?? '',
+    skills: job.skills.length
+      ? job.skills.map((skill) => {
+          const row: JobSkillFormRow = {
+            name: skill.name,
+            type: (skill.type as JobSkillType) ?? '',
+          }
+          if (skill.evidence_text) row.evidence_text = skill.evidence_text
+          if (skill.confidence !== null) row.confidence = skill.confidence
+          return row
+        })
+      : [createEmptySkillRow()],
   }
 }
 
@@ -269,6 +338,207 @@ export function validateJobForm(form: JobFormInput): string | null {
   return null
 }
 
+/* ------------------------------ AI 提取（草稿态） --------------------------- */
+
+/**
+ * 一次「把提取结果合进表单」的产出。
+ *
+ * 分成四个数而不是一个，是因为用户要做 decisions 各不相同：
+ * 重名跳过 → 什么都不用做（库里本来也只允许一条）；超上限没加入 → 得先删掉几行才能继续加。
+ * 把两者并成「跳过了若干条」会让人以为表单坏了。
+ */
+export interface ExtractMergePlan {
+  /** 合并后的完整技能行数组，视图直接整体替换 `form.skills`。 */
+  rows: JobSkillFormRow[]
+  /**
+   * 本次真正加进表单的那几行（同一批对象引用）。
+   * 「放弃本次提取」靠它判断哪些行可以安全撤掉——只撤内容还没被改过的。
+   */
+  added: JobSkillFormRow[]
+  /** 与已有技能行（或本批更早的候选）重名而被跳过的条数。 */
+  skippedDuplicate: number
+  /** 因为表单已经到了 15 条上限而没能加入的条数（后端 `max_length` 会 422）。 */
+  skippedLimit: number
+  /** 候选里名字为空、无法成为一行的条数（后端 `name` 有 `min_length=1`）。 */
+  skippedBlank: number
+}
+
+/**
+ * 把提取结果合进技能行数组。**纯函数，不发请求、不落库。**
+ *
+ * 判重键必须用 `normalizeSkillName()`：它与后端 `skill_name_key()`
+ * （NFKC + casefold，`app/schemas/job.py`）同口径，而 `JobWriteRequest.validate_unique_skill_names`
+ * 用的就是那个键。这里换成别的口径（比如裸字符串比较）的后果不是难看，而是
+ * **把一个注定 422 的 payload 交给用户**——他做完全部删改、点保存，才看到一条
+ * 「技能名称重复」，而屏幕上两条看起来长得不一样（`Python` / `python`）。
+ * 这个函数是 ADR-011 §2.D.2 那条教训在前端的落点。
+ *
+ * 两条刻意的取舍：
+ * - 重名的候选**跳过而不是覆盖**：已有行可能是用户手写的、还带着他自己选的 `type`，
+ *   用 AI 的版本盖掉等于改了他写的东西；
+ * - 到达上限就停手并计数：静默丢候选是本项目红线（禁止静默降级），
+ *   多塞进表单则会把「保存」变成一次必败的 422。
+ */
+export function mergeExtractedSkills(
+  rows: JobSkillFormRow[],
+  skills: JobsContract.ExtractedSkill[],
+  limit: number = SKILL_LIMIT,
+): ExtractMergePlan {
+  const merged = rows.map((row) => ({ ...row }))
+  // 已有行先进键集：本批候选之间也要判重，所以每加一条就把它自己的键也放进去。
+  const taken = new Set(merged.map((row) => normalizeSkillName(row.name)).filter((key) => key !== ''))
+
+  const added: JobSkillFormRow[] = []
+  let skippedDuplicate = 0
+  let skippedLimit = 0
+  let skippedBlank = 0
+
+  for (const skill of skills) {
+    const name = skill.name.trim()
+    const key = normalizeSkillName(name)
+    if (!key) {
+      skippedBlank += 1
+      continue
+    }
+    if (taken.has(key)) {
+      skippedDuplicate += 1
+      continue
+    }
+    if (merged.length >= limit) {
+      skippedLimit += 1
+      continue
+    }
+    const row: JobSkillFormRow = { name, type: skill.type ?? '' }
+    // `evidence` → `evidence_text`：字段名在两侧就是不同的（2.C 与修订清单 #2），
+    // 这一行改名是契约的一部分，不是笔误。
+    const evidence = skill.evidence?.trim()
+    if (evidence) row.evidence_text = evidence
+    if (skill.confidence !== null && skill.confidence !== undefined) {
+      row.confidence = skill.confidence
+    }
+    merged.push(row)
+    added.push(row)
+    taken.add(key)
+  }
+
+  return { rows: merged, added, skippedDuplicate, skippedLimit, skippedBlank }
+}
+
+/** 两行是否内容完全一致（用于判断「这一行还没被用户动过」）。 */
+function isSameSkillRow(row: JobSkillFormRow, added: JobSkillFormRow): boolean {
+  return (
+    row.name === added.name &&
+    row.type === added.type &&
+    (row.evidence_text ?? '') === (added.evidence_text ?? '') &&
+    (row.confidence ?? '') === (added.confidence ?? '')
+  )
+}
+
+/**
+ * 撤掉上一次提取加进表单的行。
+ *
+ * **只撤内容还一字未动的那些**：用户可能已经把某条候选改了名或换了分类，
+ * 那种情况下把它删掉就是丢掉他的劳动。改过的行留着，并在返回值里报数，
+ * 让屏幕上那句「几条已被你改动、保留在表单里」成为可见的事实而不是猜测。
+ */
+export function undoExtractMerge(
+  rows: JobSkillFormRow[],
+  added: JobSkillFormRow[],
+): { rows: JobSkillFormRow[]; removed: number; kept: number } {
+  const removable = added.filter((candidate) =>
+    rows.some((row) => isSameSkillRow(row, candidate)),
+  )
+  const keptRows = rows.filter(
+    (row) => !removable.some((candidate) => isSameSkillRow(row, candidate)),
+  )
+  return {
+    rows: keptRows.length ? keptRows : [createEmptySkillRow()],
+    removed: removable.length,
+    kept: added.length - removable.length,
+  }
+}
+
+/**
+ * 核验计数的文案（2.D「核验计数必须可见」——本端点最重要的一条产品承诺）。
+ *
+ * 三条各自独立成句、且只在该项 > 0（`truncated` 为真）时才出现，两条硬规矩：
+ *
+ * 1. `dropped_count` 与 `deduped_count` **绝不并成一个数**：前者意味着
+ *    「该怀疑核验规则，或者换一份 JD 再试」，后者意味着「什么都不用做」。
+ *    并起来会把那句「什么都不用做」混进那句「该怀疑规则」。
+ * 2. **不把三个数相加去凑 `received_count`**：算术上
+ *    `received_count = dropped + deduped + 返回条数 + 被 15 条封顶切掉的条数`，
+ *    最后那格后端**没有对应字段**（已定不加第 8 个计数），所以 `truncated` 为真时
+ *    前三项之和必然小于 `received_count`。前端一旦显示「共 X 条 = …」就会当场对不上账。
+ */
+export function extractCountLines(meta: JobsContract.ExtractSkillsMeta | null): string[] {
+  if (!meta) return []
+  const lines: string[] = []
+  if (meta.dropped_count > 0) {
+    lines.push(
+      `AI 给出 ${meta.received_count} 条，其中 ${meta.dropped_count} 条无法在 JD 原文中找到依据，已剔除`,
+    )
+  }
+  if (meta.deduped_count > 0) {
+    lines.push(`另有 ${meta.deduped_count} 条重名已合并`)
+  }
+  if (meta.truncated) {
+    lines.push(jobsApi.EXTRACT_TRUNCATED_HINT)
+  }
+  return lines
+}
+
+/** 合并结果的文案：只在该项 > 0 时出现。 */
+export function extractMergeLines(plan: ExtractMergePlan | null): string[] {
+  if (!plan) return []
+  const lines: string[] = []
+  if (plan.skippedDuplicate > 0) {
+    lines.push(`已跳过 ${plan.skippedDuplicate} 条与现有技能重名`)
+  }
+  if (plan.skippedLimit > 0) {
+    lines.push(`表单技能已达 ${SKILL_LIMIT} 条上限，本次未加入 ${plan.skippedLimit} 条`)
+  }
+  if (plan.skippedBlank > 0) {
+    lines.push(`${plan.skippedBlank} 条候选没有技能名，无法作为一行，已跳过`)
+  }
+  return lines
+}
+
+/**
+ * 提取失败的分支文案：同一个码给的**下一步**不一样，所以按 code 分支。
+ *
+ * 三条约束：
+ * - **禁止静默降级**（AGENTS.md §7、ADR-010 §5）：任何失败都必须显式出现在屏幕上，
+ *   而且表单与库里都保持原样——本端点纯计算，失败只损失这次候选。
+ * - 第 7 情形（输出被服务端 token 上限切断）与普通 502 都是 `AI_SERVICE_UNAVAILABLE`，
+ *   分流判据是 `ApiError.finishReason`（取自错误信封**外层** `meta.finish_reason`），
+ *   **不是文案**：服务端措辞属于可变量，拿它做分支等于把功能挂在翻译上。
+ * - `AI_KEY_INVALID` 是 401，但它是「你的 DeepSeek Key 有问题」，
+ *   与登录态无关；`client.ts` 已经把它挡在令牌刷新之外，这里只负责说清去哪儿修。
+ */
+export function extractFailureText(error: unknown): string {
+  if (!isApiError(error)) return '提取失败，请稍后重试。岗位不会被改动。'
+  switch (error.code) {
+    case 'AI_KEY_MISSING':
+      return '请先在右上角「AI 设置」里填好你的 DeepSeek API Key，再点一次「AI 提取技能」。'
+    case 'AI_KEY_INVALID':
+      return '你的 DeepSeek API Key 无效或已欠费，请打开「AI 设置」检查后再试。（与登录状态无关，不需要重新登录。）'
+    case 'AI_SERVICE_UNAVAILABLE':
+      if (error.finishReason === 'length') {
+        return '这条 JD 太长或技能太多，模型的输出被服务端上限切断了。请把 JD 里真正想要的技能写清楚（或只粘核心段落）后再试一次。'
+      }
+      return `${error.message}（稍后重试即可；本次结果没有被保存，岗位也没有被改动。）`
+    case 'RATE_LIMITED':
+      return '提取太频繁了，请等一分钟再试——这一步花的是你自己的额度。'
+    case 'VALIDATION_ERROR':
+      return '提取请求没有被接受：JD 原文不能为空，且最长 8000 字。'
+    case 'NETWORK_ERROR':
+      return '等 AI 返回超时或连不上服务，请确认后端在跑，然后重试。'
+    default:
+      return `${error.message}（岗位没有被改动。）`
+  }
+}
+
 /* --------------------------------- store ---------------------------------- */
 
 export const useJobStore = defineStore('job', () => {
@@ -305,6 +575,26 @@ export const useJobStore = defineStore('job', () => {
 
   /** 新建 / 发布 / 下架 / 删除等写操作进行中，视图据此禁用按钮。 */
   const submitting = ref(false)
+
+  /**
+   * AI 提取的**草稿态**（ADR-011 2.A：端点纯计算、不落库，所以「落库」这件事
+   * 只能由用户点「保存岗位」触发一次 `POST/PUT /jobs`）。
+   *
+   * 三个状态各有各的去处，不要合并：
+   * - `extractDraft`：原始响应（含 `data.meta` 的七个计数），计数文案只读它；
+   * - `extractPlan`：合并进表单的那一次的产出与加入的行，「放弃本次提取」只读它；
+   * - `extracting`：在途标记，视图用它禁用按钮并显示 Loading。
+   *
+   * 这份草稿**只在内存里**：不写 localStorage、不写 sessionStorage，
+   * `reset()` 连它一起清。JD 正文与 evidence 片段属于用户粘进来的原文，
+   * 落盘只会多一处「换个人用这台电脑就能看到」的泄漏面。
+   */
+  const extractDraft = ref<ExtractSkillsResult | null>(null)
+  const extractPlan = ref<ExtractMergePlan | null>(null)
+  const extracting = ref(false)
+
+  /** 上一次提取加进表单的行数（=0 表示这批候选一条都没落地，视图该说一句为什么）。 */
+  const extractedAddedCount = computed(() => extractPlan.value?.added.length ?? 0)
 
   const hasPrevPage = computed(() => page.value > 1)
   const hasNextPage = computed(() => page.value * pageSize.value < total.value)
@@ -390,6 +680,64 @@ export const useJobStore = defineStore('job', () => {
     }
   }
 
+  /* -------------------------------- AI 提取 -------------------------------- */
+
+  /**
+   * 「✨ AI 提取技能」：发提取请求 → 结果进草稿 → 顺手把候选合进技能行，**不发任何写请求**。
+   *
+   * 返回合并计划（视图用它整体替换 `form.skills` 并渲染计数）；失败原样抛给调用方，
+   * 由视图用 `extractFailureText()` 翻译成下一步动作——本函数**不吞异常也不降级**。
+   *
+   * 在途时重复点击直接返回 `null`：这是烧用户额度的请求（限流 10/minute），
+   * 让按钮连点变成两次上游调用是最省事的坏设计。视图也禁了按钮，两道闸都要有。
+   */
+  async function extractSkills(
+    input: JobsContract.ExtractSkillsRequest,
+    rows: JobSkillFormRow[],
+  ): Promise<ExtractMergePlan | null> {
+    if (extracting.value) return null
+    extracting.value = true
+    // 新一批开始前先丢掉上一批：屏幕上挂着两批候选，「放弃」就不知道该撤哪一批了。
+    extractDraft.value = null
+    extractPlan.value = null
+    try {
+      const result = await jobsApi.extractJobSkills({
+        description: input.description,
+        title: input.title?.trim() || null,
+      })
+      extractDraft.value = result
+      // 判重口径只有 `normalizeSkillName()` 这一个（理由见 `mergeExtractedSkills`）。
+      const plan = mergeExtractedSkills(rows, result.skills)
+      extractPlan.value = plan
+      return plan
+    } finally {
+      extracting.value = false
+    }
+  }
+
+  /**
+   * 「放弃本次提取」：把上一批加进来、且**还没被用户改过**的行撤掉，并清空草稿。
+   *
+   * 与 ADR-010 §5 的「放弃：什么都不改」同源——这里不改的是**库里**：
+   * 本函数一个请求都不发，岗位仍然是没保存的状态。改过的行留着（见 `undoExtractMerge`）。
+   */
+  function discardExtraction(rows: JobSkillFormRow[]): {
+    rows: JobSkillFormRow[]
+    removed: number
+    kept: number
+  } {
+    const undo = undoExtractMerge(rows, extractPlan.value?.added ?? [])
+    extractDraft.value = null
+    extractPlan.value = null
+    return undo
+  }
+
+  /** 只清草稿（换 JD 时用）：表单里已有的行一概不动。 */
+  function clearExtract(): void {
+    extractDraft.value = null
+    extractPlan.value = null
+  }
+
   /* --------------------------------- 写入 --------------------------------- */
 
   /**
@@ -413,6 +761,31 @@ export const useJobStore = defineStore('job', () => {
         // 忽略：下一次进列表会重新拉。
       }
       return created
+    } finally {
+      submitting.value = false
+    }
+  }
+
+  /**
+   * 编辑岗位（`/jobs/:id/edit` 的保存动作）：与 `createJob` 同一套提交前自检、同一个投影。
+   *
+   * 后端 `PUT /jobs/{id}` 是**整体覆盖**：字段覆盖 + 技能子表先删后插，
+   * 数组里没出现的技能会被删掉，所以这里必须发完整列表（`toWritePayload` 已是全量）。
+   * `status` 不在请求体里（发布是独立动作），三列提取溯源戳由服务端按本次提交整批重算。
+   *
+   * 与 `createJob` 不同的一点：**不刷新列表**。列表此刻不在屏幕上（用户从详情页进来），
+   * 而 `loadJobs()` 会按当前筛选条件清空重拉，反而可能把他回来的那一屏换掉。
+   * 详情页的同步靠 `detail.value` 就地替换。
+   */
+  async function updateJob(jobId: string, form: JobFormInput): Promise<JobRead> {
+    const problem = validateJobForm(form)
+    if (problem) throw new Error(problem)
+
+    submitting.value = true
+    try {
+      const updated = await jobsApi.updateJob(jobId, toWritePayload(form))
+      if (detail.value?.id === jobId) detail.value = updated
+      return updated
     } finally {
       submitting.value = false
     }
@@ -453,8 +826,12 @@ export const useJobStore = defineStore('job', () => {
       await jobsApi.deleteJob(jobId)
     } finally {
       submitting.value = false
-      if (detail.value?.id === jobId) detail.value = null
     }
+    // 清空详情与重拉列表只属于**成功路径**。写在 `finally` 里会在删除失败时也把
+    // `detail` 拔掉，而详情页的错误横幅在「有岗位」那个分支里，于是服务端那句
+    // 「岗位不存在，或已经不是你的岗位」根本没有落点：用户看到的是一条
+    // 并没有被删除、却凭空变成「没有可显示的内容」的岗位——比报个错更糟。
+    if (detail.value?.id === jobId) detail.value = null
     await loadJobs(1)
   }
 
@@ -499,7 +876,13 @@ export const useJobStore = defineStore('job', () => {
     }
   }
 
-  /** 登出时清空，避免下一个账号短暂看到上一个人的岗位。 */
+  /**
+   * 登出 / 离开编辑链路时清空，避免下一个账号短暂看到上一个人的岗位。
+   *
+   * `clearExtract()` 在这一串里：AI 提取的草稿带着 JD 原文片段（evidence），
+   * 它是「上一个人的屏幕」的一部分，漏掉就等于把候选技能连带留给了下一个账号。
+   * 视图里的表单数组不在 store 里，由 `JobCreateView` 自己 `reset` 时重建。
+   */
   function reset(): void {
     jobs.value = []
     total.value = 0
@@ -510,6 +893,7 @@ export const useJobStore = defineStore('job', () => {
     filter.keyword = ''
     filter.status = 'published'
     filter.includeExpired = false
+    clearExtract()
   }
 
   return {
@@ -537,9 +921,17 @@ export const useJobStore = defineStore('job', () => {
     restore,
     submitting,
     createJob,
+    updateJob,
     publish,
     unpublish,
     remove,
+    extractDraft,
+    extractPlan,
+    extracting,
+    extractedAddedCount,
+    extractSkills,
+    discardExtraction,
+    clearExtract,
     mySkillNames,
     mySkillNamesLoading,
     loadMySkillNames,
