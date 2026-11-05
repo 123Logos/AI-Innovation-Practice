@@ -1,7 +1,7 @@
 # ADR-011：岗位库与 AI 技能提取（数据模型、权限矩阵、提取链路、前端入口、模拟面试前置评估）
 
-- 状态：**v5 · 设计选项已由人类负责人于 2026-11-05 裁定收口；「岗位 JD 技能提取」的解冻已获人类负责人同日书面批准，并记入 AGENTS.md §3.2、`MVP_SCOPE.md` §5 与 §变更记录表**。本轮（Phase 4.0）交付物只有文档：零代码、零迁移、零依赖，未 commit。v1 的悬空项已在「决策」正文全部落成确定选择（见文末「已定事项与生效前提」）；v3 把提取参数改成彼此自洽（2.B、2.D）并把上一轮误写进约束文档的解冻撤下；v4 用实算复核 §2.D.1 的用例表（第 3 行例证修正）、附录的事件挂载目标（`Engine` 而非 `Session`），并把失败语义补到第 7 条（`finish_reason == "length"`）；v4.1 补齐 API.md 修订清单的 `meta` 字段契约与第 7 情形的用户动作措辞（已 commit 为 `565de48`）；**v5 只把授权记录落到三份文档，未改动任何设计选择**——三个封顶数（1500 / 15 / 60）、§2.D.1 的标点口径、议题 4 的整条冻结表述一字未动。
-- 日期：2026-11-05（v5；v1–v5 同日迭代）
+- 状态：**v7 · 设计选项已由人类负责人于 2026-11-05 裁定收口；「岗位 JD 技能提取」的解冻已获人类负责人同日书面批准，并记入 AGENTS.md §3.2、`MVP_SCOPE.md` §5 与 §变更记录表**。本轮（Phase 4.0）交付物只有文档：零代码、零迁移、零依赖，未 commit。v1 的悬空项已在「决策」正文全部落成确定选择（见文末「已定事项与生效前提」）；v3 把提取参数改成彼此自洽（2.B、2.D）并把上一轮误写进约束文档的解冻撤下；v4 用实算复核 §2.D.1 的用例表（第 3 行例证修正）、附录的事件挂载目标（`Engine` 而非 `Session`），并把失败语义补到第 7 条（`finish_reason == "length"`）；v4.1 补齐 API.md 修订清单的 `meta` 字段契约与第 7 情形的用户动作措辞（已 commit 为 `565de48`）；**v5 只把授权记录落到三份文档**；v6 按 B1 实测补三处——1.F 新增第 9 行 `restore`（草图原漏，对齐 `app/api/v1/profiles.py:221` 的先例）、写侧一律忽略 `evidence_text` / `confidence`、1.D 的 `ai_extracted` 语义缺陷列为 **C 轮开工前的必裁项**。v7 按人类负责人裁定落实该待裁项（方案 a：值域 `jd_verifiable`/`unverified`、徽标去「AI 提取」；永久删除与定时清理本轮不加；dev 库不跑 downgrade base），其余设计选择未改动：三个封顶数（1500 / 15 / 60）、§2.D.1 的标点口径、议题 4 的整条冻结表述一字未动。
+- 日期：2026-11-05（v7；v1–v7 同日迭代）
 - 决策人：架构选项由人类负责人裁定；本文记录裁定结果与其技术依据。
 - 相关：ADR-002（AI 先 stub）、ADR-006（多份简历）、ADR-007（DIY 排版与主题）、ADR-009（DeepSeek BYOK 非流式）、ADR-010（润色与生成解耦、草稿态确认制）
 - 冻结关系：**「AI 爬虫采集岗位、企业需求自动解析」已获人类负责人 2026-11-05 书面批准，部分解除**——只解「岗位 JD 技能提取」这一步（`POST /jobs/extract-skills`），且 AGENTS.md §3.2、`docs/MVP_SCOPE.md` §5、`MVP_SCOPE.md` §变更记录表三处已在本轮同步改掉，不留半更新。**AI 爬虫采集岗位、人岗匹配、模拟面试（含文字/电话/视频/WebRTC）继续整条冻结**，OpenAI 等其它外部 AI 服务亦继续冻结。解冻只回答「这一步能不能写代码」，不改变实现顺序（仍是先建表与 CRUD、后写提取，见文末「生效前提」），也不改变议题 4 只出评估不出实现的定性。
@@ -98,7 +98,7 @@
 | `job_id` | `String(36)` NOT NULL，FK → `jobs`，`ondelete="CASCADE"` | 技能条目是岗位的组成部分，不独立存在 |
 | `name` | `String(100)` NOT NULL | 技能名，来自 JD 或由 JD 归纳（2.D） |
 | `type` | `String(10)` NULL + CHECK（`hard` / `soft` / `domain`） | **可空**：AI 的分级不可信，宁可为空让用户填 |
-| `origin` | `String(16)` NOT NULL + CHECK（`ai_extracted` / `manual`） | 由**服务端派生**，见 1.F |
+| `origin` | `String(16)` NOT NULL + CHECK（`jd_verifiable` / `unverified`） | 由**服务端派生**，规则见本小节下方（v7 值域改名，人类负责人裁定方案 a） |
 | `confidence` | `DECIMAL(5,4)` NULL + CHECK（0–1） | PRD FR-03 L105 |
 | `evidence_text` | `String(60)` NULL | JD 原文片段，2.D 的核验锚点；上限与理由见 2.B |
 | `created_at` / `updated_at` | `DATETIME(6)` NOT NULL | |
@@ -109,8 +109,9 @@
 
 `origin` 只有两个值，且**禁止出现在请求体**：
 
-- 服务端派生规则：该条的 `evidence_text` 经 §2.D.1 的归一化函数处理（NFKC → casefold → 去空白 → 去标点）后**是** `jobs.description` 同法归一化文本的子串 → `ai_extracted`；否则 → `manual`。
-- v1 曾列的第三个值 `user_edited` **已从 CHECK 枚举中删除**。理由：`origin` 的用途是「这条技能能不能回溯到原文」，而客户端可以任意伪造提交的 `origin` 值——一个客户端可伪造的溯源标记等于没有标记，把它当审计字段反而会骗到后来读代码的人。PRD `docs/PRD.md:99`「AI 推断必须标记为建议，学生可修订或拒绝」是由**草稿态交互**满足的（结果先回显、用户逐条删改、点保存才落库，见 2.A/议题 3），不是由这一列满足的。用户改过的条目落在 `manual` 里，语义仍然正确：它不再能证明来自原文。
+- 服务端派生规则：该条的 `evidence_text` 经 §2.D.1 的归一化函数处理（NFKC → casefold → 去空白 → 去标点）后**是** `jobs.description` 同法归一化文本的子串 → `jd_verifiable`；否则 → `unverified`。
+- ✅ **该缺陷已由人类负责人于 2026-11-05 裁定为方案 (a) 并落实到本文**（v7）：值域由原 `ai_extracted` / `manual` 改为 `jd_verifiable` / `unverified`，议题 3.B 的徽标文案去掉「AI 提取」字样。理由是这一列能证明的只有「这句话在 JD 里出现过」，不能证明「这句话是谁写的」——学生手动粘一段 JD 原文进 `evidence` 就会被派生成「AI 提取」，属于反向失真。子串核验本身保留不动 （它确实拦得住幻觉，见 §2.D.1 第 4 行用例）。两条随裁定留下的缺口：① **列名仍叫 `origin`**，值域已是可回溯性，语义不完全贴——将来应更名 `trace_status`，本轮不改（改名要连带仓储、校验、前端三处，与 B2 撞车，且 `test_migrations.py` 已把约束名钉进断言）；② 岗位回收站**没有永久删除、也没有定时物理清理**（`student_profiles` 有 `/{id}/permanent` 与 30 天 `purge_expired`），人类负责人裁定本轮都不加，理由是岗位是公开数据、误删代价高于个人档案；待岗位库出现真实垃圾数据后再裁。
+- v1 曾列的第三个值 `user_edited` **已从 CHECK 枚举中删除**。理由：`origin` 的用途是「这条技能能不能回溯到原文」，而客户端可以任意伪造提交的 `origin` 值——一个客户端可伪造的溯源标记等于没有标记，把它当审计字段反而会骗到后来读代码的人。PRD `docs/PRD.md:99`「AI 推断必须标记为建议，学生可修订或拒绝」是由**草稿态交互**满足的（结果先回显、用户逐条删改、点保存才落库，见 2.A/议题 3），不是由这一列满足的。用户改过的条目落在 `unverified` 里，语义仍然正确：它不再能证明这句话出自原文。
 
 #### 1.E 与现有 `skills`（学生自评）表：不合并、不加外键
 
@@ -130,6 +131,7 @@
 | 6 | `PUT /jobs/{id}/publish`、`/unpublish` | 仅创建者 | **404** | 200 / 404 |
 | 7 | `POST /jobs/extract-skills` | 任何登录用户 | 无归属概念（不落库，2.A） | 200 / 4xx |
 | 8 | `GET /jobs/trash` | 任何登录用户 | 只返回**自己的**软删岗位（service 层过滤，不是查出全部再前端过滤） | 200 |
+| 9 | `PUT /jobs/{id}/restore`（从回收站恢复） | 仅创建者 | **404**；「岗位存在但不在回收站」也返回 404，不给存在性留通道 | 200 / 404 |
 
 三条必须照抄的实现约束：
 
@@ -138,6 +140,8 @@
 - 越权与「不存在」在 service 层收敛成同一个异常，不给 api 层区分两者的机会。
 
 写侧的隐含规则：`POST /jobs` 一律落 `status='draft'`，客户端提交的 `status` / `created_by_user_id` 直接忽略（同样地，`origin` 不采信客户端，见 1.D）。发布是显式动作（#6），不是创建或编辑的副作用。
+
+**v6 补一条（B1 实测暴露）**：`evidence_text` 与 `confidence` 语义上是 AI 提取的产物，在没有 AI 的路径上接受客户端填值，只会落下无法核验的数据，而且与「`origin` 恒为 `unverified`」自相矛盾（手动条目却带着「原文依据」）。因此 `POST/PUT /jobs` **一律忽略 `evidence_text` 与 `confidence`**，这两列只能在 C 轮由服务端在真正的提取路径上写入。
 
 #### 1.G FR-03 字段覆盖对照 —— 需求缺口显式化
 
@@ -188,6 +192,7 @@ PUT    /api/v1/jobs/{job_id}
 DELETE /api/v1/jobs/{job_id}     软删
 PUT    /api/v1/jobs/{job_id}/publish   /   /unpublish
 GET    /api/v1/jobs/trash
+PUT    /api/v1/jobs/{job_id}/restore    （v6 补入：对齐 `app/api/v1/profiles.py:221` 的 `/{profile_id}/restore` 先例——回收站没有恢复入口就是半个功能。B1 实测发现草图漏了这一条并上报，未自行加路由）
 ```
 
 注意 `/jobs/trash` 必须声明在 `/{job_id}` 之前——`profiles.py` 的文件头注释记录过踩坑：静态段排在动态段之后会被当成 id 塞进路径参数，表现为「回收站打不开，404」。
@@ -241,7 +246,7 @@ ADR-010 给润色的第一硬约束是「不得新增任何输入里不存在的
 3. 丢弃后为空 → `AI_SERVICE_UNAVAILABLE`（502，`retryable`）。**不返回空列表糊弄用户，也不静默降级。**
 4. 条数 > 15 → 截断到 15，`meta.truncated = true`，前端提示「模型给出的条目超过 15 条，只保留了前 15 条」。截断可见，与「悄悄替换结果」不同类。
 5. `type` 不在枚举内 → 保留该条、`type` 置 NULL（所以 1.D 的 `type` 可空）。
-6. `name` 长度 ≤ 40；`evidence` 为空或 > 60 字 → 丢弃该条（没有锚点的条目无法核验，落库只能标 `manual`，与「AI 提取」的语义矛盾）。
+6. `name` 长度 ≤ 40；`evidence` 为空或 > 60 字 → 丢弃该条（没有锚点的条目无法核验，落库只能标 `unverified`，与「AI 提取」的语义矛盾）。
 7. 落库时按 1.D 的派生规则重算 `origin`，不采信模型自报、也不采信客户端提交的任何标记。
 
 #### 2.D.1 归一化的可测定义，以及「标点是否参与比较」
@@ -327,17 +332,42 @@ def _normalize_for_trace(text: str) -> str:
 /jobs        列表页（requiresAuth: true）
 /jobs/new    录入页（粘贴 JD → AI 提取 → 逐条编辑 → 保存）
 /jobs/:id    详情页
+/jobs/trash  岗位回收站（我的软删岗位 + 「恢复」入口）
 ```
+
+**v7 补：`/jobs/trash` 这个视图是 1.F #9 的落地需要**——补正已经把 `PUT /jobs/{job_id}/restore` 接上了 HTTP，若前端没有入口，那条端点就是死码，和 B1 那个「有 `restore_job` 但没有路由」的问题是同一件事的延续。取舍：它**不占顶栏一级入口**（顶栏那个「回收站」是简历的，两个回收站混在一层会让人分不清删的是什么），入口放在 `/jobs` 列表页顶部的「我的删除」文字链接。路由声明顺序同样要注意 `/jobs/trash` 必须先于 `/jobs/:id`。
 
 - **录入用整页，不用弹窗**：8000 字 JD + 提取结果需要并排对照；Phase 3.2 定的弹窗宽度在 ≤768px 是 `calc(100% - 24px)`，长表单塞进去只会得到一条很高的内部滚动条，比整页更难填。
 - 列表页：卡片式（企业名 + 岗位名 + 类型标签 + 截止时间 + 技能前 6 条）。375px 单列；≥1100px 两列卡片 + 独立详情页（比右侧抽屉实现更简单，且抽屉要再处理一轮滚动与焦点）。
-- 详情页：JD 原文（长文本折叠 + 「展开全文」）、技能条目列表（`origin` 徽标只有两态：`ai_extracted` = 「AI 提取·可回溯原文」/ `manual` = 「手动·未标注出处」）、`evidence` 展开可见、「你已具备」只读比对（2.E）；凡 `deadline < date.today()` 的岗位，详情页一律显示「已过期」，**不绑定列表参数、也不区分查看者身份**（`include_expired` 只作用于列表，见 2.G）。
+- 详情页：JD 原文（长文本折叠 + 「展开全文」）、技能条目列表（`origin` 徽标只有两态：`jd_verifiable` = 「可回溯原文」/ `unverified` = 「未标注出处」。**v7 起徽标不得出现「AI 提取」字样**——这一列只证明这句话在 JD 里出现过，不证明是谁写的）、`evidence` 展开可见、「你已具备」只读比对（2.E）；凡 `deadline < date.today()` 的岗位，详情页一律显示「已过期」，**不绑定列表参数、也不区分查看者身份**（`include_expired` 只作用于列表，见 2.G）。
 - 提取交互完全复用润色那套已验证的模式：点「✨ AI 提取技能」→ Loading（前端超时 45 秒，对齐 `MVP_SCOPE.md:64` 的 NFR 口径）→ 结果显示 2.D 的核验计数 → 用户逐条删改 → 点「保存岗位」才落库；「放弃」什么都不改。
 - 样式走既有标准：`--ui-*` 令牌、`.ui-dialog`、`--ui-radius: 2px`、控件 32px、遮罩用 `flex + margin:auto`（不要 `grid + place-items:center`，它会把高内容裁成不可滚动）。
 
 #### 3.C 本轮明确不做
 
 搜索只做 `keyword`（企业名/岗位名）+ `status`；不做地点/薪资/经验筛选（字段存了但不筛，见 1.G）、不做收藏与投递记录、不做批量导出（`API.md:190` 的候选人导出继续冻结）。分页参数后端一次做对（`page`/`page_size`），前端首屏拉 50 条。
+
+#### 3.D 顶栏的宽度预算与窄屏处置 —— 已定（v8）
+
+**实测常量**（都写在 `frontend/src/components/AppTopBar.vue` 自己身上，不是我估的）：窄屏断点是 `@media (max-width: 760px)`，375px 下左右内边距各 16px → **可用 343px**；Phase 3.2 那次优化收起品牌文字后实测「同一行放得下 ~314px」，顶栏因此从 102px 回到 **57px**（那条注释原话：两行顶栏「占掉 375×812 视口的 12.6%」）。
+
+**问题**：新增的文字入口实测预算约 **58px**（三个 12px 汉字 36px + `padding: 0 10px` 20px + 2px 边框 + `gap: 12px`），`314 + 58 ≈ 372 > 343` → `.user-area` 的 `flex-wrap: wrap` 会让它整组折到第二行，顶栏回到约 99px —— 把 Phase 3.2 的成果吃掉。
+
+**裁定（方案：窄屏收进「更多」菜单）**：`≤760px` 时把「AI 设置」与「退出登录」收进一个「更多」菜单，顶栏一级项从 5 个降到 3 个，释放 70-90px；**「岗位库」保持文字入口不动**。理由有两条，第二条更硬：
+
+1. 学生主力在手机上，岗位库是本轮要给他们用的功能，藏进图标或菜单等于没有入口；
+2. **这是一次性的结构修复，不是本次的省法**——Phase 4 接下来还要往顶栏加「模拟面试」入口，它要吃掉同样量级的宽度。只做"缩短文案 + 压缩 gap + 收窄切换器"的微调，余量大概只剩 20px，下一个入口进来就又崩一次；那时再改结构，前面所有的微调都要返工。
+
+**微压缩方案（记录以说明为什么不选）**：「岗位库」→「岗位」省 12px、`gap` 12→8 省 12px、`.switcher-trigger` 的 `max-width` 240→180 省 60px，估算能挤进 343px。不选它不是因为做不到，而是因为它把预算花在"这一次刚好够"上，且简历标题的省略号会提前出现。
+
+**验收口径（诚实标注）**：本仓现有的浏览器自动化通道**无法把视口设成 375px**（没有 resize/devtools  emulation 工具），所以这一条的最终目视确认只能由人类负责人在手机或窄窗口做一次。实现轮要交的是：菜单在 320/375/768 三档下的可点性与键盘可达性（焦点、Esc、点外关闭，照 `profile-switcher` 的既有实现抄），以及 `user-area` 是否真的回到单行（可用 `getBoundingClientRect()` 比较各子项的 `top` 是否同一行来判定，不必依赖像素数）。
+
+**实测结果与最终接受态（B3 交付，真驱动 CDP `Emulation.setDeviceMetricsOverride`，不是估算）**：375px 岗位页顶栏 **59px 单行**（一级项 3 个：岗位库 58px / 切换器 95.2px / 更多 65.2px，合计 310.4px < 可用 343px）；768px 与 1280px 与改动前**逐值相同**（63px、五个一级项、垂直中心同为 31）→ 宽屏布局确认未动；320px 两行（101px），不在本轮要求内，仅记录。**判据修正（我上面写错了）**：「比较各子项 `top` 是否同值」不成立——`.user-name` 高 16px、按钮高 32px，`align-items: center` 下同一行的 `top` 会差 8px。正确判据是**比较垂直中心**，或直接读顶栏高度。
+
+**一条已知接受态（监督者裁定，非实现方自行决定）**：375px 的简历编辑页 + 超长简历标题时顶栏仍是**两行（101px）**。算术：三项 310.4px 放得进 343px，但加上 `.brand`(34) 与顶栏 `column-gap`(16) 共 360.4px 就超。三个出路的裁定：
+- **(a) `.switcher-title` 的 `max-width` 120→100**：省 20px 后算出 340.4px ≤ 343 —— **只剩 2.6px 余量**。字体替换、DPR、字号任一项变动都会顶回去；这是把"看得见的两行"换成"看不见的临界值"，且它正是本议题前面用「省略号提前出现」否决过的那件事。**不选。**
+- **(b) `.user-area` 改 `flex-wrap: nowrap` 让切换器自缩**：结构上更对，但动的是既有简历链路的共用组件，而收益只覆盖「超长标题」这一种内容。**不在本轮做。**
+- **(c) 接受**（选它）：改动前同一场景实测是 **143px 三行**，B3 已把它降到 101px；Phase 3.2 那句「57px」在长标题下本来就没成立过。**列为真实用户验证阶段的观察点**，若用户抱怨顶栏占位再走 (b)。
 
 ### 议题 4：模拟面试（仅评估，零实现）
 
@@ -419,6 +449,7 @@ def _normalize_for_trace(text: str) -> str:
   - `app/services/dependencies.py` —— 增装配（Key 取法与 `get_resume_service` 同构）。
   - 无需改 `app/main.py`：`CORS_ALLOW_HEADERS`（`app/main.py:46`）已含 `X-DeepSeek-Key`，本端点复用同一个头，加它反而会让人误以为引入了第二套凭据通道。
 - 迁移：`0011_jobs.py` + `0012_job_skills.py`，各自必须可 `downgrade`；沿用 0007（先建替换索引）与 0010（JSON 列不能带 `server_default`——本文已决定不用 JSON，该坑自然绕开）的既有教训。
+- **迁移改动的落点纪律（v7 补正实例）**：`ck_job_skills_origin` 的值域改名是**就地改在 `20261105_0012` 原文上，没有新开 revision**。这只在一个前提下成立——该 revision **尚未进入 git 历史**（实测 `git log -- alembic/versions/20261105_0012_job_skills.py` 为空，文件仍未跟踪）。已经应用过旧值的库必须重建这两张表：dev 走 `downgrade 20261104_0010 → upgrade head`（实测两表为空，`users=13`、`resumes=55` 原样未动），test 由 `tests/test_migrations.py` 的 base→head 往返重建。**由此定规**：迁移一旦 commit 进历史，就只能新开 revision，禁止就地改——否则 `upgrade head` 是 no-op，旧约束会原样留在下一个环境的库里。
 - 前端：新增 3 条路由 + 3 个视图 + 一个 `jobs` store，顶栏加一个入口。
 - 反幻觉核验（2.D）使服务端第一次对模型输出做**语义级**校验（子串匹配 + 归一化）。它必然把一部分合理归纳误判成幻觉而丢弃——这是有意的偏保守：宁可用户多点一次重试，也不要岗位库里出现 JD 没写的技术栈。误伤率不是猜测，由 `dropped_count` / `received_count` 直接读数；据此调整规则时，调整本身要有测试记录。
 - 与润色同源的不可验证项：真实 Key 下 `deepseek-flash` 的提取质量、`confidence` 是否是随手填的数、15 条与 `max_tokens=1500` 是否合适，**本轮无法验证**（不持有真实凭据）；Mock 测试只能证明「指令与封顶参数确实发出去了」和「不合规则的结果会被拦下」。
@@ -485,9 +516,9 @@ v1 的 13 个悬空问题在 v2 里全部落成确定选择，不再有「需你
 - 输出封顶参数（`max_tokens=1500`、`thinking.disabled`、`stream=False`、`max_retries=0`）在 `MockTransport` 捕获的请求体里逐条可验；
 - **切断情形单独命名（第 7 情形）**：用 `MockTransport` 构造一份 `finish_reason="length"` 且 `content` 只有半截 JSON 的响应（例如 `{"skills": [{"name": "Python", "evidence": "熟练`），断言①返回 `AI_SERVICE_UNAVAILABLE`（502，`retryable`）、②`meta.finish_reason == "length"`、③**没有**走到第 4 情形的"不是合法 JSON"文案。再构造一份 `finish_reason="stop"` 但内容同样不合法的响应，断言它命中第 4 情形——两条测试互为反向，防止后来人把两者合并。
 - 条数 > 15 时 `meta.truncated = true` 且只落 15 条；`received_count` / `dropped_count` 与前端文案一致；
-- `origin` 派生：`evidence` 归一化后是 `description` 子串 → `ai_extracted`，否则 → `manual`；客户端提交的 `origin` 被忽略；
+- `origin` 派生：`evidence` 归一化后是 `description` 子串 → `jd_verifiable`，否则 → `unverified`；客户端提交的 `origin` 被忽略；
 - `UNIQUE (job_id, name)` 拦得住 `Python` / `python` / `Ｐython`（首字母全角）三种写法（只落 1 行）；
-- `_normalize_for_trace` 按 2.D.1 的用例表逐条落成单元测试，**其中「仅标点/全半角不同」这条必须可复现**：JD 原文「熟悉 Python、FastAPI、Docker」配 evidence「熟悉 Python, FastAPI, Docker」→ 按本 ADR 选择的「标点不参与比较」口径**必须通过**并落库为 `ai_extracted`；同一对字符串在去掉归一化第 4 步的实现里**必须被丢弃**（用一条反向断言钉住口径本身，防止后来人"顺手改成严格比较"而不改测试）；
+- `_normalize_for_trace` 按 2.D.1 的用例表逐条落成单元测试，**其中「仅标点/全半角不同」这条必须可复现**：JD 原文「熟悉 Python、FastAPI、Docker」配 evidence「熟悉 Python, FastAPI, Docker」→ 按本 ADR 选择的「标点不参与比较」口径**必须通过**并落库为 `jd_verifiable`；同一对字符串在去掉归一化第 4 步的实现里**必须被丢弃**（用一条反向断言钉住口径本身，防止后来人"顺手改成严格比较"而不改测试）；
 - 真幻觉对照：JD 里没有 `Kubernetes`，evidence 写「负责 Kubernetes 集群运维」→ **必须丢弃**且 `dropped_count` +1；evidence 长度 > 60 字 → **必须丢弃**；全部条目被丢弃 → 502，不返回空列表；
 - 越权语义：他人 `draft` 的 `GET` / `PUT` / `DELETE` / `/publish` 全部 404，且 `JobService` 只抛 `JobNotFoundError`、`services/` 下不出现 `HTTPException`；
 - 过期判定：`deadline < 今天` 默认不出现、`include_expired=true` 出现、`deadline = 今天` 仍出现；SQL 里不出现数据库侧当日函数；
