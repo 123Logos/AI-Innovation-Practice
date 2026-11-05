@@ -1,6 +1,6 @@
 # ADR-011：岗位库与 AI 技能提取（数据模型、权限矩阵、提取链路、前端入口、模拟面试前置评估）
 
-- 状态：**v9 · 设计选项已由人类负责人于 2026-11-05 裁定收口；「岗位 JD 技能提取」的解冻已获人类负责人同日书面批准，并记入 AGENTS.md §3.2、`MVP_SCOPE.md` §5 与 §变更记录表**。本轮（Phase 4.0）交付物只有文档：零代码、零迁移、零依赖，未 commit。v1 的悬空项已在「决策」正文全部落成确定选择（见文末「已定事项与生效前提」）；v3 把提取参数改成彼此自洽（2.B、2.D）并把上一轮误写进约束文档的解冻撤下；v4 用实算复核 §2.D.1 的用例表（第 3 行例证修正）、附录的事件挂载目标（`Engine` 而非 `Session`），并把失败语义补到第 7 条（`finish_reason == "length"`）；v4.1 补齐 API.md 修订清单的 `meta` 字段契约与第 7 情形的用户动作措辞（已 commit 为 `565de48`）；**v5 只把授权记录落到三份文档**；v6 按 B1 实测补三处——1.F 新增第 9 行 `restore`（草图原漏，对齐 `app/api/v1/profiles.py:221` 的先例）、写侧一律忽略 `evidence_text` / `confidence`、1.D 的 `ai_extracted` 语义缺陷列为 **C 轮开工前的必裁项**。v7 按人类负责人裁定落实该待裁项（方案 a：值域 `jd_verifiable`/`unverified`、徽标去「AI 提取」；永久删除与定时清理本轮不加；dev 库不跑 downgrade base），其余设计选择未改动：三个封顶数（1500 / 15 / 60）、§2.D.1 的标点口径、议题 4 的整条冻结表述一字未动。**v9（C 轮开工前）**改三处：写侧按承诺放开 `evidence_text`/`confidence` 并规定服务端如何盖提取溯源戳（1.F、1.B）、前端补 `/jobs/:id/edit` 编辑入口（议题 3.B，B2 裁定的归并项）、施工顺序按实际执行改写。另记一笔我的疏漏：上一轮把 3.D 标为 v8 却没同步升状态行，本文的版本标签因此滞后过一轮。
+- 状态：**v10 · 设计选项已由人类负责人于 2026-11-05 裁定收口；「岗位 JD 技能提取」的解冻已获人类负责人同日书面批准，并记入 AGENTS.md §3.2、`MVP_SCOPE.md` §5 与 §变更记录表**。本轮（Phase 4.0）交付物只有文档：零代码、零迁移、零依赖，未 commit——这句描述 **v1–v5**；v6 起按 B1/C1 的实测回填，代码与迁移已随各轮提交（B1 建表、C1 提取链路 `efdbf1f`），本文的版本沿革见句末与各议题正文的 v 标注。v1 的悬空项已在「决策」正文全部落成确定选择（见文末「已定事项与生效前提」）；v3 把提取参数改成彼此自洽（2.B、2.D）并把上一轮误写进约束文档的解冻撤下；v4 用实算复核 §2.D.1 的用例表（第 3 行例证修正）、附录的事件挂载目标（`Engine` 而非 `Session`），并把失败语义补到第 7 条（`finish_reason == "length"`）；v4.1 补齐 API.md 修订清单的 `meta` 字段契约与第 7 情形的用户动作措辞（已 commit 为 `565de48`）；**v5 只把授权记录落到三份文档**；v6 按 B1 实测补三处——1.F 新增第 9 行 `restore`（草图原漏，对齐 `app/api/v1/profiles.py:221` 的先例）、写侧一律忽略 `evidence_text` / `confidence`、1.D 的 `ai_extracted` 语义缺陷列为 **C 轮开工前的必裁项**。v7 按人类负责人裁定落实该待裁项（方案 a：值域 `jd_verifiable`/`unverified`、徽标去「AI 提取」；永久删除与定时清理本轮不加；dev 库不跑 downgrade base），其余设计选择未改动：三个封顶数（1500 / 15 / 60）、§2.D.1 的标点口径、议题 4 的整条冻结表述一字未动。**v9（C 轮开工前）**改三处：写侧按承诺放开 `evidence_text`/`confidence` 并规定服务端如何盖提取溯源戳（1.F、1.B）、前端补 `/jobs/:id/edit` 编辑入口（议题 3.B，B2 裁定的归并项）、施工顺序按实际执行改写。另记一笔我的疏漏：上一轮把 3.D 标为 v8 却没同步升状态行，本文的版本标签因此滞后过一轮。**v10（C1 实现后的补正轮）**新增两处、并记两条我的裁定错误：① 2.D 第 7 步「重名合并」连同 §2.D.2 的判定键（`skill_name_key` = NFKC + casefold，**不是** §2.D.1 的四步函数）与 `meta` 第 7 个字段 `deduped_count`——v9 及以前完全没有这条规则，是 C1 落地后才暴露的缺口，后果不是难看而是「用户改完草稿点保存必然 422」；② 2.F 补记「复用三码的代价是处理器文案必须作用域中性」，C1 第一版让岗位录入页说出了「请稍后重试润色。生成简历不受影响。」。**我的错误**：(a) 上一轮口头裁定「按 `normalize_for_trace(name)` 去重」，会把 §2.D.1 已知的那个副作用（`user_id`/`userid` 折成相同）搬进技能名合并，静默吞掉真实条目；(b) 我为它举的反例是错的——`+` 的类别是 `Sm`、四步函数根本不删，`C++`/`C` 在两种口径下都分得开（本文 §2.D.1 原文就写着这条，是我没回读自己审过的文档），真反例是 `C#`/`C`（`#` 属 `Po`）。结论按 `skill_name_key` 落定，理由与实测对照表写在 §2.D.2。
 - 日期：2026-11-05（v7；v1–v7 同日迭代）
 - 决策人：架构选项由人类负责人裁定；本文记录裁定结果与其技术依据。
 - 相关：ADR-002（AI 先 stub）、ADR-006（多份简历）、ADR-007（DIY 排版与主题）、ADR-009（DeepSeek BYOK 非流式）、ADR-010（润色与生成解耦、草稿态确认制）
@@ -174,11 +174,17 @@
 #### 2.A 端点形态：纯计算、不落库 —— 已定
 
 ```
-POST /api/v1/jobs/extract-skills     请求头 X-DeepSeek-Key
+POST /api/v1/jobs/extract-skills     请求头 X-DeepSeek-Key（+ Authorization）
   body: { "description": "…JD 原文…", "title": "可选岗位名" }
-  resp: { "skills": [ { "name", "type", "evidence", "confidence" } ],
-          "meta": { "model", "prompt_version", "received_count", "dropped_count", "truncated", "finish_reason" } }
+  resp（v10 按实现校正：统一信封 `app/core/responses.py:9-10` 会把结果包进 `data`，
+        所以有**两个** `meta`——外层只有 `request_id`，本文说的七个计数在 `data.meta`）:
+  { "data": { "skills": [ { "name", "type", "evidence", "confidence" } ],
+              "meta":   { "model", "prompt_version", "received_count", "dropped_count",
+                          "deduped_count", "truncated", "finish_reason" } },
+    "meta": { "request_id": "…" } }
 ```
+
+前端读计数时取 `data.meta`，不是顶层 `meta`——写错的那一句会拿到 `{request_id}` 然后全部显示 `undefined`。这条区别属于「不看代码推不出来」，`docs/API.md` §4.8 已把它写进契约。
 
 为什么提取必须发生在「岗位还没落库」时：用户在录入表单里粘贴 JD → 点「AI 提取技能」→ 结果先回显、用户逐条删改 → 点「保存岗位」才写 `jobs` + `job_skills`。这是 ADR-010 §5 草稿态确认制搬到岗位侧，AI 永远无法只凭一次点击改动数据库。
 
@@ -252,6 +258,9 @@ ADR-010 给润色的第一硬约束是「不得新增任何输入里不存在的
 4. 条数 > 15 → 截断到 15，`meta.truncated = true`，前端提示「模型给出的条目超过 15 条，只保留了前 15 条」。截断可见，与「悄悄替换结果」不同类。
 5. `type` 不在枚举内 → 保留该条、`type` 置 NULL（所以 1.D 的 `type` 可空）。
 6. `name` 长度 ≤ 40；`evidence` 为空或 > 60 字 → 丢弃该条（没有锚点的条目无法核验，落库只能标 `unverified`，与「AI 提取」的语义矛盾）。
+7. **重名合并**（v10 新增，C1 实现后暴露的缺口）：通过核验的条目里，技能名与前面某条「是同一个技能」的，**丢弃后来者、保留第一次出现的**，并把合并掉的数量记进 `meta.deduped_count`。「同一个技能」的判定键见 §2.D.2，它**不是**第 2 步那个四步归一化函数。
+   这条不是审美问题而是必败问题：模型常把同一技能拆成 `Python` / `python` / `Ｐython` 两条，若不在此合并，用户点「保存岗位」时写侧的 `validate_unique_skill_names` 会报 422「技能名称重复」、库的 `UNIQUE (job_id, name)` 也会拦——等于我们把一个注定失败的 payload 交给用户，而且报错出现在他做完全部删改之后。
+   合并跑在截断（第 4 步）**之前**：否则 `deduped_count` 说的会变成「返回的那 15 条里有几条重名」，而封顶切掉的条目根本没进结果，两个数互相吃掉，前端两句计数文案都成假话。
 7. 落库时按 1.D 的派生规则重算 `origin`，不采信模型自报、也不采信客户端提交的任何标记。
 
 #### 2.D.1 归一化的可测定义，以及「标点是否参与比较」
@@ -294,11 +303,40 @@ def _normalize_for_trace(text: str) -> str:
 
 一句话取舍：**核验要证明的是「这句话真在 JD 里出现过」，不是「连标点都抄对了」**。要求后者会把误杀集中到信息量最低的那类差异上；#3 那种放过则不会给用户带来任何虚构内容，因为技能名与 `type` 仍然要用户在草稿态逐条过目（2.A、议题 3.B）。
 
+#### 2.D.2 「同一个技能」的判定键：与 §2.D.1 必须是两个函数（v10 新增）
+
+§2.D.1 的四步函数解决的是「这句话是不是抄自原文」，比较对象是**长片段**；重名合并（2.D 第 7 步）解决的是「这两条是不是同一个技能」，比较对象是**短名字**。两种问题要的宽容度相反，所以必须是两个函数：
+
+```python
+def skill_name_key(name: str) -> str:
+    return unicodedata.normalize("NFKC", name).casefold()   # 只有两步
+```
+
+比 §2.D.1 **少**去空白与去标点两步，实现在 `app/schemas/job.py`，提取端合并与写侧「技能名称重复」422 共用它（各写一份就会漂移出「提取时已合并、保存却报错」这种用户没法理解的抖动）。
+
+**为什么第 4 步删标点不能用在名字上**：被删掉的那几类字符，恰恰是名字的一部分。四步口径下会被误并、而数据库判定为两条不同技能的实例（MySQL 8.0.43，`job_skills.name` 列实测为 `utf8mb4_0900_ai_ci`）：
+
+| 名字对 | 四步函数的键 | `skill_name_key` 的键 | `UNIQUE (job_id, name)` 实测 | 结论 |
+|---|---|---|---|---|
+| `C#` / `C` | 相同（`#` 类别 `Po` 被删） | 不同 | **两行** | 四步口径会静默吞掉一条真实岗位要求 |
+| `user_id` / `userid` | 相同（`_` 类别 `Pc` 被删） | 不同 | **两行** | 同上 |
+| `python.` / `python` | 相同 | 不同 | **两行** | 同上 |
+| `Web  开发` / `Web 开发`（内部两空格） | 相同（去空白） | 不同 | **两行** | 同上 |
+| `Python` / `python` / `Ｐython` | 相同 | 相同 | **一行**（`IntegrityError`） | 两种口径都对，正是要合并的形态 |
+| `C++` / `C` | **不同**（`+` 类别 `Sm`，不删） | 不同 | 两行 | 我上一轮把这对当反例是**举错了**：四步口径在这里同样分得开。真正的反例是 `C#`，理由同上表第一行 |
+
+对照 §2.D.1 的已知副作用（`user_id` 与 `userid` 在**核验**时被判为相同）：那里可以接受，因为那只影响定位严格度、不影响「是否出自原文」；在名字上同一条宽容会把两条不同技能合成一条，用户看不出少了东西。**同一个副作用在两个问题上一个是优点一个是事故**，这就是两个函数不能合并的根据。
+
+这条不是推断：`tests/test_jobs_constraints.py` 用真实 INSERT 逐对断言「`skill_name_key` 相等 ⟹ 撞唯一键、不等 ⟹ 库里留两行」，另有一条正向断言钉住「四步函数在上面前四对上是 `True`」，防止将来有人为了「去重更聪明」把两个函数合成一个。
+
+保留第一次出现的（而不是置信度高的或 evidence 长的）：模型自己的排序就是它的优先级，而原始大小写只在第一条上；后来者只是同一种东西的另一种写法。已知副作用要写明：若全角写法排在前面，落库的就是全角字形（用户在草稿态看得见、可改）。
+
 **核验计数必须可见**（v2 新增，这是本端点最重要的一条产品承诺）：
 
-- 响应 `meta` 带 `received_count`（模型给了几条）与 `dropped_count`（因无法回溯原文被剔除几条）；
-- 前端在结果区直接显示：「AI 给出 20 条，其中 14 条无法在 JD 原文中找到依据，已剔除」；
-- 服务端日志同时记这两个计数与 `finish_reason`（**不含 Key、不含 JD 正文、不含 evidence 内容**，只有计数、`finish_reason` 与 `request_id`）；
+- 响应 `data.meta` 带 `received_count`（模型给了几条）、`dropped_count`（因无法回溯原文被剔除几条）与 `deduped_count`（v10：因重名被合并掉几条）；
+- 前端在结果区直接显示：「AI 给出 20 条，其中 14 条无法在 JD 原文中找到依据，已剔除」，重名时另起一句「另有 N 条重名已合并」。**两个数分开报，不并成一个**：「无法回溯原文」意味着该怀疑核验规则或换一份 JD，「重名合并」什么都不用做——并成一个数会把那句「什么都不用做」混进那句「该怀疑规则」；
+- 服务端日志同时记这几个计数与 `finish_reason`（**不含 Key、不含 JD 正文、不含 evidence 内容、也不含技能名**，只有计数、`finish_reason` 与 `request_id`）；
+- 计数之间的算术关系要说清，否则会被当成一条闭合等式：`received_count = dropped_count + deduped_count + 返回条数 + 被 15 条封顶切掉的条数`，最后那格**没有对应字段**（已定：不加第 8 个字段，`truncated` 加「只保留了前 15 条」那句文案已经把用户需要知道的事说完了，多一个数只会让前端去解释三个计数怎么相加）。因此 `truncated` 为真时前三项之和必然小于 `received_count`；`tests/test_jobs_extract_skills.py::test_duplicates_are_merged_before_the_fifteen_item_cap` 把那个差值钉成字面量，将来若补第四个计数，这条会红并逼改注释，而不是让等式悄悄失效；
 - 「已定事项」里那条「规则可能偏严，需要真实样本才能调」正是靠这两个计数落地：它是本端点唯一能在无凭据环境下预先设计好、上线后可直接读数的观测点。没有这两个数，「子串核验误伤合理归纳」将无法被证实或被否认。
 
 加强项（已定：本轮不做）：`name` 里若出现 JD 中完全不存在的英文 token（正则 `[A-Za-z][A-Za-z0-9+#.]{1,}`）即丢弃该条。它能挡住「模型顺手加了 Kubernetes」这类最典型的编造，代价是误伤合理的中文归纳，且规则复杂度高。决定先上线子串规则，用 `dropped_count` 观察真实失败样本，再判断要不要加这层。
@@ -315,6 +353,7 @@ def _normalize_for_trace(text: str) -> str:
 - 新常量 `EXTRACT_RATE_LIMIT = "10/minute"`（与 `POLISH_RATE_LIMIT` 同族，`app/core/rate_limit.py`）。必须限流：BYOK 下烧的是用户 Token，但**请求是我们的服务器转发给第三方的**，不限流等于把服务器变成开放代理（ADR-010 §2 的原始理由）。已知局限同样是 slowapi 进程内计数、多 worker 各自独立。
 - 输入上限：`description` ≤ 8000 字（Pydantic `le=8000`），`title` ≤ 200，超限 422。
 - 错误码沿用 ADR-010 §6 三码，且只可能来自 `/jobs/extract-skills`：`AI_KEY_MISSING`(400) / `AI_KEY_INVALID`(401) / `AI_SERVICE_UNAVAILABLE`(502, `retryable`)。前端 401 不触发令牌刷新、不踢下线的分流（判据是 code 不是 URL）原样复用；Key 只随该端点发送。
+- **复用三码的代价是文案必须作用域中性**（v10，C1 实现后才暴露）：提取侧一个错误码都没新增，而是复用润色的异常族（第 7 情形甚至是 `ResumeCopyUnavailableError` 的子类），于是 Starlette 按 MRO 把**两个端点**的失败都送进 `app/main.py` 的同一组处理器。C1 第一版沿用了润色那条 502 文案「请稍后重试润色。生成简历不受影响。」——用户在岗位录入页点提取失败，看到的是一句与他当前操作无关、且第二句还为假的话（他此刻在录岗位，不在生成简历）。定稿：三码的处理器文案一律**不得出现「润色」或「简历」**；「本次请求未被保存」这句在两端都是真话而非含糊话，依据正是两端都纯计算（ADR-010 §5 / 本 ADR 2.A）。「润色失败可以先直接生成」这类**端点专属**的下一步指引归前端（`StylePanel.vue` 已经按 code 自己补），不归服务端。第 7 情形例外：它在 api 层就地组装、文案刻意专属，且不含「未被保存」，因此不会被这条要求误放过。钉法：`tests/test_jobs_extract_skills.py::test_global_handler_502_message_is_scoped_neutral`。
 
 #### 2.G 过期判定与时钟口径 —— 已定
 
@@ -427,13 +466,19 @@ def _normalize_for_trace(text: str) -> str:
 
 不推荐直接上 B：产品成败押在浏览器厂商云端识别的国内可用性上，且仍要额外接一家 ASR。不推荐直接上 C：在内容价值未经一次真实验证之前，先引入重型依赖、改变凭据归属、并把验收方式推向 CI 之外。
 
-## `docs/API.md` 修订清单（批准后执行，本轮不改）
+## `docs/API.md` 修订清单（**v10 已全部执行完毕**，下表保留为「当时的现状 → 现在的口径」记录）
+
+执行状态：#1–#6 按下述位置命中并改毕；#7、#8 的**位置描述是过期的**，执行时按 substance 落到了别处，差异记录如下，将来别照本表去 grep：
+
+- **#8 修正**：API.md 里**没有「§7 错误码表」**——§7 是模拟面试。错误码实际散在 §1.1 的一条 inline 列表里（原 L34）。`AI_JOB_FAILED` / `AI_OUTPUT_UNSUPPORTED` 已删（`grep -rn "AI_JOB_FAILED\|AI_OUTPUT_UNSUPPORTED" app/ --include=*.py` → 零命中，实测于 v10），`MEDIA_UNAVAILABLE` 标冻结未启用。顺带查出同一列表里还有 `AUTH_REQUIRED`/`AUTH_FORBIDDEN`/`RESOURCE_NOT_FOUND`/`CONSENT_REQUIRED`/`CONFLICT`/`AUTH_INVALID_CREDENTIALS` 六个**代码从不发出**的码，已在 API.md 里与实发码分列。
+- **#7 修正**：`/teacher/jobs/...` 候选人查询与导出在 **§8**（原 L186-190），不在 §4；且原文**没有任何**「未接通」标注（`grep -n "PHASE-2\|not wired\|未接通\|未实现\|冻结\|设计意图" docs/API.md` 改前只命中文件首行范围声明），所以这一条是「补标注」而不是「保持标注」。
+- 清单之外另查出两处与代码不符、但**本轮未改**的陈旧内容，留给下一轮决定：§1 的「时间：ISO 8601 UTC」与 `app/core/datetime_display.py:33-44` 实际返回 `+08:00` 相冲；§6 简历的示例请求体 `{student_id, job_id, template, max_pages}` 与真实的 `{title, profile_id}`（`app/schemas/resume.py:61-73`）不符。两处都只在 API.md 里加了 HTML 注释标出，未改正文，未写新断言。
 
 | # | 位置 | 现状 | 新口径 |
 |---|---|---|---|
 | 1 | §4 L100（`POST /jobs`） | 「返回 `202` 并创建 `ai_job_id`，用于异步岗位分析」 | 返回 `201` + 岗位对象；岗位分析不在创建请求里发生 |
 | 2 | §4 L97 示例 body | `"requirements": ["Python","FastAPI"]`（字符串数组，客户端直传技能） | 请求体收 `salary_min`/`salary_max`/`experience_required`；技能条目走 `job_skills` 结构（`name`/`type`/`confidence`/`evidence_text`），`origin` **不在请求体里**（服务端派生，1.D） |
-| 3 | 新增 | 无提取端点 | `POST /jobs/extract-skills`：200 同步返回 `{skills, meta}`；需 `X-DeepSeek-Key`；限流 `EXTRACT_RATE_LIMIT = "10/minute"`；错误码 `AI_KEY_MISSING`/`AI_KEY_INVALID`/`AI_SERVICE_UNAVAILABLE`；**`meta` 结构必须逐字段写进 API.md**：`meta = {model, prompt_version, received_count, dropped_count, truncated, finish_reason}`（缺一份字段契约，将来改 API.md 时就只剩端点名，6 个字段的语义会丢） |
+| 3 | 新增 | 无提取端点 | `POST /jobs/extract-skills`：200 同步返回 `{skills, meta}`；需 `X-DeepSeek-Key`；错误码 `AI_KEY_MISSING`/`AI_KEY_INVALID`/`AI_SERVICE_UNAVAILABLE`（三码复用润色，**处理器文案须作用域中性，见 2.F**）；限流 `EXTRACT_RATE_LIMIT = "10/minute"`；**`meta` 结构必须逐字段写进 API.md**：`meta = {model, prompt_version, received_count, dropped_count, deduped_count, truncated, finish_reason}`（缺一份字段契约，将来改 API.md 时就只剩端点名，7 个字段的语义会丢；`deduped_count` 是 v10 追加的第 7 个，三个计数之间的算术关系见 2.D「核验计数必须可见」） |
 | 4 | §4 L104 | 「未审核岗位仅创建者和**审核者**可见」 | 无审核角色。新口径：`published` 任何登录用户可读；他人 `draft` **404**（1.F） |
 | 5 | §4 L104 | 查询参数 `keyword`、`status`、`location`、**`skill_id`**、`page`、`page_size` | 只保留 `keyword`、`status`、`include_expired`、`page`、`page_size`；删 `location` 与 `skill_id`（本轮不筛，`skill_id` 依赖并不存在的技能字典表） |
 | 6 | §4 L110-112 | 「`/publish`、`/close` 需要**审核权限**；过期岗位**自动转为 `expired`**」 | `/publish`、`/unpublish` 仅创建者（非创建者 404）；无 `/close`；过期不落状态，读侧按 `date.today()` 判定且默认隐藏（2.G） |
@@ -522,6 +567,8 @@ v1 的 13 个悬空问题在 v2 里全部落成确定选择，不再有「需你
 - 输出封顶参数（`max_tokens=1500`、`thinking.disabled`、`stream=False`、`max_retries=0`）在 `MockTransport` 捕获的请求体里逐条可验；
 - **切断情形单独命名（第 7 情形）**：用 `MockTransport` 构造一份 `finish_reason="length"` 且 `content` 只有半截 JSON 的响应（例如 `{"skills": [{"name": "Python", "evidence": "熟练`），断言①返回 `AI_SERVICE_UNAVAILABLE`（502，`retryable`）、②`meta.finish_reason == "length"`、③**没有**走到第 4 情形的"不是合法 JSON"文案。再构造一份 `finish_reason="stop"` 但内容同样不合法的响应，断言它命中第 4 情形——两条测试互为反向，防止后来人把两者合并。
 - 条数 > 15 时 `meta.truncated = true` 且只落 15 条；`received_count` / `dropped_count` 与前端文案一致；
+- **重名合并（v10）**：`Python` / `python` / ` Python ` 三条都可回溯 → 返回 1 条且保留第一条的大小写原样，`received_count=3`、`deduped_count=2`、`dropped_count=0`；`C#` 与 `C` 两条都可回溯 → **必须返回 2 条**、`deduped_count=0`（这条是 §2.D.2 口径错误的回归护栏）；`dropped_count` 与 `deduped_count` 不得互相串味；合并跑在封顶之前（20 条里 3 条重名 → `truncated=true` 且返回 15 条）。另有一条跨层断言：`skill_name_key` 与库的 `UNIQUE (job_id, name)` 对同一批名字对必须给同一个答案，用真实 INSERT 逐对实测（`tests/test_jobs_constraints.py`），不许靠对排序规则语义的推断；
+- **502 文案作用域（v10）**：走全局处理器的提取失败，`error.message` 既不含「润色」也不含「简历」；第 7 情形的专属文案不受此约束（它在 api 层就地组装）。
 - `origin` 派生：`evidence` 归一化后是 `description` 子串 → `jd_verifiable`，否则 → `unverified`；客户端提交的 `origin` 被忽略；
 - `UNIQUE (job_id, name)` 拦得住 `Python` / `python` / `Ｐython`（首字母全角）三种写法（只落 1 行）；
 - `_normalize_for_trace` 按 2.D.1 的用例表逐条落成单元测试，**其中「仅标点/全半角不同」这条必须可复现**：JD 原文「熟悉 Python、FastAPI、Docker」配 evidence「熟悉 Python, FastAPI, Docker」→ 按本 ADR 选择的「标点不参与比较」口径**必须通过**并落库为 `jd_verifiable`；同一对字符串在去掉归一化第 4 步的实现里**必须被丢弃**（用一条反向断言钉住口径本身，防止后来人"顺手改成严格比较"而不改测试）；
