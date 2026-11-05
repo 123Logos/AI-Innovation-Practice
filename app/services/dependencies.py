@@ -17,12 +17,14 @@ from starlette.requests import Request
 
 from app.integrations.copy_writer import DeepSeekCopyWriter
 from app.integrations.resume_generator import TemplateResumeGenerator
+from app.repositories.job_repository import JobRepository
 from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.resume_repository import ResumeRepository
 from app.repositories.student_profile_repository import StudentProfileRepository
 from app.repositories.user_repository import UserRepository, session_scope
 from app.schemas.auth import UserRead
 from app.services.auth_service import AuthError, AuthService
+from app.services.job_service import JobService
 from app.services.profile_service import ProfileService
 from app.services.resume_service import ResumeService
 
@@ -50,6 +52,18 @@ def get_current_user(request: Request) -> UserRead:
 def get_profile_service() -> Iterator[ProfileService]:
     with session_scope() as session:
         yield ProfileService(StudentProfileRepository(session))
+
+
+def get_job_service() -> Iterator[JobService]:
+    """装配岗位服务（Phase 4 · B1）。
+
+    与 `get_profile_service()` 同构：一个 session、一个仓储、一个服务。
+    本轮**不装配任何 AI 通道**，所以这里连 `Request` 都不取、也不读
+    `X-DeepSeek-Key` —— 技能提取（BYOK）是下一轮的事（ADR-011 的 C 轮），
+    现在把它写进来就是一行没人调用的死代码。
+    """
+    with session_scope() as session:
+        yield JobService(JobRepository(session))
 
 
 def get_resume_service(request: Request) -> Iterator[ResumeService]:
