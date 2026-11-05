@@ -26,6 +26,16 @@ AUTH_RATE_LIMIT = "5/minute"
 #: 测试引用这个常量，理由与 `AUTH_RATE_LIMIT` 相同。
 POLISH_RATE_LIMIT = "10/minute"
 
+#: 岗位 JD 技能提取的限流规则（ADR-011 2.F），与 `POLISH_RATE_LIMIT` 同族同数。
+#: 为什么必须是这个数量级：`/jobs/extract-skills` 和润色一样烧**用户自带 Key** 的额度，
+#: 而请求是我们这台服务器转发给第三方的 —— 不限流就等于把服务器开成一个免费的
+#: DeepSeek 代理（ADR-010 §2 的原始理由在这里一字不改地成立）。
+#: 10 次/分钟够用一次真实的「粘 JD → 提取 → 结果不理想，手动删两句 JD → 再提取」；
+#: 提取的重试次数天然比润色高（用户会挪 JD 的段落看哪一段能被核验），所以不往下压。
+#: 已知局限与前两条相同：slowapi 是进程内计数，多 worker 部署时每个 worker 各算一份。
+#: 测试引用这个常量，理由与 `AUTH_RATE_LIMIT` 相同。
+EXTRACT_RATE_LIMIT = "10/minute"
+
 
 def build_limiter() -> Limiter:
     """按配置构造限流器；`enabled=False` 时装饰器直接放行（测试用）。"""

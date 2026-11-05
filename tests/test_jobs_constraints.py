@@ -591,8 +591,11 @@ def test_full_slice_persists_every_layer_once(client: TestClient) -> None:
         "端到端科技",
     )
     assert [row.name for row in skills] == ["Python", "FastAPI", "沟通"]
-    # 本轮写入的每条技能恒为「未标注出处」，且没有任何原文依据/置信度：
-    # 后两列是 AI 提取产物，写侧不接受（1.F v6 补条），AI 提取本身在 C 轮才落地。
+    # 三条技能的名字与顺序按录入顺序落库；这三条**都没带** `evidence_text`，
+    # 所以 `origin` 仍是「未标注出处」、后两列仍是 NULL。
+    # 口径出处（依据 ADR-011 v9 放开）：C1 起写侧**接受** `evidence_text` / `confidence`，
+    # 「库里恒为 NULL」不再是自动成立的事实，而是这条用例没提交它们的结果——
+    # 提交之后落什么值由 `tests/test_jobs.py` 的写回路径用例钉住。
     assert {row.origin for row in skills} == {"unverified"}
     assert all(row.confidence is None for row in skills)
     assert all(row.evidence_text is None for row in skills)

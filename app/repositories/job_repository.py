@@ -21,7 +21,9 @@
 - `get_owned()`：改 / 删 / 发布 / 下架 / 回收站，只有创建者，SQL 直接带 `created_by_user_id`。
 
 `origin` 与 `status` 都不由调用方决定：`status` 由服务层给（创建恒 `draft`），
-`origin` 在本文件写死为 `ORIGIN_UNVERIFIED`（见下）。
+`origin` 由服务层按 ADR-011 1.D 派生（`evidence_text` 归一化后是否是 JD 原文的子串），
+两者都到不了请求体。三列提取溯源戳同样由服务层盖（1.F v9 第 ② 条），
+本文件只负责把它们写进对应的列。
 
 过期判定**不在这里**：SQL 里不出现数据库侧的当日函数（`CURDATE`/`CURRENT_DATE`），
 「今天」由服务层用应用时钟算好后作为绑定参数传进来（ADR-011 2.G）。
@@ -56,11 +58,12 @@ STATUS_PUBLISHED = "published"
 
 #: 技能条目的「能否回溯到 JD 原文」标记（1.D 只有两个值；v7 值域改名，方案 a）。
 #:
-#: **本轮任何写入都落 `ORIGIN_UNVERIFIED`**：服务端写死，既不采信客户端提交的
-#: `origin`，也没有任何可回溯的原文依据可派生 `ORIGIN_JD_VERIFIABLE`
-#: （那要由 C 轮的 evidence 子串核验得出，见 ADR-011 2.D）。
-#: 之所以留两个值的 CHECK 而不是只允许 `unverified`：C 轮不必再改表，
-#: 且这一列的语义（「这句话能否回溯到 JD 原文」）从建表那天起就是完整的。
+#: **写哪个值由服务层按 1.D 的派生规则决定**（`evidence_text` 经 §2.D.1 归一化后
+#: 是否是 `description` 归一化文本的子串），既不采信客户端提交的 `origin`，
+#: 也不采信模型自报的任何标记。C1 之前本轮任何写入都恒为 `ORIGIN_UNVERIFIED`，
+#: 是因为那时还没有可核验的锚点（`evidence_text` 写不进来）。
+#: 之所以只有两个值的 CHECK：这一列的语义（「这句话能否回溯到 JD 原文」）从建表那天起
+#: 就是完整的，而第三个值 `user_edited` 已被 v7 删除（客户端可伪造的标记等于没有标记）。
 #: 值名刻意不带「谁写的」含义：这一列只能证明「在 JD 原文里出现过」，
 #: 旧的「AI 提取 / 手动」两个值名会把逐字粘贴原文的手动条目误标成 AI 产出（1.D v7）。
 ORIGIN_UNVERIFIED = "unverified"
@@ -106,7 +109,7 @@ class Job(JobBase):
     #: 截止时间。`NULL` = 长期有效，永远出现在默认列表里（2.G）。
     deadline: Mapped[date | None] = mapped_column(Date, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default=STATUS_DRAFT)
-    # 以下三列本轮只建不写，恒为 NULL：写入方是 C 轮的提取端点（PRD FR-03 L105）。
+    # 三列提取溯源戳：由服务层在保存时盖（ADR-011 v9 第 ② 条），客户端提交不到这里。
     extract_model: Mapped[str | None] = mapped_column(String(60), nullable=True)
     extract_prompt_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
     extracted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -130,7 +133,7 @@ class JobSkill(JobBase):
     #: 服务端派生，禁止出现在请求体（1.D / 1.F）。
     origin: Mapped[str] = mapped_column(String(16), nullable=False, default=ORIGIN_UNVERIFIED)
     confidence: Mapped[Decimal | None] = mapped_column(Numeric(5, 4), nullable=True)
-    #: JD 原文片段，C 轮的核验锚点（2.B 的 60 字上限）。
+    #: JD 原文片段，§2.D 的核验锚点，也是 `origin` 派生的输入（60 字上限见 2.B）。
     evidence_text: Mapped[str | None] = mapped_column(String(60), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
@@ -140,9 +143,15 @@ class JobSkill(JobBase):
 class JobDraft:
     """仓储入参：不依赖 Pydantic，避免仓储层感知 API 模型。
 
-    不含 `status` / `created_by_user_id`：前者由服务层显式给（创建恒 `draft`、
+    **不含 `status` / `created_by_user_id`**：前者由服务层显式给（创建恒 `draft`、
     发布/下架是独立动作），后者只能来自 `get_current_user`。
     放在这里是为了让「请求体够不到这两列」变成类型层面的事实。
+
+    **含 `extract_model` / `extract_prompt_version` / `extracted_at`（ADR-011 v9 第 ② 条）**：
+    这三列 C1 起真的会被写，但写什么由服务层算好交下来（「本次保存里只要有任何一条
+    `jd_verifiable` 就盖戳，否则三列 `NULL`」是业务规则，不是存储细节），
+    而请求体里根本没有这三格（`JobWriteRequest` 靠 `extra="ignore"` 整键丢掉）。
+    也就是说：仓储拿得到它们，客户端拿不到——这正是 v9 要的分工。
     """
 
     company_name: str
@@ -154,21 +163,30 @@ class JobDraft:
     salary_max: Decimal | None
     experience_required: str | None
     deadline: date | None
+    #: 三列提取溯源戳；服务层在没有可回溯条目时传 `None`。
+    extract_model: str | None
+    extract_prompt_version: str | None
+    extracted_at: datetime | None
 
 
 @dataclass(frozen=True)
 class JobSkillDraft:
     """一条岗位技能。
 
-    **没有 `origin` 字段**：它由服务端写死（见 `ORIGIN_UNVERIFIED`）。
-    **也没有 `confidence` / `evidence_text` 字段**（ADR-011 1.F 的 v6 补条）：
-    这两列语义上是 AI 提取的产物，在没有 AI 的写入路径上接受填值，只会落下无法核验的
-    数据，而且与「`origin` 恒为未标注出处」自相矛盾。将两者从入参类型里去掉，
-    等于让「请求体够不到这两列」成为类型层面的事实，而不是一句纪律。
+    `origin` 由**服务层按 1.D 派生**后传下来（`evidence_text` 归一化后是否是 JD 原文的子串），
+    请求模型里没有这一格，客户端提交的 `origin` 一律整键丢掉——「可回溯原文」这个徽标
+    因此不可伪造。ADR-011 v6 曾把它写死成 `ORIGIN_UNVERIFIED`（那时还没有可核验的锚点），
+    C1 起派生成立，写死的理由随之消失。
+
+    `confidence` / `evidence_text` **依据 ADR-011 v9 放开**：它们跟着用户保存的
+    提取结果落库（列宽 60 与 `MAX_EVIDENCE_CHARS` 同一个数，越界已在 Pydantic 层报成 422）。
     """
 
     name: str
     type: str | None
+    origin: str
+    confidence: Decimal | None
+    evidence_text: str | None
 
 
 class JobRepository:
@@ -320,10 +338,10 @@ class JobRepository:
             experience_required=draft.experience_required,
             deadline=draft.deadline,
             status=status,
-            # C 轮才写的三列：本轮恒 NULL（见模型注释）。
-            extract_model=None,
-            extract_prompt_version=None,
-            extracted_at=None,
+            # 三列溯源戳由服务层算好交下来：没有可回溯条目时就是三个 None。
+            extract_model=draft.extract_model,
+            extract_prompt_version=draft.extract_prompt_version,
+            extracted_at=draft.extracted_at,
             deleted_at=None,
             created_at=now,
             updated_at=now,
@@ -349,6 +367,10 @@ class JobRepository:
 
         先删后插（而不是 diff）与 `replace_profile_content()` 一致：
         技能条目没有稳定业务主键，diff 的复杂度换不来可验证的收益。
+
+        三列溯源戳**跟着这一次提交重算**（服务层给值），不是「只在有值时覆盖」：
+        PUT 会把技能子表整批换掉，若上一次保存盖过戳而这一次一条都不可回溯，
+        留着旧戳就是在为一批已经不在库里的技能声称「出自 JD 原文」。
         """
         now = utc_now()
         job.company_name = draft.company_name
@@ -360,6 +382,9 @@ class JobRepository:
         job.salary_max = draft.salary_max
         job.experience_required = draft.experience_required
         job.deadline = draft.deadline
+        job.extract_model = draft.extract_model
+        job.extract_prompt_version = draft.extract_prompt_version
+        job.extracted_at = draft.extracted_at
         job.updated_at = now
         self._session.execute(delete(JobSkill).where(JobSkill.job_id == job.id))
         self._add_skills(job.id, skills, now)
@@ -371,13 +396,13 @@ class JobRepository:
     def _add_skills(self, job_id: str, skills: Sequence[JobSkillDraft], now: datetime) -> None:
         """写技能子行；**不提交**，由调用方决定事务边界。
 
-        `origin` 在这里写死为 `ORIGIN_UNVERIFIED`，不接受调用方传入：
-        本轮没有任何可回溯的 JD 证据可派生「可回溯原文」，
-        而一旦让调用方传，「可回溯原文」这个徽标就成了可伪造的。
+        `origin` 由服务层按 1.D 派生后传下来（见 `JobSkillDraft`），这里只落值：
+        本文件不认识请求体，所以「客户端伪造可回溯徽标」在这层根本没有入口。
 
-        `confidence` / `evidence_text` 在这里写死为 `NULL`（`JobSkillDraft` 根本没有
-        这两个字段，见其 docstring）：本轮没有任何一条链路能写它们，
-        只有 C 轮真正做过子串核验的提取结果才允许落值。
+        `confidence` / `evidence_text` 依据 ADR-011 v9 放开，同样来自 `JobSkillDraft`
+        （B1 那一轮把这两格写死成 `NULL`，注释里标的是「本轮写死」；提取链路接通后
+        该前提不再成立）。越界值不会走到这里：`JobSkillInput` 已按 422 拦下，
+        而 `ck_job_skills_confidence` 是最后一道数据库闸门。
         """
         for index, skill in enumerate(skills):
             self._session.add(
@@ -386,9 +411,9 @@ class JobRepository:
                     job_id=job_id,
                     name=skill.name,
                     type=skill.type,
-                    origin=ORIGIN_UNVERIFIED,
-                    confidence=None,
-                    evidence_text=None,
+                    origin=skill.origin,
+                    confidence=skill.confidence,
+                    evidence_text=skill.evidence_text,
                     created_at=_staggered(now, index),
                     updated_at=now,
                 )

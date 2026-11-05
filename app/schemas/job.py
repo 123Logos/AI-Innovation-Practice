@@ -1,20 +1,23 @@
-"""岗位库的请求/响应模型（Phase 4 · B1，ADR-011 1.B / 1.D / 2.A / 2.F / 2.G）。
+"""岗位库的请求/响应模型（Phase 4 · B1 + C1，ADR-011 1.B / 1.D / 2.A / 2.C / 2.D / 2.F / 2.G）。
 
 与 `schemas/profile.py`、`schemas/resume.py` 同风格：写路径严格（非法值 422），
 读路径给具体值。
 
 三条与 ADR-011 1.F 绑定的口径：
 
-1. **请求体里没有 `status` / `created_by_user_id` / `origin`，也没有 `evidence_text` /
-   `confidence`** —— 身份与归属只来自 `get_current_user`，`POST /jobs` 一律落
-   `status='draft'`，每条技能的 `origin` 恒为 `unverified`、`evidence_text` 与 `confidence`
-   恒为 `NULL`（都由服务端写死；后两者是 AI 提取产物，只能由 C 轮的提取路径写，
-   ADR-011 1.F 的 v6 补条）。客户端就算把这些键塞进 JSON，Pydantic 默认
+1. **请求体里没有 `status` / `created_by_user_id` / `origin` / `extract_model` /
+   `extract_prompt_version` / `extracted_at`** —— 身份与归属只来自 `get_current_user`，
+   `POST /jobs` 一律落 `status='draft'`，每条技能的 `origin` 由服务端按 1.D 派生，
+   三列提取溯源戳由服务端盖（v9 的第 ② 条）。客户端就算把这些键塞进 JSON，Pydantic 默认
    `extra="ignore"` 会整键丢掉，落不到仓储（先例：
    `tests/test_resumes_generate.py` 的「忽略请求体里的 profile 字段」）。
    这里刻意**不**用 `extra="forbid"`：那是「报错」而不是「忽略」，而旧客户端 /
    手工调试会把整个对象原样 POST 回来，直接 422 会让「忽略」这条安全规则
    变成可用性回归。丢掉危险字段、放过无害字段，才是 1.F 要的效果。
+   **`evidence_text` 与 `confidence` 在 v9 起回到请求体里**（1.F 的 v9 放开条）：
+   用户是在草稿态逐条确认过 AI 结果才点保存的，这两格必须存得进去，
+   否则 1.D 的派生与 §2.D.1 的核验无处落地。它们不再是「够不到的列」，
+   但 `origin` 与三列溯源戳依然够不到。
 2. **`description` ≤ 8000 字**（2.F 的输入上限），超限 422；
    `title` / `company_name` ≤ 200，与列宽一致。
 3. **薪资两端都选填**，只在「都填了」时比较（与 `ck_jobs_salary_range` 同一条规则），
@@ -24,6 +27,11 @@
 `float` 会把 8000.1 存成 8000.099999…，读回来看起来像数据被写脏了。
 Pydantic 在 `model_dump(mode="json")` 下把 `Decimal` 输出为**字符串**（`"8000.00"`），
 前端按字符串展示即可，不会有二进制浮点的尾数噪声。
+`job_skills.confidence` 同口径用 `Decimal`（列是 `DECIMAL(5,4)`）。
+
+C1 另加提取端点的四个模型（`ExtractSkillsRequest` / `ExtractedSkillRead` /
+`ExtractSkillsMeta` / `ExtractSkillsResult`）：提取是**纯计算**（2.A），
+所以它们的字段只描述响应，不参与任何持久化。
 """
 
 import unicodedata
@@ -34,6 +42,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
 from app.core.datetime_display import format_shanghai_datetime
+from app.integrations.skill_extractor import MAX_EVIDENCE_CHARS
 from app.repositories.job_repository import MAX_SKILLS_PER_JOB
 
 #: 岗位状态（`ck_jobs_status`）。只有两态，审核态在 1.A 里被明确否决。
@@ -65,19 +74,27 @@ MAX_SALARY = Decimal("99999999.99")
 class JobSkillInput(BaseModel):
     """一条岗位技能（写入）。
 
-    只有 `name` 与 `type` 两格。**没有 `origin` 字段**：它由服务端派生
-    （本轮恒 `unverified`），客户端提交的 `origin` 会被整键丢掉（模块 docstring 第 1 条）。
+    四格：`name` / `type` / `evidence_text` / `confidence`。**后两格依据 ADR-011 v9 放开**
+    （v6 曾把它们从请求体里删掉、由仓储写死 `NULL`，理由是「没有 AI 的路径上接受填值只会
+    落下无法核验的数据」；C1 的提取链路接通后，用户确实是在草稿态逐条确认过 AI 结果才保存，
+    这两格存不进去就等于 1.D 的派生与 §2.D.1 的核验无处落地）。
 
-    **也没有 `evidence_text` / `confidence`**（ADR-011 1.F 的 v6 补条）：这两列语义上是
-    AI 提取的产物 —— `evidence_text` 是 C 轮反幻觉核验的锚点（2.D，列宽 60 与 `String(60)`
-    一致），`confidence` 是模型自报的置信度（PRD FR-03 L105）。在没有 AI 的写入路径上
-    接受客户端填值，只会落下无法核验的数据，还与「`origin` 恒为 `unverified`」自相矛盾
-    （未标注出处的条目却带着「原文依据」）。因此这里从请求模型里**删掉**这两个字段：
-    它们由仓储写死为 `NULL`，只能在 C 轮由服务端在真正做过核验的提取路径上写入。
+    **依然没有 `origin` 字段**：它由服务端按 1.D 现场派生（`evidence_text` 归一化后是否是
+    JD 原文的子串），客户端提交的 `origin` 会被整键丢掉（模块 docstring 第 1 条）。
+    放开这两格不会削弱「可回溯原文」徽标的可信度，因为派生用的锚点是这条自己带的
+    `evidence_text`，而它是否与 `description` 对得上由服务端判定，不由提交者声称。
+
+    `confidence` 越界（<0 或 >1）与 `evidence_text` 超 60 字在这里就是 **422**
+    （v9 的第 ③ 条，取代 v6 的「静默丢弃」）：Pydantic 先于数据库 CHECK 拦下来，
+    用户拿到的是一条可读的校验错误，而不是一条 500。
     """
 
     name: str = Field(min_length=1, max_length=100)
     type: SkillType | None = None
+    #: 模型给的 JD 原文片段（2.D 的核验锚点）；列宽 `String(60)` 与这里的上限同一个数。
+    evidence_text: str | None = Field(default=None, max_length=MAX_EVIDENCE_CHARS)
+    #: 模型自报的把握（PRD FR-03 L105）；列是 `DECIMAL(5,4)`，取值 0–1。
+    confidence: Decimal | None = Field(default=None, ge=0, le=1)
 
     @model_validator(mode="after")
     def normalize_name(self) -> "JobSkillInput":
@@ -92,12 +109,27 @@ class JobSkillInput(BaseModel):
         self.name = stripped
         return self
 
+    @model_validator(mode="after")
+    def normalize_evidence_text(self) -> "JobSkillInput":
+        """纯空白的 `evidence_text` 归一成 `None`，与库里「没有原文依据」同一表示。
+
+        为什么要归一而不是照存：`"   "` 归一化之后是空串，而空串是任何文本的子串，
+        照存下去这条就会被 1.D 派生成「可回溯原文」——徽标凭空出现。
+        `is_traceable()` 里已经挡掉了空锚点，这里再把它折成 `NULL`，
+        是为了让库里根本不存在第二种「没有依据」的写法（`NULL` 与空白串）。
+        """
+        if self.evidence_text is not None:
+            evidence = self.evidence_text.strip()
+            self.evidence_text = evidence or None
+        return self
+
     @property
     def dedup_key(self) -> str:
         """与应用层重名判断同口径的键：NFKC（全角→半角）+ casefold。
 
-        这是 ADR-011 §2.D.1 归一化函数的**子集**（去掉空白与标点的那两步留给 C 轮的
-        evidence 核验）：技能名里 `C++` 的 `+` 是名字的一部分，
+        这是 ADR-011 §2.D.1 归一化函数的**子集**（去空白与去标点那两步只用于
+        `evidence_text` 的子串核验，见 `skill_extractor.normalize_for_trace()`）：
+        技能名里 `C++` 的 `+` 是名字的一部分，
         删标点会把 `C++` 与 `C` 混为一谈。数据库那侧由排序规则负责同样的宽容度，
         这里只是把它的报错提前成一条可读的 422。
         """
@@ -173,8 +205,8 @@ class JobSkillRead(BaseModel):
     #: 读侧给原始字符串（`jd_verifiable` / `unverified`），前端按两态渲染徽标
     #: （议题 3.B：徽标文案是「可回溯原文」/「未标注出处」，**不得出现「AI 提取」字样**）。
     origin: SkillOrigin
-    #: 本轮恒为 `NULL`：写侧不接受这两个字段（见 `JobSkillInput`），
-    #: 读接口先给出来，前端不需要为「字段将来才有值」写两套代码。
+    #: C1 起有值：写侧依据 ADR-011 v9 放开这两格，用户保存提取结果时它们跟着落库。
+    #: 没带 `evidence_text` 的手动条目仍然是 `NULL`，所以类型依旧可空。
     confidence: Decimal | None = None
     evidence_text: str | None = None
 
@@ -228,8 +260,11 @@ class JobRead(BaseModel):
     deadline: date | None = None
     status: JobStatus
     created_by_user_id: str
-    #: 本轮恒为 `null`：写入方是 C 轮的提取端点（PRD FR-03 L105）。
-    #: 读接口先给出来，是为了让前端不需要为「字段将来才存在」写两套代码。
+    #: 三列提取溯源戳，**由服务端盖，不采信客户端**（ADR-011 v9 第 ② 条）：
+    #: 本次保存里只要有任何一条技能被判为 `jd_verifiable`，服务层就写入
+    #: `extract_model` = 固定模型、`extract_prompt_version` = `EXTRACT_PROMPT_VERSION`、
+    #: `extracted_at` = 应用时钟的当前 UTC 时间；一条都没有则三列保持 `NULL`。
+    #: 客户端提交的同名字段在 Pydantic 那一层就整键丢掉（模块 docstring 第 1 条）。
     extract_model: str | None = None
     extract_prompt_version: str | None = None
     extracted_at: datetime | None = None
@@ -252,3 +287,80 @@ class JobRead(BaseModel):
     @field_serializer("deleted_at")
     def serialize_deleted_at(self, value: datetime | None) -> str | None:
         return None if value is None else format_shanghai_datetime(value)
+
+
+# --------------------------------------------------------------------------- #
+# C1：`POST /jobs/extract-skills`（ADR-011 2.A / 2.C / 2.D / 2.F）
+#
+# 这四个模型**只描述一次计算的两端**，不参与任何持久化：岗位此刻还没落库（2.A），
+# 用户逐条删改之后走的是上面那套 `JobWriteRequest`。
+# --------------------------------------------------------------------------- #
+
+
+class ExtractSkillsRequest(BaseModel):
+    """提取请求体：只有 JD 原文与可选岗位名。
+
+    两个输入上限都是 2.F 的硬规定（`description` ≤ 8000、`title` ≤ 200），
+    超限由 Pydantic 报 422 而**不发往任何外部服务**：Prompt 体积要兜住（8000 字已经
+    是「整份 JD 粘进来」的量级），而 BYOK 下每个字节都花用户的钱。
+
+    没有 `skills` / `origin` / `confidence` 之类的格子：本端点只读不写，
+    把落库字段放进请求体只会给「提取顺手改库」留下想象空间。
+    """
+
+    description: str = Field(min_length=1, max_length=MAX_DESCRIPTION_LENGTH)
+    title: str | None = Field(default=None, max_length=200)
+
+
+class ExtractedSkillRead(BaseModel):
+    """提取响应里的一条技能（2.C 的输出契约）。
+
+    字段名是 `evidence` 而不是 `evidence_text`：这里是「模型给的原话」，
+    还没有经过服务端的落库判定；用户在草稿态确认后保存时，同一串文字走
+    `JobSkillInput.evidence_text` 进列。两个名字都出自 ADR-011（2.C 与修订清单 #2）。
+
+    `type` 可空是 2.D 第 5 条的结果：枚举外的值保留该条、把 `type` 置 NULL，
+    让前端显示「未分类」并由用户选，而不是悄悄丢掉一条真实的技能。
+    """
+
+    name: str
+    type: SkillType | None = None
+    evidence: str
+    confidence: float | None = None
+
+
+class ExtractSkillsMeta(BaseModel):
+    """核验计数与溯源信息（2.D「核验计数必须可见」——本端点最重要的一条产品承诺）。
+
+    六个字段逐个为什么必须在（`docs/API.md` 修订清单 #3 要求逐字段写进契约，
+    缺一份字段契约，将来只剩端点名，语义会丢）：
+
+    - `model` / `prompt_version`：这一批结果是哪一版指令产出的（PRD FR-03 L105）；
+    - `received_count`：模型一共给了几条；
+    - `dropped_count`：其中几条因**无法回溯 JD 原文**被剔除——前端把它读成
+      「AI 给出 20 条，其中 14 条无法在 JD 原文中找到依据，已剔除」，
+      也是「子串核验误伤合理归纳」唯一的可读数来源（无凭据环境下测不出来，只能靠它）；
+    - `truncated`：条数封顶（15）是否真的切掉了东西。**只在确实切的时候为真**：
+      给了 20 条但 12 条没通过核验、剩下 12 条全部返回时，并没有「只保留前 15 条」，
+      此时报 `true` 会让前端说出一句假话；
+    - `finish_reason`：上游给的原因，用来把第 7 情形（输出被服务端的 token 上限切断）
+      与第 4 情形（模型不守格式）分开——两者的用户动作不同。
+    """
+
+    model: str
+    prompt_version: str
+    received_count: int
+    dropped_count: int
+    truncated: bool
+    finish_reason: str | None = None
+
+
+class ExtractSkillsResult(BaseModel):
+    """提取响应体：`{skills, meta}`（2.A）。
+
+    `skills` 至少一条：一条都不剩时服务层不会返回这个模型，而是抛
+    `ResumeCopyUnavailableError`（502）——「静默返回空结果」在七条失败语义里被明令禁止。
+    """
+
+    skills: list[ExtractedSkillRead] = Field(min_length=1)
+    meta: ExtractSkillsMeta

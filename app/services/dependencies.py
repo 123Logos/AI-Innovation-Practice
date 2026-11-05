@@ -17,6 +17,7 @@ from starlette.requests import Request
 
 from app.integrations.copy_writer import DeepSeekCopyWriter
 from app.integrations.resume_generator import TemplateResumeGenerator
+from app.integrations.skill_extractor import DeepSeekJobSkillExtractor
 from app.repositories.job_repository import JobRepository
 from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.resume_repository import ResumeRepository
@@ -54,16 +55,26 @@ def get_profile_service() -> Iterator[ProfileService]:
         yield ProfileService(StudentProfileRepository(session))
 
 
-def get_job_service() -> Iterator[JobService]:
-    """装配岗位服务（Phase 4 · B1）。
+def get_job_service(request: Request) -> Iterator[JobService]:
+    """装配岗位服务（Phase 4 · B1，C1 起带上提取通道）。
 
-    与 `get_profile_service()` 同构：一个 session、一个仓储、一个服务。
-    本轮**不装配任何 AI 通道**，所以这里连 `Request` 都不取、也不读
-    `X-DeepSeek-Key` —— 技能提取（BYOK）是下一轮的事（ADR-011 的 C 轮），
-    现在把它写进来就是一行没人调用的死代码。
+    读、写、回收站那几条路径与 `get_profile_service()` 同构：一个 session、一个仓储、一个服务。
+    C1 起还要装配 JD 技能提取的适配器，**Key 的取法与 `get_resume_service` 完全同构**：
+    在这里取而不是在路由里取（路由拿不到 `JobService` 内部的 extractor），
+    且「缺鉴权材料就 4xx」本来就是本文件的既有分工。
+
+    「有没有 Key」只决定 extractor 装不装：`GET/POST/PUT/DELETE /jobs` 都不看这个头，
+    只有 `/jobs/extract-skills` 在拿不到 Key 时由服务层抛 `ResumeApiKeyMissingError`（400）。
+    这里不提前 4xx，理由与润色相同——不让不需要 Key 的路径付任何成本。
+
+    Key 只活在这一次请求的内存里：不落库、不写日志、不进异常消息（ADR-009/011 2.B）。
     """
+    api_key = request.headers.get(DEEPSEEK_KEY_HEADER, "").strip()
     with session_scope() as session:
-        yield JobService(JobRepository(session))
+        yield JobService(
+            repository=JobRepository(session),
+            extractor=DeepSeekJobSkillExtractor(api_key) if api_key else None,
+        )
 
 
 def get_resume_service(request: Request) -> Iterator[ResumeService]:

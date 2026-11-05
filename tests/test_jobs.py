@@ -18,6 +18,10 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+from app.integrations.skill_extractor import (
+    DEEPSEEK_MODEL,
+    EXTRACT_PROMPT_VERSION,
+)
 from app.main import app
 from app.repositories.job_repository import JobRepository
 from app.repositories.user_repository import get_engine, session_scope
@@ -197,10 +201,11 @@ def test_create_job_returns_201_and_persists_every_column(client: TestClient) ->
             "id": created["skills"][0]["id"],
             "name": "Python",
             "type": "hard",
-            # 本轮写入的每条技能恒为「未标注出处」（ADR-011 1.D v7 的值域）；
-            # 请求体里那个 confidence=0.9 被整键丢掉（1.F 的 v6 补条）。
+            # 这一条**没有** `evidence_text`，所以 1.D 的派生只能给「未标注出处」；
+            # `confidence` 自 ADR-011 v9 起真的落库（列 `DECIMAL(5,4)` → 读回 `"0.9000"`），
+            # 但「有置信度」≠「可回溯原文」：置信度是模型自报的数字，徽标只看子串核验。
             "origin": "unverified",
-            "confidence": None,
+            "confidence": "0.9000",
             "evidence_text": None,
         }
     ]
@@ -223,7 +228,10 @@ def test_create_job_returns_201_and_persists_every_column(client: TestClient) ->
     assert float(row.salary_min) == 3000
     assert str(row.deadline) == (today + timedelta(days=30)).isoformat()
     assert row.status == "draft"
-    # C 轮才写的三列本轮必须全空：现在没有任何代码路径能写它们。
+    # 三列溯源戳仍为 NULL，但**理由换了**（依据 ADR-011 v9 放开）：
+    # 不是「没有代码能写它们」，而是本次保存没有任何一条技能被判为 `jd_verifiable`
+    # （这条只带了 `confidence`，没有 `evidence_text`，无从回溯原文），
+    # 按 v9 第 ② 条，一条都没有时三列保持 NULL。盖戳的正向用例见下面的写回路径用例。
     assert row.extract_model is None
     assert row.extract_prompt_version is None
     assert row.extracted_at is None
@@ -303,19 +311,26 @@ def test_create_job_rejects_employment_type_and_salary_range(client: TestClient)
     assert _count("jobs") == 0, "校验失败的请求不能留下一行"
 
 
-def test_post_and_put_ignore_evidence_text_and_confidence(client: TestClient) -> None:
-    """`evidence_text` / `confidence` 被请求模型整键丢掉，**库里恒为 NULL**（1.F v6 补条）。
+def test_post_and_put_write_back_evidence_confidence_and_stamp_trace(client: TestClient) -> None:
+    """写回路径的三条 v9 规则（依据 ADR-011 v9 放开 `evidence_text` / `confidence`）。
 
-    断言的是库里的值，不是响应：这两列是 AI 提取的产物，在没有 AI 的写入路径上
-    落任何值都会造出一条无法核验、又与「未标注出处」自相矛盾的数据。
+    本用例取代 B1 的 `test_post_and_put_ignore_evidence_text_and_confidence`——
+    那条钉的是 v6 补条「写侧一律忽略这两格、库里恒为 NULL」；C1 的提取链路接通后
+    该前提不再成立，所以**逐条改成 v9 的新口径**（断言一个没删，只是方向反过来）：
 
-    两个刻意设计的输入：
-    - `confidence=1.5`（越界）与超长 `evidence_text`：请求模型里没有这两格，
-      所以**不再 422** 而是 201 —— 「忽略」而不是「报错」，与 `origin` / `status`
-      同一口径（`app/schemas/job.py` 模块 docstring 第 1 条解释过为什么不 `forbid`）；
-    - 走 PUT 再写一次：编辑路径与创建路径必须同样够不到这两列。
+    1. `skills[]` 接受 `name`/`type`/`evidence_text`/`confidence` 四格，**库里就是这四格**；
+    2. `origin` 仍由服务端按 1.D 派生（`evidence_text` 归一化后是否是 JD 原文的子串），
+       客户端提交的 `origin` 忽略；
+    3. 只要有任何一条被判 `jd_verifiable`，服务端盖三列溯源戳；一条都没有则三列 `NULL`；
+       客户端提交的 `extract_model` / `extract_prompt_version` / `extracted_at` /
+       `status` / `created_by_user_id` 一律忽略（断言看的是**库里的值**）；
+    4. `confidence` 越界与 `evidence_text` 超 60 字 → **422 走统一错误模型**
+       （v9 第 ③ 条，不再是 v6 的静默丢弃），且校验失败的请求不留一行。
+
+    断言全部读原始表而不是响应体：响应可以临时改写，落库才是既成事实。
     """
     token = _register_and_login(client)
+    other_user_id = _user_id(client, _register_and_login(client))
 
     def stored_skills(job_id: object) -> list[tuple[object, object, object, object]]:
         with get_engine().connect() as connection:
@@ -329,36 +344,107 @@ def test_post_and_put_ignore_evidence_text_and_confidence(client: TestClient) ->
                 ).all()
             )
 
+    def stored_stamp(job_id: object) -> tuple[object, object, object]:
+        with get_engine().connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT extract_model, extract_prompt_version, extracted_at "
+                    "FROM jobs WHERE id = :id"
+                ),
+                {"id": str(job_id)},
+            ).one()
+        return (row.extract_model, row.extract_prompt_version, row.extracted_at)
+
+    # ---- 1/2/3：两条带原文依据、一条不带；默认 JD 原文是
+    #      「负责后端接口开发，熟练掌握 Python 与 FastAPI。」
     created = _create(
         client,
         token,
+        # 客户端能伪造的都伪造一遍：这三列与 status / 归属 / origin 都不该被采信。
+        status="published",
+        created_by_user_id=other_user_id,
+        extract_model="some-other-model",
+        extract_prompt_version="v99",
+        extracted_at="2020-01-01T00:00:00",
         skills=[
             _skill("Python", type="hard", evidence_text="熟练掌握 Python", confidence=0.99),
-            _skill("SQL", confidence=1.5),
-            _skill("Docker", evidence_text="熟悉 Docker" * 30),
+            # 全角逗号 vs 半角逗号：§2.D.1 的「标点不参与比较」口径下这条同样可回溯。
+            _skill("FastAPI", evidence_text="熟练掌握 Python, 与 FastAPI", confidence=0.5),
+            _skill("SQL", evidence_text="熟悉 SQL", confidence=0.25, origin="jd_verifiable"),
+            _skill("Docker"),
         ],
     )
-    assert [skill["confidence"] for skill in created["skills"]] == [None, None, None]
-    assert [skill["evidence_text"] for skill in created["skills"]] == [None, None, None]
     rows = stored_skills(created["id"])
-    assert [row.name for row in rows] == ["Python", "SQL", "Docker"]
-    assert {row.origin for row in rows} == {"unverified"}
-    assert all(row.confidence is None for row in rows), "请求体填了置信度，库里仍必须是 NULL"
-    assert all(row.evidence_text is None for row in rows), "请求体填了原文依据，库里仍必须是 NULL"
+    assert [row.name for row in rows] == ["Python", "FastAPI", "SQL", "Docker"]
+    # `origin` 由服务端派生：前两条的锚点能在 JD 原文里逐字找到，
+    # 「熟悉 SQL」找不到 → 未标注出处；客户端给 SQL 那条伪装的 `jd_verifiable` 被丢掉。
+    assert [row.origin for row in rows] == [
+        "jd_verifiable",
+        "jd_verifiable",
+        "unverified",
+        "unverified",
+    ]
+    # v9 放开：库里就是提交的那两格（`DECIMAL(5,4)` 补零到四位）。
+    assert [str(row.confidence) for row in rows] == ["0.9900", "0.5000", "0.2500", "None"]
+    assert [row.evidence_text for row in rows] == [
+        "熟练掌握 Python",
+        "熟练掌握 Python, 与 FastAPI",
+        "熟悉 SQL",
+        None,
+    ]
+    # 响应体与库里同一口径（读路径先给出来，前端不需要为「字段将来才有值」写两套代码）。
+    assert [skill["evidence_text"] for skill in created["skills"]] == [
+        "熟练掌握 Python",
+        "熟练掌握 Python, 与 FastAPI",
+        "熟悉 SQL",
+        None,
+    ]
+    returned_confidence = [
+        None if skill["confidence"] is None else float(skill["confidence"])
+        for skill in created["skills"]
+    ]
+    assert returned_confidence == [0.99, 0.5, 0.25, None]
 
+    model, prompt_version, extracted_at = stored_stamp(created["id"])
+    assert model == DEEPSEEK_MODEL, "提交的 extract_model 被忽略，落库的是服务端自己那一个"
+    assert prompt_version == EXTRACT_PROMPT_VERSION
+    assert extracted_at is not None, "有可回溯条目时必须盖时间戳，且不是提交里那个 2020 年"
+    # 归属与状态同样不采信（1.F 的写侧规则，与这两格无关，留在本用例里一起钉住）。
+    assert _scalar("SELECT status FROM jobs WHERE id = :id", id=created["id"]) == "draft"
+    assert (
+        _scalar("SELECT created_by_user_id FROM jobs WHERE id = :id", id=created["id"])
+        == _user_id(client, token)
+    )
+
+    # ---- 3 的反向：PUT 换成「一条都不可回溯」的技能后，三列必须回到 NULL。
+    #      技能子表是整批换掉的，留着旧戳就是在为一批已经不在库里的技能声称「出自 JD 原文」。
     edited = client.put(
         f"{JOBS_BASE}/{created['id']}",
-        json=_job_payload(
-            skills=[_skill("Go", type="hard", evidence_text="熟悉 Go", confidence=0.5)]
-        ),
+        json=_job_payload(skills=[_skill("Go", type="hard", confidence=0.5)]),
         headers=_headers(token),
     )
     assert edited.status_code == 200, edited.text
     rows = stored_skills(created["id"])
     assert [row.name for row in rows] == ["Go"]
-    assert rows[0].origin == "unverified"
-    assert rows[0].confidence is None
+    assert rows[0].origin == "unverified", "锚点不在 JD 里，置信度再高也不能算可回溯"
+    assert str(rows[0].confidence) == "0.5000"
     assert rows[0].evidence_text is None
+    assert stored_stamp(created["id"]) == (None, None, None)
+
+    # ---- 4：越界值现在是 422（v6 是「静默丢掉、照样 201」）。
+    before = _count("jobs")
+    for payload in (
+        _job_payload(skills=[_skill("Python", confidence=1.5)]),
+        _job_payload(skills=[_skill("Python", confidence=-0.0001)]),
+        _job_payload(skills=[_skill("Python", evidence_text="D" * 61)]),
+    ):
+        response = client.post(JOBS_BASE, json=payload, headers=_headers(token))
+        assert response.status_code == 422, str(payload)[:120] + response.text
+        body = response.json()
+        assert body["error"]["code"] == "VALIDATION_ERROR"
+        assert body["error"]["message"]
+        assert body["meta"]["request_id"]
+    assert _count("jobs") == before, "越界的技能不能留下一行"
 
 
 # --------------------------------------------------------------------------- #
@@ -837,15 +923,20 @@ def test_expired_jobs_are_hidden_by_default_on_the_app_clock(client: TestClient)
 
 
 # --------------------------------------------------------------------------- #
-# 矩阵第 7 行：本轮不存在提取端点（零外部调用）
+# 矩阵第 7 行：提取端点已在 C1 接通（B1 那轮的「本轮不存在」守卫随之改写）
 # --------------------------------------------------------------------------- #
 
 
-def test_extract_skills_endpoint_is_not_wired_in_this_round(client: TestClient) -> None:
-    """本轮**没有任何外部调用**：`POST /jobs/extract-skills` 不存在（ADR-011 的 C 轮才写）。
+def test_extract_skills_endpoint_is_wired_as_a_static_path(client: TestClient) -> None:
+    """`POST /jobs/extract-skills` 存在，且**没有**被 `/jobs/{job_id}` 当成岗位 id 吃掉。
 
-    命中的是 `/jobs/{job_id}` 这条路径但没有 POST 方法，所以是 405 而不是 404；
-    两种都算「端点不存在」，这里断言「绝不可能是 2xx」并检查错误体仍是统一模型。
+    B1 那一轮这条用例钉的是反面（「本轮没有任何外部调用，端点不存在 → 404/405」）；
+    C1 按 ADR-011 2.A 把它接上，所以**依据 v9 改成新口径**：不带 Key 时必须是
+    `AI_KEY_MISSING`（400）——这条只有真的落到提取处理函数里才可能出现，
+    若路径被当成 `job_id` 就会是 405/404。路由顺序与失败语义的完整覆盖在
+    `tests/test_jobs_extract_skills.py`，这里只留「端点存在」这一格守卫。
+
+    另外保留 B1 的原断言：提取是纯计算，一次失败的提取也不能留下任何一行。
     """
     token = _register_and_login(client)
 
@@ -854,8 +945,8 @@ def test_extract_skills_endpoint_is_not_wired_in_this_round(client: TestClient) 
         json={"description": "熟练掌握 Python"},
         headers=_headers(token),
     )
-    assert response.status_code in (404, 405), response.text
-    assert response.json()["error"]["code"] in ("NOT_FOUND", "CLIENT_ERROR")
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["code"] == "AI_KEY_MISSING"
     # 没有任何地方把提取结果落成技能：库里一行都没有
     assert _count("jobs") == 0
     assert _count("job_skills") == 0
