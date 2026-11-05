@@ -60,9 +60,9 @@ def test_table_row_1_full_width_comma_passes_under_both_readings() -> None:
     assert is_traceable(evidence, jd) is True
     # 反向：连标点一起比也过（NFKC 已经把全角标点折成半角）。
     assert normalize_keeping_punctuation(jd) == "熟练掌握python,熟悉fastapi"
-    assert (
-        normalize_keeping_punctuation(evidence) in normalize_keeping_punctuation(jd)
-    ), "第 1 行在「标点参与」口径下也必须通过，否则它就不是两条路的公共反例"
+    assert normalize_keeping_punctuation(evidence) in normalize_keeping_punctuation(jd), (
+        "第 1 行在「标点参与」口径下也必须通过，否则它就不是两条路的公共反例"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -87,9 +87,9 @@ def test_table_row_2_ideographic_comma_only_passes_when_punctuation_is_dropped()
     # 反向断言：同一对字符串在「标点参与」的实现里必须被丢弃。
     assert normalize_keeping_punctuation(jd) == "熟悉python、fastapi、docker"
     assert normalize_keeping_punctuation(evidence) == "熟悉python,fastapi,docker"
-    assert (
-        normalize_keeping_punctuation(evidence) not in normalize_keeping_punctuation(jd)
-    ), "严格比较口径必须丢弃这条，否则第 2 行就证明不了两个口径有分歧"
+    assert normalize_keeping_punctuation(evidence) not in normalize_keeping_punctuation(jd), (
+        "严格比较口径必须丢弃这条，否则第 2 行就证明不了两个口径有分歧"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -117,9 +117,9 @@ def test_table_row_3_cross_sentence_join_is_deliberately_let_through() -> None:
 
     assert normalize_keeping_punctuation(jd) == "负责数据采集。负责数据清洗"
     assert normalize_keeping_punctuation(evidence) == "负责数据采集负责数据清洗"
-    assert (
-        normalize_keeping_punctuation(evidence) not in normalize_keeping_punctuation(jd)
-    ), "参与口径：必须丢弃——两半不同才构成「口径分歧」，改绿任何一半都是改口径不叫修 bug"
+    assert normalize_keeping_punctuation(evidence) not in normalize_keeping_punctuation(jd), (
+        "参与口径：必须丢弃——两半不同才构成「口径分歧」，改绿任何一半都是改口径不叫修 bug"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -194,9 +194,8 @@ def test_underscore_drop_is_an_accepted_tradeoff_not_a_bug() -> None:
     assert normalize_for_trace("user_id") == "userid"
     assert is_traceable("用 userid 命名", "表结构里用 user_id 命名规范") is True
     # 反向：JD 里是 `user_id`、模型写的是 `userid`，只有「删掉 `Pc`」才判得相同。
-    assert (
-        normalize_keeping_punctuation("用 userid 命名")
-        not in normalize_keeping_punctuation("表结构里用 user_id 命名规范")
+    assert normalize_keeping_punctuation("用 userid 命名") not in normalize_keeping_punctuation(
+        "表结构里用 user_id 命名规范"
     ), "保留下划线的口径下这是一次丢弃——「放过」确实发生，不是嘴上说说"
 
 

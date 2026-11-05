@@ -253,9 +253,7 @@ class JobRepository:
             # 列表不掺回收站：软删的行由 `list_trash()` 单独回答。
             include_deleted=False,
         )
-        statement = (
-            select(Job).where(*conditions).order_by(Job.created_at.desc(), Job.id.desc())
-        )
+        statement = select(Job).where(*conditions).order_by(Job.created_at.desc(), Job.id.desc())
         return list(self._session.scalars(statement.offset(offset).limit(limit)))
 
     def count_jobs(

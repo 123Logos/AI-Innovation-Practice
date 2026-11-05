@@ -258,9 +258,7 @@ def test_polish_prompt_carries_the_draft_not_the_database(
     assert ORIGINAL_DESCRIPTION not in messages, "润色用的是请求体，不是库里的档案"
 
 
-def test_polish_writes_nothing_to_database(
-    fake_deepseek: FakeDeepSeek, client: TestClient
-) -> None:
+def test_polish_writes_nothing_to_database(fake_deepseek: FakeDeepSeek, client: TestClient) -> None:
     """ADR-010 的核心承诺：润色是纯计算。落库发生在用户点「保存修改」之后。"""
     token = _register_and_login(client)
 
@@ -344,9 +342,7 @@ def test_expand_injects_given_max_words(
     assert f"严格不超过 {max_words} 个汉字" in fake_deepseek.system_prompt
 
 
-def test_non_expand_modes_ignore_max_words(
-    fake_deepseek: FakeDeepSeek, client: TestClient
-) -> None:
+def test_non_expand_modes_ignore_max_words(fake_deepseek: FakeDeepSeek, client: TestClient) -> None:
     """其它档位收下 `max_words` 也必须作废：校验层已把它置空，Prompt 里不该出现那个数字。"""
     token = _register_and_login(client)
 
@@ -368,9 +364,7 @@ def test_expand_caps_oversized_model_output(
     token = _register_and_login(client)
     fake_deepseek.copy_payload = {
         "skills": ["Python", "SQL"],
-        "experiences": [
-            {"index": 0, "description": "建设" * 120, "responsibility": "承担" * 60}
-        ],
+        "experiences": [{"index": 0, "description": "建设" * 120, "responsibility": "承担" * 60}],
     }
 
     response = _polish(client, token, mode="expand", max_words=60)
@@ -629,9 +623,7 @@ def test_markdown_fenced_json_is_parsed(fake_deepseek: FakeDeepSeek, client: Tes
     assert _polished_item(response)["description"] == "围栏里的文案"
 
 
-def test_ai_cannot_invent_or_drop_skills(
-    fake_deepseek: FakeDeepSeek, client: TestClient
-) -> None:
+def test_ai_cannot_invent_or_drop_skills(fake_deepseek: FakeDeepSeek, client: TestClient) -> None:
     """技能以输入为准：模型加的一律丢弃，漏掉的按原顺序补回，名字回贴用户写过的写法。"""
     token = _register_and_login(client)
     fake_deepseek.copy_payload = {

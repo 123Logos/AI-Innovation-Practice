@@ -104,10 +104,7 @@ def build_system_prompt(mode: PolishMode, max_words: int | None = None) -> str:
     return (
         "你是资深技术岗位简历顾问，服务对象是中国高校 AI 专业的在校生。"
         "用户会发来一份 JSON，字段为 profile、skills、"
-        "experiences[].index/title/description/responsibility。\n"
-        + directive
-        + "\n"
-        + _HARD_RULES
+        "experiences[].index/title/description/responsibility。\n" + directive + "\n" + _HARD_RULES
     )
 
 

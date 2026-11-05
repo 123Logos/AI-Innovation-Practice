@@ -172,9 +172,7 @@ class JobService:
     def list_trash(self, user_id: str) -> list[JobSummary]:
         """回收站（1.F #8）：只含**自己**软删除的岗位，过滤在 SQL 里做。"""
         today = date.today()
-        return [
-            self._to_summary(job, today) for job in self._repository.list_trash(user_id)
-        ]
+        return [self._to_summary(job, today) for job in self._repository.list_trash(user_id)]
 
     def get_job(self, user_id: str, job_id: str) -> JobRead:
         """详情（1.F #2）：`published` 任何登录用户可读，`draft` 仅创建者。
@@ -517,8 +515,7 @@ class JobService:
     def _to_summary(self, job: Job, today: date) -> JobSummary:
         """列表项：不带 `description`（JD 最长 8000 字），技能只给前 6 条。"""
         skills = [
-            JobSkillRead.model_validate(skill)
-            for skill in self._repository.list_skills(job.id)
+            JobSkillRead.model_validate(skill) for skill in self._repository.list_skills(job.id)
         ]
         return JobSummary(
             id=job.id,

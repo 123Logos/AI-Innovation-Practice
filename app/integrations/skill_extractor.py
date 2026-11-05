@@ -210,9 +210,7 @@ def normalize_for_trace(text: str) -> str:
     normalized = unicodedata.normalize("NFKC", text)
     folded = normalized.casefold()
     without_space = "".join(char for char in folded if not char.isspace())
-    return "".join(
-        char for char in without_space if not unicodedata.category(char).startswith("P")
-    )
+    return "".join(char for char in without_space if not unicodedata.category(char).startswith("P"))
 
 
 def is_traceable(evidence: str, description: str) -> bool:
@@ -299,7 +297,9 @@ class DeepSeekJobSkillExtractor(JobSkillExtractor):
         except (APIConnectionError, APIStatusError) as error:
             status = getattr(error, "status_code", None)
             # 401 已由上面的 AuthenticationError 单独处理；剩下的都是「上游不可用」。
-            logger.warning("DeepSeek 提取调用失败（status=%s, type=%s）", status, type(error).__name__)
+            logger.warning(
+                "DeepSeek 提取调用失败（status=%s, type=%s）", status, type(error).__name__
+            )
             raise SkillExtractUnavailableError("AI 服务暂时不可用。") from error
 
         choice = completion.choices[0] if completion.choices else None

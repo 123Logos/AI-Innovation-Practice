@@ -207,7 +207,9 @@ def _assert_schema_after_upgrade(engine: Engine) -> None:
                 """
             )
         ).all()
-        assert [(row.INDEX_NAME, row.SEQ_IN_INDEX, row.COLUMN_NAME) for row in job_index_columns] == [
+        assert [
+            (row.INDEX_NAME, row.SEQ_IN_INDEX, row.COLUMN_NAME) for row in job_index_columns
+        ] == [
             ("ix_jobs_creator", 1, "created_by_user_id"),
             ("ix_jobs_creator", 2, "deleted_at"),
             ("ix_jobs_status_created", 1, "status"),

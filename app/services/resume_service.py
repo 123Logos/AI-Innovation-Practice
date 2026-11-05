@@ -98,9 +98,9 @@ def _sanitize_copy(copy: ResumeCopy, request: ResumePolishRequest) -> ResumeCopy
             ordered.append(skill.name)
 
     originals = list(request.experiences)
-    if len(copy.experiences) != len(originals) or {
-        item.index for item in copy.experiences
-    } != set(range(len(originals))):
+    if len(copy.experiences) != len(originals) or {item.index for item in copy.experiences} != set(
+        range(len(originals))
+    ):
         raise ResumeCopyUnavailableError("AI 返回的经历与输入不一致。")
 
     polished_items = sorted(copy.experiences, key=lambda item: item.index)
@@ -148,10 +148,10 @@ def _cap_pair(description: str, responsibility: str, max_words: int) -> tuple[st
     if len(description) + len(responsibility) <= max_words:
         return description, responsibility
 
-    responsibility_budget = max(
-        _RESPONSIBILITY_FLOOR, min(len(responsibility), max_words // 3)
+    responsibility_budget = max(_RESPONSIBILITY_FLOOR, min(len(responsibility), max_words // 3))
+    capped_description = _cap_text(
+        description, max(_RESPONSIBILITY_FLOOR, max_words - responsibility_budget)
     )
-    capped_description = _cap_text(description, max(_RESPONSIBILITY_FLOOR, max_words - responsibility_budget))
     capped_responsibility = _cap_text(
         responsibility,
         max(_RESPONSIBILITY_FLOOR, max_words - len(capped_description)),

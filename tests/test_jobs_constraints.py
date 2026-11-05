@@ -132,9 +132,7 @@ def _insert_skill(job_id: str, name: str, **overrides: Any) -> str:
     columns = ", ".join(row)
     placeholders = ", ".join(f":{key}" for key in row)
     with get_engine().begin() as connection:
-        connection.execute(
-            text(f"INSERT INTO job_skills ({columns}) VALUES ({placeholders})"), row
-        )
+        connection.execute(text(f"INSERT INTO job_skills ({columns}) VALUES ({placeholders})"), row)
     return skill_id
 
 
@@ -269,7 +267,9 @@ def test_status_check_rejects_review_and_expired_states() -> None:
     user_id = _insert_user()
 
     for illegal in ("pending_review", "approved", "rejected", "closed", "expired"):
-        _expect_check_violation("ck_jobs_status", lambda illegal=illegal: _insert_job(user_id, status=illegal))
+        _expect_check_violation(
+            "ck_jobs_status", lambda illegal=illegal: _insert_job(user_id, status=illegal)
+        )
 
     _insert_job(user_id, status="draft")
     _insert_job(user_id, status="published")
@@ -279,7 +279,9 @@ def test_employment_type_check_accepts_only_the_five_values() -> None:
     """五种取值 + NULL；`remote` 不在其列（1.G：远程/驻场本轮留在 JD 文本里）。"""
     user_id = _insert_user()
 
-    _expect_check_violation("ck_jobs_employment_type", lambda: _insert_job(user_id, employment_type="remote"))
+    _expect_check_violation(
+        "ck_jobs_employment_type", lambda: _insert_job(user_id, employment_type="remote")
+    )
 
     for value in (None, "internship", "full_time", "part_time", "contract", "other"):
         _insert_job(user_id, employment_type=value)
@@ -453,9 +455,7 @@ def test_skill_name_key_matches_unique_key_for_equivalent_spellings(
 
 
 @pytest.mark.parametrize(("first", "second"), _NAME_PAIRS_DIFFERENT_SKILL)
-def test_skill_name_key_matches_unique_key_for_distinct_names(
-    first: str, second: str
-) -> None:
+def test_skill_name_key_matches_unique_key_for_distinct_names(first: str, second: str) -> None:
     """`skill_name_key` 判为两个技能 ⟹ 库里必须真的留下两行（这才是同一个答案）。
 
     反向护栏由 `test_four_step_normalization_is_not_a_valid_skill_name_key` 单独测：
@@ -650,7 +650,9 @@ def test_full_slice_persists_every_layer_once(client: TestClient) -> None:
     job_id = created.json()["data"]["job"]["id"]
     assert created.json()["data"]["job"]["status"] == "draft"
 
-    published = client.put(f"/api/v1/jobs/{job_id}/publish", headers={"Authorization": f"Bearer {token}"})
+    published = client.put(
+        f"/api/v1/jobs/{job_id}/publish", headers={"Authorization": f"Bearer {token}"}
+    )
     assert published.status_code == 200, published.text
 
     with get_engine().connect() as connection:

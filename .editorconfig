@@ -1,0 +1,32 @@
+root = true
+
+# 这份文件只记录仓库里**已经成立**的约定，不引入新约定。
+# 唯一例外是 *.md 的 trim_trailing_whitespace，理由写在下面那一节。
+
+[*]
+charset = utf-8
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# 刻意**不写 end_of_line**：本机 git 是 core.autocrlf=true 且仓库没有 .gitattributes，
+# 索引里存 LF、工作区检出的文件是 CRLF。`end_of_line = lf` 不是描述而是立法——
+# 编辑器会在每次保存时转换行尾，把一次格式化提交染上一层看不见的抖动。
+# 真要钉死行尾，需要「加 .gitattributes + 全库 renormalize」这样一个独立决定，
+# 它的爆炸半径是仓库里的每一个文件，不该顺手混进这一轮。
+
+[*.py]
+indent_size = 4
+# 与 pyproject 的 [tool.ruff] line-length 同一个数；两处不一致时编辑器会劝你换行，
+# 而 ruff 不报错，于是同一段代码有两种「合规」的写法。
+max_line_length = 100
+
+[*.{ts,js,vue,json,yml,yaml}]
+indent_size = 2
+
+[*.md]
+# Markdown 的行尾两个空格是**硬换行**语法。ADR 与 PRD 里存在这种写法，
+# 打开这个目录的编辑器若按通用规则裁掉行尾空白，会静默改掉决策记录的排版，
+# 而 diff 里只显示「删了两个空格」——这种改动没人会在 review 里追回来。
+trim_trailing_whitespace = false

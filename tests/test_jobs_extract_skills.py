@@ -295,9 +295,7 @@ def test_extract_returns_429_after_ten_attempts(client: TestClient) -> None:
     limiter.reset()
     limiter.enabled = True
     try:
-        statuses = [
-            _extract(client, token, with_key=False).status_code for _ in range(10)
-        ]
+        statuses = [_extract(client, token, with_key=False).status_code for _ in range(10)]
         assert statuses == [400] * 10, statuses
 
         blocked = _extract(client, token, with_key=False)
@@ -598,9 +596,7 @@ def test_truncated_is_false_when_drops_already_leave_fifteen_or_fewer(
     """`truncated` 说的是「确实切掉了东西」：模型给了 18 条但 5 条不合格、剩 13 条全给回去时，
     报 `true` 会让前端说一句假话（「只保留了前 15 条」并没有发生）。"""
     token = _register_and_login(client)
-    fake_deepseek.items_payload = {
-        "skills": _valid_items(13) + [HALLUCINATED_ITEM] * 5
-    }
+    fake_deepseek.items_payload = {"skills": _valid_items(13) + [HALLUCINATED_ITEM] * 5}
 
     response = _extract(client, token)
 

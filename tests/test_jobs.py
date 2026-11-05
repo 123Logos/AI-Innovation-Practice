@@ -244,9 +244,7 @@ def test_create_job_is_open_to_every_logged_in_user(client: TestClient) -> None:
     second = _register_and_login(client)
 
     assert client.post(JOBS_BASE, json=_job_payload(), headers=_headers(first)).status_code == 201
-    assert (
-        client.post(JOBS_BASE, json=_job_payload(), headers=_headers(second)).status_code == 201
-    )
+    assert client.post(JOBS_BASE, json=_job_payload(), headers=_headers(second)).status_code == 201
     assert _count("jobs") == 2
 
 
@@ -280,9 +278,8 @@ def test_create_job_ignores_status_creator_and_origin_from_request_body(
     assert job["skills"][0]["origin"] == "unverified"
 
     assert _scalar("SELECT status FROM jobs WHERE id = :id", id=job["id"]) == "draft"
-    assert (
-        _scalar("SELECT created_by_user_id FROM jobs WHERE id = :id", id=job["id"])
-        == _user_id(client, token)
+    assert _scalar("SELECT created_by_user_id FROM jobs WHERE id = :id", id=job["id"]) == _user_id(
+        client, token
     )
     assert _scalar("SELECT origin FROM job_skills WHERE job_id = :id", id=job["id"]) == "unverified"
 
@@ -411,10 +408,9 @@ def test_post_and_put_write_back_evidence_confidence_and_stamp_trace(client: Tes
     assert extracted_at is not None, "有可回溯条目时必须盖时间戳，且不是提交里那个 2020 年"
     # 归属与状态同样不采信（1.F 的写侧规则，与这两格无关，留在本用例里一起钉住）。
     assert _scalar("SELECT status FROM jobs WHERE id = :id", id=created["id"]) == "draft"
-    assert (
-        _scalar("SELECT created_by_user_id FROM jobs WHERE id = :id", id=created["id"])
-        == _user_id(client, token)
-    )
+    assert _scalar(
+        "SELECT created_by_user_id FROM jobs WHERE id = :id", id=created["id"]
+    ) == _user_id(client, token)
 
     # ---- 3 的反向：PUT 换成「一条都不可回溯」的技能后，三列必须回到 NULL。
     #      技能子表是整批换掉的，留着旧戳就是在为一批已经不在库里的技能声称「出自 JD 原文」。
@@ -503,7 +499,9 @@ def test_list_newest_first_and_carries_pagination_meta(client: TestClient) -> No
     assert page_nine == []
 
     # page_size 上限 100、page 下限 1：非法值 422 而不是全表扫描
-    assert client.get(JOBS_BASE, params={"page_size": 101}, headers=_headers(token)).status_code == 422
+    assert (
+        client.get(JOBS_BASE, params={"page_size": 101}, headers=_headers(token)).status_code == 422
+    )
     assert client.get(JOBS_BASE, params={"page": 0}, headers=_headers(token)).status_code == 422
 
 
@@ -517,7 +515,9 @@ def test_list_keyword_matches_company_and_title_only(client: TestClient) -> None
         _publish(client, token, job_id)
 
     matched = _list_ids(client, token, keyword="字节")
-    assert sorted(matched) == sorted([str(by_company["id"]), str(by_title["id"])]), "企业名或岗位名命中都算"
+    assert sorted(matched) == sorted([str(by_company["id"]), str(by_title["id"])]), (
+        "企业名或岗位名命中都算"
+    )
 
     # keyword 不匹配 description：JD 正文最长 8000 字，广场搜索的是「哪个岗位」
     assert _list_ids(client, token, keyword="FastAPI") == []
@@ -583,9 +583,9 @@ def test_detail_published_is_readable_by_anyone_but_draft_only_by_owner(
     assert forbidden.json()["error"]["code"] == "NOT_FOUND"
     assert forbidden.json()["meta"]["request_id"]
 
-    assert (
-        client.get(f"{JOBS_BASE}/{uuid4()}", headers=_headers(owner)).status_code == 404
-    ), "「不存在」与「无权」必须是同一个答案"
+    assert client.get(f"{JOBS_BASE}/{uuid4()}", headers=_headers(owner)).status_code == 404, (
+        "「不存在」与「无权」必须是同一个答案"
+    )
 
     # 自己的草稿当然可读
     assert _detail(client, owner, draft["id"])["status"] == "draft"
@@ -636,7 +636,12 @@ def test_update_is_owner_only_and_keeps_status(client: TestClient) -> None:
     assert edited.status_code == 200, edited.text
     assert edited.json()["data"]["job"]["status"] == "draft"
 
-    assert client.put(f"{JOBS_BASE}/{uuid4()}", json=_job_payload(), headers=_headers(owner)).status_code == 404
+    assert (
+        client.put(
+            f"{JOBS_BASE}/{uuid4()}", json=_job_payload(), headers=_headers(owner)
+        ).status_code
+        == 404
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -658,7 +663,9 @@ def test_publish_and_unpublish_are_owner_only_and_take_effect_immediately(
 
     # 陌生人既不能发布也不能下架
     for verb, action in (("put", "publish"), ("put", "unpublish")):
-        response = getattr(client, verb)(f"{JOBS_BASE}/{created['id']}/{action}", headers=_headers(stranger))
+        response = getattr(client, verb)(
+            f"{JOBS_BASE}/{created['id']}/{action}", headers=_headers(stranger)
+        )
         assert response.status_code == 404, response.text
     assert _scalar("SELECT status FROM jobs WHERE id = :id", id=created["id"]) == "draft"
 
@@ -678,7 +685,9 @@ def test_publish_and_unpublish_are_owner_only_and_take_effect_immediately(
     assert _list_ids(client, owner, status="draft") == [str(created["id"])]
 
     assert client.put(f"{JOBS_BASE}/{uuid4()}/publish", headers=_headers(owner)).status_code == 404
-    assert client.put(f"{JOBS_BASE}/{uuid4()}/unpublish", headers=_headers(owner)).status_code == 404
+    assert (
+        client.put(f"{JOBS_BASE}/{uuid4()}/unpublish", headers=_headers(owner)).status_code == 404
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -709,7 +718,8 @@ def test_soft_delete_hides_everything_but_keeps_children(client: TestClient) -> 
     assert client.get(f"{JOBS_BASE}/{created['id']}", headers=_headers(token)).status_code == 404
     # 软删的岗位连发布都不能做（已回收的行不参与任何写路径）
     assert (
-        client.put(f"{JOBS_BASE}/{created['id']}/publish", headers=_headers(token)).status_code == 404
+        client.put(f"{JOBS_BASE}/{created['id']}/publish", headers=_headers(token)).status_code
+        == 404
     )
 
     trash = _trash(client, token)
@@ -891,9 +901,13 @@ def test_expired_jobs_are_hidden_by_default_on_the_app_clock(client: TestClient)
     token = _register_and_login(client)
     today = date.today()
 
-    expired = _create(client, token, title="昨天截止", deadline=(today - timedelta(days=1)).isoformat())
+    expired = _create(
+        client, token, title="昨天截止", deadline=(today - timedelta(days=1)).isoformat()
+    )
     due_today = _create(client, token, title="今天截止", deadline=today.isoformat())
-    future = _create(client, token, title="下周截止", deadline=(today + timedelta(days=7)).isoformat())
+    future = _create(
+        client, token, title="下周截止", deadline=(today + timedelta(days=7)).isoformat()
+    )
     forever = _create(client, token, title="没有截止时间")
     for job_id in (expired["id"], due_today["id"], future["id"], forever["id"]):
         _publish(client, token, job_id)
@@ -909,7 +923,9 @@ def test_expired_jobs_are_hidden_by_default_on_the_app_clock(client: TestClient)
 
     # 过期没有改写任何状态：库里仍是 published，也没有 expired 这个值（1.B）
     assert _scalar("SELECT status FROM jobs WHERE id = :id", id=expired["id"]) == "published"
-    assert _scalar("SELECT deadline FROM jobs WHERE id = :id", id=expired["id"]) == today - timedelta(days=1)
+    assert _scalar(
+        "SELECT deadline FROM jobs WHERE id = :id", id=expired["id"]
+    ) == today - timedelta(days=1)
 
     # 过期位随响应给出，前端不需要再实现一遍判据
     cards = {job["id"]: job for job in _list(client, token, include_expired="true")[0]}

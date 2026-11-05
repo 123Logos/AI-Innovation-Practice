@@ -47,7 +47,6 @@ def test_polish_rate_limit_rule_is_ten_per_minute() -> None:
     assert POLISH_RATE_LIMIT == "10/minute"
 
 
-
 def test_login_returns_429_after_five_attempts(enabled_limiter: None) -> None:
     """登录暴力破解：前 5 次走到凭据校验（401），第 6 次直接被限流拦下。"""
     client = TestClient(app)
@@ -102,7 +101,11 @@ def _polish_body() -> dict[str, object]:
         "profile": {"full_name": "张三", "contact": "13800000000"},
         "skills": [{"name": "Python", "self_rating": 4}],
         "experiences": [
-            {"title": "校园二手交易平台", "description": "做了个 Web 应用", "responsibility": "负责后端"}
+            {
+                "title": "校园二手交易平台",
+                "description": "做了个 Web 应用",
+                "responsibility": "负责后端",
+            }
         ],
         "mode": "medium",
     }
@@ -124,16 +127,19 @@ def test_polish_returns_429_after_ten_attempts(enabled_limiter: None, client: Te
     与后面的业务分支无关，这样这条用例只验限流，不牵扯假上游。
     """
     username = f"polishflood_{uuid4().hex[:8]}"
-    assert client.post(
-        REGISTER_URL, json={"username": username, "password": PASSWORD}
-    ).status_code == 201
+    assert (
+        client.post(REGISTER_URL, json={"username": username, "password": PASSWORD}).status_code
+        == 201
+    )
     logged_in = client.post(LOGIN_URL, json={"username": username, "password": PASSWORD})
     assert logged_in.status_code == 200, logged_in.text
     # 注册 + 登录已经吃掉本分钟 2 次认证配额，把限流器重置一次，让下面的计数从干净状态开始。
     limiter.reset()
     headers = {"Authorization": f"Bearer {logged_in.json()['data']['access_token']}"}
 
-    statuses = [client.post(POLISH_URL, json=_polish_body(), headers=headers).status_code for _ in range(10)]
+    statuses = [
+        client.post(POLISH_URL, json=_polish_body(), headers=headers).status_code for _ in range(10)
+    ]
     assert statuses == [400] * 10, statuses
 
     blocked = client.post(POLISH_URL, json=_polish_body(), headers=headers)
