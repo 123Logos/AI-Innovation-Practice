@@ -142,15 +142,6 @@ function defaultExtractEnvelope(skills: JobsContract.ExtractedSkill[] = [extract
   }
 }
 
-/** 造一次带统一错误体的失败（后端三个 AI 码 + 第 7 情形多带的那个外层 `meta.finish_reason`）。 */
-function aiError(config: InternalAxiosRequestConfig, status: number, code: string, message: string, finishReason?: string): AxiosResponse {
-  const body = {
-    error: { code, message, details: {}, retryable: status === 502 },
-    meta: finishReason ? { request_id: 'req-test', finish_reason: finishReason } : { request_id: 'req-test' },
-  }
-  return envelope(config, body, status)
-}
-
 /**
  * 假的服务端：`server` 里只有「删除过的进回收站」这一条最小状态，
  * 目的是让五条动作在 store 里留下的痕迹可被断言，而不是重做一遍后端。
