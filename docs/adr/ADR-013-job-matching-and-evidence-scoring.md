@@ -59,6 +59,30 @@ dev 库实测：`published` 岗位 **0** 条，`draft` 3 条，回收站 1 条�
 
 除首尾空白外三套行为一致（`Web␣␣开发` 内部空格、`ß`/`strasse`、`Ｃ#` 都判不同，实测过）。岗位侧在 API 边界已 strip（`app/schemas/job.py:127-130`），**学生侧没有**：`SkillInput.name` 无校验器，档案技能去重用的是裸相等（`app/schemas/profile.py:290-295`）。今天库里 0 条带首尾空白的技能名，但门开着：一旦学生存进 `"Python "`，服务端算「未覆盖」而前端角标显示「已具备」，同一屏上自相矛盾。
 
+**2026-11-07 已消除（§10 第 3 步的 a/b 两半）**，并且实测出一个比文档描述更严重的后果：
+裸相等让 `Python` + `python` 通过校验、走到 INSERT，再由 `uq_skills_profile_name`
+（建在大小写不敏感的 `utf8mb4_0900_ai_ci` 上）抛 `IntegrityError 1062` —— **用户看到的是 500，
+不是「技能名称重复」**。这条不是推演：新测试先跑在未修代码上，抓出来的就是这个数据库异常。
+顺带堵掉 `"   "`（`min_length=1` 挡不住纯空白名，它会往库里存一条空白技能）。
+
+落地方式与本节初稿不同，两处偏差如实记：
+
+1. **没有新增 `match_key()`**。`skill_name_key` 就是那个唯一口径，再加一个名字只是多一层转发；
+   两端空白仍归各自的**输入边界**负责（岗位侧 `JobSkillInput.normalize_name`、
+   现在档案侧 `SkillInput.normalize_name`、提取侧 `_verify_item`），键本身仍是两步
+   （NFKC + casefold），ADR-011 §2.D.2 的口径一字未改。
+2. **键从 `app/schemas/job.py` 移到 `app/core/skill_names.py`**。原因不是我嫌乱，是契约是**传递**的：
+   档案侧一旦 `import app.schemas.job`，就出现
+   `integrations.resume_generator → schemas.profile → schemas.job → repositories.job_repository`
+   这条可达路径，`lint-imports` 当场报 `Contracts: 4 kept, 1 broken`。
+   这个键零依赖，`core` 才是它真实的位置。改后 `Contracts: 5 kept, 0 broken`。
+
+**残留的一半（第 3 步 c）**：前端角标仍用自己的 `trim + NFKC + toLowerCase`。在 ASCII 与 CJK 上
+它与服务端一致，但 JS 没有 casefold——`ß`/`strasse`、`İ` 这类字符两边会给出不同答案。
+要彻底消除得让角标消费服务端结果，而那需要一个不花钱的确定性端点（不能复用匹配端点，
+否则每次浏览岗位详情页都烧一次用户的 AI 额度）。这条与匹配端点同轮落地，见 §10 第 6 步。
+
+
 ### 1.4 没有「目标偏好」这个东西
 全仓 grep `target_role|preferred|意向|偏好` 在 `app/` 与 `alembic/` 0 命中（只剩两条注释里的「风格偏好」字样）。`student_profiles` 现有列：`title / is_default / paper_size / theme / layout_config / full_name / email / grade / contact`。所以 PRD FR-05 的 0.10 权重项**当前无法计算**，老板指令 6.3 要求补一个用户填写的偏好岗位。
 
@@ -288,7 +312,12 @@ deadline 为 NULL → value = 0.5，note = "no_deadline"      （未知不装作
 
 1. **本文 + `MVP_SCOPE.md:42-43` 与 AGENTS.md §3.2 的解冻注记**（纯文档，先合）。
 2. ~~种子岗位（§9，纯数据 + 一份可重放的建号脚本，不动 schema）~~ → **已执行**，PR #6。
-3. **匹配键统一**（§1.3）：新增 `match_key()` = strip + NFKC + casefold，`skill_name_key` 收敛到它；学生侧 `SkillInput.name` 补 strip + 去重改用同一键；前端角标改为消费后端结果。含一条把三套键钉成一套的回归测试。
+3. **匹配键统一**（§1.3）：
+   - **a/b 已执行**：档案侧 `SkillInput.name` 补 strip + 去重改用 `skill_name_key`，键本体移入
+     `app/core/skill_names.py`（详见 §1.3 的两处偏差说明）。
+   - **c 未执行**：前端角标改为消费后端结果。它需要一个确定性的、不调 AI 的重叠查询端点，
+     与第 6 步一起做，不单独开（否则等于把同一个岗位读两遍的代价先付一次）。
+
 4. `self_rating` 删除（§4，含迁移与降级测试 + 前后端 + API.md）。
 5. `target_role` 新列（§5，含迁移与档案接口/表单）。
 6. 评分与匹配服务 + `POST /jobs/{job_id}/match`（§6–§8，含 404-not-403、限流、AI 失败四情形、`main.py` 处理器作用域从「两个端点」改「三个端点」的注释与测试）。

@@ -32,10 +32,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import event, text
 from sqlalchemy.exc import DatabaseError, IntegrityError
 
+from app.core.skill_names import skill_name_key
 from app.integrations.skill_extractor import normalize_for_trace
 from app.repositories import job_repository
 from app.repositories.user_repository import get_engine
-from app.core.skill_names import skill_name_key
 from app.services import job_service
 
 JOB_COLUMNS = {
