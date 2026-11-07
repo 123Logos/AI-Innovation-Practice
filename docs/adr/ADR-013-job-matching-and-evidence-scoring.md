@@ -193,13 +193,24 @@ PRD `:181` 要求「至少展示三条可验证证据或明确缺口」：`cover
 - 填写入口：档案编辑页加一格「目标岗位（选填）」，与 `full_name`/`email` 同级。老板指令 6.3 说「在简历或者哪里填写」，我选档案而不是简历，因为简历载荷 `content_html` 是渲染产物、不是输入源；输入源在档案。🚩 **决策 5**：这条入口位置请确认。
 
 ### 5.1 未填时不惩罚：权重重新归一
-`目标偏好` 未填、或岗位无 `deadline`、或用户没有任何经历时，对应项**不参与加权**，剩余权重按比例归一：
 
 ```
 score = Σ(w_i · v_i | term i computable) / Σ(w_i | term i computable)
 ```
 
 `data.terms[].computed` 与 `data.meta.weight_sum_used` 如实暴露「这次是几分母算的」。替代方案「缺项记 0 分」不采用：那会让「刚注册、什么都没填」的用户稳定拿到 0.1 以下，等于用分数惩罚沉默，产品上是错的，PRD `:200` 的禁止歧视虽不直接覆盖它，但同一判断力应该看得见这种后果。
+
+### 5.2 已执行（2026-11-07，迁移 `20261107_0014`）
+
+改动面：`student_profiles.target_role`（`String(200)` 可空，无 CHECK、无索引）+ 档案读写链路 + 编辑页一格标签「目标岗位」、placeholder 注明选填并给了一个示例写法，位置在「简历邮箱」之后，与 `full_name`/`email` 同级。没建枚举、没建词表，按上面「不建枚举的原因」执行。
+
+三条本轮学到的、值得留给后续的实现约束：
+
+1. **`ProfileRead` 是手工构造的，不是从 ORM 行 `model_validate` 出来的**（`app/services/profile_service.py:391` 逐字段传参）。所以新增读字段的第一版写了 `target_role: str | None = None`，漏传时不会报错，只会让接口**静默**返回 `null`——测试先写就发现了（`test_put_profile_round_trips_target_role` 直接失败），随后把默认值去掉，让漏传在构造点就 `TypeError`。可空字段的「读路径默认值」和「缺省不改动」是两回事，前者是 bug 的温床。
+2. **`PUT /profiles/me` 是整体覆盖语义**（PUT-as-replace，本轮没改它），所以载荷里不带 `target_role` 等于把它清空。这不是缺陷，但必须被一个测试钉住，否则后续任何「只提交部分字段」的前端改造都会静默吃掉用户已填的偏好：见 `test_put_profile_without_target_role_clears_it`。同页的 `paper_size`/`theme` 走的是另一套「缺省不改动」三态，两者并存是既有设计（ADR-007），不要顺手统一。
+3. **可选新字段禁止进本地草稿的形状判据**（`frontend/src/stores/resume.ts::isProfileDraft`）。我第一版就把 `typeof candidate.target_role === 'string'` 加了进去，实测后果是：`DRAFT_VERSION` 仍是 1，上一版前端存的草稿少这一格 → 判据直接判整份草稿无效 → 用户不只是丢掉这一格，而是连同**所有**未保存的修改一起被判废，界面上连「恢复草稿」横幅都不出现。`a7a1fe2` 加 `layout_config` 时没这么写，就是同一个道理，我踩的是本项目已经避过的坑。已回退，并留了回归用例 `缺 target_role 键的老草稿必须仍能恢复`（反向探针：把那行判据加回去，用例立刻红 —— `expected null not to be null`）。可选字段的兼容由 `normalizeDraft()` 补默认值负责。
+
+前端侧验证只到 `vue-tsc` + `vitest` + 后端契约测试（`tests/test_profile_contract.py` 的 `FRONTEND_PAYLOAD_KEYS` 已加 `target_role`），本轮**没有**跑浏览器实测这一格输入框；375px 与真机行为留到 §10 第 7 步的匹配卡一起补。
 
 ---
 
@@ -334,7 +345,7 @@ deadline 为 NULL → value = 0.5，note = "no_deadline"      （未知不装作
      与第 6 步一起做，不单独开（否则等于把同一个岗位读两遍的代价先付一次）。
 
 4. ~~`self_rating` 删除（§4，含迁移与降级测试 + 前后端 + API.md）~~ → **已执行**，见 §4.1。
-5. `target_role` 新列（§5，含迁移与档案接口/表单）。
+5. ~~`target_role` 新列（§5，含迁移与档案接口/表单）~~ → **已执行**，见 §5.2。
 6. 评分与匹配服务 + `POST /jobs/{job_id}/match`（§6–§8，含 404-not-403、限流、AI 失败四情形、`main.py` 处理器作用域从「两个端点」改「三个端点」的注释与测试）。
 7. 前端匹配卡（三档展示 + `evidence_mode` 可见 + 375px 实测）。
 8. `docs/API.md` 新章节与 §1.1 错误码可达性更新。

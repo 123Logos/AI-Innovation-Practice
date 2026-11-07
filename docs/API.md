@@ -100,6 +100,7 @@
 | `email` | `str \| None`，≤254 | 空串在校验器里折成 `None` |
 | `grade` | `str \| None`，≤50 | UI 已不采集（ADR-013 的反歧视条款禁止它进入匹配特征） |
 | `contact` | `str`，默认 `""`，≤255 | 两端空白裁掉 |
+| `target_role` | `str \| None`，≤200 | 2026-11-07 新增（ADR-013 §5）。目标岗位偏好，自由文本、不建枚举；纯空白折成 `NULL`。**`PUT` 是整体覆盖，不带这一格 = 清空**，与 `email` 同语义（`paper_size`/`theme` 那组才是「缺省不改动」） |
 | `paper_size` | `PaperSize \| None` | A4 等，见 ADR-008 之后的实现 |
 | `theme` | `Theme \| None` | 主题，`fe21c8b` |
 | `layout_config` | `LayoutConfigInput \| None` | 排版，`a7a1fe2` |

@@ -188,4 +188,26 @@ describe('useResumeStore 草稿一致性投影（comparableOf 口径）', () => 
       reversed.map((section) => section.id),
     )
   })
+
+  it('缺 target_role 键的老草稿必须仍能恢复（可选新字段不得进判据）', () => {
+    // `DRAFT_VERSION` 仍是 1，所以「上一版前端存的草稿」就是这份少一个键的对象。
+    // 把可选新字段写进 `isProfileDraft` 会让这类草稿整体判废：用户看到的不是
+    // 「这一格没填」，而是整条「上次没保存的修改」横幅连同其它未保存内容一起消失。
+    // `JSON.stringify` 会丢掉值为 `undefined` 的键，正好构造出缺键的老形状；
+    // 同时改掉 `full_name`，让它与当前草稿**有差异**，否则判等分支会先把草稿当残留清掉，
+    // 用例就会因为错误的原因通过。
+    const store = useResumeStore()
+    seedLocalDraft({ full_name: '上一次没点保存的名字', target_role: undefined })
+    const seeded = JSON.parse(localStorage.getItem(DRAFT_KEY)!).data as Record<string, unknown>
+    expect(Object.keys(seeded)).not.toContain('target_role')
+
+    store.detectLocalDraft(OWNER_ID)
+
+    expect(store.pendingDraft).not.toBeNull()
+
+    store.restoreDraft()
+    expect(store.draft.full_name).toBe('上一次没点保存的名字')
+    // 缺键由 normalizeDraft 补成空串，而不是 undefined：模板直接绑定它。
+    expect(store.draft.target_role).toBe('')
+  })
 })

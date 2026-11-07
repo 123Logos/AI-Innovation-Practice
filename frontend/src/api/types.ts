@@ -212,6 +212,8 @@ export interface ProfileUpsertRequest {
   /** 年级已下架，可不传。 */
   grade?: string | null
   contact: string
+  /** 目标岗位偏好；不填 = `null`，匹配侧据此免加权（ADR-013 §5）。 */
+  target_role?: string | null
   /**
    * 纸张尺寸（D5.1）。**三态语义**（ADR-007 §10.2）：
    * 不传 = 保留库里原值（旧客户端安全）；`null` = 恢复默认 A4；枚举值 = 设置。
@@ -253,6 +255,8 @@ export interface ProfileRead {
   email: string | null
   grade: string
   contact: string
+  /** 没填过是 `null`，不是空串。 */
+  target_role: string | null
   /** 东八区 ISO 串，如 `2026-11-02T21:25:00+08:00`。 */
   created_at: string
   updated_at: string

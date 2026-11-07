@@ -319,6 +319,8 @@ export interface ProfileDraft {
   /** 简历上展示的邮箱（可空），与登录邮箱无关。 */
   email: string
   contact: string
+  /** 目标岗位偏好；草稿里用空串表示「没填」，上线时折成 `null`。 */
+  target_role: string
   /**
    * 纸张尺寸（D5.1）。
    *
@@ -429,6 +431,7 @@ function createEmptyDraft(): ProfileDraft {
     full_name: '',
     email: '',
     contact: '',
+    target_role: '',
     paper_size: 'A4',
     theme: DEFAULT_THEME,
     layout_config: createDefaultLayout(),
@@ -451,6 +454,7 @@ function draftFromProfile(profile: ProfileRead): ProfileDraft {
     full_name: profile.full_name,
     email: profile.email ?? '',
     contact: profile.contact,
+    target_role: profile.target_role ?? '',
     // 后端保证读侧是具体值；`??` 只是为了兼容「D5.1 之前缓存的响应对象」。
     paper_size: profile.paper_size ?? 'A4',
     theme: toTheme(profile.theme),
@@ -500,7 +504,13 @@ function legacyDraftStorageKey(ownerId: string): string {
   return `${DRAFT_STORAGE_PREFIX}${ownerId}`
 }
 
-/** `localStorage` 的内容不可信：任何字段不符就当作没有草稿。 */
+/**
+ * `localStorage` 的内容不可信：任何**必备**字段不符就当作没有草稿。
+ *
+ * 只列破坏后无法恢复的字段。后加的可选字段（`paper_size`/`theme`/`layout_config`/`target_role`）
+ * 一律不写进来：`DRAFT_VERSION` 仍是 1，把它们纳入判据等于让老草稿整体判废，
+ * 用户下次打开会看到「未保存的修改」四个字一起消失。这类字段由 `normalizeDraft()` 补默认值。
+ */
 function isProfileDraft(value: unknown): value is ProfileDraft {
   if (!value || typeof value !== 'object') return false
   const candidate = value as Partial<ProfileDraft>
@@ -636,6 +646,7 @@ function normalizeDraft(raw: ProfileDraft): ProfileDraft {
     full_name: raw.full_name ?? '',
     email: raw.email ?? '',
     contact: raw.contact ?? '',
+    target_role: raw.target_role ?? '',
     paper_size: toPaperSize(raw.paper_size),
     theme: toTheme(raw.theme),
     // D5.3 之前的草稿没有 layout_config，补齐默认排版（同上）。
@@ -700,6 +711,7 @@ function comparableOf(source: ProfileDraft): string {
     full_name: (source.full_name ?? '').trim(),
     email: (source.email ?? '').trim(),
     contact: (source.contact ?? '').trim(),
+    target_role: (source.target_role ?? '').trim(),
     // `?? 'A4'`：D5.1 之前的草稿没有这个键，缺省必须与服务器默认值一致，
     // 否则「什么都没改」的旧草稿会立刻被判成「有未保存的修改」（ADR-007 §11.5）。
     paper_size: toPaperSize(source.paper_size),
@@ -857,6 +869,7 @@ export const useResumeStore = defineStore('resume', () => {
     draft.full_name = next.full_name
     draft.email = next.email
     draft.contact = next.contact
+    draft.target_role = next.target_role
     draft.paper_size = next.paper_size
     draft.theme = next.theme
     draft.layout_config = next.layout_config
@@ -872,7 +885,10 @@ export const useResumeStore = defineStore('resume', () => {
     styleNotice.value = null
   }
 
-  function updateProfileField(field: 'full_name' | 'email' | 'contact', value: string): void {
+  function updateProfileField(
+    field: 'full_name' | 'email' | 'contact' | 'target_role',
+    value: string,
+  ): void {
     draft[field] = value
     markDirty()
   }
@@ -1048,6 +1064,8 @@ export const useResumeStore = defineStore('resume', () => {
       // 空串等同「没填」，交给后端存 NULL。
       email: draft.email.trim() || null,
       contact: draft.contact.trim(),
+      // 必须显式带上：`PUT` 是整体覆盖，省略这一格会清掉用户已填的偏好。
+      target_role: draft.target_role.trim() || null,
       // 显式传值（而不是省略）：前端永远知道当前选的是哪档纸，
       // 省略只会让后端走「保留原值」分支，万一本地和服务端不同步就再也改不回来。
       paper_size: draft.paper_size,

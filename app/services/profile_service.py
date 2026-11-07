@@ -246,6 +246,7 @@ class ProfileService:
                 email=payload.email,
                 # 年级列仍在库里但产品已移除该字段：不再写入任何业务值（见仓储）。
                 contact=payload.contact,
+                target_role=payload.target_role,
                 paper_size=self._resolve_paper_size(profile, payload),
                 theme=self._resolve_theme(profile, payload),
                 layout_config=self._resolve_layout_config(profile, payload),
@@ -387,6 +388,7 @@ class ProfileService:
             email=profile.email,
             grade=profile.grade,
             contact=profile.contact,
+            target_role=profile.target_role,
             created_at=profile.created_at,
             updated_at=profile.updated_at,
             skills=[

@@ -258,6 +258,9 @@ class ProfileUpsertRequest(BaseModel):
     grade: str | None = Field(default=None, max_length=50)
     #: 手机号。允许空串（先存草稿），一旦填了就必须是大陆 11 位手机号。
     contact: str = Field(default="", max_length=255)
+    #: 目标岗位偏好（ADR-013 §5）。选填；空串与缺省都存成 `NULL`——
+    #: 「没填」和「填了但不相干」在匹配里是两件事，前者退出加权，后者记 0.2。
+    target_role: str | None = Field(default=None, max_length=200)
     #: 纸张尺寸；缺省 = 不改动（不是重置），显式 null = 回到 A4。
     paper_size: PaperSize | None = None
     #: 配色主题（8 套预设之一）；缺省 = 不改动，显式 null = 回到 `forest`。
@@ -284,6 +287,19 @@ class ProfileUpsertRequest(BaseModel):
         if not PHONE_PATTERN.fullmatch(trimmed):
             raise ValueError("contact must be a mainland China mobile number")
         return trimmed
+
+    @field_validator("target_role")
+    @classmethod
+    def normalize_target_role(cls, value: str | None) -> str | None:
+        """裁两端空白；纯空白折成 `None`。
+
+        与 `email` 那条同一口径：库里不留「半空不空」的第二种表示。否则 `'   '` 会被
+        匹配侧当成「填了偏好」，于是那个根本没填目标的人被记 0 分而不是免加权——
+        正是 ADR-013 §5.1 要避免的那种惩罚。
+        """
+        if value is None:
+            return None
+        return value.strip() or None
 
     @field_validator("skills")
     @classmethod
@@ -388,6 +404,10 @@ class ProfileRead(BaseModel):
     email: str | None = None
     grade: str
     contact: str
+    #: 没填过就是 `null`；前端据此显示占位文案，不显示空字符串。
+    #: **故意不给默认值**：`ProfileRead` 是手工构造的（`profile_service._to_read`），
+    #: 给了默认值就会让「忘了传这一格」静默变成「用户没填」——本轮就是这么漏掉一次的。
+    target_role: str | None
     created_at: datetime
     updated_at: datetime
     skills: list[SkillRead]
