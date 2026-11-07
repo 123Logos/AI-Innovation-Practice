@@ -93,7 +93,7 @@ dev 库实测：`published` 岗位 **0** 条，`draft` 3 条，回收站 1 条�
 
 真实机制是**两道**，不是一道：
 
-- 服务层显式切片：`SUMMARY_SKILL_LIMIT = 6`（`app/services/job_service.py:81-82`），
+- 服务层显式切片：`SUMMARY_SKILL_LIMIT = 6`（`app/services/job_service.py:82-83`），
   构造列表项时 `skills[:SUMMARY_SKILL_LIMIT]`（`:534`）；
 - 列表模型确实会拦：`JobSummary.skills` 的 `max_length=6`（`app/schemas/job.py:253`）
   实测 **7 条技能 → ValidationError**；而详情模型 `JobRead.skills` 没有上限，
@@ -135,14 +135,14 @@ dev 库实测：`published` 岗位 **0** 条，`draft` 3 条，回收站 1 条�
 - BYOK：请求头 `X-DeepSeek-Key`，与润色/提取同一份 Key、同一套「不落库、不写日志、不出现在异常文本」的规则。
 - 限流：**`10/minute` 按用户键**，新增常量 `MATCH_RATE_LIMIT`。
   🚩 这一条是 §13 架构复核改的，原文写的是「`10/minute/user`，与 extract-skills 同量级」——**那句在本仓库当时不成立**：
-  `app/core/rate_limit.py:44` 的 `Limiter` 用 `key_func=get_remote_address`，现有三条规则（`AUTH` / `POLISH` / `EXTRACT`）
+  `app/core/rate_limit.py:72` 的 `Limiter` 用 `key_func=get_remote_address`，现有三条规则（`AUTH` / `POLISH` / `EXTRACT`）
   实际全部**按 IP**计数，`rate_limit.py:35` 自己也写了「多 worker 部署时每个 worker 各算一份」。
   按 IP 对本端点不是措辞不严谨，是错的：局域网实测那批人共用一个出口时，10 次/分钟会被前一两个账号点光，
   后面的人拿到 429 —— 而这恰恰是唯一一个「别人替你花不了钱、但能替你花 Key」的端点。
   实测 `Limiter.limit()` 的签名支持装饰器级 `key_func=` 覆盖（`slowapi` 的 `limit(limit_value, key_func=None, per_method, methods, error_message, exempt_when, cost, override_defaults)`），
   所以**只给这一条端点换键**，另三条一个字不动；已知局限照抄 `rate_limit.py:35`：进程内计数，多 worker 各算一份。
 - 状态码边界（同样来自 §13 复核，实现时最容易写错的一条）：**本端点不因 AI 失败返回 4xx/5xx**。
-  润色与提取把 AI 失败抛给 `app/main.py:252/259/270` 的三个处理器（400 `AI_KEY_MISSING` / 401 `AI_KEY_INVALID` / 502 `AI_SERVICE_UNAVAILABLE`）；
+  润色与提取把 AI 失败抛给 `app/main.py:259/266/277` 的三个处理器（400 `AI_KEY_MISSING` / 401 `AI_KEY_INVALID` / 502 `AI_SERVICE_UNAVAILABLE`）；
   匹配按 §6.5 要**退化**，所以这三个异常在 service 层就地转成「关键词模式的成功响应」，处理器一个都不新增、也不复用其状态码。
   会走到处理器的只有：未登录 401、岗位不可见 404、限流 429、参数校验 422。
   退化必须可归因，见 §6.5 的 `data.meta.degrade_reason`。
@@ -276,12 +276,20 @@ score = Σ(w_i · v_i | term i computable) / Σ(w_i | term i computable)
 4. 模型**从不**被问「这个学生匹不匹配这个岗位」，也从不收到完整简历或完整 JD——只收到已经定位好的片段。这样它既无法发明覆盖，也拿不到可以反推身份的整体上下文。
 5. 无 Key / Key 无效 / 超时 / 429：`证据强度` 项退化为**确定性代理值**（命中经历条数 / min(条数,3)，见 §7.2），并在 `data.meta.evidence_mode` 与 UI 文案里**显式说明当前是关键词模式**，绝不静默降级（AGENTS.md §3.2 那条「失败时必须由用户点出来」的口径沿用）。
    退化必须**可归因**：`data.meta.degrade_reason ∈ {key_missing, key_invalid, upstream, bad_output, timeout}`，AI 正常参与时为 `null`。
-   这五个值是 `app/main.py:252/259/270` 三个处理器今天各自对应的失败（400/401/502）加上「输出不可用」的两类，
+   这五个值是 `app/main.py:259/266/277` 三个处理器今天各自对应的失败（400/401/502）加上「输出不可用」的两类，
    在 service 层一一对应转换：`ResumeApiKeyMissingError → key_missing`、`ResumeCopyRejectedError → key_invalid`、
    `ResumeCopyUnavailableError`（及其子类 `SkillExtract*` 翻译过来的超时/上游错）`→ upstream|timeout`、JSON 不可解析/空内容 `→ bad_output`。
    **实现要求**：五种情形各一个测试，断言 200 + `evidence_mode="keyword_fallback"` + 正确的 `degrade_reason`，
    并且断言**没有任何一种**走到 `app/main.py` 的 AI 处理器（否则 §3 那条状态码边界就是空话）。
    UI 文案按 `degrade_reason` 分句，不许把「你没配 Key」和「DeepSeek 正在超时」写成同一句话——两者的用户动作完全不同。
+
+   > **实现时的一处偏离（7d，已执行）**：§10 第 6 步原稿写着「`main.py` 处理器作用域从『两个端点』改
+   > 『三个端点』的注释与测试」。这句在本节定稿之后**就不成立了**——匹配故意不进那三个处理器，
+   > 所以处理器的作用域今天仍然是**两个端点**，注释改成「第三个 AI 端点显式不经过这里」，
+   > 并由 `test_ai_failures_degrade_to_200_not_an_error_envelope` 六种退化各一条钉住。
+   > 另外 §6.5 的五种值里 `upstream` 与 `timeout` 必须分得开，所以适配器多了一个
+   > `EvidenceScoreTimeoutError`（`APIConnectionError` 那一支）；不新增这一类，服务层就只能瞎猜，
+   > 而猜错的那句话是「等一会儿再试」，用户真正该查的是自己的网络。
 
 **输入预算**（§13 复核新增，之前这一条是漏的）：交给模型的字符数不能由用户的自由文本决定。实测：
 单档案技能 ≤8（`app/schemas/profile.py:271`）、经历 ≤3（`:272`），但 `description`/`responsibility` 在
@@ -325,13 +333,32 @@ M∩R 为空：value = 0，computed = False（没东西可评，不假装「评�
 `covered` 与 `partial` 的分界（§3 的三档展示在这里落地，原稿没定，实现时必须定）：
 
 ```
-PARTIAL_STRENGTH_THRESHOLD = 0.4
-某技能的平均强度 < 0.4 → 进 partial；否则进 covered
+PARTIAL_STRENGTH_THRESHOLD = 0.3
+某技能的平均强度 < 0.3 → 进 partial；否则进 covered
 ```
 
-0.4 不是随手取的：关键词模式的档位只有 `0 / ⅓ / ⅔ / 1`（`min(hits,3)/3`），
-0.4 落在 ⅓ 与 ⅔ 之间，于是这一条阈值在**没有 AI 的时候**语义是干净的——
-「只在一条经历里出现过」= 证据偏薄，「两条及以上」= 站得住。AI 模式下它变成「模型认为这句话撑不起这个技能」。
+**这条阈值被集成测试改过一次：0.4 → 0.3**，理由值得留档，因为它是一次典型的「代理指标越权」：
+
+- 0.4 是我按关键词档位（`0 / ⅓ / ⅔ / 1`）算出来的中点，看起来干净。
+- 但 `min(hits,3)/3` 测的是**这个技能出现了几条经历**，而本产品的档案最多只允许 3 条经历、
+  一段项目是常态。0.4 的实际后果由 `test_job_match.py::test_evidence_snippets_are_substrings_of_the_stored_text`
+  暴露：一份「一段真实项目 + Python/FastAPI」的简历，`covered` 是**空的**——
+  用户看不到任何一条「已满足 + 证据」，尽管他确实写过出处。
+- 那不是证据弱，那是关键词模式在替它没资格做的判断下结论。「提到名字但没做过」这件事
+  只有 AI 模式分得出来（Prompt 里 0.3 那一档就是「只是提到了技能名」）。
+- 0.3 让边界回到两种模式各自真正在测的东西：关键词模式 = 有没有一条真实出处；
+  AI 模式 = 模型认为这句话撑不撑得起。零出处的命中技能不走这个阈值，见下面那条规则。
+
+还有一条同样是测试逼出来的补充规则（原稿三个清单的语义有洞）：
+
+```
+技能名命中、但在经历里找不到任何片段 → 必须进 partial（reason=「技能名命中，但经历里找不到出处」）
+```
+
+它原来会**三个清单里都不出现**：`strengths_by_skill` 是从候选对分组的，零候选的命中技能
+不在分组里，于是既不是 covered 也不是 gap。§3 要求「至少三条可验证证据或明确缺口」，
+这种两头都不算的消失等于对用户隐身——用户看不到「你会 Docker 但没写过」这条最有用的话。
+
 两种含义都成立但不同，所以 `partial` 的文案里不许假装解释了是哪一种，`evidence_mode` 必须一起显示。
 
 ### 7.3 经验相关度 0.15 —— 代理指标，明说它是代理
@@ -484,7 +511,7 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
 - 取材方式：公开搜索结果与可访问的高校就业网/招聘聚合页（Boss直聘/猎聘详情页是 JS 渲染，直接抓只能拿到壳）。**文字全部由我们自己重写**，不逐字复制任何站点，不写具体真实公司名（用「某 AIGC 创业公司」这类形式）。
 - 建号：只用于内部测试的账号，命名带可辨识前缀并沿用现有约定（今天的 `preflight_*` / `pf_*` / `nx_*` 已被要求排除在真实用户统计外）。岗位以这些账号创建、`published`、每人 3–5 条，覆盖 §1.1 的 5 类岗位（大模型算法实习、Python 后端实习、数据分析实习、AI 产品实习、前端实习）。
 - 走真实路径 `POST /jobs` + `PUT /jobs/{id}/publish`，不用裸 SQL 插库——否则等于用假数据骗自己，且绕过 `JobSkillInput` 的全部校验。
-- 每份岗位的技能条目控制在 8–15 条、必备/加分语义写进 `type`；`origin` **不是我们填的字段**——服务端用 `is_traceable(evidence_text, description)` 派生（`app/services/job_service.py:472`），`evidence_text` 必须是 JD 原文（归一化后）的连续子串才拿到 `jd_verifiable`，否则自动 `unverified`。所以种子数据想有可回溯徽标，就得真的把技能写进 JD 正文里，而不是在请求里声明。
+- 每份岗位的技能条目控制在 8–15 条、必备/加分语义写进 `type`；`origin` **不是我们填的字段**——服务端用 `is_traceable(evidence_text, description)` 派生（`app/services/job_service.py:473`），`evidence_text` 必须是 JD 原文（归一化后）的连续子串才拿到 `jd_verifiable`，否则自动 `unverified`。所以种子数据想有可回溯徽标，就得真的把技能写进 JD 正文里，而不是在请求里声明。
 - 红线：不含性别/年龄/户籍/健康/婚育，不含「2027 届」这类年龄代理，不含「无挂科」「限男性」。
 - 测试账号与种子岗位在下一轮真实用户测试前必须下架/停用，并再次声明不计入真实用户统计。
 
@@ -518,15 +545,27 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
 6. ~~架构复核（§13）与其更正值落文档~~ → **已执行**（本 PR，先于实现合入）。
 7. **评分与匹配服务 + `POST /jobs/{job_id}/match`**（§6–§8）。这一条内部有四个必须一起做的部分，缺一个就是假交付：
    - **7a 纯打分层** `app/services/match_scoring.py`：权重常量与版本、五项分项、窗口化片段与 `fragments_truncated`、
-     §8 的四桶闭合核验（**不碰 DB、不碰 FastAPI**，契约已强制，单测全覆盖）。
+     §8 的**两个分区**闭合核验（**不碰 DB、不碰 FastAPI**，契约已强制，单测全覆盖）。
+     → **已实现**（`c4a4531`，`tests/test_match_scoring.py`）。实现时否证了两处设计：§7.3 的指标恒 0、
+     §8 原来的闭合式单位混了，均见 §13.1。
    - **7b 适配层** `app/integrations/evidence_scorer.py`：`EvidenceScorer` 协议 + `DeepSeekEvidenceScorer`，
      与 `skill_extractor.py` 同一族异常（`SkillExtractorError` 的三个子类那样），测试用 fake，且 fake 要能**分别**造出 §6.5 的五种退化。
+     → **已实现**（`c900ff2`，`tests/test_evidence_scorer.py`）。多了一个 `EvidenceScoreTimeoutError`
+     才能让 `upstream` 与 `timeout` 分得开，见 §6.5 那条实现偏离说明。
    - **7c 编排层** `app/services/match_service.py` + **一个** `get_match_service(request)`：同一个 `session_scope()` 里装
      `JobRepository` + `StudentProfileRepository` + scorer。🚩 复核定的结构约束：**不许**复用 `get_job_service()` + `get_profile_service()`
-     拼两个 session（`app/services/dependencies.py:66-78` 的先例是一 service 一 session；两个 session 等于同一次请求占两条连接，
+     拼两个 session（`app/services/dependencies.py:64-83` 的先例是一 service 一 session；两个 session 等于同一次请求占两条连接，
      且两侧读到的是两个快照）。
+     → **已实现**。这条约束的测试第一版用 `inspect.getsource` 数字符串，被自己的 docstring 骗过（docstring 里就写着那两个函数名），
+     已改成行为断言：`service._jobs._session is service._profiles._session`。
    - **7d 路由与闸门**：`POST` 路由 + `@limiter.limit(MATCH_RATE_LIMIT, key_func=<按用户>)`（§3）、404-not-403、
      `main.py` 处理器作用域从「两个端点」改「三个端点」的注释与测试、`client.ts` 白名单第 3 条 + §6.1 的三条断言（含路由表闭合）。
+     → **已实现**（`451aae4`）：路由、按用户限流（含「同一 IP 两个用户互不挤占」的行为用例，它同时证明了鉴权依赖先于限流装饰器执行）、
+     404-not-403、`main.py` 注释（按 §6.5 的实现偏离写成「仍两个端点 + 匹配显式不经过」）、后端的路由表闭合测试、
+     `client.ts` 白名单第 3 条（`POST ^/jobs/[^/]+/match$`，绑方法——全仓库第一条模式判据，所以配套写了**不扩张**用例：
+     `/jobs/a/b/match`、`/jobs/match`、`/jobs/1/match/extra`、`/resumes/polish/match`、GET `/jobs/1/match` 都不许注入）
+     与前端的注入矩阵（`frontend/src/api/__tests__/byok.spec.ts`：正例 / 不扩张 / 尾斜杠与查询串归一化 / `matchJob()` 走白名单而不是手挂头）都已完成。
+     那条白名单的自我辩护从「命中即转发」换成了路由表论证，理由见 §6.1。
 8. 前端匹配卡（三档展示 + `evidence_mode` 与 `degrade_reason` 分句可见 + **必须显式点击才请求**，
    不许在岗位详情页 `onMounted` 里自动调用：那是拿用户的 Key 换页面浏览量）。
    🚩 2026-11-07 人类负责人裁定「不用向客户说明技术上的设计」之后，这一条**去掉**了「`weight_sum_used` 显示」：
@@ -534,6 +573,12 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
    375px 与 1280px 的实测仍然必须做（AGENTS.md §3.1），这一条不受上面裁定影响。
 9. 第 3c 条（角标消费后端确定性端点）与第 7 条同 PR 或紧随其后，理由见 §10 末。
 10. `docs/API.md` 新章节与 §1.1 错误码可达性更新。
+    → **已实现**（本次）：新增 §4.10 描述真实契约、§4.11 承接原「未接通」清单；§1.1 补一句
+    「`POST /jobs/{job_id}/match` 不在三个 `AI_*` 码的可达集合里」；§4.0 的 OpenAPI 实测从 10 个操作改成 11 个并补一行 429；
+    权限矩阵补第 10 行；§4.11 与 §5 里「人岗匹配整条仍在冻结清单」那句按实现更正。
+    新增路由让 `app/api/v1/jobs.py` 等五个文件之后的行号全部漂移，所以两份文档里指向它们的行号引用**逐条重新推导**过
+    （用 master→HEAD 的逐行对齐映射机械平移，再对手写的那两条 `is_expired` 引用按语义改写），
+    最后跑一遍机器检查：`docs/` 与 `AGENTS.md` 里 206 条 `app/*.py:行号` 引用全部在文件范围内且指向非空行。
 
 第 3 条必须在第 7 条之前：否则匹配与角标各用各的键，§1.3 那屏自相矛盾会成为产品事实。
 
@@ -570,14 +615,14 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
 
 | # | 发现 | 取证（实测，不是推断） | 处置 |
 |---|---|---|---|
-| 1 | 限流口径与仓库机制不符，按 IP 会让局域网测试互相抢额度 | `app/core/rate_limit.py:44` `key_func=get_remote_address`；`:35` 自记多 worker 局限；`Limiter.limit` 签名实测支持 `key_func=` 覆盖 | §3 改为按用户键 + 新增 `MATCH_RATE_LIMIT`，另三条规则不动 |
-| 2 | 「AI 失败退化成 200」与三个全局 AI 处理器冲突，实现时最自然的写法会把它变成红字报错 | `app/main.py:252/259/270` 分别 400/401/502；异常类 `ResumeApiKeyMissingError` / `ResumeCopyRejectedError` / `ResumeCopyUnavailableError`（`app/services/resume_service.py:43/47/51`） | §3 新增「状态码边界」；§6.5 新增 `degrade_reason` 五值 + 五情形各一测试 |
+| 1 | 限流口径与仓库机制不符，按 IP 会让局域网测试互相抢额度 | `app/core/rate_limit.py:72` `key_func=get_remote_address`；`:37` 自记多 worker 局限；`Limiter.limit` 签名实测支持 `key_func=` 覆盖 | §3 改为按用户键 + 新增 `MATCH_RATE_LIMIT`，另三条规则不动 |
+| 2 | 「AI 失败退化成 200」与三个全局 AI 处理器冲突，实现时最自然的写法会把它变成红字报错 | `app/main.py:259/266/277` 分别 400/401/502；异常类 `ResumeApiKeyMissingError` / `ResumeCopyRejectedError` / `ResumeCopyUnavailableError`（`app/services/resume_service.py:43/47/51`） | §3 新增「状态码边界」；§6.5 新增 `degrade_reason` 五值 + 五情形各一测试 |
 | 3 | 交给模型的输入没有上界，而它由用户自由文本决定 | 技能 ≤8 / 经历 ≤3（`app/schemas/profile.py:271-272`），但 `description`/`responsibility` 无长度约束（`app/schemas/resume.py:67-68`，列型 `Text`）；dev 库 8 条经历 `description` p50 44 / p90 102 / **max 615** | §6 第 2 点改窗口化（±80 字）+ `fragments_truncated`；不给 `ExperienceInput` 加 `max_length`（那是截断用户数据，另一个决定） |
 | 4 | §7.5 与 §5.1 的「未知怎么办」自相矛盾，常数 0.5 进分母会把总分往中间挤 | `status='published'` 6 行、`deadline is null` 2 行（其中 1 行是回收站异常行）→ 真实可点 5 个里 1 个走这一支 | §7.5 改为 `computed=False`，键名 `freshness` → `remaining_time`，UI 改名「剩余投递时间」 |
 | 5 | §6 的白名单自证不成立：正则也命中**不存在**的路径，那些请求不转发 DeepSeek | `client.ts:224` 现在是 `BYOK_KEY_PATHS.includes(path)` 整段相等，模式机制今天不存在；`:229` 只做查询串与尾斜杠归一化 | §6.1 换成路由表论证 + 三条断言（正向 / 不扩张 / 已注册路由闭合），并进 `byok.spec.ts` 现有注入矩阵 |
 | 6 | §8 故意不做计数闭合，等于把一条漏计写进设计 | 少一个「模型没回这条」的通道，等式必然不闭合 | 新增 `dropped_missing_output` + 四桶互斥次序 + **要求写成断言**；同时更正我引用的 ADR-011 「先例」其实是已知缺陷 |
 | 7 | 「请求体为空 ⇒ 用哪份档案」是隐式选择，用户会以为分数算错 | `student_profiles.is_default`（`app/repositories/student_profile_repository.py:76`）；岗位页与编辑页无共享档案上下文 | §3 响应新增 `profile_id` / `profile_title` / `job_id` 回显 |
-| 8 | 编排层若复用两个既有 DI 会开两个 session、两个快照 | `app/services/dependencies.py:66-78`：每个 `get_*_service` 各自 `session_scope()` | §10 第 7c 条：一个新 DI、一个 session、两个仓储 |
+| 8 | 编排层若复用两个既有 DI 会开两个 session、两个快照 | `app/services/dependencies.py:64-83`：每个 `get_*_service` 各自 `session_scope()` | §10 第 7c 条：一个新 DI、一个 session、两个仓储 |
 
 **复核没有改的东西**（写下来是为了让「改了什么」有边界）：五项权重数值与 PRD 出处、`score` 只做解释不做排序、
 分数不落库、v1 只支持默认档案、404-not-403、`deepseek-flash` + BYOK + 非流式 + `max_retries=0`、模型不被问「匹不匹配」。
