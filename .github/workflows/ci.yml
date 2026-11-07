@@ -37,13 +37,15 @@ jobs:
       # 它挡的是**此后**新提交的风格发散，不是替历史债还钱。
       # 版本由 uv.lock 钉住，不会出现「本地 ruff 与 CI ruff 判得不一样」这种扯皮。
       - name: Format check
-        run: uv run ruff format --check app tests alembic
+        # scripts/ 一起进来：种子脚本落在仓库里就必须和 app/ 同标准，
+        # 否则等于开一个没人检查的目录（ADR-013 §9）。
+        run: uv run ruff format --check app tests alembic scripts
 
       - name: Lint
-        run: uv run ruff check app tests
+        run: uv run ruff check app tests scripts
 
       - name: Type check
-        run: uv run mypy app
+        run: uv run mypy app scripts
 
       - name: Import architecture check
         run: uv run lint-imports
