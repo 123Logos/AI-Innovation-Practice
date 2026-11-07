@@ -28,6 +28,9 @@ frontend/.vite/
 .env.*
 !.env.example
 
+# 本地脚本生成的账号凭据（scripts/seed_internal_jobs.py），与 .env 同级敏感
+.dev-secrets/
+
 # IDE and operating system files
 .idea/
 .vscode/*
