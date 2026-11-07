@@ -322,6 +322,18 @@ M∩R 为空：value = 0，computed = False（没东西可评，不假装「评�
 ```
 `hits(s)` 是命中该技能的**经历条数**，不是出现次数——同一句话里写三遍 Python 不该刷分。
 
+`covered` 与 `partial` 的分界（§3 的三档展示在这里落地，原稿没定，实现时必须定）：
+
+```
+PARTIAL_STRENGTH_THRESHOLD = 0.4
+某技能的平均强度 < 0.4 → 进 partial；否则进 covered
+```
+
+0.4 不是随手取的：关键词模式的档位只有 `0 / ⅓ / ⅔ / 1`（`min(hits,3)/3`），
+0.4 落在 ⅓ 与 ⅔ 之间，于是这一条阈值在**没有 AI 的时候**语义是干净的——
+「只在一条经历里出现过」= 证据偏薄，「两条及以上」= 站得住。AI 模式下它变成「模型认为这句话撑不起这个技能」。
+两种含义都成立但不同，所以 `partial` 的文案里不许假装解释了是哪一种，`evidence_mode` 必须一起显示。
+
 ### 7.3 经验相关度 0.15 —— 代理指标，明说它是代理
 不引中文分词依赖（新依赖要另走 ADR）。定义：岗位 `title` 的关键片段与经历 `title` 的匹配，
 ```
@@ -329,6 +341,38 @@ relevance = max over experiences of |tokens(job.title) ∩ tokens(exp.title)| / 
 tokens(x) = 对 match_key(x) 按非字母数字切分后的片段集合（中文整串当一个 token）
 ```
 它测的是「他做过的事的名字，像不像这个岗位的名字」，**不是**语义相关度。UI 上这一项的说明文字要写「岗位名称与经历名称的字面重合」，不写「经验相关度」这种听起来像理解了对方的词。AGENTS.md 第 7.9 条禁止用大词包装未验证的东西，这条同样适用于一个分数标签。
+
+#### 7.3.1 实现时的否决（2026-11-07，7a）：v1 这一项不参与加权
+
+上面这个指标**没有被实现**，因为先测了它，测出来是空的：
+
+```
+job titles: ['大模型算法实习生', 'Python 后端开发工程师', '前端开发实习生', '数据分析实习生', 'AI 产品经理实习生']
+exp titles: ['1', '占位符', '项目名称121', '123', 'AI职业规划', '校园二手交易平台', '知识图谱问答系统', '…（窄屏测试标题）']
+pairs: 40  with any token overlap: 0
+```
+
+dev 库 5 个已发布岗位 × 8 条经历，**0/40 重合**。原因不是数据脏，是概念错了：
+经历的 `title` 是**项目名**（「校园二手交易平台」），岗位的 `title` 是**角色名**（「大模型算法实习生」），
+这两个字符串本来就不该相似。把「中文整串当一个 token」放进去算交集，等价于问「这两个名字一模一样吗」。
+
+于是 v1 的处理是：
+
+- 这一项**恒 `computed=False`**，`note="not_measurable_v1"`，`weight_sum_used` 如实少 0.15（§5.1 的归一在这里生效）；
+- **不删掉这一项**：保留在 `data.terms[]` 里，是为了让「PRD 五项中有一项我们现在测不了」这件事在响应里可见。
+  删掉它，等下一次有人对着 PRD 数分项，会发现少了一项而不知道原因。
+- 一个恒为 0 的 `computed=True` 项**绝不接受**：那会把每个人的总分按 0.15 拖下去，
+  与我们删 `self_rating` 的理由（§1.2「零信息常量」）完全同一，只是这次它长在公式里而不是表单里。
+
+两处文字也要更正，否则下一个读这份 ADR 的人会照抄错的定义：
+
+1. 公式里的 `match_key(x)` **不存在**，也不该存在——§1.3 已经裁定过「没有新增 `match_key()`，
+   `skill_name_key` 就是唯一口径」。这里写成 `match_key` 是我自己前后不一致。
+2. `tokens()` 的实现口径改为**拉丁词/数字串各一个 token + 中日韩按二元组切**。
+   二元组不是为了让 §7.3 复活（它仍然不参与），而是 §7.4 的目标偏好比对**真的需要**一个能看见中文内部重合的函数：
+   整串口径下「大模型算法」对「大模型算法实习生」只能靠 §7.4 第一条的**包含**关系得分，
+   而包含关系看不见词序变化（「算法大模型」→ 落不进任何一档）。
+   `tests/test_match_scoring.py::TestTokens` 把「整串口径为 0、二元组口径 > 0.5」钉成断言。
 
 ### 7.4 目标偏好 0.10
 ```
@@ -343,9 +387,14 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
 已过期           → value = 0.0，computed = True
 距今 ≤ 7 天      → 0.4    ≤ 30 天 → 0.7    > 30 天 → 1.0
 ```
-判据用应用时钟，与 `JobService.is_expired`（`app/services/job_service.py:482`，读侧注释见 `app/schemas/job.py:233-234` 与 `:273`）
-**同一个函数**，不允许端点里再写一遍 `deadline < today` 的比较。（原稿这里引的是 `app/schemas/job.py:255`，
-是 §1.1 那批行号重新推导时漏掉的一格——`is_expired` 现在实测在 `:235` 与 `:275`，注释在 `:233`，`255` 那行是 `deadline` 字段本身。）
+判据用应用时钟，与 `is_expired`**同一个函数**，不允许端点里再写一遍 `deadline < today` 的比较。
+
+落地形态（实现时定的，比原稿具体）：判据本体在 `app/core/deadline.py::is_expired(deadline, today)`，
+`JobService.is_expired(job, today)` 改为**委托**给它（签名不变，调用点一处没动）。
+放在 core 而不是留在 service 里，是因为纯打分层 `match_scoring` 不能 import 带仓储依赖的 service 判据；
+同一个位置的先例是 `app/core/skill_names.py`（为完全相同的理由搬进来）。
+（原稿这里还引过一个错行号：`app/schemas/job.py:255`。`is_expired` 现在实测在 `:235` 与 `:275`，
+注释在 `:233`，`255` 那行是 `deadline` 字段本身——是 §1.1 那批行号重新推导时漏掉的一格，已改。）
 
 两处更正，都是改我自己：
 
@@ -379,30 +428,43 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
 | `degrade_reason` | `null` \| `key_missing` \| `key_invalid` \| `upstream` \| `timeout` \| `bad_output`（§6.5 第 5 点，退化必须可归因） |
 | `candidate_pairs` | 交给模型的 (技能, 片段) 候选对数量 |
 | `verified_pairs` | 通过引用核验、真正参与打分的对数 |
-| `dropped_unreferenced` | 模型引用了我们没给过的片段编号的对数 |
-| `dropped_unknown_skill` | 模型返回了不在命中集合里的技能名的对数 |
-| `dropped_missing_output` | 我们给了候选对、模型却没有回这一条评分的对数（§13 复核新增，理由见下） |
+| `dropped_unreferenced` | 模型引用的片段编号不在我们发出去的编号里（含「编号是真的但挂在另一个技能下」）的条目数 |
+| `dropped_unknown_skill` | 模型返回的技能名不在本次命中集合里的条目数 |
+| `dropped_unusable_strength` | 技能名与编号都对，但 `strength` 不可用（缺字段、非数字、布尔）的条目数（实现时新增，理由见下） |
+| `dropped_missing_output` | 我们发出去了、却没有拿到可用评分的**候选对**数 |
 | `clamped_strength` | `strength` 越界被夹过的次数 |
 | `fragments_truncated` | 被 §6 第 2 点的窗口切过端的片段数（输入预算的可见性） |
 | `truncated` / `finish_reason` | 与提取端点同义 |
 | `weight_sum_used` | 本次实际参与加权的权重之和（§5.1 归一后的分母） |
 
-算术闭合：`candidate_pairs = verified_pairs + dropped_unreferenced + dropped_unknown_skill + dropped_missing_output`。
+计数有**两个分区**，各自精确闭合，单位不同，不许混进一个式子：
 
-要让这个等式有意义，四个桶必须**互斥且穷尽**，所以核验按固定次序判，一条返回条目只会落进一个桶：
+```
+候选侧：candidate_pairs      = verified_pairs + dropped_missing_output
+条目侧：len(model_items)     = verified_pairs + dropped_unreferenced + dropped_unknown_skill + dropped_unusable_strength
+```
+
+核验按固定次序判，一条返回条目只会落进条目侧的一个桶：
 ① 技能名不在本次交给模型的命中集合里 → `dropped_unknown_skill`（判完即止，不再看它的编号）；
-② 引用的片段编号不在我们给过它的编号里 → `dropped_unreferenced`；
-③ 没有可用的 `strength`（缺字段、非数字，或越界到无法夹回）→ `dropped_missing_output`；
+② 编号不在我们发出去的编号里，或编号是真的却挂在另一个技能下 → `dropped_unreferenced`；
+③ 没有可用的 `strength` → `dropped_unusable_strength`；
 ④ 前三关都过 → `verified_pairs`（越界但可夹的在这里计入，同时 `clamped_strength` +1）。
-次序本身就是契约：换成「先判编号再判技能名」，两个计数器的值会变，而总分不变——这种「只有对账数字漂移」的差异，
-只有把次序写进 ADR 才守得住。
+候选侧不看 junk：模型多编十条也不影响「发出去的候选对有没有拿到评分」，所以两个等式互相独立。
 
-原稿在这里写的是「差值应等于两个 `dropped_*` 之和……这条**故意不做闭合断言**」。这个决定是错的，而且错在一个具体的地方：
-少了 `dropped_missing_output` 这一格，等式在「模型只回了一半条目」时**必然不闭合**，
-于是我等于提前宣布「有一条损失通道我不数」——那不是诚实，那是把漏计写进设计。
-补上第四个计数器之后闭合是可证的，所以本 ADR 要求**写成断言**（AI fake 里造一个「少回一条」与一个「多回一条未知技能」的用例，两条断言分别钉住两个方向）。
+这里连着错了两次，都记下来：
+
+1. **原稿**写「差值应等于两个 `dropped_*` 之和……这条**故意不做闭合断言**」。错在少了一个损失通道
+   （模型只回一半条目时没桶装），那等于提前宣布「有一条损失我不数」。
+2. **§13 复核给出的更正式版**写「四个桶互斥且穷尽，相加 = `candidate_pairs`」——**同样错**，
+   而且是我在实现这一层的测试时跑红的：它把「候选对」（我们发出去的东西）与「返回条目」（模型吐回来的东西）
+   两种单位塞进同一个等式。模型只要多编一条编号，等式两边同时各多 1，测试立刻不闭合。
+   现在这两个分区分别断言，`tests/test_match_scoring.py::TestApplyModelScores` 两个方向都钉住。
+   `dropped_unusable_strength` 也是在这一步冒出来的：它原来被 `continue` 静默吞掉，
+   既不进候选侧也不进条目侧，正是第 1 条那个老毛病的复发。
+
 先例引用也要更正：ADR-011 那条 `received = dropped + deduped + 返回 + 切掉` 里无字段的最后一格是**已知缺陷**，
-不是可以照抄的判断，别拿它当先例给自己开路。
+不是可以照抄的判断，别拿它当先例给自己开路。而这一轮我自己照着它「再补一格」补出来的式子，同样是错的——
+**把计数写成可闭合的两个分区**才是答案，不是把桶加多。
 
 ---
 
@@ -511,3 +573,29 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
 **复核发现但不属于本切片的**：润色端点整段发送 `description`/`responsibility`、输入侧无上界
 （`app/integrations/copy_writer.py:171-172`）。这是 ADR-010 的既有暴露面，本轮只记录、不修改——
 把它顺手改掉会让「一条切片一条分支」变成一屏无法审的 diff。
+
+### 13.1 上面这张表没有覆盖到的三条（实现 7a 时才发现）
+
+复核只能读设计，读不出「这个指标在真实数据上有没有值」。写纯打分层之前先测了它们，结果推翻三条：
+
+| # | 被否证的说法 | 实测 | 处置 |
+|---|---|---|---|
+| 9 | §7.3 的经验相关度是个「诚实标签下的弱代理」 | 5 个已发布岗位 × 8 条经历，token 重合 **0/40** | v1 该项恒 `computed=False`，见 §7.3.1 |
+| 10 | §13 复核第 6 条给出的「四个桶相加 = `candidate_pairs`」 | 模型多编一条编号，等式两边同时各多 1，测试跑红 | 改成候选侧/条目侧两个分区，各断言一次，见 §8 |
+| 11 | 「越界的 `strength` 夹到 [0,1]」这一句隐含「能拿到数值」 | `True` 在 Python 里既是 `int` 又能当 `1` 用，还顺手命中编号 `1` | 两处显式挡 `bool`，并新增 `dropped_unusable_strength` |
+
+第 10、11 条的共性值得单独留一句：**复核也是靠读文字做的，所以它只能发现「说法不自相矛盾」级别的问题**。
+计数是否真能闭合、代理指标在真实数据上是否恒为 0，这两类只有把代码跑起来才知道——
+所以本 ADR 要求实现前先测数据（§7.3.1 的 0/40 就是这么来的），而不是把复核当成终点。
+
+### 13.2 第 7 步实现期间的合入事实（与闸门有关，和 `DEVELOPMENT.md` §10.0 同步）
+
+- PR #9 与 PR #10 在两条 `test` 检查都 `success`、`required_approving_review_count: 0` 的前提下，
+  GitHub 仍持续报 `mergeStateStatus: BLOCKED` / `mergeable_state: blocked`；
+  `reviewDecision` 为 `null`，`refs/pull/*/merge` 上没有 check-run，仓库级 `allow_*_merge` 与 `delete_branch_on_merge` 都查过。
+  **原因至今没有定位**，不要把「我最后合进去了」读成「闸门验证通过」：
+  PR #9 是走 `PUT /pulls/9/merge`（管理员身份，`viewerCanMergeAsAdmin: true`）合的，
+  PR #10 之后我这边被协作策略拦住自合并，需要人类负责人在页面上点。
+- 因此本切片的事实是：**实质条件（CI 绿 + 单 merge 方式 + 分支不可删/不可 force push）都满足并被读回过，
+  但「正常权限能不能合」这条路一次都没走通过**。这条差异只有在页面上才能看出来，所以在 §10 第 7 步做完之前，
+  我不声称闸门已经被端到端验证。
