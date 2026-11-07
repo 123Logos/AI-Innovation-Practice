@@ -30,8 +30,24 @@ class ProfileInput(BaseModel):
 
 
 class SkillInput(BaseModel):
+    """学生侧的一条技能。
+
+    `name` 两端空白在这里就裁掉，与岗位侧 `JobSkillInput.normalize_name` 同一规矩：
+    库里两张技能表必须只有一种规范化程度，否则「后端键判未覆盖、前端角标判已具备」
+    会在同一屏上同时出现（ADR-013 §1.3）。大小写/全半角**不在这里折**——展示要保留
+    用户自己写的样子，判定交给 `skill_name_key`。
+    """
+
     name: str = Field(min_length=1, max_length=100)
     self_rating: int = Field(ge=1, le=5)
+
+    @model_validator(mode="after")
+    def normalize_name(self) -> "SkillInput":
+        stripped = self.name.strip()
+        if not stripped:
+            raise ValueError("skill name must not be blank")
+        self.name = stripped
+        return self
 
 
 class ExperienceInput(BaseModel):
