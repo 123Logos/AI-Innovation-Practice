@@ -33,6 +33,7 @@ import logging
 from collections.abc import Sequence
 from datetime import date, datetime
 
+from app.core import deadline
 from app.core.datetime_display import utc_now
 from app.core.skill_names import skill_name_key
 from app.integrations.skill_extractor import (
@@ -480,11 +481,13 @@ class JobService:
 
     @staticmethod
     def is_expired(job: Job, today: date) -> bool:
-        """2.G 的唯一判据：`deadline` 非空且**严格早于**今天。
+        """2.G 的唯一判据，实现在 `app/core/deadline.py::is_expired`。
 
-        `deadline = 今天` 还没过期（「今天截止」仍可投递），`deadline IS NULL` 长期有效。
+        这里只保持既有签名不变（调用点很多），比较本身**不在此处**：
+        ADR-013 §7.5 要求匹配的「剩余投递时间」与列表页的「已过期」走同一个函数，
+        两处各写一份 `deadline < today` 迟早漂移。
         """
-        return job.deadline is not None and job.deadline < today
+        return deadline.is_expired(job.deadline, today)
 
     def _to_read(self, job: Job) -> JobRead:
         return JobRead(
