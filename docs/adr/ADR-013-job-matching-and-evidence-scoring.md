@@ -61,14 +61,24 @@ dev 库实测：`published` 岗位 **0** 条，`draft` 3 条，回收站 1 条�
 ### 1.5 没有角色系统
 `users` 表无 `role` 列，全仓无 `is_admin`（ADR-011 1.A 决定不加，老板指令 6.4 确认角色系统留给后续需求）。因此 `docs/PRD.md:119` 那句「权重由管理员配置并记录版本」**现在实现不了**，v1 只能把权重写成代码常量 + 版本号，沿用 `prompt_version='v1'` 的先例。
 
-### 1.6 一个我自己搞错的点（防止实现时照抄我的错误）
-岗位**列表**视图 `JobSummary.skills` 有 `max_length=6`（`app/schemas/job.py:253`），岗位**详情** `JobRead.skills` 没有上限（`:267` 起）。实测：用 15 条技能构造 `JobRead` → 通过，`len == 15`；`MAX_SKILLS_PER_JOB = 15`。所以匹配的分母必须从仓储 `list_skills(job_id)` 取全量，**不能**从列表载荷算。（本文初稿把这条写反成「JobRead 只回 6 条」，已实测纠正。）
+### 1.6 我自己在这条上连错两次（写下来，防止实现时照抄任何一个版本）
 
-另：`JobSummary.skills` 上的 `max_length=6` **不是校验**，而是配合服务层的显式切片——
-`SUMMARY_SKILL_LIMIT = 6`（`app/services/job_service.py:81-82`）在构造列表项时做
-`skills[:SUMMARY_SKILL_LIMIT]`（`:534`），所以 15 条技能永远不会撞上那个 `max_length`。
-也就是说：**同一个岗位在列表里只有前 6 条技能，在详情里才是全量**。任何「按列表数据算匹配」的实现
-都会静默地把分母算小，这不是理论风险，是载荷形状决定的必然结果。
+真实机制是**两道**，不是一道：
+
+- 服务层显式切片：`SUMMARY_SKILL_LIMIT = 6`（`app/services/job_service.py:81-82`），
+  构造列表项时 `skills[:SUMMARY_SKILL_LIMIT]`（`:534`）；
+- 列表模型确实会拦：`JobSummary.skills` 的 `max_length=6`（`app/schemas/job.py:253`）
+  实测 **7 条技能 → ValidationError**；而详情模型 `JobRead.skills` 没有上限，
+  实测 **15 条 → 通过，`len == 15`**。
+
+所以：同一个岗位在列表里只有前 6 条技能，在详情里才是全量。任何「按列表载荷算匹配」的实现
+都会把分母算小——载荷形状决定的必然结果，不是理论风险。差别在于**忘了切片**会撞上有界校验、
+当场报错，而不是静默把 15 条发出去，这一点 `frontend/src/views/JobBoardView.vue:7` 的注释说得对。
+
+我错的两处：初稿写「JobRead 只回 6 条」（张冠李戴，那是 `JobSummary`）；改的时候又矫枉过正，
+写了「`max_length` 不是校验、只是配合切片」——实测证明它就是校验，会拒。两次都是没有先跑一遍
+就下断言，与 §0 的授权记录无关，是实现前的取证义务没做到位。
+
 
 
 ---
@@ -255,12 +265,25 @@ deadline 为 NULL → value = 0.5，note = "no_deadline"      （未知不装作
 - 红线：不含性别/年龄/户籍/健康/婚育，不含「2027 届」这类年龄代理，不含「无挂科」「限男性」。
 - 测试账号与种子岗位在下一轮真实用户测试前必须下架/停用，并再次声明不计入真实用户统计。
 
+**已执行（2026-11-07，脚本 `scripts/seed_internal_jobs.py`，PR #6）**：dev 库现有 `published`
+岗位 5 条（`seedboard_a` 3 条 / `seedboard_b` 2 条），技能条目合计 61 条，其中服务端派生出
+`jd_verifiable` 50 条、`unverified` 11 条——11 正好等于脚本里 `evidence_text=None` 的「加分项」条数，
+说明徽标不是脚本声明的。`deadline` 铺了 +5d / +20d / +45d / +60d / NULL 四档加一个未知档，
+让 §7.5 的每一支都有真实数据可点。脚本连跑两次后 `published` 仍为 5（第一版在这里会翻倍，
+因为它只查草稿是否重名；已改成同时查 published 并按 `created_by_user_id` 归属过滤）。
+
+顺带发现的**历史数据**：探针账号 `jobboardcheck01` 有一条 `status='published'` 且
+`deleted_at` 非空的岗位（11-07 下架那两条探针岗位时留下的）。可见性谓词挡住了它，
+用户看不到，但「已发布 + 已删除」这个组合是 ADR-011 1.D 缺口②（回收站无永久删除）的
+一个具体后果，处理它属于岗位轮，不属于匹配轮。
+
+
 ---
 
 ## 10. 落地顺序（每条一个分支一个 PR，照 DEVELOPMENT.md §10.0）
 
 1. **本文 + `MVP_SCOPE.md:42-43` 与 AGENTS.md §3.2 的解冻注记**（纯文档，先合）。
-2. 种子岗位（§9，纯数据 + 一份可重放的建号脚本，不动 schema）。
+2. ~~种子岗位（§9，纯数据 + 一份可重放的建号脚本，不动 schema）~~ → **已执行**，PR #6。
 3. **匹配键统一**（§1.3）：新增 `match_key()` = strip + NFKC + casefold，`skill_name_key` 收敛到它；学生侧 `SkillInput.name` 补 strip + 去重改用同一键；前端角标改为消费后端结果。含一条把三套键钉成一套的回归测试。
 4. `self_rating` 删除（§4，含迁移与降级测试 + 前后端 + API.md）。
 5. `target_role` 新列（§5，含迁移与档案接口/表单）。
