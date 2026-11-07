@@ -67,31 +67,55 @@
 
 ## 3. 学生档案与技能
 
-### GET/PATCH `/students/me/profile`
+> **本节 2026-11-07 重写过一次。** 它原先描述的是 `GET/PATCH /students/me/profile`
+> （字段 `name/school/major/grade/city_preference/target_roles/bio`）、`/students/me/skills`
+> （`skill_id/level/source/evidence_ids/last_used_at`）、`/students/me/evidence`、`/students/me/consents`
+> 以及一句「删除只解除学生关联，不删除公共技能字典」——**这些端点、这些字段、那张技能字典从未实现过**，
+> OpenAPI 里一个都查不到（`app/api/v1/` 下没有 `students` 路由，`skills` 表也没有 `level`/`source` 列）。
+> 旧文本是设计期词汇漏进了契约文档，读它的人会以为 `target_roles` 已经存在（ADR-013 §5 才刚决定加它）。
+> 下面按代码重写，每条都给了出处。
 
-字段：`name`、`school`、`major`、`grade`、`city_preference`、`target_roles`、`bio`。服务端过滤不可公开字段。
+### 3.1 路由（`app/api/v1/profiles.py`，前缀 `/profiles`）
 
-### GET/POST `/students/me/evidence`
+| 方法与路径 | 作用 | 出处 |
+|---|---|---|
+| `GET /profiles` | 列出我的档案（不含回收站） | `:48` |
+| `POST /profiles` | 新建档案，**201** | `:72` |
+| `GET /profiles/trash` | 回收站列表 | `:94` |
+| `GET /profiles/me` | **兼容入口**：默认档案；没有默认档案时返回 `{"profile": null}`，**不是 404** | `:108` |
+| `PUT /profiles/me` | **兼容入口**：整体覆盖默认档案；一份都没有时先建一份再写 | `:122` |
+| `GET /profiles/{profile_id}` | 读单份档案 | `:134` |
+| `PUT /profiles/{profile_id}` | 覆盖指定档案 | `:149` |
+| `PUT /profiles/{profile_id}/default` | 设为默认 | `:165` |
+| `PUT /profiles/{profile_id}/title` | 改档案名 | `:180` |
+| `DELETE /profiles/{profile_id}` | 软删（进回收站） | `:206` |
+| `PUT /profiles/{profile_id}/restore` | 从回收站恢复 | `:221` |
+| `DELETE /profiles/{profile_id}/permanent` | **永久删除**——档案有这条，岗位没有（ADR-011 1.D 缺口②） | `:236` |
 
-证据包括 `type`（project/internship/certificate/link/assessment）、`title`、`description`、`skills`、`url`、`occurred_at`、`visibility`。上传文件使用预签名 URL，不把文件二进制放进 JSON。
+### 3.2 `PUT /profiles/me` 请求体（`ProfileUpsertRequest`，`app/schemas/profile.py:220` 起）
 
-### GET/POST/PATCH/DELETE `/students/me/skills`
+| 字段 | 约束 | 备注 |
+|---|---|---|
+| `full_name` | `str`，默认 `""`，≤100 | 必填的是**生成简历**时，不是保存时 |
+| `email` | `str \| None`，≤254 | 空串在校验器里折成 `None` |
+| `grade` | `str \| None`，≤50 | UI 已不采集（ADR-013 的反歧视条款禁止它进入匹配特征） |
+| `contact` | `str`，默认 `""`，≤255 | 两端空白裁掉 |
+| `paper_size` | `PaperSize \| None` | A4 等，见 ADR-008 之后的实现 |
+| `theme` | `Theme \| None` | 主题，`fe21c8b` |
+| `layout_config` | `LayoutConfigInput \| None` | 排版，`a7a1fe2` |
+| `skills` | `list[SkillInput]`，**≤8** | 见 §3.3 |
+| `experiences` | `list[ExperienceInput]`，**≤3** | `title`/`start_date`/`end_date`/`description`/`responsibility` |
+| `educations` | `list[EducationInput]`，**≤5** | `d02b176` |
 
-技能字段：`skill_id`、`level`、`source`、`evidence_ids`、`last_used_at`。删除只解除学生关联，不删除公共技能字典。
+### 3.3 `skills[]` 每条的名字规矩（2026-11-07 起）
 
-### GET `/students/me/consents`
+`SkillInput`（`app/schemas/resume.py:32`）= `name`（1–100）+ `self_rating`（1–5）。
 
-### POST `/students/me/consents`
+- **`name` 两端空白由服务端裁掉**，纯空白名 → 422（以前 `"   "` 能过 `min_length=1`，会往库里存一条空白技能，在简历里渲染成空条目）。这与岗位侧 `JobSkillInput.normalize_name` 同规矩，目的是让两张技能表只有一种规范化程度。
+- **重名判定用 `skill_name_key` = NFKC + casefold**（`app/core/skill_names.py`，与提取端点、岗位写侧同一个函数），不是裸相等。改之前 `Python` 与 `python` 能过校验、走到 INSERT，再由 `uq_skills_profile_name`（建在大小写不敏感的 `utf8mb4_0900_ai_ci` 上）抛 `IntegrityError 1062`——用户看到的是内部错误，正确答案是「技能名称重复」的 422。全角 `Ｐython` 同理。
+- 判定键**不删标点、不去内部空白**，所以 `C#` 与 `C`、`Web␣␣开发` 与 `Web␣开发` 仍是两个技能；理由与实测对照表见 ADR-011 §2.D.2。
+- `self_rating` 仍在 API 里必填，但 UI 已不采集、恒发 3，库里分布实测 `{2:1, 3:23, 4:1}`。**它是零信息常量**，ADR-013 §4 已裁定把它从 API 与库中删除（该条尚未落地）。
 
-请求：
-
-```json
-{"purpose":"enterprise_recommendation","fields":["email","skills","resume_summary"],"target_id":"job-uuid","expires_at":"2026-12-31T00:00:00Z"}
-```
-
-### DELETE `/students/me/consents/{consent_id}`
-
-撤回后新请求不得继续访问；已导出的文件按保留策略失效。
 
 ## 4. 岗位
 
@@ -156,11 +180,11 @@
 
 ### 4.2 请求体里有什么、没有什么
 
-`POST /jobs` 与 `PUT /jobs/{job_id}` 共用同一个模型 `JobWriteRequest`（`app/schemas/job.py:158-215`）：
+`POST /jobs` 与 `PUT /jobs/{job_id}` 共用同一个模型 `JobWriteRequest`（`app/schemas/job.py:137-194`）：
 
 | 字段 | 类型 / 约束 | 必填 | 代码位置 |
 |---|---|---|---|
-| `company_name` | string，1–200 | ✅ | `app/schemas/job.py:168` |
+| `company_name` | string，1–200 | ✅ | `app/schemas/job.py:147` |
 | `title` | string，1–200 | ✅ | `:169` |
 | `description` | string，1–8000（JD 原文；上限即 ADR-011 2.F 的输入上限） | ✅ | `:172`、`MAX_DESCRIPTION_LENGTH` `:63` |
 | `location` | string ≤160，选填 | ❌ | `:170` |
@@ -170,7 +194,7 @@
 | `deadline` | `date`（`YYYY-MM-DD`），允许填**过去**的日期 | ❌ | `:176-178` |
 | `skills` | 数组，最多 15 条（`MAX_SKILLS_PER_JOB`） | ❌，默认 `[]` | `:179`、常量 `app/repositories/job_repository.py:75` |
 
-`skills[]` 每条收**四格**（`JobSkillInput`，`app/schemas/job.py:95-155`）：
+`skills[]` 每条收**四格**（`JobSkillInput`，`app/schemas/job.py:74-134`）：
 
 | 字段 | 类型 / 约束 | 代码位置 |
 |---|---|---|
@@ -186,7 +210,7 @@
 1. `POST /jobs` 恒落 `status='draft'`（`app/services/job_service.py:330-345`）；`PUT` 不改 `status` 也不改 `deleted_at`（`app/repositories/job_repository.py:364-366`）。发布 / 下架是独立动作。
 2. 每条技能的 `origin` 由服务层现场派生：该条 `evidence_text` 与岗位 `description` 各过四步归一化（NFKC → casefold → 去空白 → 去标点）后，前者是后者的子串 → `jd_verifiable`，否则 → `unverified`（`app/services/job_service.py:456-481`，归一化与子串判定在 `app/integrations/skill_extractor.py:189-227`；值域常量 `app/repositories/job_repository.py:69-70`）。`evidence_text` 为空即 `unverified`——空串是任何文本的子串，必须先挡掉（`app/integrations/skill_extractor.py:220-226`）。
 3. 三列提取溯源戳由服务端在本次保存里盖：本次提交的技能里**只要有任何一条**被判为 `jd_verifiable`，就写入 `extract_model`（固定 `"deepseek-flash"`，`app/integrations/copy_writer.py:40`）、`extract_prompt_version`（`"v1"`，`app/integrations/skill_extractor.py:56`）、`extracted_at`（应用时钟 UTC naive，`app/services/job_service.py:437-454`）；一条都没有则三列保持 `null`。`PUT` 会**整批重算**这三列，不是「只在有值时覆盖」（`app/repositories/job_repository.py:371-373`）。
-4. 一次提交里的技能名重复先报 422「`skill names must be unique`」（`app/schemas/job.py:196-215`），判定键是 `skill_name_key()` = NFKC + casefold，**只有两步**，与上面第 2 条那个四步归一化函数是两回事（`app/schemas/job.py:74-92`；为什么必须分开见 ADR-011 §2.D.2）。数据库侧的 `UNIQUE (job_id, name)` 名为 `uq_job_skills_job_name`（`alembic/versions/20261105_0012_job_skills.py:96`）。
+4. 一次提交里的技能名重复先报 422「`skill names must be unique`」（`app/schemas/job.py:175-194`），判定键是 `skill_name_key()` = NFKC + casefold，**只有两步**，与上面第 2 条那个四步归一化函数是两回事（`app/core/skill_names.py`；为什么必须分开见 ADR-011 §2.D.2）。数据库侧的 `UNIQUE (job_id, name)` 名为 `uq_job_skills_job_name`（`alembic/versions/20261105_0012_job_skills.py:96`）。
 
 过期是**读侧判定，不落状态、不写库**：`deadline is not None and deadline < date.today()`（`app/services/job_service.py:483-489`，调用点 `:152`）。「今天」取**应用进程时钟**，SQL 里不出现数据库侧的当日函数（`app/repositories/job_repository.py:243`、`:490-492` 的谓词只吃绑定参数）。`deadline` 为 `null` 视为长期有效。`jobs.status` 的值域只有 `draft` / `published`（`app/repositories/job_repository.py:56-57`，CHECK `ck_jobs_status` 见 `alembic/versions/20261105_0011_jobs.py:84-88`）——**没有 `expired`，也没有 `closed`**，旧版那句「过期岗位自动转为 `expired`」作废。
 
@@ -263,7 +287,7 @@
 
 调用参数（`app/integrations/skill_extractor.py:280-293`）：`model = "deepseek-flash"`、`stream=False`、`max_tokens=1500`（`MAX_OUTPUT_TOKENS` `:61`）、`extra_body={"thinking": {"type": "disabled"}}`、`max_retries=0`、超时 30 秒（`app/integrations/copy_writer.py:43`）；不启用 `response_format`（理由见 ADR-011「替代方案」）。
 
-请求体只有两格（`ExtractSkillsRequest`，`app/schemas/job.py:319-331`）：
+请求体只有两格（`ExtractSkillsRequest`，`app/schemas/job.py:298-310`）：
 
 ```json
 {"description": "……JD 原文，必填，1–8000 字……", "title": "可选岗位名，≤200 字"}
@@ -293,9 +317,9 @@
 }
 ```
 
-`data.skills[]` 四格（`ExtractedSkillRead`，`app/schemas/job.py:334-348`）：`name`、`type`（`hard`/`soft`/`domain` 或 `null`）、`evidence`、`confidence`（`float | null`）。字段名是 **`evidence`**，不是 `evidence_text`：这里是「模型给的原话」，还没经过落库判定；用户确认后保存时同一串文字走 `skills[].evidence_text` 进列（`app/schemas/job.py:338-339`）。数组**至少一条**（`min_length=1`，`app/schemas/job.py:390`）——一条都不剩时不是空列表而是 502。
+`data.skills[]` 四格（`ExtractedSkillRead`，`app/schemas/job.py:313-327`）：`name`、`type`（`hard`/`soft`/`domain` 或 `null`）、`evidence`、`confidence`（`float | null`）。字段名是 **`evidence`**，不是 `evidence_text`：这里是「模型给的原话」，还没经过落库判定；用户确认后保存时同一串文字走 `skills[].evidence_text` 进列（`app/schemas/job.py:317-318`）。数组**至少一条**（`min_length=1`，`app/schemas/job.py:369`）——一条都不剩时不是空列表而是 502。
 
-`data.meta` 七个字段逐个的语义（模型 `app/schemas/job.py:351-380`，赋值点 `app/services/job_service.py:292-303`）：
+`data.meta` 七个字段逐个的语义（模型 `app/schemas/job.py:330-359`，赋值点 `app/services/job_service.py:292-303`）：
 
 | 字段 | 类型 | 含义 | 值的来源 |
 |---|---|---|---|
@@ -303,7 +327,7 @@
 | `prompt_version` | string | 这批结果是哪一版 Prompt 产出的 | 常量 `EXTRACT_PROMPT_VERSION` = `"v1"`（`app/integrations/skill_extractor.py:56`）；Prompt 每改一次 +1 |
 | `received_count` | int | 模型**一共给了**几条（含后来被剔除、被合并、被切断的） | `len(extraction.skills)`（`app/services/job_service.py:248`） |
 | `dropped_count` | int | 其中几条因**无法回溯 JD 原文**（或 `name`/`evidence` 不合规）被剔除 | `:251`、`:255-257`；判定 `_verify_item` `:305-326` |
-| `deduped_count` | int | 其中几条与前面的条目**重名**被合并掉（保留第一次出现的） | `:252`、`:258-263`；判定键 `skill_name_key`（`app/schemas/job.py:74-92`）。这是 ADR-011 §2.D.2 的第 7 个字段 |
+| `deduped_count` | int | 其中几条与前面的条目**重名**被合并掉（保留第一次出现的） | `:252`、`:258-263`；判定键 `skill_name_key`（`app/core/skill_names.py`）。这是 ADR-011 §2.D.2 的第 7 个字段 |
 | `truncated` | bool | 15 条封顶**是否真的切掉了东西** | `len(kept) > MAX_EXTRACTED_SKILLS`（`app/services/job_service.py:267`；常量 `app/integrations/skill_extractor.py:65`） |
 | `finish_reason` | string \| null | 上游给的原因；用来把「被我们的 token 上限切断」与「模型不守格式」分开 | `completion.choices[0].finish_reason`（`app/integrations/skill_extractor.py:305-306`） |
 
@@ -333,17 +357,17 @@
 
 ### 4.9 响应对象的字段
 
-`JobSummary`（列表项与回收站项；**不含 `description`**，JD 最长 8000 字；技能只给**前 6 条**，`SUMMARY_SKILL_LIMIT` `app/services/job_service.py:82`、切片 `:537`）：`id`、`company_name`、`title`、`location`、`employment_type`、`salary_min`、`salary_max`、`deadline`、`status`、`created_by_user_id`、`created_at`、`updated_at`、`deleted_at`、`skills[]`、`is_expired`（`app/schemas/job.py:233-264`）。
+`JobSummary`（列表项与回收站项；**不含 `description`**，JD 最长 8000 字；技能只给**前 6 条**，`SUMMARY_SKILL_LIMIT` `app/services/job_service.py:82`、切片 `:537`）：`id`、`company_name`、`title`、`location`、`employment_type`、`salary_min`、`salary_max`、`deadline`、`status`、`created_by_user_id`、`created_at`、`updated_at`、`deleted_at`、`skills[]`、`is_expired`（`app/schemas/job.py:212-243`）。
 
-`JobRead`（详情与所有写操作的返回；含 `description` 全文与**全部**技能）：上面的字段之外还有 `experience_required`、`extract_model`、`extract_prompt_version`、`extracted_at`（`app/schemas/job.py:267-308`）。
+`JobRead`（详情与所有写操作的返回；含 `description` 全文与**全部**技能）：上面的字段之外还有 `experience_required`、`extract_model`、`extract_prompt_version`、`extracted_at`（`app/schemas/job.py:246-287`）。
 
-`skills[]` 每条（`JobSkillRead`，`app/schemas/job.py:218-230`）：`id`、`name`、`type`、`origin`（`jd_verifiable` 或 `unverified`，**只出现在响应里**）、`confidence`、`evidence_text`。
+`skills[]` 每条（`JobSkillRead`，`app/schemas/job.py:197-209`）：`id`、`name`、`type`、`origin`（`jd_verifiable` 或 `unverified`，**只出现在响应里**）、`confidence`、`evidence_text`。
 
 两个序列化口径（前端与联调都会撞上）：
 
-- `Decimal` 在 `model_dump(mode="json")` 下输出为**字符串**（`"8000.00"`、`"0.9000"`），不是数字，为避免二进制浮点尾数噪声（`app/schemas/job.py:26-30`）。方向要说清：**响应侧一律是字符串**；**请求侧数字与数字串都收**（Pydantic 宽松模式转 `Decimal`），本文件 §4.4 的请求示例用字符串只是其中一种写法。`/jobs/extract-skills` 的 `data.skills[].confidence` 例外——它是 `float | null`（`app/schemas/job.py:348`，模型自报的原始数字，未经列宽约束），响应里就是 JSON 数字。
-- `created_at` / `updated_at` / `extracted_at` / `deleted_at` 输出为**带 `+08:00` 偏移**的 ISO 串，例如 `2026-11-02T21:25:00+08:00`（`app/core/datetime_display.py:33-44`，调用点 `app/schemas/job.py:258-264`、`:298-308`）。这与本文件 §1「时间：ISO 8601 UTC」那句不一致——§1 属本轮范围外、尚未按实现修订。
-- `is_expired` 是服务端算好的布尔值，前端不需要再实现一遍「`deadline < 今天`」（`app/schemas/job.py:254-256`）。判据对列表与详情是同一个，且不随 `include_expired` 或查看者身份变化（`app/services/job_service.py:483-489`、`:514`、`:538`）。
+- `Decimal` 在 `model_dump(mode="json")` 下输出为**字符串**（`"8000.00"`、`"0.9000"`），不是数字，为避免二进制浮点尾数噪声（`app/schemas/job.py:26-30`）。方向要说清：**响应侧一律是字符串**；**请求侧数字与数字串都收**（Pydantic 宽松模式转 `Decimal`），本文件 §4.4 的请求示例用字符串只是其中一种写法。`/jobs/extract-skills` 的 `data.skills[].confidence` 例外——它是 `float | null`（`app/schemas/job.py:327`，模型自报的原始数字，未经列宽约束），响应里就是 JSON 数字。
+- `created_at` / `updated_at` / `extracted_at` / `deleted_at` 输出为**带 `+08:00` 偏移**的 ISO 串，例如 `2026-11-02T21:25:00+08:00`（`app/core/datetime_display.py:33-44`，调用点 `app/schemas/job.py:237-243`、`:298-308`）。这与本文件 §1「时间：ISO 8601 UTC」那句不一致——§1 属本轮范围外、尚未按实现修订。
+- `is_expired` 是服务端算好的布尔值，前端不需要再实现一遍「`deadline < 今天`」（`app/schemas/job.py:233-235`）。判据对列表与详情是同一个，且不随 `include_expired` 或查看者身份变化（`app/services/job_service.py:483-489`、`:514`、`:538`）。
 - `meta.request_id` 取自请求头 `X-Request-ID`，没带时固定回 `req-local`（`app/core/responses.py:6-7`）。
 
 ### 4.10 本章未接通 / 不存在的接口
@@ -386,7 +410,7 @@
 ### POST `/resumes/generate`
 
 请求：`{"student_id":"uuid","job_id":"uuid","template":"clean_white","max_pages":1.5}`。只能使用学生已确认资料；**同步返回 `200` 与生成结果，不返回 `202`、不创建 `ai_job_id`**（`app/api/v1/resumes.py:43-63` 直接 `success_response(..., resume.model_dump(...))`；`POST /api/v1/resumes/generate` 的 OpenAPI `responses` 实测为 `200`、`422`）。
-<!-- 本行的请求体示例仍是旧口径：实际模型是 `app/schemas/resume.py:61-73` 的 `{title, profile_id}`。该差异属 §6 简历章节，不在本轮「岗位 + 错误码」范围内，已列入交付说明的未解决问题。 -->
+<!-- 本行的请求体示例仍是旧口径：实际模型是 `app/schemas/resume.py:77-97` 的 `{title, profile_id}`。该差异属 §6 简历章节，不在本轮「岗位 + 错误码」范围内，已列入交付说明的未解决问题。 -->
 
 ### GET `/resumes` / GET `/resumes/{resume_id}`
 

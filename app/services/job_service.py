@@ -34,6 +34,7 @@ from collections.abc import Sequence
 from datetime import date, datetime
 
 from app.core.datetime_display import utc_now
+from app.core.skill_names import skill_name_key
 from app.integrations.skill_extractor import (
     DEEPSEEK_MODEL,
     EXTRACT_PROMPT_VERSION,
@@ -68,7 +69,6 @@ from app.schemas.job import (
     JobSkillRead,
     JobSummary,
     JobWriteRequest,
-    skill_name_key,
 )
 from app.services.resume_service import (
     ResumeApiKeyMissingError,

@@ -34,7 +34,6 @@ C1 另加提取端点的四个模型（`ExtractSkillsRequest` / `ExtractedSkillR
 所以它们的字段只描述响应，不参与任何持久化。
 """
 
-import unicodedata
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
@@ -42,6 +41,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
 from app.core.datetime_display import format_shanghai_datetime
+from app.core.skill_names import skill_name_key
 from app.integrations.skill_extractor import MAX_EVIDENCE_CHARS
 from app.repositories.job_repository import MAX_SKILLS_PER_JOB
 
@@ -69,27 +69,6 @@ MAX_PAGE_SIZE = 100
 #: 薪资列宽 `DECIMAL(12,2)` 的可表达上界，提前在应用层拦住，
 #: 免得超出列宽的输入撞成一条数据库 1264 而不是可读的 422。
 MAX_SALARY = Decimal("99999999.99")
-
-
-def skill_name_key(name: str) -> str:
-    """「这两条是不是同一个技能」的判定键：NFKC（全角→半角）+ casefold，只有两步。
-
-    为什么**不是** §2.D.1 的 `normalize_for_trace()`（四步，多去空白与去标点）：
-    那套是给 `evidence` 的子串核验用的，第 4 步删标点这一刀砍在技能名上会误并真实条目——
-    `#` 的类别是 `Po`，于是 `C#` 与 `C` 折成同一个键；`_` 是 `Pc`，`user_id` 与
-    `userid` 同理。对核验来说这点宽容是划算的（误杀集中在信息量最低的标点差异上），
-    但技能名被这样合并掉的是一条真实的岗位要求，而且用户在结果里看不出少了东西。
-    （`+` 的类别是 `Sm`、不删，所以 `C++` 与 `C` 两种口径下都分得开。）
-
-    为什么两处必须共用这一个函数：提取侧的重名合并与写侧的「技能名称重复」422 回答的是
-    同一个问题。各写一份就会出现「提取时已经合并了、点保存却报重复」这种用户没法理解的
-    抖动；数据库那侧的宽容度由 `utf8mb4_0900_ai_ci` 提供，这里只是把它提前成可读的报错
-    与一条干净的结果。
-
-    不含去空白：两端空白归各自的入口负责（写侧 `JobSkillInput.normalize_name`、
-    提取侧 `_verify_item`），在这里再 strip 一次只会让「谁负责什么」变得不可查。
-    """
-    return unicodedata.normalize("NFKC", name).casefold()
 
 
 class JobSkillInput(BaseModel):

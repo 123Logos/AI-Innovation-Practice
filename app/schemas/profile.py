@@ -48,6 +48,7 @@ from app.core.document_style import (
     SectionId,
     ThemeId,
 )
+from app.core.skill_names import skill_name_key
 from app.schemas.resume import ExperienceInput, SkillInput
 
 #: 学历枚举，与 `ck_educations_degree` 约束保持一致。
@@ -288,8 +289,15 @@ class ProfileUpsertRequest(BaseModel):
     @field_validator("skills")
     @classmethod
     def validate_unique_skill_names(cls, skills: list[SkillInput]) -> list[SkillInput]:
-        names = [skill.name for skill in skills]
-        if len(names) != len(set(names)):
+        """判定键必须是 `skill_name_key`，不是裸相等。
+
+        裸相等放得过 `Python` / `python`：这一对能过校验、走到 INSERT，然后由
+        `uq_skills_profile_name`（建在大小写不敏感的 `utf8mb4_0900_ai_ci` 上）抛
+        `IntegrityError 1062`——用户拿到的是内部错误，而正确答案是一句「技能名称重复」。
+        同一个问题在写侧与提取侧已经是同一个函数（ADR-011 §2.D.2），这里是漏掉的一处。
+        """
+        keys = [skill_name_key(skill.name) for skill in skills]
+        if len(keys) != len(set(keys)):
             raise ValueError("skill names must be unique")
         return skills
 

@@ -446,6 +446,74 @@ def test_put_profile_rejects_duplicate_skill_names(client: TestClient) -> None:
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
+def test_put_profile_rejects_case_variant_duplicate_skill_names(client: TestClient) -> None:
+    """`Python` 与 `python` 是同一个技能，必须给可读 422，而不是把冲突推给数据库。
+
+    库里 `UNIQUE (student_profile_id, name)` 建在 `utf8mb4_0900_ai_ci` 上（大小写不敏感），
+    而校验器过去按**裸相等**判重复：这对名字能过校验、走到 INSERT、由数据库报错。
+    用户看到的是 500/内部错误，而正确的报错是「技能名称重复」——同一个问题两处答案不同。
+    """
+    token = _register_and_login(client)
+    payload = _profile_payload(skills=[_skill("Python"), _skill("python")])
+
+    response = client.put(PROFILES_URL, json=payload, headers=_headers(token))
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_put_profile_rejects_full_width_variant_duplicate_skill_names(client: TestClient) -> None:
+    """全角 `Ｐython` 与半角 `Python` 同样算重复（键含 NFKC）。"""
+    token = _register_and_login(client)
+    payload = _profile_payload(skills=[_skill("Python"), _skill("\uff30ython")])
+
+    response = client.put(PROFILES_URL, json=payload, headers=_headers(token))
+
+    assert response.status_code == 422
+
+
+def test_put_profile_trims_skill_name_ends(client: TestClient) -> None:
+    """两端空白在校验边界就裁掉：库里存的必须是 `Python`，不是 ` Python `。
+
+    岗位侧一直这么做（`JobSkillInput.normalize_name`），学生侧没有，于是同一个技能名
+    在两张表上有两种规范化程度——匹配按后端键算会判「未覆盖」，前端角标 trim 后判「已具备」，
+    同一屏自相矛盾。见 ADR-013 §1.3。
+    """
+    token = _register_and_login(client)
+    payload = _profile_payload(skills=[_skill("  Python  ")])
+
+    response = client.put(PROFILES_URL, json=payload, headers=_headers(token))
+
+    assert response.status_code == 200
+    names = [item["name"] for item in response.json()["data"]["profile"]["skills"]]
+    assert names == ["Python"]
+
+
+def test_put_profile_rejects_padded_variant_duplicate_skill_names(client: TestClient) -> None:
+    """trim 之后 `Python` 与 ` Python ` 变成同名 → 422，而不是悄悄存下两条。"""
+    token = _register_and_login(client)
+    payload = _profile_payload(skills=[_skill("Python"), _skill("  Python ")])
+
+    response = client.put(PROFILES_URL, json=payload, headers=_headers(token))
+
+    assert response.status_code == 422
+
+
+def test_put_profile_rejects_blank_skill_name(client: TestClient) -> None:
+    """纯空格不是技能名：`min_length=1` 单独挡不住它，必须裁完再判空。
+
+    改之前 `{"name": "   "}` 是合法的，会往 `skills.name` 里存一条空白——
+    它在简历里渲染出一个空条目，在匹配里既不算覆盖也不算缺口。
+    """
+    token = _register_and_login(client)
+    payload = _profile_payload(skills=[_skill("   ")])
+
+    response = client.put(PROFILES_URL, json=payload, headers=_headers(token))
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
 def test_put_profile_rejects_invalid_date_range(client: TestClient) -> None:
     token = _register_and_login(client)
     payload = _profile_payload(experiences=[_experience(end_date="2024-02-28")])
