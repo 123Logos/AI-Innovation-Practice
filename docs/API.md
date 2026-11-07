@@ -434,10 +434,14 @@
 `AUTH`/`POLISH`/`EXTRACT` 三条仍按 IP 不动）。原因是本端点花的是调用者自己的 Key，
 按 IP 会让同一出口下前两个人点光整组额度，而后面的人既没做错也没花钱。
 
-**前端调用**：`frontend/src/api/jobs.ts::matchJob(jobId)`。`X-DeepSeek-Key` 由
+**前端调用**：`frontend/src/api/jobs.ts::matchJob(jobId)`，调用方是岗位详情页的匹配卡
+（`frontend/src/views/JobDetailView.vue`，状态与文案在 `frontend/src/stores/job.ts::runMatch` /
+`matchDegradeLines` / `matchFailureText`）。`X-DeepSeek-Key` 由
 `client.ts` 白名单注入——这是那条白名单里**唯一一条模式判据**（`POST ^/jobs/[^/]+/match$`，
 绑方法），为什么它不构成扩张、以及它的可辩护版本是路由表论证而不是「命中即转发」，
-见 `client.ts` 的注释与 ADR-013 §6.1。**必须由用户显式点击**，不得在详情页自动调用。
+见 `client.ts` 的注释与 ADR-013 §6.1。**必须由用户显式点击**，不得在详情页自动调用
+（`JobDetailView.spec.ts` 里有一条「mount 后匹配请求数为 0」的断言；
+卡片为什么排在 JD 前面见那个文件里的注释与 ADR-013 §10 第 8 步）。
 
 ### 4.11 本章未接通 / 不存在的接口
 

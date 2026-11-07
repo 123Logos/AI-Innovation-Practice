@@ -42,6 +42,14 @@ let savedAdapter: typeof http.defaults.adapter
  * 因为断言落在一个从未出现的元素上。
  */
 let failDelete = false
+/**
+ * 匹配端点的返回。默认 `null` = **不发这一份**（详情页挂载时根本不该调用它）；
+ * 需要结果的用例先赋值再点按钮。做成开关而不是常驻 fixture，是为了让
+ * 「mount 完没有 POST /match」这条断言真的能测到东西。
+ */
+let matchPayload: Record<string, unknown> | null = null
+/** 匹配失败的真实形状（429 / 404），与 `failDelete` 同一个理由。 */
+let matchFailure: { status: number; code: string; message: string } | null = null
 /** 当前在挂的组件实例的卸载钩子，见 `afterEach` 里那段为什么要 unmount。 */
 let unmountCurrent: (() => void) | null = null
 /** 详情页要渲染的岗位：默认「创建者本人 + 一条可回溯、一条无依据」。 */
@@ -96,6 +104,64 @@ function makeJobPayload(overrides: Record<string, unknown> = {}): Record<string,
   }
 }
 
+function makeMatchPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    profile_id: 'profile-mine',
+    profile_title: '默认简历',
+    job_id: 'job-42',
+    // 0.45×0.667 + 0.20×0.667 = 0.4349，除以本次真正参与的权重之和 0.65 → 0.669。
+    score: 0.669,
+    weights_version: 'v1',
+    terms: [
+      { name: 'coverage', weight: 0.45, value: 0.667, computed: true, note: null },
+      { name: 'evidence', weight: 0.2, value: 0.667, computed: true, note: null },
+      { name: 'relevance', weight: 0.15, value: null, computed: false, note: 'not_measurable_v1' },
+      { name: 'preference', weight: 0.1, value: null, computed: false, note: 'no_target_role' },
+      { name: 'remaining_time', weight: 0.1, value: null, computed: false, note: 'no_deadline' },
+    ],
+    covered: [
+      {
+        skill: 'Python',
+        evidence: [
+          {
+            experience_id: 'exp-1',
+            field: 'description',
+            snippet: '用 Python 重写了订单服务',
+            strength: 0.667,
+          },
+        ],
+      },
+    ],
+    partial: [{ skill: 'FastAPI', reason: '只在 1 处经历里出现，证据偏薄' }],
+    gaps: [
+      {
+        skill: 'MySQL',
+        action: '补一条真的用 MySQL 做过的项目经历：做了什么 → 怎么做的 → 结果如何。',
+        verify: '按你写的过程细节追问，能答出为什么这样选，就算验证通过。',
+      },
+    ],
+    meta: {
+      model: 'deepseek-flash',
+      prompt_version: 'v1',
+      evidence_mode: 'ai_scored',
+      degrade_reason: null,
+      candidate_pairs: 2,
+      verified_pairs: 2,
+      dropped_unreferenced: 0,
+      dropped_unknown_skill: 0,
+      dropped_unusable_strength: 0,
+      dropped_missing_output: 0,
+      clamped_strength: 0,
+      fragments_truncated: 0,
+      truncated: false,
+      finish_reason: 'stop',
+      weight_sum_used: 0.65,
+      no_required_skills: false,
+    },
+    ...overrides,
+  }
+}
+
 function envelope(config: InternalAxiosRequestConfig, data: unknown, status = 200): AxiosResponse {
   return { data, status, statusText: 'OK', headers: {}, config } as AxiosResponse
 }
@@ -112,6 +178,60 @@ function fakeAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse>
         meta: { request_id: 'req-test' },
       }),
     )
+  }
+
+  if (method === 'post' && url === '/jobs/job-42/match') {
+    if (matchFailure) {
+      return Promise.reject(
+        new AxiosError(
+          matchFailure.code,
+          'ERR_BAD_REQUEST',
+          config,
+          {},
+          envelope(
+            config,
+            {
+              error: {
+                code: matchFailure.code,
+                message: matchFailure.message,
+                details: {},
+                retryable: matchFailure.status === 429,
+              },
+              meta: { request_id: 'r' },
+            },
+            matchFailure.status,
+          ),
+        ),
+      )
+    }
+    // 没准备结果却被调用了：说明有人在 `onMounted` 里自动算了匹配
+    // （ADR-013 §10 第 8 步明令禁止——那是拿用户的 Key 换页面浏览量）。
+    // 这里返回一次**看得见**的失败而不是直接 throw：throw 在适配器里会变成未捕获拒绝，
+    // 测的是 vitest 的报错处理而不是本组件的行为。
+    if (!matchPayload) {
+      return Promise.reject(
+        new AxiosError(
+          'tripwire',
+          'ERR_BAD_REQUEST',
+          config,
+          {},
+          envelope(
+            config,
+            {
+              error: {
+                code: 'INTERNAL_ERROR',
+                message: '测试没有准备匹配结果，但页面发出了 POST /match。',
+                details: {},
+                retryable: false,
+              },
+              meta: { request_id: 'r' },
+            },
+            500,
+          ),
+        ),
+      )
+    }
+    return Promise.resolve(envelope(config, { data: matchPayload, meta: { request_id: 'r' } }))
   }
 
   if (method === 'delete') {
@@ -193,6 +313,8 @@ beforeEach(() => {
   localStorage.clear()
   calls = []
   failDelete = false
+  matchPayload = null
+  matchFailure = null
   unmountCurrent = null
   savedAdapter = http.defaults.adapter
   http.defaults.adapter = fakeAdapter
@@ -271,7 +393,7 @@ describe('详情页如实展示提取产物（C1 之后这两格有真值了）'
     const mine = wrapper.findAll('.badge--mine')
     expect(mine).toHaveLength(1)
     expect(mine[0]?.text()).toBe('你已具备')
-    // 只读比对：不写任何表（人岗匹配仍冻结，ADR-011 2.E）。
+    // 只读比对：不写任何表，也不发匹配请求（匹配只在用户点按钮时才发，见下面那一组）。
     expect(callsFor('post')).toEqual([])
     expect(callsFor('put')).toEqual([])
     expect(callsFor('delete')).toEqual([])
@@ -450,5 +572,212 @@ describe('删除确认：页面内弹层，不再用 window.confirm', () => {
     expect(router.currentRoute.value.name).toBe('job-detail')
     // 「不静默吞掉」的另一半：失败后弹层仍然开着，用户看得见自己刚才那一下没成。
     expect(dialogOpen()).toBe(true)
+  })
+})
+
+/**
+ * 匹配卡（ADR-013 §10 第 8 步）。这一组守的四件事：
+ *
+ * 1. **不自动调用**：每次匹配都可能向 DeepSeek 发一次真实请求、花调用者自己的额度，
+ *    所以只能在用户点按钮之后发生。第一条用例是这件事的唯一有效测法——
+ *    适配器在「没准备结果却被调用」时返回一次看得见失败，而不是 throw。
+ * 2. **AI 失败不是错误**：退化必须显示，但显示成说明而不是红字（§6.5 / §3 的状态码边界）。
+ * 3. **五种原因分句**：把它们写成同一句，用户就会去改一个本来没坏的 Key。
+ * 4. **技术构成不进界面**：权重、`weight_sum_used`、各计数留在响应里对账
+ *    （2026-11-07 人类负责人裁定「不用向客户说明技术上的设计」，作用域见 §7.5）。
+ */
+function keywordMeta(reason: string): Record<string, unknown> {
+  return {
+    model: null,
+    prompt_version: null,
+    evidence_mode: 'keyword_fallback',
+    degrade_reason: reason,
+    candidate_pairs: 0,
+    verified_pairs: 0,
+    dropped_unreferenced: 0,
+    dropped_unknown_skill: 0,
+    dropped_unusable_strength: 0,
+    dropped_missing_output: 0,
+    clamped_strength: 0,
+    fragments_truncated: 0,
+    truncated: false,
+    finish_reason: null,
+    weight_sum_used: 0.65,
+    no_required_skills: false,
+  }
+}
+
+describe('匹配卡：只有点按钮才算', () => {
+  it('挂载详情页时一个匹配请求都没发', async () => {
+    const { wrapper } = await mountDetail()
+
+    expect(callsFor('post', '/jobs/job-42/match')).toEqual([])
+    expect(wrapper.find('.match-result').exists()).toBe(false)
+    // 首屏只有按钮和那句「是参考不是录用概率」，没有任何看起来像结果的数字。
+    expect(wrapper.find('.match-score').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="match-score"]').exists()).toBe(false)
+  })
+
+  it('点一次才发一次 POST；分数、三档清单、原文片段、用的哪份档案都上屏', async () => {
+    matchPayload = makeMatchPayload()
+    const { wrapper } = await mountDetail()
+
+    await wrapper.find('[data-testid="match-run"]').trigger('click')
+    await flushPromises()
+
+    expect(callsFor('post', '/jobs/job-42/match')).toHaveLength(1)
+    // 分数压成整数百分比（`0.669` → `67%`）：小数点后三位在屏幕上没有决策价值。
+    expect(wrapper.find('[data-testid="match-score"]').text()).toBe('67%')
+    expect(wrapper.text()).toContain('按《默认简历》打分')
+
+    expect(wrapper.text()).toContain('已具备 1 项')
+    expect(wrapper.text()).toContain('部分具备 1 项')
+    expect(wrapper.text()).toContain('还缺 1 项')
+    // 证据片段是用户自己写过的原话，原样显示才能核对；并说明它出自哪一栏。
+    expect(wrapper.text()).toContain('用 Python 重写了订单服务')
+    expect(wrapper.text()).toContain('项目描述')
+    expect(wrapper.text()).toContain('补一条真的用 MySQL 做过的项目经历')
+    // 后端给的 partial 原因直接显示，前端不重写一遍（重写就会和后端漂移）。
+    expect(wrapper.text()).toContain('只在 1 处经历里出现，证据偏薄')
+  })
+
+  it('结果出来后按钮变成「再算一次」，再点真的发第二次', async () => {
+    matchPayload = makeMatchPayload()
+    const { wrapper } = await mountDetail()
+
+    const button = wrapper.find('[data-testid="match-run"]')
+    await button.trigger('click')
+    await flushPromises()
+    expect(button.text()).toBe('再算一次')
+
+    await button.trigger('click')
+    await flushPromises()
+    expect(callsFor('post', '/jobs/job-42/match')).toHaveLength(2)
+  })
+
+  it('AI 正常参与时不出现退化句', async () => {
+    matchPayload = makeMatchPayload()
+    const { wrapper } = await mountDetail()
+
+    await wrapper.find('[data-testid="match-run"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.match-degrade').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('关键词')
+  })
+
+  /**
+   * 五种退化各说各话。断言的是**渲染出来的五段文字两两不同**，
+   * 而不是「各自包含某个词」——后者会因为实现把五句都拼进同一个常量大串而假绿。
+   */
+  it('五种退化两两不同，且分数照常显示、没有一种被写成红字', async () => {
+    const reasons = ['key_missing', 'key_invalid', 'upstream', 'timeout', 'bad_output']
+    const lines: string[] = []
+    for (const reason of reasons) {
+      matchPayload = makeMatchPayload({ meta: keywordMeta(reason) })
+      const { wrapper } = await mountDetail()
+      await wrapper.find('[data-testid="match-run"]').trigger('click')
+      await flushPromises()
+
+      const degrade = wrapper.find('.match-degrade')
+      expect(degrade.exists(), reason).toBe(true)
+      lines.push(degrade.text())
+      // 退化不是错误：分数照样是真的，只是「证据强度」这一项换了算法。
+      expect(wrapper.find('[data-testid="match-score"]').exists(), reason).toBe(true)
+      expect(wrapper.find('[role="alert"]').exists(), reason).toBe(false)
+      // 不在这里 unmount：`mountDetail()` 只记最后一个实例的卸载钩子，
+      // 在这里自己拆会让 `afterEach` 再拆一次同一个实例。
+    }
+
+    expect(new Set(lines).size).toBe(5)
+    for (const line of lines) expect(line).toContain('关键词')
+    // 前两种用户自己修得动，所以必须给出去哪儿修；
+    // 后三种不许把他支去改一个本来没坏的 Key——这正是 §6.5 要求分句的理由。
+    expect(lines[0]).toContain('AI 设置')
+    expect(lines[1]).toContain('AI 设置')
+    for (const line of lines.slice(2)) {
+      expect(line).not.toContain('AI 设置')
+      expect(line).not.toContain('API Key')
+    }
+  })
+
+  it('429 是真失败：说清为什么要等一分钟，而且没有结果区', async () => {
+    matchFailure = { status: 429, code: 'RATE_LIMITED', message: '请求太频繁，请稍后重试。' }
+    const { wrapper } = await mountDetail()
+
+    await wrapper.find('[data-testid="match-run"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[role="alert"]').text()).toContain('等一分钟')
+    // 服务端那句「请求太频繁」不直接显示：这条分支的用户动作由 `matchFailureText` 给，
+    // 与提取侧同一个分工（文案随上游措辞变，动作不能跟着变）。
+    expect(wrapper.find('.match-result').exists()).toBe(false)
+  })
+
+  it('404 说清「这条岗位读不到所以没法匹配」，不是一句通用失败', async () => {
+    matchFailure = { status: 404, code: 'NOT_FOUND', message: '资源不存在。' }
+    const { wrapper } = await mountDetail()
+
+    await wrapper.find('[data-testid="match-run"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[role="alert"]').text()).toContain('回收站')
+    expect(wrapper.find('.match-result').exists()).toBe(false)
+  })
+
+  it('没有档案时明说是按空简历打的分（否则 0% 会被读成算错了）', async () => {
+    matchPayload = makeMatchPayload({
+      profile_id: null,
+      profile_title: null,
+      score: 0,
+      covered: [],
+      partial: [],
+      gaps: [],
+    })
+    const { wrapper } = await mountDetail()
+
+    await wrapper.find('[data-testid="match-run"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.match-source').text()).toContain('空简历')
+    expect(wrapper.find('.match-source').text()).not.toContain('按《')
+  })
+
+  it('岗位没有技能要求时说明为什么没有条目，而不是留一片空白', async () => {
+    matchPayload = makeMatchPayload({
+      covered: [],
+      partial: [],
+      gaps: [],
+      meta: { ...keywordMeta('key_missing'), no_required_skills: true },
+    })
+    const { wrapper } = await mountDetail()
+
+    await wrapper.find('[data-testid="match-run"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('还没有填写技能要求')
+    expect(wrapper.find('.match-tiers').exists()).toBe(false)
+  })
+
+  /**
+   * 2026-11-07 人类负责人裁定「不用向客户说明技术上的设计」：权重构成、免加权原因、
+   * 各计数、`weight_sum_used` 都只留在响应里。这一条守的是**别把它们显示出来**，
+   * 而 `evidence_mode` / `degrade_reason` 那两句不在此列（作用域见 ADR-013 §7.5）。
+   */
+  it('技术构成与计数不进界面：分数之外只有三档清单和那两句能修的说明', async () => {
+    matchPayload = makeMatchPayload({ meta: keywordMeta('key_missing') })
+    const { wrapper } = await mountDetail()
+    await wrapper.find('[data-testid="match-run"]').trigger('click')
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).not.toContain('0.65')
+    expect(text).not.toContain('weight_sum_used')
+    expect(text).not.toContain('candidate_pairs')
+    expect(text).not.toContain('not_measurable_v1')
+    expect(text).not.toContain('权重')
+    expect(text).not.toContain('relevance')
+    // 反向护栏：`terms[].value` 这些数字确实**没有**被误当成界面元素渲染出来。
+    expect(text).not.toContain('0.45')
   })
 })

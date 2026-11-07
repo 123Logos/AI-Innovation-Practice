@@ -33,6 +33,8 @@ import {
   extractFailureText,
   extractMergeLines,
   jobToFormInput,
+  matchDegradeLines,
+  matchFailureText,
   mergeExtractedSkills,
   normalizeSkillName,
   toWritePayload,
@@ -143,6 +145,86 @@ function defaultExtractEnvelope(skills: JobsContract.ExtractedSkill[] = [extract
 }
 
 /**
+ * 匹配端点的可注入响应（ADR-013 §10 第 8 步）。
+ * `null` = 用下面那份默认的 `ai_scored` 结果；每条用例跑完在 `beforeEach` 里复位。
+ */
+let matchEnvelope: unknown = null
+let matchErrorFactory: ((config: InternalAxiosRequestConfig) => AxiosResponse) | null = null
+
+function matchMetaFixture(
+  overrides: Partial<JobsContract.MatchMeta> = {},
+): JobsContract.MatchMeta {
+  return {
+    model: 'deepseek-flash',
+    prompt_version: 'v1',
+    evidence_mode: 'ai_scored',
+    degrade_reason: null,
+    candidate_pairs: 2,
+    verified_pairs: 2,
+    dropped_unreferenced: 0,
+    dropped_unknown_skill: 0,
+    dropped_unusable_strength: 0,
+    dropped_missing_output: 0,
+    clamped_strength: 0,
+    fragments_truncated: 0,
+    truncated: false,
+    finish_reason: 'stop',
+    weight_sum_used: 0.65,
+    no_required_skills: false,
+    ...overrides,
+  }
+}
+
+/**
+ * 一份形状完整的匹配结果：三档各一条、五项分项、meta 十个计数。
+ *
+ * 这里刻意把**全部**格子写出来而不是只写用到的那几格：`MatchMeta` 是
+ * 后端 `app/schemas/match.py` 的镜像，少写一格会让 typecheck 在契约变化时漏红。
+ */
+function defaultMatchEnvelope(overrides: Partial<JobsContract.MatchResult> = {}): unknown {
+  return {
+    data: {
+      profile_id: 'profile-1',
+      profile_title: '默认简历',
+      job_id: 'job-1',
+      score: 0.669,
+      weights_version: 'v1',
+      terms: [
+        { name: 'coverage', weight: 0.45, value: 0.667, computed: true, note: null },
+        { name: 'evidence', weight: 0.2, value: 0.667, computed: true, note: null },
+        { name: 'relevance', weight: 0.15, value: null, computed: false, note: 'not_measurable_v1' },
+        { name: 'preference', weight: 0.1, value: null, computed: false, note: 'no_target_role' },
+        { name: 'remaining_time', weight: 0.1, value: null, computed: false, note: 'no_deadline' },
+      ],
+      covered: [
+        {
+          skill: 'Python',
+          evidence: [
+            {
+              experience_id: 'exp-1',
+              field: 'description',
+              snippet: '用 Python 重写了订单服务',
+              strength: 0.667,
+            },
+          ],
+        },
+      ],
+      partial: [{ skill: 'FastAPI', reason: '只在 1 处经历里出现，证据偏薄' }],
+      gaps: [
+        {
+          skill: 'MySQL',
+          action: '补一条真的用 MySQL 做过的项目经历：做了什么 → 怎么做的 → 结果如何。',
+          verify: '按你写的过程细节追问，能答出为什么这样选，就算验证通过。',
+        },
+      ],
+      meta: matchMetaFixture(),
+      ...overrides,
+    },
+    meta: { request_id: 'req-test' },
+  }
+}
+
+/**
  * 假的服务端：`server` 里只有「删除过的进回收站」这一条最小状态，
  * 目的是让五条动作在 store 里留下的痕迹可被断言，而不是重做一遍后端。
  */
@@ -189,6 +271,15 @@ function fakeAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse>
         meta: { request_id: 'req-test', page: Number(query.page ?? 1), page_size: Number(query.page_size ?? 20), total: isDraft ? 0 : 120 },
       }),
     )
+  }
+
+  if (method === 'post' && /^\/jobs\/[^/]+\/match$/.test(url)) {
+    if (matchErrorFactory) {
+      return Promise.reject(
+        new AxiosError('匹配失败', 'ERR_BAD_RESPONSE', config, {}, matchErrorFactory(config)),
+      )
+    }
+    return Promise.resolve(envelope(config, matchEnvelope ?? defaultMatchEnvelope()))
   }
 
   if (method === 'post' && url === '/jobs/extract-skills') {
@@ -244,6 +335,8 @@ beforeEach(() => {
   mySkillNamesFromServer = DEFAULT_MY_SKILL_NAMES
   extractEnvelope = null
   extractErrorFactory = null
+  matchEnvelope = null
+  matchErrorFactory = null
   savedAdapter = http.defaults.adapter
   http.defaults.adapter = fakeAdapter
   useAuthStore().user = { id: OWN_USER_ID, username: 'tester', email: null, created_at: '2026-11-05T10:00:00+08:00' }
@@ -984,5 +1077,149 @@ describe('编辑态回填（`jobToFormInput`）', () => {
     ).rejects.toThrow('技能名称不能重复，请先合并同名技能。')
 
     expect(captured.length).toBe(before)
+  })
+})
+
+/**
+ * 人岗匹配（ADR-013 §10 第 8 步）。这里测 store 与文案函数那四件事，
+ * 界面上怎么渲染在 `views/__tests__/JobDetailView.spec.ts`：
+ *
+ * 1. `runMatch` 真的打 `POST /jobs/{id}/match`，请求体为空（用默认档案，由响应回显）；
+ *    并且**一个写请求都不发**——匹配是纯计算，落库的只有用户自己填的档案。
+ * 2. 在途重复调用只发一次：这条限流按用户算 10/minute，双击就是两次真实计费。
+ * 3. 结果的生命周期：重算前清、换岗位清、登出清。它带着**用户经历原文的连续子串**，
+ *    挂在 store 上不清就是「下一个人看见上一个人的屏幕」。
+ * 4. 五种退化分句（§6.5）+ 真的失败按码分支（§3 的状态码边界：AI 失败不在这里）。
+ */
+describe('人岗匹配（显式点击、纯计算、退化可归因）', () => {
+  it('打对端点、结果进 store、请求体为空，且没有任何写请求', async () => {
+    const store = useJobStore()
+
+    const result = await store.runMatch('job-1')
+
+    expect(result?.score).toBeCloseTo(0.669)
+    expect(store.matchResult?.covered[0]?.skill).toBe('Python')
+    expect(store.matching).toBe(false)
+
+    const requests = requestsFor('post', '/jobs/job-1/match')
+    expect(requests).toHaveLength(1)
+    // 空请求体 = 「用当前用户的默认档案」这条隐式选择由后端决定，前端不许指定。
+    expect(requests[0]?.body).toBeUndefined()
+    expect(requestsFor('put')).toEqual([])
+    expect(requestsFor('delete')).toEqual([])
+  })
+
+  it('在途时重复调用返回 null 且只发一次请求', async () => {
+    const gate: { resolve?: (value: AxiosResponse) => void } = {}
+    http.defaults.adapter = (config: InternalAxiosRequestConfig) =>
+      new Promise<AxiosResponse>((resolve) => {
+        captured.push({ method: 'post', url: config.url ?? '', query: {}, body: config.data })
+        gate.resolve = resolve
+      })
+
+    const store = useJobStore()
+    const first = store.runMatch('job-1')
+    expect(store.matching).toBe(true)
+
+    // axios 在 promise 链里才把请求交给适配器，所以要让它先跑一拍：
+    // 下一句断言的是「适配器真的被调过一次」，否则后面那句「只有一次」会因为
+    // 一次都没发出去而恒成立（假绿）。
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(gate.resolve).toBeTypeOf('function')
+    expect(requestsFor('post', '/jobs/job-1/match')).toHaveLength(1)
+
+    expect(await store.runMatch('job-1')).toBeNull()
+    // 第二次调用连「在途」标记都没动：它直接返回 null，也就没有第二轮计费。
+    expect(store.matching).toBe(true)
+
+    gate.resolve?.(envelope({} as InternalAxiosRequestConfig, defaultMatchEnvelope()))
+    expect((await first)?.job_id).toBe('job-1')
+    expect(store.matching).toBe(false)
+    expect(requestsFor('post', '/jobs/job-1/match')).toHaveLength(1)
+  })
+
+  it('重算前先清空上一次结果；换岗位（loadDetail）也清', async () => {
+    const store = useJobStore()
+    await store.runMatch('job-1')
+    expect(store.matchResult).not.toBeNull()
+
+    matchEnvelope = defaultMatchEnvelope({ score: 0.1 })
+    const pending = store.runMatch('job-1')
+    expect(store.matchResult).toBeNull()
+    expect((await pending)?.score).toBe(0.1)
+
+    await store.loadDetail('job-2')
+    expect(store.matchResult).toBeNull()
+  })
+
+  it('reset()（登出）连匹配结果一起清——里面有用户经历的原文片段', async () => {
+    const store = useJobStore()
+    await store.runMatch('job-1')
+    store.reset()
+    expect(store.matchResult).toBeNull()
+    expect(store.matching).toBe(false)
+  })
+
+  it('AI 失败是退化不是异常：store 这边没有 catch 分支，200 原样进结果', async () => {
+    const store = useJobStore()
+    // 后端把五种 AI 失败翻译成 `200 + meta.degrade_reason`，所以这里**不该**有 try/catch；
+    // 这一条钉的是「实现者不要顺手加一个 catch，把退化说成失败」。
+    matchEnvelope = defaultMatchEnvelope({
+      meta: matchMetaFixture({
+        model: null,
+        prompt_version: null,
+        evidence_mode: 'keyword_fallback',
+        degrade_reason: 'key_missing',
+        candidate_pairs: 0,
+        verified_pairs: 0,
+        finish_reason: null,
+      }),
+    })
+    const result = await store.runMatch('job-1')
+
+    expect(result).not.toBeNull()
+    expect(result?.meta.evidence_mode).toBe('keyword_fallback')
+    expect(store.matchResult?.meta.degrade_reason).toBe('key_missing')
+  })
+
+  it('退化分句：ai_scored 一句都不给，五种原因两两不同，前两种给出去哪儿修', () => {
+    expect(matchDegradeLines(matchMetaFixture())).toEqual([])
+
+    const reasons = ['key_missing', 'key_invalid', 'upstream', 'timeout', 'bad_output'] as const
+    const texts = reasons.map((reason) =>
+      matchDegradeLines(
+        matchMetaFixture({ evidence_mode: 'keyword_fallback', degrade_reason: reason }),
+      ).join('\n'),
+    )
+    expect(new Set(texts).size).toBe(5)
+    for (const text of texts) expect(text).toContain('关键词')
+    expect(texts[0]).toContain('AI 设置')
+    expect(texts[1]).toContain('AI 设置')
+    // 后三种只能等：把用户支去改一个本来没坏的 Key 是最坏的那种「有帮助的文案」。
+    for (const text of texts.slice(2)) {
+      expect(text).not.toContain('AI 设置')
+      expect(text).not.toContain('API Key')
+      expect(text).toContain('稍后再算一次')
+    }
+
+    // 关键词模式却没有原因（后端不该给；真给了也不许替它编一个）。
+    expect(
+      matchDegradeLines(matchMetaFixture({ evidence_mode: 'keyword_fallback', degrade_reason: null })),
+    ).toHaveLength(1)
+  })
+
+  it('真的失败按码分支：429 等一分钟、404 说岗位读不到、401 说重新登录', () => {
+    expect(matchFailureText(new ApiError('请求太多。', 429, 'RATE_LIMITED'))).toContain('等一分钟')
+    expect(matchFailureText(new ApiError('资源不存在。', 404, 'NOT_FOUND'))).toContain('回收站')
+    expect(
+      matchFailureText(new ApiError('无效或已过期的访问令牌。', 401, 'CLIENT_ERROR')),
+    ).toContain('重新登录')
+    expect(matchFailureText(new ApiError('连不上。', 0, 'NETWORK_ERROR'))).toContain('后端')
+    // 兜底也必须是一句人话，而且要说清「资料没被动过」。
+    expect(matchFailureText(new Error('boom'))).toContain('没有被改动')
+    expect(matchFailureText(new ApiError('没见过的错。', 500, 'WEIRD'))).toContain('没见过的错。')
+    // 反向：这条分支里不许出现「AI 不可用」之类的说法——AI 失败到不了这里（§3 状态码边界），
+    // 把它说成 AI 故障会让用户以为这次连分都没算出来。
+    expect(matchFailureText(new ApiError('请求太多。', 429, 'RATE_LIMITED'))).not.toContain('不可用')
   })
 })

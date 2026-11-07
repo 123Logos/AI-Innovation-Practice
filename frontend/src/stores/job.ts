@@ -20,7 +20,12 @@
  * 4. **「你已具备」的只读比对**（`loadMySkillNames()` + `matchesMySkill()`）。
  *    按 2.E：拿当前登录用户**默认简历**的技能名与 `job_skills.name` 做归一化等值比较
  *    （口径与后端同：`trim` → NFKC → 小写，见 `normalizeSkillName()`），命中就标一下。
- *    不写任何表、不产生匹配分数、不排序——人岗匹配仍在 AGENTS.md §3.2 的冻结清单里。
+ *    不写任何表、不产生匹配分数、不排序。
+ * 5. **人岗匹配**（`runMatch()` + `matchDegradeLines()` + `matchFailureText()`，ADR-013 §10 第 8 步）。
+ *    上面第 4 条这条只读比对**没有被它取代**：一个是「这条技能名我在简历里写过吗」，
+ *    一个是「这段经历撑不撑得起这条技能」，两件事都在页面上，各自独立。
+ *    匹配是**显式点击**才发的（`JobDetailView` 的按钮，不在 `onMounted` 里），
+ *    因为它每次都可能向 DeepSeek 发一次真实请求、花调用者自己的额度。
  *
  * 过期判定不在这里：后端 `JobSummary.is_expired` / `JobRead.is_expired` 已用**应用时钟**
  * 算好（2.G 明确禁止前端各写一份 `deadline < 今天`，两处实现必然漂移），前端只读那个布尔。
@@ -43,6 +48,8 @@ type JobStatus = JobsContract.JobStatus
 type JobSkillType = JobsContract.JobSkillType
 type EmploymentType = JobsContract.EmploymentType
 type ExtractSkillsResult = JobsContract.ExtractSkillsResult
+type MatchResult = JobsContract.MatchResult
+type MatchMeta = JobsContract.MatchMeta
 
 /* -------------------------------- 展示文案 -------------------------------- */
 
@@ -539,6 +546,77 @@ export function extractFailureText(error: unknown): string {
   }
 }
 
+/* -------------------------------- 匹配文案 -------------------------------- */
+
+/**
+ * 匹配退化的分句：`evidence_mode` 一句 + `degrade_reason` 一句（ADR-013 §6.5 第 5 点）。
+ *
+ * 为什么这两句必须显示：`keyword_fallback` 下 `partial` 里那句「证据偏薄」说的是
+ * 「这条技能只在你的经历里出现过，撑不起一个结论」，而 `ai_scored` 下同一句说的是
+ * 「模型读完你的经历认为它偏薄」。两种情况下用户的下一步动作完全不同，
+ * 所以按 AGENTS.md §3.2「失败必须由用户点出来」的口径，这里不许静默省略。
+ *
+ * 五种原因**分句而不合并**也是同一理由：前两种用户自己就能修（去「AI 设置」补 Key / 修 Key），
+ * 后三种只能稍后重试。把它们写成同一句「AI 不可用」，用户会去改一个本来没坏的 Key。
+ *
+ * 与之相反，权重构成、`weight_sum_used`、各计数**不进界面**（2026-11-07 人类负责人裁定
+ * 「不用向客户说明技术上的设计」，作用域见 ADR-013 §7.5）：它们留在响应里给我们自己对账。
+ */
+export function matchDegradeLines(meta: MatchMeta): string[] {
+  if (meta.evidence_mode !== 'keyword_fallback') return []
+  const lines = ['本次的「证据强度」按关键词算法给分，没有让 AI 读你的经历。']
+  switch (meta.degrade_reason) {
+    case 'key_missing':
+      lines.push('还没配置你的 DeepSeek API Key：点右上角「AI 设置」填好，再算一次会更准。')
+      break
+    case 'key_invalid':
+      lines.push(
+        '你的 DeepSeek API Key 无效或已欠费：打开「AI 设置」检查后再算一次。（与登录状态无关，不需要重新登录。）',
+      )
+      break
+    case 'timeout':
+      lines.push('AI 这次响应超时，所以没拿到证据强度。稍后再算一次即可。')
+      break
+    case 'bad_output':
+      lines.push('AI 这次没有按约定格式返回，所以没拿到证据强度。稍后再算一次即可。')
+      break
+    case 'upstream':
+      lines.push('DeepSeek 当前不可用（上游报错），所以没拿到证据强度。稍后再算一次即可。')
+      break
+    default:
+      // 关键词模式必然带原因（§6.5 要求退化可归因）。真出现 `null` 时只说上面那一句，
+      // 不替后端编一个它没给过的原因。
+      break
+  }
+  return lines
+}
+
+/**
+ * 匹配**请求本身**失败的分支文案。
+ *
+ * 与 `extractFailureText()` 的关键差别：AI 失败不在这里。后端把五种 AI 失败翻译成
+ * `200 + meta.degrade_reason`（ADR-013 §3 的状态码边界），所以走到这个函数的
+ * 只有「没到模型那就失败」的分支——429 / 404 / 401 / 网络超时 / 500。
+ * 这里绝不允许出现「AI 挂了」之类的红字，那会把一条本可以解释的退化说成一次故障。
+ */
+export function matchFailureText(error: unknown): string {
+  if (!isApiError(error)) return '匹配失败，请稍后重试。你的资料与这条岗位都没有被改动。'
+  switch (error.code) {
+    case 'RATE_LIMITED':
+      return '一分钟内算得太多次了，请等一分钟再试——每一次都可能向 DeepSeek 发一次真实请求。'
+    case 'NOT_FOUND':
+      return '这个岗位不存在、是别人的草稿，或已经在回收站里，所以没法匹配。'
+    case 'CLIENT_ERROR':
+      return '登录状态已失效，请重新登录后再算一次。'
+    case 'NETWORK_ERROR':
+      return '等后端响应超时或连不上服务，请确认后端在跑，然后重试。'
+    case 'VALIDATION_ERROR':
+      return '匹配请求没有被接受：这个岗位 id 的格式不对，请回到列表重新点进来。'
+    default:
+      return `${error.message}（你的资料与这条岗位都没有被改动。）`
+  }
+}
+
 /* --------------------------------- store ---------------------------------- */
 
 export const useJobStore = defineStore('job', () => {
@@ -595,6 +673,20 @@ export const useJobStore = defineStore('job', () => {
 
   /** 上一次提取加进表单的行数（=0 表示这批候选一条都没落地，视图该说一句为什么）。 */
   const extractedAddedCount = computed(() => extractPlan.value?.added.length ?? 0)
+
+  /**
+   * 人岗匹配的结果与在途标记（ADR-013 §10 第 8 步）。
+   *
+   * 与 `extractDraft` 同一处置：**只在内存里**，不写 localStorage / sessionStorage。
+   * 理由不是省事——`covered[].evidence[].snippet` 是用户经历原文的连续子串，
+   * 落盘等于把「上一个人的屏幕」留给下一个共用这台电脑的人。
+   *
+   * 这里**没有** `matchError`：匹配失败的文案是视图按分支渲染的一次性提示，
+   * 换岗位、重试都要立刻清掉，存进 store 只会让下一个用户看见上一个人的红字
+   * （与 `extractFailureText` 的既有分工一致）。
+   */
+  const matchResult = ref<MatchResult | null>(null)
+  const matching = ref(false)
 
   const hasPrevPage = computed(() => page.value > 1)
   const hasNextPage = computed(() => page.value * pageSize.value < total.value)
@@ -672,6 +764,10 @@ export const useJobStore = defineStore('job', () => {
   async function loadDetail(jobId: string): Promise<JobRead | null> {
     detailLoading.value = true
     detail.value = null
+    // 上一条岗位的匹配结果必须一起清掉：`matchResult` 挂在 store 上而不是组件上，
+    // 从广场「返回→点另一条」时详情页会重新挂载，但 store 不会——留着就是
+    // 「A 岗位的分数显示在 B 岗位上」，而这屏唯一的数字看起来完全可信。
+    matchResult.value = null
     try {
       detail.value = await jobsApi.getJob(jobId)
       return detail.value
@@ -736,6 +832,39 @@ export const useJobStore = defineStore('job', () => {
   function clearExtract(): void {
     extractDraft.value = null
     extractPlan.value = null
+  }
+
+  /* -------------------------------- 人岗匹配 ------------------------------- */
+
+  /**
+   * 「算一次匹配」：发 `POST /jobs/{id}/match`，结果进 `matchResult`，**不发任何写请求**。
+   *
+   * 三条约束：
+   * - **只由显式点击进来**：视图不在 `onMounted` 里调它（ADR-013 §10 第 8 步：
+   *   自动调用等于拿用户的 Key 换页面浏览量）。这条在测试里是「mount 完不发请求」的断言。
+   * - **在途时重复点击直接返回 `null`**：这条限流按用户算 10/minute，按钮连点两次
+   *   就是两次真实计费。视图也禁了按钮，两道闸都要有。
+   * - **不吞异常也不降级**：AI 失败由后端翻译成 `200 + meta.degrade_reason`，
+   *   由视图用 `matchDegradeLines()` 显示；这里只负责把真的失败原样抛给调用方，
+   *   由视图用 `matchFailureText()` 翻译。
+   */
+  async function runMatch(jobId: string): Promise<MatchResult | null> {
+    if (matching.value) return null
+    matching.value = true
+    // 重算前先清空上一次的结果：屏幕上挂着上一份分数、底下却正在算新的那一份，
+    // 用户分不清哪一行对应哪一次点击。
+    matchResult.value = null
+    try {
+      matchResult.value = await jobsApi.matchJob(jobId)
+      return matchResult.value
+    } finally {
+      matching.value = false
+    }
+  }
+
+  /** 清掉匹配结果（换岗位、登出）。一个请求都不发。 */
+  function clearMatch(): void {
+    matchResult.value = null
   }
 
   /* --------------------------------- 写入 --------------------------------- */
@@ -879,8 +1008,9 @@ export const useJobStore = defineStore('job', () => {
   /**
    * 登出 / 离开编辑链路时清空，避免下一个账号短暂看到上一个人的岗位。
    *
-   * `clearExtract()` 在这一串里：AI 提取的草稿带着 JD 原文片段（evidence），
-   * 它是「上一个人的屏幕」的一部分，漏掉就等于把候选技能连带留给了下一个账号。
+   * `clearExtract()` 与 `clearMatch()` 都在这一串里：AI 提取的草稿带着 JD 原文片段（evidence），
+   * 匹配结果带着**用户自己经历**的原文片段（`covered[].evidence[].snippet`），
+   * 它们是「上一个人的屏幕」的一部分，漏掉就等于把候选技能连带留给了下一个账号。
    * 视图里的表单数组不在 store 里，由 `JobCreateView` 自己 `reset` 时重建。
    */
   function reset(): void {
@@ -894,6 +1024,8 @@ export const useJobStore = defineStore('job', () => {
     filter.status = 'published'
     filter.includeExpired = false
     clearExtract()
+    // 匹配结果里同样是用户的经历原文片段，属于「上一个人的屏幕」。
+    clearMatch()
   }
 
   return {
@@ -932,6 +1064,10 @@ export const useJobStore = defineStore('job', () => {
     extractSkills,
     discardExtraction,
     clearExtract,
+    matchResult,
+    matching,
+    runMatch,
+    clearMatch,
     mySkillNames,
     mySkillNamesLoading,
     loadMySkillNames,
