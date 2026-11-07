@@ -28,20 +28,27 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
 from app.core.errors import error_response
-from app.core.rate_limit import EXTRACT_RATE_LIMIT, limiter
+from app.core.rate_limit import (
+    EXTRACT_RATE_LIMIT,
+    MATCH_RATE_LIMIT,
+    get_user_or_remote_address,
+    limiter,
+)
 from app.core.responses import request_id, success_response
 from app.schemas.auth import UserRead
 from app.schemas.job import MAX_PAGE_SIZE, ExtractSkillsRequest, JobWriteRequest
-from app.services.dependencies import get_current_user, get_job_service
+from app.services.dependencies import get_current_user, get_job_service, get_match_service
 from app.services.job_service import (
     JobNotFoundError,
     JobService,
     JobSkillExtractTruncatedError,
 )
+from app.services.match_service import MatchService
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 JobServiceDep = Annotated[JobService, Depends(get_job_service)]
+MatchServiceDep = Annotated[MatchService, Depends(get_match_service)]
 CurrentUserDep = Annotated[UserRead, Depends(get_current_user)]
 
 #: 1.F #1：列表默认只给已发布，自己的草稿要显式传 `status=draft`。
@@ -184,6 +191,39 @@ def read_job(
     except JobNotFoundError as error:
         raise _not_found() from error
     return success_response(request, {"job": job.model_dump(mode="json")})
+
+
+@router.post("/{job_id}/match")
+@limiter.limit(MATCH_RATE_LIMIT, key_func=get_user_or_remote_address)
+def match_job(
+    job_id: str,
+    request: Request,
+    service: MatchServiceDep,
+    current_user: CurrentUserDep,
+) -> dict[str, Any]:
+    """人岗匹配（ADR-013 §3）：**POST 而不是 GET**，它会向 DeepSeek 发起一次真实调用、
+    花用户自己的额度，语义上是「执行一次计算」，与 `/jobs/extract-skills` 同族。
+
+    三条与既有端点不同的地方，都在这个函数体里，不在服务层偷偷做：
+
+    1. **AI 失败不往外抛**。`MatchService` 已经把它们翻译成 `degrade_reason` 并继续给分，
+       所以本函数**没有** `except EvidenceScore*`，也没有第 7 情形那种就地构造响应体——
+       匹配不像提取那样「一条都拿不到就没意义」。因此这三个 AI 处理器在本端点上永不命中
+       （见 `app/main.py` 的那段注释）。
+    2. **限流键是用户而不是 IP**（`get_user_or_remote_address`）：按 IP 会让同一出口下
+       前两个人把整组人的额度点光，而后面的人没做错任何事。
+    3. **不可见岗位 404 不是 403**：与 `read_job` 同一谓词、同一 `_not_found()`；
+       403 会确认「该 id 存在」。
+
+    请求体为空是刻意的（§3 决策 2）：v1 只匹配当前用户的**默认档案**，
+    而用的是哪一份必须由响应里的 `profile_id` / `profile_title` 说出来，
+    不能让用户自己去猜分数是谁的。
+    """
+    try:
+        result = service.match(current_user.id, job_id)
+    except JobNotFoundError as error:
+        raise _not_found() from error
+    return success_response(request, result.model_dump(mode="json"))
 
 
 @router.put("/{job_id}")

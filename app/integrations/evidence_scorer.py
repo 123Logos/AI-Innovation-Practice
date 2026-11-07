@@ -72,7 +72,16 @@ class EvidenceScoreAuthError(EvidenceScoreError):
 
 
 class EvidenceScoreUnavailableError(EvidenceScoreError):
-    """第 3 情形：连接失败或非 401 的上游状态码。"""
+    """第 3 情形：非 401 的上游状态码。"""
+
+
+class EvidenceScoreTimeoutError(EvidenceScoreUnavailableError):
+    """第 3 情形的一个子类：连接失败或超时（SDK 的 `APITimeoutError` 是 `APIConnectionError` 子类）。
+
+    单独一类不是为了好看：§6.5 要求 `degrade_reason` 把 `upstream` 与 `timeout` 分开，
+    而两者的用户动作不同——上游 5xx 是「等一会儿再试」，超时还多一句「你的网络到 DeepSeek 通不通」。
+    合并成一类就等于让服务层没法区分，只能瞎猜。
+    """
 
 
 class EvidenceScoreBadOutputError(EvidenceScoreUnavailableError):
@@ -236,7 +245,11 @@ class DeepSeekEvidenceScorer(EvidenceScorer):
             # 这里仍然只记状态码，不把 str(error) 原样往外抛。
             logger.info("DeepSeek 拒绝该 Key（status=%s）", error.status_code)
             raise EvidenceScoreAuthError("API Key 无效或已欠费。") from error
-        except (APIConnectionError, APIStatusError) as error:
+        except APIConnectionError as error:
+            # 连接失败与超时（SDK 的 `APITimeoutError` 是它的子类）单独一类，理由见类 docstring。
+            logger.warning("DeepSeek 证据打分连不上（type=%s）", type(error).__name__)
+            raise EvidenceScoreTimeoutError("AI 服务连接失败或超时。") from error
+        except APIStatusError as error:
             status = getattr(error, "status_code", None)
             logger.warning(
                 "DeepSeek 证据打分调用失败（status=%s, type=%s）", status, type(error).__name__

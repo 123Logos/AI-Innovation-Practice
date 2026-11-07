@@ -460,7 +460,7 @@ class TestScoreMatchContract:
         assert match.meta.weight_sum_used == pytest.approx(1.0 - MATCH_WEIGHTS["relevance"])
 
     def test_full_coverage_and_strong_evidence(self) -> None:
-        """关键词模式下要两条经历才算「证据站得住」：1/3 < 0.4 <= 2/3。"""
+        """两条经历 = 0.667，两种模式下都算「证据站得住」；片段全部回显给用户。"""
         items = (
             experience("e1", description="用 Python 重写订单服务，P99 降了 60%"),
             experience("e2", responsibility="用 Python 写了对账脚本"),
@@ -478,12 +478,39 @@ class TestScoreMatchContract:
         assert len(match.covered[0].evidence) == 2
         assert match.gaps == ()
 
-    def test_single_mention_is_partial_not_covered(self) -> None:
+    def test_one_real_mention_is_covered_in_keyword_mode(self) -> None:
+        """阈值 0.4 → 0.3 的理由就在这条用例上：一段经历是常态，不是弱点。
+
+        关键词模式测的是「有没有一条真实出处」，有出处就进 `covered` 并把片段给用户看；
+        「提到名字但没做过」只有 AI 模式分得出来，所以下一条用例改用 0.2 的 AI 评分触发 partial。
+        """
         item = experience("e1", description="接触过 Python")
         match = score_match(facts(experiences=(item,)))
+        assert keyword_strength(1) > PARTIAL_STRENGTH_THRESHOLD
+        assert [covered.skill for covered in match.covered] == ["Python"]
+        assert match.partial == ()
+
+    def test_weak_ai_judgement_moves_a_skill_into_partial(self) -> None:
+        """AI 给 0.2（Prompt 里那一档 =「只是提到名字」）→ 证据偏薄，进 partial。"""
+        item = experience("e1", description="接触过 Python")
+        facts_ = facts(experiences=(item,))
+        bundle = build_evidence(facts_, (RequiredSkill("Python"),))
+        outcome = ModelOutcome(
+            strengths={0: 0.2},
+            verified_pairs=1,
+            dropped_unreferenced=0,
+            dropped_unknown_skill=0,
+            dropped_unusable_strength=0,
+            dropped_missing_output=0,
+            clamped_strength=0,
+        )
+        match = score_match(
+            facts_,
+            bundle,
+            AiScoring(model="deepseek-flash", prompt_version="v1", outcome=outcome),
+        )
         assert match.covered == ()
         assert [partial.skill for partial in match.partial] == ["Python"]
-        assert keyword_strength(1) < PARTIAL_STRENGTH_THRESHOLD
 
     def test_matched_name_without_any_evidence_is_a_real_zero(self) -> None:
         match = score_match(facts(experiences=()))
@@ -491,7 +518,9 @@ class TestScoreMatchContract:
         assert item.computed is True
         assert item.value == 0.0
         assert item.note == "matched_without_evidence"
-        assert match.partial == ()
+        # `partial` 这一格是集成测试逼出来的（`test_job_match.py` 里 Docker 命中却零片段，
+        # 三档清单当时全空）：它既不是 covered 也不是 gap，两头都不算就等于对用户隐身。
+        assert [partial.skill for partial in match.partial] == ["Python"]
 
     def test_no_required_skills_excludes_coverage(self) -> None:
         match = score_match(facts(required=(), student=("Python",)))

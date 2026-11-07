@@ -16,6 +16,7 @@ from starlette.exceptions import HTTPException
 from starlette.requests import Request
 
 from app.integrations.copy_writer import DeepSeekCopyWriter
+from app.integrations.evidence_scorer import DeepSeekEvidenceScorer
 from app.integrations.resume_generator import TemplateResumeGenerator
 from app.integrations.skill_extractor import DeepSeekJobSkillExtractor
 from app.repositories.job_repository import JobRepository
@@ -26,6 +27,7 @@ from app.repositories.user_repository import UserRepository, session_scope
 from app.schemas.auth import UserRead
 from app.services.auth_service import AuthError, AuthService
 from app.services.job_service import JobService
+from app.services.match_service import MatchService
 from app.services.profile_service import ProfileService
 from app.services.resume_service import ResumeService
 
@@ -45,9 +47,13 @@ def get_current_user(request: Request) -> UserRead:
     with session_scope() as session:
         service = AuthService(UserRepository(session), RefreshTokenRepository(session))
         try:
-            return service.get_current_user(token)
+            user = service.get_current_user(token)
         except AuthError as error:
             raise HTTPException(status_code=401, detail=UNAUTHORIZED_MESSAGE) from error
+    # 给限流用的一次性标记（ADR-013 §3）：`/jobs/{id}/match` 的键按用户而不是 IP。
+    # 写在依赖里而不是在路由里，是为了让「谁都能改这个请求的限流归属」这件事不可能发生。
+    request.state.rate_limit_user_id = user.id
+    return user
 
 
 def get_profile_service() -> Iterator[ProfileService]:
@@ -74,6 +80,26 @@ def get_job_service(request: Request) -> Iterator[JobService]:
         yield JobService(
             repository=JobRepository(session),
             extractor=DeepSeekJobSkillExtractor(api_key) if api_key else None,
+        )
+
+
+def get_match_service(request: Request) -> Iterator[MatchService]:
+    """装配匹配服务（ADR-013 §10 第 7c 步的**结构约束**）。
+
+    一个 session、两个仓储、一个 scorer —— 这三样必须在同一次 `session_scope()` 里装好：
+    复用 `get_job_service()` + `get_profile_service()` 会开两条连接、拿到两个快照，
+    而「岗位与档案是同一时刻的状态」是分数可复现的前提（§13 第 8 条）。
+
+    Key 的取法与 `get_job_service` 完全同构：空 Key 时 scorer 装 `None`，
+    由服务层翻译成 `degrade_reason="key_missing"`，**不在这里 4xx**——
+    匹配没有 Key 也要给分（§6.5），这是它与润色/提取的唯一语义差别。
+    """
+    api_key = request.headers.get(DEEPSEEK_KEY_HEADER, "").strip()
+    with session_scope() as session:
+        yield MatchService(
+            job_repository=JobRepository(session),
+            profile_repository=StudentProfileRepository(session),
+            scorer=DeepSeekEvidenceScorer(api_key) if api_key else None,
         )
 
 

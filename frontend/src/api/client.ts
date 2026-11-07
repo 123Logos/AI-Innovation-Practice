@@ -207,27 +207,46 @@ export function hasDeepSeekKey(): boolean {
 /**
  * 哪些请求携带 `X-DeepSeek-Key`（BYOK）。
  *
- * 判据是一份**白名单**而不是模式匹配，且只列真正消耗用户 AI 额度的端点：
- * 目前两个——`/resumes/polish`（ADR-010）与 `POST /jobs/extract-skills`（ADR-011 2.A）。
+ * 判据是一份**白名单**而不是模式匹配，且只列真正消耗用户 AI 额度的端点。
+ * 今天两条精确路径 + 一条模式：
+ * - `/resumes/polish`（ADR-010）
+ * - `POST /jobs/extract-skills`（ADR-011 2.A）
+ * - `POST /jobs/{id}/match`（ADR-013 §6，**唯一一条模式**）
  *
- * 为什么岗位侧只扩 `/jobs/extract-skills` 这一条：`/jobs` 下其余七个端点
- * （列表 / 创建 / 详情 / 更新 / publish / unpublish / trash / restore）全部走我们自己的
- * 数据库，一个字节都不发往 DeepSeek。用 `url.includes('/jobs')` 这种宽判据把它们一并纳进来，
- * 等于把用户的 Key 复制到八个与服务毫无必要的接收方——泄漏面按端点个数翻倍，
- * 而且这些端点的日志、代理访问日志、任何一处误打请求头都会带上它。
- * 每扩一个 URL 都必须能回答「这个请求会不会被转发给 DeepSeek」，答不上来就不许加。
+ * 为什么岗位侧只扩这三条：`/jobs` 下其余端点（列表 / 创建 / 详情 / 更新 / publish /
+ * unpublish / trash / restore / 删除）全部走我们自己的数据库，一个字节都不发往 DeepSeek。
+ * 用 `url.includes('/jobs')` 这种宽判据把它们一并纳进来，等于把用户的 Key 复制到
+ * 九个与服务毫无必要的接收方——泄漏面按端点个数翻倍，而且这些端点的日志、
+ * 代理访问日志、任何一处误打请求头都会带上它。
+ * **每扩一个 URL 都必须能回答「这个请求会不会被转发给 DeepSeek」，答不上来就不许加。**
  *
- * 匹配刻意做到**整段相等**（去掉 baseURL 与查询串后比路径）：
- * `includes('/jobs')` 会连 `/jobs/trash` 一起命中，而 `includes('/jobs/extract-skills')`
- * 会连 `/jobs/extract-skills/anything` 一起命中。宁可写死两条精确路径。
+ * 关于那条模式，必须把话说准（ADR-013 §6.1，我上一版把它写大了）：
+ * `[^/]+` 只吃一个路径段，所以 `/jobs/x/y/match`、`/jobs/match/extra` 都进不来；
+ * 但它**同样命中** `/jobs/extract-skills/match` 这种根本没有路由的路径（返回 404，
+ * 一个字节都不发往 DeepSeek）。所以「命中即转发」这句话对不存在的路径是假的。
+ * 真正可辩护、且能被测的判据是**路由表论证**：
+ * 「凡是能被这条正则命中、且在 FastAPI 里真的注册过的 POST 路由，其处理器一定转发 DeepSeek」——
+ * 那条断言在后端 `tests/test_job_match.py::test_only_the_match_route_under_jobs_forwards_to_deepseek`。
+ * 它守的是未来有人新加一条 `/jobs/{a}/{b}` 形状而不转发 AI 的路由，那才是这条约定唯一的失效方式。
+ *
+ * 另外这条模式**绑方法**：只有 POST 才注入。GET `/jobs/{id}/match` 不存在，
+ * 但「模式不看方法」这种写法一旦落地，任何路径拼错的 GET 都会带着 Key 出门。
  */
 const BYOK_KEY_PATHS = ['/resumes/polish', '/jobs/extract-skills'] as const
 
-function isDeepSeekKeyRequest(url: string | undefined): boolean {
+const BYOK_KEY_PATTERNS: ReadonlyArray<{ method: string; pattern: RegExp }> = [
+  { method: 'post', pattern: /^\/jobs\/[^/]+\/match$/ },
+]
+
+function isDeepSeekKeyRequest(url: string | undefined, method?: string): boolean {
   if (!url) return false
   // `url` 在这里是 axios 的相对路径（不含 baseURL），可能带查询串；只看路径那一段。
   const path = url.split('?')[0].replace(/\/+$/, '')
-  return (BYOK_KEY_PATHS as readonly string[]).includes(path)
+  if ((BYOK_KEY_PATHS as readonly string[]).includes(path)) return true
+  const normalizedMethod = (method ?? 'get').toLowerCase()
+  return BYOK_KEY_PATTERNS.some(
+    (entry) => entry.method === normalizedMethod && entry.pattern.test(path),
+  )
 }
 
 type UnauthorizedHandler = () => void
@@ -454,8 +473,8 @@ http.interceptors.request.use(async (config) => {
     config.headers.Authorization = `Bearer ${token}`
   }
 
-  // BYOK：只有白名单里的两个 AI 端点携带用户自带的 DeepSeek Key（ADR-010 / ADR-011 2.A）。
-  if (isDeepSeekKeyRequest(config.url)) {
+  // BYOK：只有白名单里的三个 AI 端点携带用户自带的 DeepSeek Key（ADR-010 / 011 2.A / 013 §6）。
+  if (isDeepSeekKeyRequest(config.url, config.method)) {
     const deepSeekKey = getDeepSeekKey()
     if (deepSeekKey) {
       config.headers['X-DeepSeek-Key'] = deepSeekKey

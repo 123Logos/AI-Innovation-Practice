@@ -437,3 +437,127 @@ export async function extractJobSkills(
   )
   return unwrap(response)
 }
+
+/* ------------------------------ 人岗匹配（ADR-013） ------------------------------ */
+
+/** 五项分项的名字。与后端 `MATCH_WEIGHTS` 的键逐字一致，由契约测试双向比对。 */
+export type MatchTermName =
+  | 'coverage'
+  | 'evidence'
+  | 'relevance'
+  | 'preference'
+  | 'remaining_time'
+
+/**
+ * `meta.evidence_mode`：这一份分数里的「证据强度」是谁算的。
+ *
+ * 这一格必须显示给用户，理由不是美观而是 §6.5 的「不许静默降级」：
+ * `keyword_fallback` 意味着 DeepSeek 没参与，此时 `partial` 里那句「证据偏薄」
+ * 说的是「只在一条经历里出现过」，而不是「模型认为这句话撑不起这个技能」。
+ */
+export type EvidenceMode = 'ai_scored' | 'keyword_fallback'
+
+/** 退化的五种原因（§6.5）。前端按它分句，所以是一个封闭枚举而不是自由文案。 */
+export type DegradeReason = 'key_missing' | 'key_invalid' | 'upstream' | 'timeout' | 'bad_output'
+
+export interface MatchTerm {
+  name: MatchTermName
+  weight: number
+  /**
+   * `null` = 这一项**没算出来**，与「算出来是 0」是两件事（§5.1）。
+   * 压成 0 会让前端再也解释不了为什么两个人的 0.72 不同义。
+   */
+  value: number | null
+  computed: boolean
+  note: string | null
+}
+
+export interface MatchEvidence {
+  experience_id: string
+  field: 'title' | 'description' | 'responsibility'
+  /** 经历原文的**连续子串**（后端由构造保证，§3 的反幻觉闸门）。 */
+  snippet: string
+  strength: number
+}
+
+export interface MatchCovered {
+  skill: string
+  evidence: MatchEvidence[]
+}
+
+export interface MatchPartial {
+  skill: string
+  reason: string
+}
+
+export interface MatchGap {
+  skill: string
+  action: string
+  verify: string
+}
+
+export interface MatchMeta {
+  model: string | null
+  prompt_version: string | null
+  evidence_mode: EvidenceMode
+  degrade_reason: DegradeReason | null
+  candidate_pairs: number
+  verified_pairs: number
+  dropped_unreferenced: number
+  dropped_unknown_skill: number
+  dropped_unusable_strength: number
+  dropped_missing_output: number
+  clamped_strength: number
+  fragments_truncated: number
+  truncated: boolean
+  finish_reason: string | null
+  weight_sum_used: number
+  no_required_skills: boolean
+}
+
+export interface MatchResult {
+  /**
+   * 本次被打分的是哪一份档案（§13 第 7 条）。
+   *
+   * 请求体为空 ⇒ 用的是**默认档案**，这是一个用户看不见的隐式选择。
+   * 不回显这两格，编辑器里开着 B 档案的人会在岗位页拿到 A 档案的分数，
+   * 而他的第一反应一定是「分数算错了」。
+   */
+  profile_id: string | null
+  profile_title: string | null
+  job_id: string
+  score: number
+  weights_version: string
+  terms: MatchTerm[]
+  covered: MatchCovered[]
+  partial: MatchPartial[]
+  gaps: MatchGap[]
+  meta: MatchMeta
+}
+
+/** 匹配请求的超时：与润色/提取同口径（30 秒上游预算 + 余量，NFR 见 `MVP_SCOPE.md`）。 */
+export const MATCH_TIMEOUT_MS = 45_000
+
+/**
+ * `POST /api/v1/jobs/{job_id}/match`：算一次人岗匹配（ADR-013 §3）。
+ *
+ * 三条与既有端点不同的口径，都写在类型上而不是靠注释提醒：
+ *
+ * 1. **POST 而不是 GET**：它会向 DeepSeek 发起一次真实调用、花用户自己的额度。
+ * 2. **AI 失败不是错误**：本函数**没有**「AI 挂了」这个分支——后端把失败翻译成
+ *    `meta.degrade_reason` 后照样返回 200 与分数。所以调用方不许在这里 catch 出
+ *    一个红色报错，也不许因为 `evidence_mode === 'keyword_fallback'` 就当失败处理。
+ * 3. **必须由用户显式点击**：不能在岗位详情页 `onMounted` 里自动调用，
+ *    那是拿用户的 Key 换页面浏览量（§10 第 8 步）。
+ *
+ * `X-DeepSeek-Key` 由 `client.ts` 的白名单注入（那里第三条、也是唯一一条模式判据），
+ * 这里不手工加头。
+ */
+export async function matchJob(jobId: string): Promise<MatchResult> {
+  const response = await http.post<ApiSuccess<MatchResult>>(
+    `/jobs/${jobId}/match`,
+    undefined,
+    { timeout: MATCH_TIMEOUT_MS },
+  )
+  return unwrap(response)
+}

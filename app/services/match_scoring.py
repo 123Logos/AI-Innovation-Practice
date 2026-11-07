@@ -43,12 +43,17 @@ MAX_SNIPPETS_PER_SKILL = 3
 #: 同一句话里写三遍 Python 不该刷分。
 KEYWORD_FALLBACK_HITS_CAP = 3
 
-#: 强度低于此值的命中技能进 `partial` 而不是 `covered`。取值对着两种模式各核了一遍：
-#: 关键词模式 `min(n,3)/3` 的档位是 0 / 0.333 / 0.667 / 1.0，0.4 落在 0.333 与 0.667 之间，
-#: 于是「只在一条经历里出现过」= 证据偏薄、「两条及以上」= 站得住；
-#: AI 模式下 0.4 是「模型认为这句话撑不起这个技能」。
-#: 两种含义都成立，但必须连着 `evidence_mode` 一起看，所以这一项不进 `partial` 的文案里假装解释。
-PARTIAL_STRENGTH_THRESHOLD = 0.4
+#: 强度低于此值的命中技能进 `partial` 而不是 `covered`。
+#:
+#: 曾经是 0.4，被集成测试改掉了。0.4 落在关键词档位 0.333 与 0.667 之间，于是
+#: 「只有一段项目经历」这个本产品里最常见的形状，`已满足` 一栏会整个空掉——
+#: 那不是证据弱，那是代理指标在替它没资格做的判断下结论：`min(hits,3)/3` 测的是
+#: **出现了几条经历**，而「提到名字但没做过」只有 AI 模式分得出来。
+#: 0.3 把边界放回两种模式各自真正在测的东西：
+#: 关键词模式 = 有没有一条真实出处；AI 模式 = 0.3 那一档「只是提到了名字」（见 Prompt 的档位定义）。
+#: 零出处的命中技能不走这个阈值，它由「命中但找不到片段」那条规则直接进 `partial`。
+#: 两种含义仍然不同，所以必须连着 `evidence_mode` 一起看，`partial` 的文案不许假装解释了是哪一种。
+PARTIAL_STRENGTH_THRESHOLD = 0.3
 
 EVIDENCE_MODE_AI = "ai_scored"
 EVIDENCE_MODE_KEYWORD = "keyword_fallback"
@@ -623,6 +628,14 @@ def score_match(
             partial.append(Partial(skill=skill, reason=f"只在 {len(items)} 处经历里出现，证据偏薄"))
         else:
             covered.append(Covered(skill=skill, evidence=evidence_out))
+
+    # 命中了技能名、但一条经历里都找不到出处的条目必须进 `partial`，不能三个清单里都没有它。
+    # 这不是补漏：`strengths_by_skill` 是从**候选对**分组的，零候选的命中技能天生不在里面，
+    # 于是它会从三档展示里彻底消失——用户看不到「你会 Docker 但没写过」，
+    # 而 §3 要求「至少三条可验证证据或明确缺口」，这种消失两头都不算。
+    # （这条是被集成测试逼出来的：`test_job_match.py` 里 Docker 命中却零证据，当时三档全空。）
+    for skill in sorted(matched_names - set(strengths_by_skill)):
+        partial.append(Partial(skill=skill, reason="技能名命中，但经历里找不到出处"))
 
     gaps = tuple(_gap_for(item) for item in required if item.name not in matched_names)
 

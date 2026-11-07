@@ -6,13 +6,15 @@
 应用根本起不来。因此这里只负责**构造**实例，真正的「初始化」动作仍留在
 `main.py`：挂到 `app.state.limiter`、注册 429 异常处理器（转成 T6 统一错误模型）。
 
-限流键取客户端 IP（`get_remote_address`），不依赖登录态——注册/登录本来就没有身份。
+限流键默认取客户端 IP（`get_remote_address`），不依赖登录态——注册/登录本来就没有身份。
+**一处例外**：`MATCH_RATE_LIMIT` 走 `get_user_or_remote_address`（按用户），理由见那条函数的 docstring。
 存储用 slowapi 默认的进程内内存计数：单进程 MVP 够用；多 worker 部署时
 每个 worker 各算一份，届时需要换 Redis 存储（`storage_uri`），属于后续任务。
 """
 
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from starlette.requests import Request
 
 from app.core.config import get_settings
 
@@ -35,6 +37,32 @@ POLISH_RATE_LIMIT = "10/minute"
 #: 已知局限与前两条相同：slowapi 是进程内计数，多 worker 部署时每个 worker 各算一份。
 #: 测试引用这个常量，理由与 `AUTH_RATE_LIMIT` 相同。
 EXTRACT_RATE_LIMIT = "10/minute"
+
+#: 人岗匹配的限流规则（ADR-013 §3）。数量级与前两条一致，**但键不一样**（见下面那条函数）。
+MATCH_RATE_LIMIT = "10/minute"
+
+
+def get_user_or_remote_address(request: Request) -> str:
+    """匹配端点的限流键：能认出用户就按用户，认不出就退回 IP。
+
+    为什么这一条例外必须存在（ADR-013 §13 第 1 条）：本端点每次点击都花**调用者自己**的
+    DeepSeek 额度，而按 IP 计数会让同一个出口 IP 上的人互相抢额度。局域网测试那批
+    5 人共用一个出口是必然场景，按 IP 的结果是「前两个人点光，后面的人拿到 429」——
+    被限的人既没做错什么，也没花自己的钱。
+
+    为什么不直接把 `limiter` 的默认 `key_func` 换掉：那会同时改掉登录、润色、提取三条规则的
+    语义，而登录恰恰**必须**按 IP（未登录时没有用户可认，且防的就是同一 IP 撞库）。
+    所以这里是「装饰器级覆盖」，另三条一个字不动。
+
+    `request.state.rate_limit_user_id` 由 `app/services/dependencies.py::get_current_user`
+    写入。它是否真的在限流之前被写上是**测出来的**，不是假设的：
+    `tests/test_job_match.py` 里有一条「同一 IP 下两个用户互不挤占」的用例，
+    那条用例红就说明键退化回了 IP，届时不要改测试，要改这里的次序。
+    """
+    user_id = getattr(request.state, "rate_limit_user_id", None)
+    if isinstance(user_id, str) and user_id:
+        return f"user:{user_id}"
+    return get_remote_address(request)
 
 
 def build_limiter() -> Limiter:

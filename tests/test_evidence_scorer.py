@@ -26,6 +26,7 @@ from app.integrations.evidence_scorer import (
     EvidenceScoreAuthError,
     EvidenceScoreBadOutputError,
     EvidenceScoreEmptyContentError,
+    EvidenceScoreTimeoutError,
     EvidenceScoreTruncatedError,
     EvidenceScoreUnavailableError,
     ScoringFragment,
@@ -168,6 +169,22 @@ class TestFailureModes:
         client = httpx2.Client(transport=httpx2.MockTransport(handler))
         with pytest.raises(EvidenceScoreUnavailableError):
             DeepSeekEvidenceScorer(API_KEY, http_client=client).score(fragments(1))
+
+    def test_timeout_is_its_own_class_not_merged_into_upstream(self) -> None:
+        """§6.5 要 `timeout` 与 `upstream` 两个 degrade_reason，前提是两个异常分得开。
+
+        合并成一类就等于让服务层只能瞎猜——而猜错的用户动作是「等一等」对「查你的网络」。
+        """
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            raise httpx2.ConnectTimeout("连接超时")
+
+        client = httpx2.Client(transport=httpx2.MockTransport(handler))
+        with pytest.raises(EvidenceScoreTimeoutError):
+            DeepSeekEvidenceScorer(API_KEY, http_client=client).score(fragments(1))
+
+    def test_timeout_is_a_subclass_so_existing_catch_still_works(self) -> None:
+        assert issubclass(EvidenceScoreTimeoutError, EvidenceScoreUnavailableError)
 
     def test_truncated_output_is_named_before_parsing(self, fake_deepseek: FakeDeepSeek) -> None:
         """反向用例：半截 JSON + `finish_reason=length` 必须是第 7 情形，不是「不守格式」。
