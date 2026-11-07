@@ -154,11 +154,10 @@ MVP 不引入未经验证的全网爬虫；岗位变化雷达只使用合法来�
   **这一条不是机器强制的**：仓库设置 `delete_branch_on_merge` 实测为 `false`，删分支仍是一次人动作。
   要变成自动的，把它设成 `true` 即可（一条 PATCH，改不改都不影响下面的闸门）。
 - 「只接受 CI 绿的 PR 合入」这半条现在是**机器强制**的：master 由 ruleset `26754995`（`enforcement: active`，
-  作用于 `~DEFAULT_BRANCH`）保护，规则为 `pull_request` + `update` + `deletion` + `required_status_checks`，
+  作用于 `~DEFAULT_BRANCH`）保护，规则为 `pull_request` + `deletion` + `required_status_checks`，
   逐字段读回值：`required_approving_review_count: 0`、`allowed_merge_methods: ["merge"]`（只允许 merge commit，
   保留「ADR 提交在前、实现在后」的顺序）、状态检查 context `test`、`strict_required_status_checks_policy: true`
-  （合入前必须先 rebase/merge 到最新 master，防「两个各自绿的 PR 合出红的 master」）、
-  分支不可删、不可 force push。
+  （合入前必须先 rebase/merge 到最新 master，防「两个各自绿的 PR 合出红的 master」）、分支不可删。
   仓库级 `allow_squash_merge` / `allow_rebase_merge` 实测仍为 `true`，但对 master 无效——ruleset 的
   `allowed_merge_methods` 覆盖面更窄的那一条说了算；其它分支不受约束，所以「在 feature 分支上随便 squash」是允许的。
   **一个必须知道的口子**：`bypass_actors` 里有一条 `actor_id: 5 / actor_type: RepositoryRole / bypass_mode: always`，
@@ -166,15 +165,28 @@ MVP 不引入未经验证的全网爬虫；岗位变化雷达只使用合法来�
   对管理员只是默认路径——管理员直推 `master` 仍然物理可行，禁止它靠本节，而不是靠 GitHub。
   没把它关掉的原因：需要保留一次紧急回滚通道。若要改成「管理员也要走 PR」，把该 actor 的 `bypass_mode`
   改为 `never` 或直接删掉 `bypass_actors`，改前先想清楚应急路径。
-- **闸门的「非管理员路径」至今没有被真实验证过**，这条要显式记账，别把上面那段读成「闸门已经跑通过」。
-  PR #9（2026-11-07，target_role）合并时：两条 `test` 检查都已 `pass`，
-  但 `gh pr merge` 报 `base branch policy prohibits the merge`、`mergeStateStatus: BLOCKED`，
-  我随后用 `PUT /pulls/9/merge` 以管理员身份合入（merge commit `c87a0cd`，`merged_by: 123Logos`）。
-  两个事实因此都成立：**实质闸门满足了**（CI 绿 + 必需检查齐 + merge 方式合规），
-  **但我没有证明 GitHub 会不会自己放行这一合**，也就是无法排除「策略里有一条我没读到的东西在挡正常合入」。
-  这不是小事：如果它连自己的 PR 都挡，将来只会逼着所有人用管理员绕过，闸门就退化成装饰。
-  下一个人工动作：在下一个 PR 上，先 `gh api …/actions/required-check-reports` 读评估明细，再用不带管理员权限的方式试合，
-  把结果（放行 or 哪条规则阻塞）记在这里。
+- **闸门曾经把正常合入也挡死了，原因已定位（2026-11-07）**。现象：两条 `test` 检查都 `pass`、
+  `required_approving_review_count: 0`，但 PR 页面显示
+  「Merging is blocked — **Cannot update this protected ref.**」，`mergeable_state` 恒为 `blocked`，
+  而管理员侧的按钮变成「Bypass rules and merge」。
+  凶手是我一开始就加进去的那条 **`update` 规则**（UI 里的「Restrict updates」）。
+  它挡的不是「不满足条件的合入」，而是**对 master 这个 ref 的一切更新**——PR 合并本身就是一次 ref 更新，
+  于是它把自己的闸门也一并挡了，只剩管理员绕过这一条路可走。
+  取证过程（两次 PATCH + 一次读回，都是同一条 ruleset）：
+  1. `update` 带 `allow_force_pushes` / `allow_deletions` → `422 Unexpected parameter`：这两个参数不属于 `update`，
+     说明这条规则在本 API 版本里只管「更新」这一件事；
+  2. `update` 带 `{"update_allows_fetch_and_merge": true}` → 保存成功，但 `mergeable_state` 仍 `blocked`：不是这个参数；
+  3. 删掉 `update` 规则 → 读回 `rules: ["pull_request","deletion","required_status_checks"]`，
+     `mergeable_state` 立刻变 **`clean`**。
+  所以最终配置**不含 `update` 规则**。少掉的保护由谁补：
+  「不许直推 master」这件事由 `pull_request` 规则负责（它的语义就是「所有进入该分支的提交必须来自 PR」，
+  直推与 force push 都属于被它挡住的那类更新）；「不许删分支」由 `deletion` 规则负责。
+  我没有用一次真实的直推去证明这一点（那需要往 master 上推一个测试提交，成功即违规），
+  这一句是按 GitHub 该规则的语义写的，与上面三条实测区分开。
+- **由此得到的纪律**：闸门配完必须**实测一次「正常合入能不能走通」**，只读回字段不算验证。
+  上面那段就是教训：我读回了 `enforcement: active` 与四个规则名，便写下「现在是机器强制的」，
+  而它强制的结果是「谁也合不进去，除了绕过的人」。
+  判据：`gh api repos/…/pulls/{n} --jq '.mergeable_state'` 必须是 `clean`，不是 `blocked`。
 - **不做**长期 `develop` 分支，**不做** `release`/版本号分支：服务尚未公网部署，
   现在造版本号是给不存在的发布流程做兼容。真到部署那步，按 §4.6 另出 ADR。
 

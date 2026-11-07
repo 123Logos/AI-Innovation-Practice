@@ -413,7 +413,17 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
    （§9 末段那条，用户看不到），所以**真实可点的 5 个种子里有 1 个走这一支（20%）**。
    原稿那句「未知不装作来得及」的方向是对的，
    但正确的做法是**这项不参与**，而不是用一个中位数假装知道。
-   连带后果：`meta.weight_sum_used` 会更经常地小于 1.0，UI 必须照 §8 把它显示出来，不能让「按 4 项算的」和「按 5 项算的」两个 0.72 看起来同义。
+   连带后果：`meta.weight_sum_used` 会更经常地小于 1.0。**它留在 API 里给我们对账，不进用户界面**
+   （2026-11-07 人类负责人裁定，原话：「**不用向客户说明技术上的设计**」，针对的正是我上一轮问的
+   「总分实际按 0.85 归一这件事要不要对用户说明」）。
+   这条裁定我接受，并把它的作用域写清楚，免得它被扩大解释成「失败原因也不用说」：
+   - **不进 UI**：权重构成、哪几项免加权、`weight_sum_used`、`candidate_pairs` 这类计数、`not_measurable_v1` 这种 note。
+     对用户只需要一个分数和三档清单，剩下的会变成一个他无法采取行动的问号。
+   - **仍然进 UI**：`evidence_mode`（现在是关键词模式，不是 AI 打分）与 `degrade_reason`（你没配 Key / Key 失效 /
+     上游超时）。这两类不是技术细节，是**用户自己能修的事**，藏起来等于让他对着一个降级结果当真实结果用。
+   - **仍然进 UI**：「匹配度是参考、不是录用概率」这句定性（§11、PRD `:152`/`:218` 的要求），
+     它是关于分数含义的说明，不属于「技术设计」。
+   对账风险由 §8 承担：数字全在响应里，用户界面不显示不等于后端不记录。
 
 ---
 
@@ -517,8 +527,11 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
      且两侧读到的是两个快照）。
    - **7d 路由与闸门**：`POST` 路由 + `@limiter.limit(MATCH_RATE_LIMIT, key_func=<按用户>)`（§3）、404-not-403、
      `main.py` 处理器作用域从「两个端点」改「三个端点」的注释与测试、`client.ts` 白名单第 3 条 + §6.1 的三条断言（含路由表闭合）。
-8. 前端匹配卡（三档展示 + `evidence_mode` 与 `degrade_reason` 分句可见 + `weight_sum_used` 显示 + **必须显式点击才请求**，
-   不许在岗位详情页 `onMounted` 里自动调用：那是拿用户的 Key 换页面浏览量）+ 375px 实测。
+8. 前端匹配卡（三档展示 + `evidence_mode` 与 `degrade_reason` 分句可见 + **必须显式点击才请求**，
+   不许在岗位详情页 `onMounted` 里自动调用：那是拿用户的 Key 换页面浏览量）。
+   🚩 2026-11-07 人类负责人裁定「不用向客户说明技术上的设计」之后，这一条**去掉**了「`weight_sum_used` 显示」：
+   权重构成与计数只留在 API 响应里，界面只给分数、三档清单、以及用户能自己修的那两句（作用域见 §7.5）。
+   375px 与 1280px 的实测仍然必须做（AGENTS.md §3.1），这一条不受上面裁定影响。
 9. 第 3c 条（角标消费后端确定性端点）与第 7 条同 PR 或紧随其后，理由见 §10 末。
 10. `docs/API.md` 新章节与 §1.1 错误码可达性更新。
 
@@ -588,14 +601,15 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
 计数是否真能闭合、代理指标在真实数据上是否恒为 0，这两类只有把代码跑起来才知道——
 所以本 ADR 要求实现前先测数据（§7.3.1 的 0/40 就是这么来的），而不是把复核当成终点。
 
-### 13.2 第 7 步实现期间的合入事实（与闸门有关，和 `DEVELOPMENT.md` §10.0 同步）
+### 13.2 第 7 步实现期间的合入事实（结论已定位，细节与取证在 `DEVELOPMENT.md` §10.0）
 
-- PR #9 与 PR #10 在两条 `test` 检查都 `success`、`required_approving_review_count: 0` 的前提下，
-  GitHub 仍持续报 `mergeStateStatus: BLOCKED` / `mergeable_state: blocked`；
-  `reviewDecision` 为 `null`，`refs/pull/*/merge` 上没有 check-run，仓库级 `allow_*_merge` 与 `delete_branch_on_merge` 都查过。
-  **原因至今没有定位**，不要把「我最后合进去了」读成「闸门验证通过」：
-  PR #9 是走 `PUT /pulls/9/merge`（管理员身份，`viewerCanMergeAsAdmin: true`）合的，
-  PR #10 之后我这边被协作策略拦住自合并，需要人类负责人在页面上点。
-- 因此本切片的事实是：**实质条件（CI 绿 + 单 merge 方式 + 分支不可删/不可 force push）都满足并被读回过，
-  但「正常权限能不能合」这条路一次都没走通过**。这条差异只有在页面上才能看出来，所以在 §10 第 7 步做完之前，
-  我不声称闸门已经被端到端验证。
+- PR #9 / #10 在两条 `test` 检查都 `success`、`required_approving_review_count: 0` 的前提下持续
+  `mergeable_state: blocked`，页面文案是 **「Merging is blocked — Cannot update this protected ref.」**，
+  管理员侧只剩「Bypass rules and merge」可点。
+- 凶手是我建的 ruleset 里那条 **`update` 规则**：它挡的是对 master ref 的一切更新，而 PR 合并本身就是一次
+  ref 更新——**闸门把自己的合入路径也锁死了**。删掉该规则后 `mergeable_state` 立刻 `clean`（同一 ruleset 上
+  两次 PATCH + 一次删除的实测，过程记在 DEVELOPMENT.md §10.0）。
+- 对本文的影响：§10 第 7 步要开 3–4 个 PR，如果这条没定位，每一步都会撞上「只能绕过」，
+  而「绕过」用第三次之后就不再是例外，是习惯。所以这条属于流程阻塞项，不是记录性细节。
+- 我这边仍有一道外部约束：协作策略不允许我合自己写的 PR（`gh pr merge` 与 merge API 自合并都会被拦），
+  所以 PR #9 之后所有合入都需要人类负责人点一次。这一点不改动任何设计结论。
