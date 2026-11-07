@@ -15,8 +15,8 @@ ESLint: 9.39.4
 ESLint couldn't find an eslint.config.(js|mjs|cjs) file.
 ```
 
-`.github/workflows/ci.yml` 的前端 job 只有 `Frontend unit tests` / `Frontend type check` /
-`Frontend build` 三步，**没有 lint 步骤**。于是前端处于最坏的一种状态：脚本对外宣称存在、
+`.github/workflows/ci.yml` 只有一个 job（`test`，后端与前端步骤同属它，触发条件是 `push` + `pull_request`），
+其中前端只有 `Frontend unit tests` / `Frontend type check` / `Frontend build` 三步，**没有 lint 步骤**。于是前端处于最坏的一种状态：脚本对外宣称存在、
 实际不可运行、闸门也不存在——按 AGENTS.md 第 7 节，这属于「假装存在」，要么补真，要么删掉别骗人。
 
 本轮先用「只装 package.json 里已有的包」能不能凑出闸门做了实测（2026-11-07，探针配置文件已删）：
@@ -91,7 +91,7 @@ ESLint couldn't find an eslint.config.(js|mjs|cjs) file.
 
 - `npm run lint` 从死脚本变成真闸门。实测进入检查 **45 个文件**（16 个 `.vue` + 28 个 `.ts` +
   `eslint.config.js` 自己），其中 `src/**` 42 个。
-- 本地与 CI 都需要重新 `npm ci` 拉这 4 个包；CI 前端 job 时长略增。
+- 本地与 CI 都需要重新 `npm ci` 拉这 4 个包；CI 在同一个 `test` job 里多一个 step，时长略增。
 - **闸门上线当天就抓到 3 个真问题**，全部与格式无关：
   1. `frontend/src/stores/__tests__/job.spec.ts:146` 的 `aiError()` **定义了但从未被调用**——
      C2 轮那七种 AI 失败情形实际是各用例内联构造错误体的。已删除。

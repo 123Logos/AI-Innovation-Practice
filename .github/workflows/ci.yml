@@ -67,6 +67,12 @@ jobs:
         run: npm ci
         working-directory: frontend
 
+      - name: Frontend lint
+        # ADR-012: this step did not exist before, while package.json advertised a
+        # `lint` script that ESLint 9 could not run (no flat config in the repo).
+        run: npm run lint
+        working-directory: frontend
+
       - name: Frontend unit tests
         run: npm run test
         working-directory: frontend
