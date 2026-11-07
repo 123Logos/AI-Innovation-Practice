@@ -192,9 +192,7 @@ class ResumeService:
             contact=profile.contact,
             email=profile.email,
         )
-        skill_inputs = [
-            SkillInput(name=skill.name, self_rating=skill.self_rating) for skill in skills
-        ]
+        skill_inputs = [SkillInput(name=skill.name) for skill in skills]
         experience_inputs = [
             ExperienceInput(
                 title=experience.title,

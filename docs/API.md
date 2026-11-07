@@ -109,12 +109,12 @@
 
 ### 3.3 `skills[]` 每条的名字规矩（2026-11-07 起）
 
-`SkillInput`（`app/schemas/resume.py:32`）= `name`（1–100）+ `self_rating`（1–5）。
+`SkillInput`（`app/schemas/resume.py:32`）= 只有 `name`（1–100）一格。
 
 - **`name` 两端空白由服务端裁掉**，纯空白名 → 422（以前 `"   "` 能过 `min_length=1`，会往库里存一条空白技能，在简历里渲染成空条目）。这与岗位侧 `JobSkillInput.normalize_name` 同规矩，目的是让两张技能表只有一种规范化程度。
 - **重名判定用 `skill_name_key` = NFKC + casefold**（`app/core/skill_names.py`，与提取端点、岗位写侧同一个函数），不是裸相等。改之前 `Python` 与 `python` 能过校验、走到 INSERT，再由 `uq_skills_profile_name`（建在大小写不敏感的 `utf8mb4_0900_ai_ci` 上）抛 `IntegrityError 1062`——用户看到的是内部错误，正确答案是「技能名称重复」的 422。全角 `Ｐython` 同理。
 - 判定键**不删标点、不去内部空白**，所以 `C#` 与 `C`、`Web␣␣开发` 与 `Web␣开发` 仍是两个技能；理由与实测对照表见 ADR-011 §2.D.2。
-- `self_rating` 仍在 API 里必填，但 UI 已不采集、恒发 3，库里分布实测 `{2:1, 3:23, 4:1}`。**它是零信息常量**，ADR-013 §4 已裁定把它从 API 与库中删除（该条尚未落地）。
+- `self_rating` **已于 2026-11-07 删除**（迁移 `20261107_0013`；它此前在 UI 已不采集、渲染不使用、库里实测恒为 `{2:1, 3:23, 4:1}`，是一个零信息常量，理由见 ADR-013 §4）。旧客户端多发的那个键不会报错也不会入库（Pydantic 丢弃未知键），但**不要继续写它**。
 
 
 ## 4. 岗位

@@ -168,7 +168,6 @@ class SkillRead(BaseModel):
 
     id: str
     name: str
-    self_rating: int
 
 
 class ExperienceRead(BaseModel):

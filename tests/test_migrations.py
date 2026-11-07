@@ -58,6 +58,26 @@ def _assert_schema_after_upgrade(engine: Engine) -> None:
         )
         assert tables == EXPECTED_TABLES | {"alembic_version"}
 
+        # ADR-013 §4：`self_rating` 已随迁移 20261107_0013 从库里删除。
+        # 显式钉「列不存在」而不是靠「NOT NULL 写不进去」间接暴露——后者要等某次
+        # INSERT 才失效，而 upgrade/downgrade 链路本身会一路绿灯。
+        skill_columns = set(
+            connection.execute(
+                text(
+                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'skills'"
+                )
+            ).scalars()
+        )
+        assert "self_rating" not in skill_columns
+        assert skill_columns == {
+            "id",
+            "student_profile_id",
+            "name",
+            "created_at",
+            "updated_at",
+        }
+
         foreign_keys = dict(
             connection.execute(
                 text(

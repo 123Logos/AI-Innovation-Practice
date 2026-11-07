@@ -99,7 +99,7 @@ def _polish_body() -> dict[str, object]:
     """合法的润色请求体：必须过得了 422 校验，才会真正进入被限流包裹的端点函数。"""
     return {
         "profile": {"full_name": "张三", "contact": "13800000000"},
-        "skills": [{"name": "Python", "self_rating": 4}],
+        "skills": [{"name": "Python"}],
         "experiences": [
             {
                 "title": "校园二手交易平台",

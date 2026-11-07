@@ -61,9 +61,9 @@ def test_internal_error_uses_unified_error_response(monkeypatch) -> None:
                     "contact": "13800000000",
                 },
                 "skills": [
-                    {"name": "Python", "self_rating": 3},
-                    {"name": "SQL", "self_rating": 3},
-                    {"name": "React", "self_rating": 3},
+                    {"name": "Python"},
+                    {"name": "SQL"},
+                    {"name": "React"},
                 ],
                 "experiences": [
                     {

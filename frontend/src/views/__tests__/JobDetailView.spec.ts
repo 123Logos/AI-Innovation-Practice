@@ -108,7 +108,7 @@ function fakeAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse>
   if (url === '/profiles/me') {
     return Promise.resolve(
       envelope(config, {
-        data: { profile: { skills: [{ id: 'mine-1', name: ' FastAPI ', self_rating: 3 }] } },
+        data: { profile: { skills: [{ id: 'mine-1', name: ' FastAPI ' }] } },
         meta: { request_id: 'req-test' },
       }),
     )

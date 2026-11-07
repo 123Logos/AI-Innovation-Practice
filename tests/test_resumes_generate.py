@@ -82,9 +82,9 @@ def _profile_payload(**overrides: object) -> dict[str, object]:
         "email": "zhangsan@example.com",
         "contact": "13800000000",
         "skills": [
-            {"name": "Python", "self_rating": 4},
-            {"name": "SQL", "self_rating": 3},
-            {"name": "React", "self_rating": 3},
+            {"name": "Python"},
+            {"name": "SQL"},
+            {"name": "React"},
         ],
         "educations": _educations(),
     }
@@ -221,7 +221,7 @@ def test_generate_ignores_profile_fields_sent_in_request_body(client: TestClient
         json=_payload(
             "被污染？",
             full_name="李四",
-            skills=[{"name": "伪造技能", "self_rating": 5}],
+            skills=[{"name": "伪造技能"}],
             experiences=[{"title": "伪造经历"}],
         ),
         headers=_headers(token),
@@ -333,7 +333,7 @@ def test_generate_uses_requested_profile(client: TestClient) -> None:
             full_name="李四",
             email=None,
             contact="13900000000",
-            skills=[{"name": "PyTorch", "self_rating": 5}],
+            skills=[{"name": "PyTorch"}],
             experiences=[],
         ),
         headers=_headers(token),
@@ -356,7 +356,7 @@ def test_generate_uses_requested_profile(client: TestClient) -> None:
             full_name="李四",
             email=None,
             contact="13900000000",
-            skills=[{"name": "PyTorch", "self_rating": 5}],
+            skills=[{"name": "PyTorch"}],
         ),
         headers=_headers(token),
     )

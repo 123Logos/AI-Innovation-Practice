@@ -123,7 +123,7 @@ function freshServerProfile(): Record<string, unknown> {
     contact: '13800000000',
     created_at: '2026-11-01T10:00:00+08:00',
     updated_at: '2026-11-01T10:00:00+08:00',
-    skills: [{ id: 'skill-1', name: 'Python', self_rating: 3 }],
+    skills: [{ id: 'skill-1', name: 'Python' }],
     experiences: [
       {
         id: 'exp-1',

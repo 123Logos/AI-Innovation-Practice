@@ -32,7 +32,7 @@ function onProfileInput(field: ProfileField, event: Event): void {
 }
 
 function onSkillName(index: number, event: Event): void {
-  store.updateSkill(index, 'name', (event.target as HTMLInputElement).value)
+  store.updateSkill(index, (event.target as HTMLInputElement).value)
 }
 
 function onEducationInput(index: number, field: keyof EducationDraft, event: Event): void {

@@ -41,8 +41,8 @@ def _headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _skill(name: str, rating: int = 3) -> dict[str, object]:
-    return {"name": name, "self_rating": rating}
+def _skill(name: str) -> dict[str, object]:
+    return {"name": name}
 
 
 def _experience(
@@ -84,7 +84,7 @@ def _profile_payload(**overrides: object) -> dict[str, object]:
         "full_name": "张三",
         "email": "zhangsan@example.com",
         "contact": "13800000000",
-        "skills": [_skill("Python", 4), _skill("SQL"), _skill("React")],
+        "skills": [_skill("Python"), _skill("SQL"), _skill("React")],
         "experiences": [_experience()],
         "educations": [_education()],
     }
@@ -301,7 +301,7 @@ def test_put_profile_replaces_children_on_second_call(client: TestClient) -> Non
         PROFILES_URL,
         json=_profile_payload(
             full_name="李四",
-            skills=[_skill("Go", 5), _skill("Kubernetes"), _skill("Linux"), _skill("MySQL")],
+            skills=[_skill("Go"), _skill("Kubernetes"), _skill("Linux"), _skill("MySQL")],
             experiences=[_experience("实习一"), _experience("实习二", "2023-01-01", None)],
         ),
         headers=_headers(token),
@@ -424,16 +424,6 @@ def test_put_profile_stores_resume_email_without_touching_login_email(
     assert cleared.json()["data"]["profile"]["email"] is None
     with get_engine().connect() as connection:
         assert connection.execute(text("SELECT email FROM student_profiles")).scalar_one() is None
-
-
-def test_put_profile_rejects_invalid_rating(client: TestClient) -> None:
-    token = _register_and_login(client)
-
-    for rating in (0, 6):
-        payload = _profile_payload(
-            skills=[_skill("Python", rating), _skill("SQL"), _skill("React")]
-        )
-        assert client.put(PROFILES_URL, json=payload, headers=_headers(token)).status_code == 422
 
 
 def test_put_profile_rejects_duplicate_skill_names(client: TestClient) -> None:
@@ -760,7 +750,7 @@ def test_create_profile_copy_from_deep_copies_content(client: TestClient) -> Non
 
     updated = client.put(
         f"{PROFILES_BASE}/{copied['id']}",
-        json=_profile_payload(full_name="李四", skills=[_skill("Go", 5)]),
+        json=_profile_payload(full_name="李四", skills=[_skill("Go")]),
         headers=_headers(token),
     )
     assert updated.status_code == 200, updated.text

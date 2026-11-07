@@ -10,7 +10,7 @@
  *   教育 edu_end   空串 → null（至今）
  *
  * 技能熟练度（`self_rating`）与年级（`grade`）已从 UI 移除：
- * 前者类型保留、提交时统一写 `DEFAULT_SKILL_RATING`（3）；
+ * 前者于 2026-11-07 连后端字段与库列一起删掉（迁移 20261107_0013，理由见 ADR-013 §4）；
  * 后者前后端都不再传写，数据库列保留但不再参与业务。
  *
  * 专业（`major`）自 T7.6 起只属于「教育经历」的每一段，主表不再有该字段，
@@ -260,9 +260,6 @@ export const GENERATE_MIN = { skills: 1, experiences: 1, educations: 1 } as cons
 /** 学历下拉选项，顺序与后端枚举声明一致。 */
 export const DEGREE_OPTIONS: readonly Degree[] = ['专科', '本科', '硕士', '博士']
 
-/** UI 已不再采集熟练度；提交时一律用它填后端必填字段。 */
-export const DEFAULT_SKILL_RATING = 3
-
 /**
  * 中国大陆手机号；与后端 `app/schemas/profile.py::PHONE_PATTERN` 同源，
  * 两边必须同步修改，否则前端放过、后端 422。
@@ -296,7 +293,6 @@ const LAST_PROFILE_STORAGE_PREFIX = 'resume_last_profile:'
 
 export interface SkillDraft {
   name: string
-  self_rating: number
 }
 
 export interface ExperienceDraft {
@@ -436,10 +432,7 @@ function createEmptyDraft(): ProfileDraft {
     paper_size: 'A4',
     theme: DEFAULT_THEME,
     layout_config: createDefaultLayout(),
-    skills: Array.from({ length: 3 }, () => ({
-      name: '',
-      self_rating: DEFAULT_SKILL_RATING,
-    })),
+    skills: Array.from({ length: 3 }, () => ({ name: '' })),
     experiences: [
       {
         title: '',
@@ -463,10 +456,7 @@ function draftFromProfile(profile: ProfileRead): ProfileDraft {
     theme: toTheme(profile.theme),
     // D5.3：后端读侧恒返回解析后的配置；`?? null` 只是兼容「D5.2 之前缓存的响应」。
     layout_config: toLayoutConfig(profile.layout_config),
-    skills: profile.skills.map((skill) => ({
-      name: skill.name,
-      self_rating: skill.self_rating,
-    })),
+    skills: profile.skills.map((skill) => ({ name: skill.name })),
     experiences: profile.experiences.map((experience) => ({
       title: experience.title,
       start_date: experience.start_date,
@@ -634,7 +624,7 @@ function readRememberedProfileId(ownerId: string): string | null {
  * - 已下线的 `grade`（年级）直接丢弃；
  * - T7.6 已删除主表 `major`（专业），旧草稿里的顶层 `major` 一并丢弃——
  *   重建对象时不拷贝该键，运行时自然消失；
- * - 已下线的 `self_rating` 抹平为默认值；
+ * - 已废弃的 `self_rating`：老草稿里可能带着这一格，重建对象时不拷贝，运行时自然消失；
  * - T7.5 之前的草稿没有 `educations`，补空数组而不是报错；
  * - 用户反馈轮之前的草稿没有 `email`，补空串；
  * - D5.1 之前的草稿没有 `paper_size`，补 A4（否则升级后弹出的「恢复草稿」
@@ -652,7 +642,7 @@ function normalizeDraft(raw: ProfileDraft): ProfileDraft {
     layout_config: toLayoutConfig(raw.layout_config),
     skills: (raw.skills ?? [])
       .filter((skill) => skill && typeof skill.name === 'string')
-      .map((skill) => ({ name: skill.name, self_rating: DEFAULT_SKILL_RATING })),
+      .map((skill) => ({ name: skill.name })),
     experiences: (raw.experiences ?? [])
       .filter((experience) => experience && typeof experience.title === 'string')
       .map((experience) => ({
@@ -696,8 +686,8 @@ function meaningfulEducations(source: ProfileDraft): EducationDraft[] {
 /**
  * 用于「草稿 vs 服务端」比较的归一化序列化。
  *
- * 刻意忽略 `self_rating`：UI 已不采集它，提交后恒为 3，
- * 若把它算进比较，一份本来没改过的草稿也会被判成「有未保存修改」。
+ * 技能只剩 `name` 一格（`self_rating` 已于 2026-11-07 删除），所以这里不再需要
+ * 「忽略某个恒定量」的特例。
  * 同时也只比较「有效行」，否则一份 3 个空技能行的空白骨架
  * 会跟服务端的 0 条技能判成「有差异」，每次进页面都弹恢复提示。
  * 顶层 `major` 已不存在（T7.6），无需再参与比较。
@@ -978,20 +968,16 @@ export const useResumeStore = defineStore('resume', () => {
     return section.title.trim() || DEFAULT_SECTION_TITLES[section.id]
   }
 
-  function updateSkill(index: number, field: keyof SkillDraft, value: string | number): void {
+  function updateSkill(index: number, value: string): void {
     const skill = draft.skills[index]
     if (!skill) return
-    if (field === 'self_rating') {
-      skill.self_rating = Math.min(5, Math.max(1, Number(value) || DEFAULT_SKILL_RATING))
-    } else {
-      skill.name = String(value)
-    }
+    skill.name = value
     markDirty()
   }
 
   function addSkill(): void {
     if (!canAddSkill.value) return
-    draft.skills.push({ name: '', self_rating: DEFAULT_SKILL_RATING })
+    draft.skills.push({ name: '' })
     markDirty()
   }
 
@@ -1087,11 +1073,7 @@ export const useResumeStore = defineStore('resume', () => {
               title: sectionTitle(section),
             })),
           },
-      skills: meaningfulSkills(draft).map((skill) => ({
-        name: skill.name.trim(),
-        // 后端 `SkillInput.self_rating` 仍必填（1–5），但 UI 不再采集，统一写 3。
-        self_rating: DEFAULT_SKILL_RATING,
-      })),
+      skills: meaningfulSkills(draft).map((skill) => ({ name: skill.name.trim() })),
       experiences: meaningfulExperiences(draft).map((experience) => ({
         title: experience.title.trim(),
         start_date: experience.start_date,
@@ -1562,10 +1544,7 @@ export const useResumeStore = defineStore('resume', () => {
     }
 
     // 只发「有效行」：空技能行与没填标题的经历行对模型没有意义，还会白烧额度。
-    const skills = meaningfulSkills(draft).map((skill) => ({
-      name: skill.name.trim(),
-      self_rating: skill.self_rating,
-    }))
+    const skills = meaningfulSkills(draft).map((skill) => ({ name: skill.name.trim() }))
     const experiences = meaningfulExperiences(draft).map((experience) => ({
       title: experience.title.trim(),
       description: experience.description,
@@ -1741,7 +1720,7 @@ export const useResumeStore = defineStore('resume', () => {
   /**
    * 读取本地草稿并判断是否值得提示恢复。
    *
-   * 判定用「内容是否与服务端不同」（忽略 self_rating），而不是裸比时间戳：
+   * 判定用「内容是否与服务端不同」，而不是裸比时间戳：
    * 后端 `updated_at` 是 UTC naive 字符串，前端 `Date.parse` 会按本地时区解析，
    * 直接比时间会稳定偏 8 小时，误判成「草稿更新」。时间只用于提示文案。
    */
