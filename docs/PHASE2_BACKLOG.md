@@ -144,14 +144,19 @@
   - 现状（2026-11-07 复核）：
     - **(a) 已达成**：`.github/workflows/ci.yml` 在 master push 上真实跑绿，覆盖
       `ruff format --check` / `ruff check` / `mypy` / `lint-imports` / `pytest`（带 MySQL 8.0 service，
-      含 upgrade+downgrade 迁移检查）/ `npm ci` / `vitest` / `vue-tsc` / `vite build`。
+      含 upgrade+downgrade 迁移检查）/ `eslint`（ADR-012，2026-11-07 才真实存在）/ `npm ci` /
+      `vitest` / `vue-tsc` / `vite build`。
       上面那句「只在本地验证过」已经过期。
     - **(b) 未达成**：公网部署没有任何证据。仓库里只有 `Dockerfile.backend` / `Dockerfile.frontend` /
       `docker-compose.yml`，而 `ADR-008-docker-configs-unverified.md` 自己标注了**未验证**。
       不要从这些文件推断成「已部署」。
-  - 口径待定：本条与文末出口标准写的是「CI 在 **PR** 上真实绿过」。实际仓库是单分支 trunk-based，
-    `gh pr list --state all` 为空、从未有过 PR。按字面判未达成；若接受「master push 上绿」等价则达成。
-    **需要人类负责人定口径**，不要由文档默认。
+  - 口径已定（字面判达成）：2026-11-07 起本仓库改为 PR 合入流程（约定见 `docs/DEVELOPMENT.md` §10.0），
+    PR #1 与 PR #2 的 `test` job 均真实跑绿。原始输出摘自 PR #1 的运行日志（run 42359183399）：
+    `All checks passed!` / `Success: no issues found in 39 source files` /
+    `Contracts: 5 kept, 0 broken.` / `327 passed in 122.75s` / `> eslint .`（前端 lint 首次执行，0 问题）/
+    `Test Files 11 passed (11)` / `Tests 150 passed` / `✓ built in 5.12s`。
+    **仍未做的事**：GitHub 侧的分支保护与「必须 review 才能合」没有配置——现在是我自己开 PR、自己合。
+    如果口径要求的是「机器强制的 PR 闸门」，那这半条还没满足，需要人类负责人在仓库设置里开保护。
 
 ---
 
@@ -168,7 +173,8 @@
 1. **满足**。三项均已实现且都有自动化用例（见上文各条的「现状（2026-11-07 复核）」）。
    其中第 3 项「纸面回写」此前**只有手动步骤**，按本文件开头那条规则本来不该勾选，
    本轮补了 `ResumePreview.spec.ts` 之后才成立。
-2. **口径待定**（见 §三 第 8 条）：CI 真实在跑且绿，但仓库从未有过 PR。
+2. **满足（字面口径）**：2026-11-07 起仓库改用 PR 合入，PR #1 / PR #2 的 CI 均真实跑绿，
+   原始输出见 §三 第 8 条。机器强制的那半（分支保护 + 必须 review）仍未配置，属人类负责人决定。
 3. **满足**：2026-11-07 人类负责人宣布 5 名真实用户测试完成（在另一套数据库上进行，数据已归档，
    用户无额外建议）。这一条是外部事实，仓库内无法自证，按 §1 的口径以人类负责人确认为准。
 
