@@ -64,7 +64,12 @@ dev 库实测：`published` 岗位 **0** 条，`draft` 3 条，回收站 1 条�
 ### 1.6 一个我自己搞错的点（防止实现时照抄我的错误）
 岗位**列表**视图 `JobSummary.skills` 有 `max_length=6`（`app/schemas/job.py:253`），岗位**详情** `JobRead.skills` 没有上限（`:267` 起）。实测：用 15 条技能构造 `JobRead` → 通过，`len == 15`；`MAX_SKILLS_PER_JOB = 15`。所以匹配的分母必须从仓储 `list_skills(job_id)` 取全量，**不能**从列表载荷算。（本文初稿把这条写反成「JobRead 只回 6 条」，已实测纠正。）
 
-另：`max_length=6` 在 `JobSummary` 上是否真的会拦下 7 条，我没有测出结论性证据——只测了 `JobRead`。列表侧的截断行为留给实现时用一条集成测试钉死，不在本文下断言。
+另：`JobSummary.skills` 上的 `max_length=6` **不是校验**，而是配合服务层的显式切片——
+`SUMMARY_SKILL_LIMIT = 6`（`app/services/job_service.py:81-82`）在构造列表项时做
+`skills[:SUMMARY_SKILL_LIMIT]`（`:534`），所以 15 条技能永远不会撞上那个 `max_length`。
+也就是说：**同一个岗位在列表里只有前 6 条技能，在详情里才是全量**。任何「按列表数据算匹配」的实现
+都会静默地把分母算小，这不是理论风险，是载荷形状决定的必然结果。
+
 
 ---
 
