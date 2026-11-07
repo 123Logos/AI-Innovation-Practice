@@ -157,6 +157,16 @@
     `Test Files 11 passed (11)` / `Tests 150 passed` / `✓ built in 5.12s`。
     **仍未做的事**：GitHub 侧的分支保护与「必须 review 才能合」没有配置——现在是我自己开 PR、自己合。
     如果口径要求的是「机器强制的 PR 闸门」，那这半条还没满足，需要人类负责人在仓库设置里开保护。
+  - **2026-11-07 复核（上一段的「没有配置」已过期）**：人类负责人把配置方式交给我
+    （原话「使用你建议的API建保护分支那套方案配置」），已用 rulesets API 建成并逐字段读回，
+    ruleset `26754995`、`enforcement: active`、作用于 `~DEFAULT_BRANCH`：PR 必需、状态检查 context `test` 必需
+    且 `strict_required_status_checks_policy: true`、只允许 merge commit、分支禁删禁 force push。
+    全字段与实现细节见 `docs/DEVELOPMENT.md` §10.0。
+    **两个仍然成立的缺口**：① `required_approving_review_count` 是 **0**，即「必须 review」这半条
+    依然没有机器强制——单人团队里 reviewer 就是同一个人，设成 1 只会逼我自己点批准，那是仪式不是闸门；
+    ② `bypass_actors` 保留了管理员 `bypass_mode: always`（读回 `current_user_can_bypass: "always"`），
+    所以闸门对非管理员是硬的，对管理员只是默认路径。这两条是我按「不留假闸门」的原则显式选择的结果，
+    不是遗漏；要收紧就在 §10.0 记的那两个字段上改。
 
 ---
 
@@ -174,7 +184,9 @@
    其中第 3 项「纸面回写」此前**只有手动步骤**，按本文件开头那条规则本来不该勾选，
    本轮补了 `ResumePreview.spec.ts` 之后才成立。
 2. **满足（字面口径）**：2026-11-07 起仓库改用 PR 合入，PR #1 / PR #2 的 CI 均真实跑绿，
-   原始输出见 §三 第 8 条。机器强制的那半（分支保护 + 必须 review）仍未配置，属人类负责人决定。
+   原始输出见 §三 第 8 条。分支保护那半条同日由 ruleset `26754995` 落地（PR 必需 + `test` 检查必需且严格）；
+   「必须 review」仍是 `required_approving_review_count: 0`，且管理员保留 `always` 绕过——
+   两条都是显式选择而非未配置，理由与字段见 §三 第 8 条与 `docs/DEVELOPMENT.md` §10.0。
 3. **满足**：2026-11-07 人类负责人宣布 5 名真实用户测试完成（在另一套数据库上进行，数据已归档，
    用户无额外建议）。这一条是外部事实，仓库内无法自证，按 §1 的口径以人类负责人确认为准。
 

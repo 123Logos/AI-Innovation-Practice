@@ -147,6 +147,21 @@ MVP 不引入未经验证的全网爬虫；岗位变化雷达只使用合法来�
 - 合入路径是 PR：CI 在 PR 上跑绿才合。此前所有历史都是 `master` 直推，PR 上从未跑过 CI，
   所以需求池出口标准「CI 在 PR 上真实绿过」当时是不可满足的；本约定是让它第一次可满足。
 - ADR 与实现的先后：ADR 先合，或作为同一 PR 的第一个提交；实现提交不得跑在决策提交之前。
+- **合并后立即删分支**：PR 合完就删远端分支（合并按钮勾选删除，或 `gh pr close --delete-branch`），
+  本地分支在切回 `master` 后删。理由不是整洁：一条已经合入的分支留着，下一次开工时很容易在它上面
+  继续提交，于是「一条切片一条分支」变成「一条切片两条历史」。
+  实测：2026-11-07 清理后远端只剩 `master` 一条分支（`gh api repos/…/branches` → `["master"]`）。
+- 上面两条现在是**机器强制**的，不是约定：master 由 ruleset `26754995`（`enforcement: active`，
+  作用于 `~DEFAULT_BRANCH`）保护，规则为 `pull_request` + `update` + `deletion` + `required_status_checks`，
+  逐字段读回值：`required_approving_review_count: 0`、`allowed_merge_methods: ["merge"]`（只允许 merge commit，
+  保留「ADR 提交在前、实现在后」的顺序）、状态检查 context `test`、`strict_required_status_checks_policy: true`
+  （合入前必须先 rebase/merge 到最新 master，防「两个各自绿的 PR 合出红的 master」）、
+  分支不可删、不可 force push。
+  **一个必须知道的口子**：`bypass_actors` 里有一条 `actor_id: 5 / actor_type: RepositoryRole / bypass_mode: always`，
+  即仓库管理员可以无条件绕过全部规则，`current_user_can_bypass: "always"`。所以闸门对非管理员是硬的，
+  对管理员只是默认路径——管理员直推 `master` 仍然物理可行，禁止它靠本节，而不是靠 GitHub。
+  没把它关掉的原因：需要保留一次紧急回滚通道。若要改成「管理员也要走 PR」，把该 actor 的 `bypass_mode`
+  改为 `never` 或直接删掉 `bypass_actors`，改前先想清楚应急路径。
 - **不做**长期 `develop` 分支，**不做** `release`/版本号分支：服务尚未公网部署，
   现在造版本号是给不存在的发布流程做兼容。真到部署那步，按 §4.6 另出 ADR。
 
