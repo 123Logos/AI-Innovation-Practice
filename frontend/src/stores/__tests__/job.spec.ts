@@ -160,7 +160,7 @@ function fakeAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse>
     return Promise.resolve(
       envelope(config, {
         data: {
-          profile: { skills: mySkillNamesFromServer.map((name, index) => ({ id: `s${index + 1}`, name, self_rating: 3 })) },
+          profile: { skills: mySkillNamesFromServer.map((name, index) => ({ id: `s${index + 1}`, name })) },
         },
         meta: { request_id: 'req-test' },
       }),

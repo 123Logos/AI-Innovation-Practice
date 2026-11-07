@@ -250,10 +250,7 @@ class ProfileService:
                 theme=self._resolve_theme(profile, payload),
                 layout_config=self._resolve_layout_config(profile, payload),
             ),
-            [
-                SkillDraft(name=skill.name, self_rating=skill.self_rating)
-                for skill in payload.skills
-            ],
+            [SkillDraft(name=skill.name) for skill in payload.skills],
             [
                 ExperienceDraft(
                     title=experience.title,

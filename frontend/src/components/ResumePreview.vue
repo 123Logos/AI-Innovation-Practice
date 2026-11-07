@@ -510,7 +510,7 @@ function updateExpDate(
                     data-placeholder="技能"
                     @blur="
                       commitText($event, skill.name, (value) => {
-                        store.updateSkill(index, 'name', value)
+                        store.updateSkill(index, value)
                         return value
                       })
                     "

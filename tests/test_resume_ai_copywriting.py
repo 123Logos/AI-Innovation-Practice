@@ -54,8 +54,8 @@ def _polish_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "profile": {"full_name": "张三", "contact": "13800000000", "email": "zhangsan@example.com"},
         "skills": [
-            {"name": "Python", "self_rating": 4},
-            {"name": "SQL", "self_rating": 3},
+            {"name": "Python"},
+            {"name": "SQL"},
         ],
         "experiences": [
             {
@@ -186,7 +186,7 @@ def _complete_profile(client: TestClient, token: str) -> None:
         json={
             "full_name": "张三",
             "contact": "13800000000",
-            "skills": [{"name": "Python", "self_rating": 4}],
+            "skills": [{"name": "Python"}],
             "experiences": [
                 {
                     "title": "校园二手交易平台",

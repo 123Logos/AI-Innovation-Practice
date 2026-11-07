@@ -101,8 +101,8 @@ class TemplateResumeGenerator(ResumeGenerator):
                 f'<span class="contact-email">{escape(profile.email)}</span>'
             )
 
-        # 只渲染技能名：熟练度已从产品中移除，`self_rating` 仅作为入参保留校验，
-        # 不得写入 HTML，否则会作为脏数据落进 `resumes.content_html`。
+        # 只渲染技能名：熟练度已从产品中移除（`self_rating` 于 2026-11-07 随迁移
+        # 20261107_0013 从库里删掉），写进 HTML 只会成为 `content_html` 里的脏数据。
         skill_items = "".join(
             f'<span class="skill-item">{escape(skill.name)}</span>' for skill in skills
         )

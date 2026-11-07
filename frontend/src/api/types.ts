@@ -77,7 +77,6 @@ export interface MeResponse {
 /** 后端 `SkillInput`：名称 + 1–5 自评。 */
 export interface SkillInput {
   name: string
-  self_rating: number
 }
 
 /** 后端 `ExperienceInput`：日期为 `YYYY-MM-DD`，`end_date` 为 null 表示「至今」。 */

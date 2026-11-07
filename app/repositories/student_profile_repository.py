@@ -29,7 +29,6 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
-    SmallInteger,
     String,
     Text,
     bindparam,
@@ -113,7 +112,6 @@ class Skill(ProfileBase):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     student_profile_id: Mapped[str] = mapped_column(String(36), nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
-    self_rating: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
@@ -172,7 +170,6 @@ class ProfileDraft:
 @dataclass(frozen=True)
 class SkillDraft:
     name: str
-    self_rating: int
 
 
 @dataclass(frozen=True)
@@ -411,7 +408,6 @@ class StudentProfileRepository:
                     id=str(uuid4()),
                     student_profile_id=target.id,
                     name=skill.name,
-                    self_rating=skill.self_rating,
                     created_at=_staggered(now, index),
                     updated_at=now,
                 )
@@ -490,7 +486,6 @@ class StudentProfileRepository:
                     id=str(uuid4()),
                     student_profile_id=profile.id,
                     name=skill.name,
-                    self_rating=skill.self_rating,
                     created_at=_staggered(now, index),
                     updated_at=now,
                 )

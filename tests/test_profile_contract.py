@@ -51,7 +51,8 @@ def _frontend_payload() -> dict[str, object]:
 
     逐字段对应 `frontend/src/stores/resume.ts`：
     - `email` 空串 → `null`；
-    - `self_rating` 固定 3（UI 不采集，但后端 `SkillInput` 必填 1–5）；
+    - 技能只剩 `{"name": ...}`——`self_rating` 于 2026-11-07 随迁移 20261107_0013 删除
+      （迁移与理由见 ADR-013 §4）；
     - `end_date` 空串 → `null`（「至今」）；
     - `edu_start` / `edu_end` 由 `YYYY-MM` 补成当月 1 号，空 → `null`；
     - 不再有顶层 `major` / `grade`。
@@ -66,8 +67,8 @@ def _frontend_payload() -> dict[str, object]:
         # 草稿没调过顺序 → 前端发 `null`（让库里保持 NULL，将来能跟上新默认顺序）。
         "layout_config": None,
         "skills": [
-            {"name": "Python", "self_rating": 3},
-            {"name": "SQL", "self_rating": 3},
+            {"name": "Python"},
+            {"name": "SQL"},
         ],
         "experiences": [
             {
@@ -114,7 +115,7 @@ def test_frontend_payload_is_accepted_by_backend_model() -> None:
     assert set(payload) == FRONTEND_PAYLOAD_KEYS
     assert parsed.full_name == "张三"
     assert parsed.contact == "13800000000"
-    assert [skill.self_rating for skill in parsed.skills] == [3, 3]
+    assert [skill.name for skill in parsed.skills] == ["Python", "SQL"]
     assert parsed.experiences[0].end_date is None
     assert parsed.educations[0].edu_start.isoformat() == "2021-09-01"
     assert parsed.educations[0].edu_end is None

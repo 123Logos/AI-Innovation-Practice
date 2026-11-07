@@ -64,9 +64,9 @@ function seedDraft() {
   store.draft.full_name = '张三'
   store.draft.contact = '13800000000'
   store.draft.skills = [
-    { name: 'Python', self_rating: 3 },
-    { name: '', self_rating: 3 },
-    { name: 'SQL', self_rating: 3 },
+    { name: 'Python' },
+    { name: '' },
+    { name: 'SQL' },
   ]
   store.draft.experiences = [
     {
@@ -105,7 +105,7 @@ describe('polish 的前置拦截', () => {
     store.draft.skills = []
     expect(store.validateForPolish()).toContain('技能')
 
-    store.draft.skills = [{ name: 'Python', self_rating: 3 }]
+    store.draft.skills = [{ name: 'Python' }]
     store.draft.experiences = []
     expect(store.validateForPolish()).toContain('项目经历')
 

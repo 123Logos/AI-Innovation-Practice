@@ -36,10 +36,12 @@ class SkillInput(BaseModel):
     库里两张技能表必须只有一种规范化程度，否则「后端键判未覆盖、前端角标判已具备」
     会在同一屏上同时出现（ADR-013 §1.3）。大小写/全半角**不在这里折**——展示要保留
     用户自己写的样子，判定交给 `skill_name_key`。
+
+    2026-11-07 起没有 `self_rating`：那一格在 UI 已下线、渲染不使用、库里恒为 3，
+    却仍要求每个客户端编一个 1–5 的数。迁移与理由见 ADR-013 §4。
     """
 
     name: str = Field(min_length=1, max_length=100)
-    self_rating: int = Field(ge=1, le=5)
 
     @model_validator(mode="after")
     def normalize_name(self) -> "SkillInput":
