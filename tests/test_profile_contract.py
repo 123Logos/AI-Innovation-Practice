@@ -37,6 +37,7 @@ FRONTEND_PAYLOAD_KEYS = {
     "full_name",
     "email",
     "contact",
+    "target_role",
     "paper_size",
     "theme",
     "layout_config",
@@ -61,6 +62,7 @@ def _frontend_payload() -> dict[str, object]:
         "full_name": "张三",
         "email": "zhangsan@example.com",
         "contact": "13800000000",
+        "target_role": "大模型算法实习生",
         # 这两项由 `toUpsertPayload()` 显式带上（当前草稿里的值，不是省略）。
         "paper_size": "A4",
         "theme": "forest",

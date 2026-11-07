@@ -25,7 +25,7 @@ const store = useResumeStore()
 const maxMonth = currentMonthValue()
 const maxDate = todayIsoDate()
 
-type ProfileField = 'full_name' | 'email' | 'contact'
+type ProfileField = 'full_name' | 'email' | 'contact' | 'target_role'
 
 function onProfileInput(field: ProfileField, event: Event): void {
   store.updateProfileField(field, (event.target as HTMLInputElement).value)
@@ -81,6 +81,16 @@ function onExperienceInput(
           :value="store.draft.email"
           placeholder="选填，会显示在简历的联系方式旁"
           @input="onProfileInput('email', $event)"
+        />
+      </label>
+      <label class="field">
+        <span>目标岗位</span>
+        <input
+          type="text"
+          maxlength="200"
+          :value="store.draft.target_role"
+          placeholder="选填，如「大模型算法实习生」；填了才能算这一项匹配"
+          @input="onProfileInput('target_role', $event)"
         />
       </label>
       <p class="hint">带 <b class="required">*</b> 的项在「生成简历」时才校验；随时可保存草稿。</p>

@@ -489,6 +489,54 @@ def test_put_profile_rejects_padded_variant_duplicate_skill_names(client: TestCl
     assert response.status_code == 422
 
 
+def test_put_profile_round_trips_target_role(client: TestClient) -> None:
+    """`target_role` 是档案内容的一部分：写进去要读得回来，且两端空白不留（ADR-013 §5）。"""
+    token = _register_and_login(client)
+    payload = _profile_payload(target_role="  大模型算法实习生  ")
+
+    response = client.put(PROFILES_URL, json=payload, headers=_headers(token))
+
+    assert response.status_code == 200
+    profile = response.json()["data"]["profile"]
+    assert profile["target_role"] == "大模型算法实习生"
+    read_back = client.get(PROFILES_URL, headers=_headers(token))
+    assert read_back.json()["data"]["profile"]["target_role"] == "大模型算法实习生"
+
+
+def test_put_profile_stores_blank_target_role_as_null(client: TestClient) -> None:
+    """纯空白折成 `NULL`，不留第二种「没填」的写法。
+
+    这不是格式洁癖：匹配侧靠「填没填」决定这一项是退出加权还是记 0.2（ADR-013 §5.1）。
+    库里同时存在 `NULL` 和 `'   '` 会让「没填的人不被惩罚」取决于用户有没有敲过空格。
+    """
+    token = _register_and_login(client)
+    response = client.put(
+        PROFILES_URL, json=_profile_payload(target_role="   "), headers=_headers(token)
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["profile"]["target_role"] is None
+
+
+def test_put_profile_without_target_role_clears_it(client: TestClient) -> None:
+    """`PUT` 是整体覆盖：不带这一格 = 清空，与 `email` 同一语义。
+
+    故意把「会清掉」写成断言而不是注释——`paper_size`/`theme` 是「缺省不改动」的另一套
+    语义，两个字段族挨在一起，靠读代码猜不出来。前端因此必须每次都带上它。
+    """
+    token = _register_and_login(client)
+    client.put(
+        PROFILES_URL, json=_profile_payload(target_role="前端开发实习生"), headers=_headers(token)
+    )
+
+    payload = _profile_payload()
+    payload.pop("target_role", None)
+    response = client.put(PROFILES_URL, json=payload, headers=_headers(token))
+
+    assert response.status_code == 200
+    assert response.json()["data"]["profile"]["target_role"] is None
+
+
 def test_put_profile_rejects_blank_skill_name(client: TestClient) -> None:
     """纯空格不是技能名：`min_length=1` 单独挡不住它，必须裁完再判空。
 

@@ -102,6 +102,8 @@ class StudentProfile(ProfileBase):
     # T7.6：`major` 列已随迁移删除，专业只存在于 `educations.major`。
     grade: Mapped[str] = mapped_column(String(50), nullable=False)
     contact: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: ADR-013 §5：目标岗位偏好，自由文本、可空。没填时匹配侧走权重归一，不记 0 分。
+    target_role: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
@@ -161,6 +163,7 @@ class ProfileDraft:
     full_name: str
     email: str | None
     contact: str
+    target_role: str | None = None
     paper_size: str = "A4"
     theme: str = "forest"
     #: `None` = 恢复默认顺序（写进库里就是 SQL NULL）。
@@ -354,6 +357,7 @@ class StudentProfileRepository:
             email=None,
             grade="",
             contact="",
+            target_role=None,
             created_at=now,
             updated_at=now,
         )
@@ -396,6 +400,7 @@ class StudentProfileRepository:
             email=source.email,
             grade=source.grade,
             contact=source.contact,
+            target_role=source.target_role,
             created_at=now,
             updated_at=now,
         )
@@ -471,6 +476,7 @@ class StudentProfileRepository:
         profile.full_name = draft.full_name
         profile.email = draft.email
         profile.contact = draft.contact
+        profile.target_role = draft.target_role
         profile.paper_size = draft.paper_size
         profile.theme = draft.theme
         profile.layout_config = draft.layout_config
