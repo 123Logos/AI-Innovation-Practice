@@ -10,7 +10,7 @@
  * 1. 「更多」菜单的开关（含 `aria-expanded`、Esc、点外关闭）；
  * 2. 窄屏下「岗位库」仍然是文字链接、且没有被收进菜单；
  * 3. `handleLogout()` 之后岗位 store 为空，并钉住 `resume.reset()` / `job.reset()`
- *    都在 `auth.logout()` **之前**这个顺序——顺序反了就会出现「下一个账号
+ *    都在 `auth.signOut()` **之前**这个顺序——顺序反了就会出现「下一个账号
  *    短暂看到上一个人的数据」那一帧。
  *
  * 路由用一份本地 memory router，而不是 `@/router`：
@@ -23,7 +23,8 @@ import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import { createMemoryHistory, createRouter, type Router, type RouteRecordRaw } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { TOKEN_STORAGE_KEY } from '@/api/client'
+import { authApi } from '@/api'
+import { REFRESH_TOKEN_STORAGE_KEY, TOKEN_STORAGE_KEY } from '@/api/client'
 import type { jobsApi as JobsContract } from '@/api'
 import AppTopBar from '@/components/AppTopBar.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -241,7 +242,7 @@ describe('登出清空岗位 store（handleLogout 的不变量）', () => {
     expect(router.currentRoute.value.name).toBe('login')
   })
 
-  it('顺序判据：resume.reset() 与 job.reset() 都发生在 auth.logout() 之前', async () => {
+  it('顺序判据：resume.reset() 与 job.reset() 都发生在 auth.signOut() 之前', async () => {
     const { wrapper } = await mountTopBar()
     const calls: string[] = []
     vi.spyOn(useResumeStore(), 'reset').mockImplementation(() => {
@@ -250,13 +251,49 @@ describe('登出清空岗位 store（handleLogout 的不变量）', () => {
     vi.spyOn(useJobStore(), 'reset').mockImplementation(() => {
       calls.push('job.reset')
     })
-    vi.spyOn(useAuthStore(), 'logout').mockImplementation(() => {
-      calls.push('auth.logout')
+    vi.spyOn(useAuthStore(), 'signOut').mockImplementation(async () => {
+      calls.push('auth.signOut')
     })
 
     await wrapper.find('.logout-button').trigger('click')
     await flushPromises()
 
-    expect(calls).toEqual(['resume.reset', 'job.reset', 'auth.logout'])
+    expect(calls).toEqual(['resume.reset', 'job.reset', 'auth.signOut'])
+  })
+
+  /**
+   * 这一条钉的是一个**曾经真实存在的死 UI**：按钮绑的是 `auth.signingOut` 并显示「退出中…」，
+   * 而 `signingOut` 只有 `signOut()` 会置真——那时顶栏调的是 `logout()`，
+   * 所以这两个状态永远不可能出现，测试也无从写起。
+   *
+   * 注意这里**不能** mock `signOut()` 本身：`signingOut` 正是它内部置的，
+   * 把它换掉等于把要测的东西测没了（会绿，但什么都没验）。
+   * 只把最外层的撤销请求挂在半空，让真实的 store 逻辑跑完。
+   */
+  it('撤销请求在途时按钮禁用并显示「退出中…」，落地后恢复', async () => {
+    const { wrapper } = await mountTopBar()
+    localStorage.setItem(REFRESH_TOKEN_STORAGE_KEY, 'refresh-token-under-test')
+    // `settle` 初值是空函数：忘了调用只会让这条用例超时（响的），
+    // 而不是像 `release?.()` 那样静默跳过——那会留下一条恒绿的假用例。
+    let settle = (): void => undefined
+    const revoke = vi.spyOn(authApi, 'logout').mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = () => resolve()
+        }),
+    )
+
+    await wrapper.find('.logout-button').trigger('click')
+    await flushPromises()
+
+    expect(revoke).toHaveBeenCalledTimes(1)
+    expect(revoke).toHaveBeenCalledWith('refresh-token-under-test')
+    const busy = wrapper.find('.logout-button')
+    expect(busy.attributes('disabled')).toBeDefined()
+    expect(busy.text()).toContain('退出中')
+
+    settle()
+    await flushPromises()
+    expect(wrapper.find('.logout-button').text()).toContain('退出登录')
   })
 })

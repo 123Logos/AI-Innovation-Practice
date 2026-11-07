@@ -25,7 +25,7 @@
  * 过期判定不在这里：后端 `JobSummary.is_expired` / `JobRead.is_expired` 已用**应用时钟**
  * 算好（2.G 明确禁止前端各写一份 `deadline < 今天`，两处实现必然漂移），前端只读那个布尔。
  *
- * 登出的清理：`reset()` 由 `AppTopBar.vue` 的 `handleLogout()` 在 `auth.logout()` **之前**
+ * 登出的清理：`reset()` 由 `AppTopBar.vue` 的 `handleLogout()` 在 `auth.signOut()` **之前**
  * 调用，与 `resume.reset()` 并列——「先清业务数据再清登录态」这条不变量涵盖岗位数据。
  * 每个 `load*()` 在发请求前清空旧数据只是**并发/换账号时的补帧缓解**，不替代这条不变量。
  */

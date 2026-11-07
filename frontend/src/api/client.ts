@@ -10,6 +10,8 @@
  *    - 能续期就先续期，再重放原请求（Single-flight，见 `refreshSession`）；
  *    - 续不了才清 Token + 通知上层跳登录页（跳转动作由 `router` 注入，
  *      避免 client 反向依赖 router 造成循环引用）。
+ *      被踢的那一次还会在 `sessionExpiredNoticeArmed` 上留一个一次性标记，
+ *      让登录页能说出「他为什么被送回来了」（arm 的判据在 `router/index.ts`）。
  * 4. 续期请求走 `authHttp`（**没有拦截器**的裸实例）：
  *    若走带拦截器的 `http`，刷新失败产生的 401 会再次进入 401 分支，
  *    形成「刷新失败 → 触发刷新 → 刷新失败」的自激循环，且会被判定为业务请求。
@@ -234,6 +236,35 @@ let unauthorizedHandler: UnauthorizedHandler | null = null
 /** 由 `router/index.ts` 注入「跳转登录页」的实现。 */
 export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
   unauthorizedHandler = handler
+}
+
+/* -------------------------- 会话过期的一次性提示 -------------------------- */
+
+/**
+ * 「你的登录状态过期了」这条提示的**唯一一份**状态：模块里的一个布尔，读一次即清空。
+ *
+ * 为什么不用 `?expired=1` 这类 query 标记，也不写任何存储：
+ * - query 会跟着 URL 活下来——刷新、后退、收藏、把链接发给别人，都会让一个
+ *   早已重新登录的人继续看见「登录状态已过期」。这条提示说的是
+ *   「刚刚那一次跳转的原因」，原因只属于那一次跳转。
+ * - 写 `localStorage` 更错：提示会跨账号存活，下一个登录进来的人被莫名告知过期。
+ * - 内存里这一个布尔随页面卸载自然消失，配合「读取即清空」正好等于「展示过就作废」。
+ *
+ * 谁来按这个开关（判据）见 `router/index.ts` 的 `setUnauthorizedHandler` 回调：
+ * 只有「从受保护页面被送回登录页」才 arm，主动点退出登录与登录失败都不 arm。
+ * 这里只提供槽位，不自行决定语义，因为 client 层看不见路由。
+ */
+let sessionExpiredNoticeArmed = false
+
+export function armSessionExpiredNotice(): void {
+  sessionExpiredNoticeArmed = true
+}
+
+/** 一次性取走提示标记：返回 `true` 的那一次是唯一一次，之后自动回到 `false`。 */
+export function consumeSessionExpiredNotice(): boolean {
+  const armed = sessionExpiredNoticeArmed
+  sessionExpiredNoticeArmed = false
+  return armed
 }
 
 type SessionChangeHandler = (tokens: SessionTokens | null) => void

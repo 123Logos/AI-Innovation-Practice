@@ -1,6 +1,6 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 
-import { setUnauthorizedHandler } from '@/api/client'
+import { armSessionExpiredNotice, setUnauthorizedHandler } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import JobBoardView from '@/views/JobBoardView.vue'
 import JobCreateView from '@/views/JobCreateView.vue'
@@ -130,12 +130,30 @@ router.beforeEach(async (to) => {
 /**
  * 任意接口返回 401 时的统一出口：清掉本地会话并回到登录页。
  * 放在这里而不是 `main.ts`，是为了不改动 T7.4 已验收的启动文件。
+ *
+ * 「会话过期」提示只在这里 arm，判据是这个回调**跑到第几行**，不是调用方传进来的标记：
+ *
+ * 1. `current.name === 'login'` 时直接 return——此刻用户**已经站在登录页上**，
+ *    这次 401 只能是登录本身没成功（密码打错：`/auth/login` 也在 `expireSession()`
+ *    的分支里）。对一个刚把密码敲错的人说「你的登录状态过期了」是撒谎，
+ *    所以这里既不跳转也不挂提示。
+ * 2. 走到下面这一行，就意味着「他原来在某个受保护页面上，是被服务端请回来的」，
+ *    这才是那句提示唯一成立的场合。
+ *
+ * 为什么主动点「退出登录」不会误挂这条提示（看不出来就是推不出来，故写下）：
+ * 登出走 `AppTopBar.handleLogout()` → `resume.reset()` / `job.reset()` →
+ * `auth.signOut()`（它内部先 `logout()` 清本地、再尽力撤销服务端 refresh token），
+ * 全程**一行都不进这个回调**——`signOut()` 不触发 `unauthorizedHandler`。
+ * 两条路径在结构上就是分开的，所以不需要给登出额外传一个「我是自愿的」的标记；
+ * 反过来，将来谁把「跳登录页」抽成公共函数并在这里统一 arm，
+ * `views/__tests__/LoginView.spec.ts` 的「登出 vs 过期」那组用例立刻会变红。
  */
 setUnauthorizedHandler(() => {
   const auth = useAuthStore()
   auth.logout()
   const current = router.currentRoute.value
   if (current.name === 'login') return
+  armSessionExpiredNotice()
   void router.replace({ name: 'login', query: { redirect: current.fullPath } })
 })
 

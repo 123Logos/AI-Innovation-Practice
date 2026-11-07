@@ -3,8 +3,27 @@ import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { isApiError } from '@/api'
+import { consumeSessionExpiredNotice } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useResumeStore } from '@/stores/resume'
+
+/**
+ * 会话过期被送回登录页时的提示文案。
+ *
+ * 三条口径由监督者定下，改动前先对齐：
+ * - 必须带上下一步动作（「请重新登录」），只说「过期了」等于把问题丢回给用户；
+ * - 不得出现「令牌 / token / session」这类内部词——用户不认识它们，
+ *   认识了也修不了任何东西；
+ * - 必须说清重新登录之后会怎样（回到刚才那一页），否则用户会以为刚才白干了。
+ * 这里的 `redirect` 查询参数正是 `router/index.ts` 被踢时带上的那一个，
+ * `submit()` 登录成功后会用它跳回原页面，所以这句话是可兑现的承诺。
+ *
+ * 为什么不在 `client.ts` 复用 `SESSION_EXPIRED_MESSAGE`：那句是**抛给调用方的错误消息**
+ * （`ApiError.message`，出现在任何接口的失败提示里），这一句是**登录页的一处界面文案**，
+ * 要额外说明「登录后回到刚才的页面」。把两者合并成一句，等于让所有接口的错误文案
+ * 都长出一段与它们无关的话。
+ */
+const SESSION_EXPIRED_NOTICE = '你的登录状态已过期。请重新登录，登录后会回到你刚才正在看的页面。'
 
 const auth = useAuthStore()
 const resume = useResumeStore()
@@ -14,6 +33,15 @@ const route = useRoute()
 const username = ref('')
 const password = ref('')
 const errorMessage = ref('')
+
+/**
+ * 一次性读取「刚刚是不是被会话失效踢回来的」。
+ *
+ * 读放在 setup 里而不是 `onMounted`：setup 每个实例只跑一次，
+ * 天然等于「这一屏最多显示一次」；`consume…()` 取完即清，所以刷新页面、
+ * 从别的页面再回到登录页都不会重复显示（提示本身也不在任何存储里）。
+ */
+const sessionExpiredNotice = ref(consumeSessionExpiredNotice())
 
 /**
  * 密码可见性状态。
@@ -51,6 +79,16 @@ async function submit(): Promise<void> {
       <p class="eyebrow">AI 职业发展助手</p>
       <h1>登录简历工作台</h1>
       <p class="intro">登录后可保存个人档案，并基于档案一页生成 A4 简历。</p>
+
+      <!--
+        会话过期提示：放在表单**之前**而不是和 `errorMessage` 挤在一起——
+        它解释的是「你为什么在这儿」，是用户读页面时第一眼要拿到的上下文；
+        表单校验失败那句话是对用户**这一次操作**的反馈，两者混在一个位置会让人
+        以为「过期」是自己密码敲错造成的。
+      -->
+      <p v-if="sessionExpiredNotice" class="expired-notice" role="status">
+        {{ SESSION_EXPIRED_NOTICE }}
+      </p>
 
       <form class="auth-form" @submit.prevent="submit">
         <label class="field">
@@ -175,6 +213,13 @@ input:focus { border-color: var(--theme-rule); box-shadow: 0 0 0 2px var(--theme
 .primary-button:disabled { opacity: .6; cursor: progress; }
 .feedback { margin: 0; font-size: 13px; line-height: 1.5; }
 .feedback--error { color: var(--ui-danger); }
+/*
+ * 会话过期提示走 warning 家族而不是 danger 红：这条说的是「状态没了、需要你做一件事」，
+ * 不是「你做错了」。红色在这里会把「重新登录」读成「登录失败」，
+ * 而用户本来就怀疑是自己账号坏了。规格与 `.draft-banner`（编辑器里的草稿恢复条）同档：
+ * 1px 描边 + 4px 左强调条 + `--ui-radius`（= 2px）+ 13px 正文，全部取 `--ui-*` 令牌。
+ */
+.expired-notice { margin: 0 0 20px; border: 1px solid var(--ui-warning-border); border-left: 4px solid var(--ui-warning-border); border-radius: var(--ui-radius); padding: 12px 16px; color: var(--ui-warning); background: var(--ui-warning-soft); font-size: 13px; line-height: 1.5; }
 .switch-hint { margin: 22px 0 0; color: var(--ui-ink-muted); font-size: 13px; }
 .switch-hint a { color: var(--theme-primary); }
 </style>

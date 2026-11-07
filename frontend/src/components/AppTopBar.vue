@@ -380,7 +380,10 @@ async function handleLogout(): Promise<void> {
   // 先清业务数据再清登录态，避免下一个账号短暂看到上一个人的档案与岗位数据。
   resume.reset()
   job.reset()
-  auth.logout()
+  // `signOut()` 而不是 `logout()`：后者只清本地，前者会去撤销服务端的 refresh token。
+  // 点「退出登录」的人表达的是「我的会话到此为止」，只清本地等于把这句话留在客户端——
+  // refresh token 在服务端还能用满 7 天。机房/共用电脑上登出的人尤其依赖这个语义。
+  await auth.signOut()
   await router.replace({ name: 'login' })
 }
 </script>
