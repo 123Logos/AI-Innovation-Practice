@@ -133,19 +133,37 @@ dev 库实测：`published` 岗位 **0** 条，`draft` 3 条，回收站 1 条�
 - 权限：沿用 ADR-011 的可见性谓词——`published` 任何登录用户可读即匹配；他人 `draft` 一律 **404 不是 403**（403 会确认「该 id 存在」）。回收站里的岗位 404。
 - 请求体：空（匹配对象 = 当前用户**默认档案** vs 路径里的岗位）。🚩 **决策 2**：v1 只支持默认档案，多档案各自的匹配留到下一轮——档案切换与匹配缓存放一起会立刻把「分数不落库」这条冲掉。
 - BYOK：请求头 `X-DeepSeek-Key`，与润色/提取同一份 Key、同一套「不落库、不写日志、不出现在异常文本」的规则。
-- 限流：`10/minute/user`，与 extract-skills 同量级（同一次点击可能连点，且它比提取更贵）。
+- 限流：**`10/minute` 按用户键**，新增常量 `MATCH_RATE_LIMIT`。
+  🚩 这一条是 §13 架构复核改的，原文写的是「`10/minute/user`，与 extract-skills 同量级」——**那句在本仓库当时不成立**：
+  `app/core/rate_limit.py:44` 的 `Limiter` 用 `key_func=get_remote_address`，现有三条规则（`AUTH` / `POLISH` / `EXTRACT`）
+  实际全部**按 IP**计数，`rate_limit.py:35` 自己也写了「多 worker 部署时每个 worker 各算一份」。
+  按 IP 对本端点不是措辞不严谨，是错的：局域网实测那批人共用一个出口时，10 次/分钟会被前一两个账号点光，
+  后面的人拿到 429 —— 而这恰恰是唯一一个「别人替你花不了钱、但能替你花 Key」的端点。
+  实测 `Limiter.limit()` 的签名支持装饰器级 `key_func=` 覆盖（`slowapi` 的 `limit(limit_value, key_func=None, per_method, methods, error_message, exempt_when, cost, override_defaults)`），
+  所以**只给这一条端点换键**，另三条一个字不动；已知局限照抄 `rate_limit.py:35`：进程内计数，多 worker 各算一份。
+- 状态码边界（同样来自 §13 复核，实现时最容易写错的一条）：**本端点不因 AI 失败返回 4xx/5xx**。
+  润色与提取把 AI 失败抛给 `app/main.py:252/259/270` 的三个处理器（400 `AI_KEY_MISSING` / 401 `AI_KEY_INVALID` / 502 `AI_SERVICE_UNAVAILABLE`）；
+  匹配按 §6.5 要**退化**，所以这三个异常在 service 层就地转成「关键词模式的成功响应」，处理器一个都不新增、也不复用其状态码。
+  会走到处理器的只有：未登录 401、岗位不可见 404、限流 429、参数校验 422。
+  退化必须可归因，见 §6.5 的 `data.meta.degrade_reason`。
 
 响应 `data` 载荷（信封仍是 `{data, meta:{request_id}}`，业务 meta 在 `data.meta`，与 ADR-011 2.A 同构）：
 
 ```
-data.score            0..1，总分（保留 3 位小数）
-data.weights_version  "v1"
-data.terms            五项分项，每项 {name, weight, value, computed: bool, note}
-data.covered          [{skill, evidence: [{experience_id, snippet, strength}]}]
-data.partial          [{skill, reason}]          命中但证据弱的
-data.gaps             [{skill, action, verify}]   未命中；action=建议行动，verify=预计验证方式
-data.meta             见 §8
+data.profile_id         本次被打分的是哪一份档案（§13 复核新增：请求体为空 ⇒ 档案是隐式选择，必须回显）
+data.profile_title      档案标题，UI 直接写「本次按《xxx》这份简历计算」
+data.job_id             路径里那个岗位，回显而不是让前端自己拼
+data.score              0..1，总分（保留 3 位小数）
+data.weights_version    "v1"
+data.terms              五项分项，每项 {name, weight, value, computed: bool, note}
+data.covered            [{skill, evidence: [{experience_id, snippet, strength}]}]
+data.partial            [{skill, reason}]          命中但证据弱的
+data.gaps               [{skill, action, verify}]   未命中；action=建议行动，verify=预计验证方式
+data.meta               见 §8
 ```
+
+`profile_id` 这一格不是贴心功能，是防一类具体的误解：编辑页与岗位页各自独立，用户在编辑器里开着 B 档案、
+去岗位页点匹配，拿回来的是**默认档案 A** 的分数。不告诉他是谁的分数，他第一反应会是「分数算错了」。
 
 PRD `:181` 要求「至少展示三条可验证证据或明确缺口」：`covered[].evidence[].snippet` 必须是经历原文的**连续子串**（服务端核验，核不上就丢），这一条同时是验收标准也是反幻觉闸门。
 
@@ -228,13 +246,52 @@ score = Σ(w_i · v_i | term i computable) / Σ(w_i | term i computable)
 
 并写明为什么这个模式不构成扩张：`[^/]+` 只允许**一个**路径段、不含 `/`，因此不可能命中 `/jobs/trash`、`/jobs/extract-skills` 或任何其它端点；匹配成功后请求**确实**会转发 DeepSeek，满足那条约定要求的自证。测试要把「`/jobs/x/y/match`、`/jobs/match`、`/jobs/1/match/extra` 三个都不注入」写成断言。
 
+### 6.1 上面那句自证不够严（§13 复核更正，实现以此节为准）
+
+「匹配成功后请求确实会转发 DeepSeek」这句在字面上是**假的**，我写的时候没算过。实测 `client.ts:224-230` 现在的判据是
+`BYOK_KEY_PATHS.includes(path)` —— **整段相等**，模式机制今天不存在，加正则等于新引入一种判据。而 `/^\/jobs\/[^/]+\/match$/`
+会命中 `/jobs/extract-skills/match`、`/jobs/trash/match` 这类**根本没有路由**的路径（`[^/]+` 吃得下 `extract-skills`），
+这些请求返回 404，一个字节都没发往 DeepSeek。所以「命中即转发」只能对**已注册的路由**说。
+
+可辩护、且能测的版本是**路由表论证**，三条断言分工明确，全部加进 `frontend/src/api/__tests__/byok.spec.ts` 现有的注入矩阵：
+
+1. **正向**：`/jobs/{id}/match` 注入 Key（`{id}` 取一个真实 uuid 与一个非数字串，防止判据意外写成 uuid 形状）。
+2. **不扩张**：`/jobs/x/y/match`、`/jobs/match`、`/jobs/1/match/extra`、`/jobs/1/match/`（尾斜杠走 `client.ts:229` 的既有归一化）、`/jobs/1/match?x=1` 五种都不注入 —— 前四种是模式本身不该吃到的形状，后两种是「归一化之后仍只认那一条」。
+3. **路由表闭合**：这条**不属于 vitest**（前端不知道后端有哪些路由）。它落在后端测试里：从 `app.openapi()["paths"]` 取 `/jobs` 下
+   **所有已注册路由**，断言「凡是能被这条正则命中的 `POST` 路由，其处理器一定走 DeepSeek」。判定方式用白名单式的显式集合，
+   而不是猜函数体：今天的答案是一个已知列表（`/jobs/{job_id}/match` 一条），将来新增匹配形状的路由时这条测试必须红。
+   这条是把上面两句空话换成可执行判据的关键：它守的是未来有人新加一条 `/jobs/{a}/{b}/match` 形状的路由而不转发 AI 的情形，
+   而那正是这条约定唯一真正的失效方式。
+
+另外补一句实现纪律：**正则只允许出现在「是否需要注入 Key」这一个判断里**，不许被复用成「这是不是匹配端点」的业务判断；业务判断只看 `job_id` 是否存在。判据的作用域写窄，将来才守得住。
+
 **AI 的职责被限死为「打分」，不碰「有没有」**（这是本端点最重要的结构决定）：
 
 1. 确定性层先算出：哪些岗位技能在学生的技能名里命中（§7 的键）、每个命中技能在哪几条经历文本里出现（关键词）。
 2. **只有第 1 层已经命中**的条目才交给模型，输入是 `(技能名, 命中片段列表)`，要求返回每条片段的 `strength ∈ [0,1]` + 引用片段编号。
+   **片段不是整段经历，是命中位置周围的窗口**（§13 复核补，理由见下面「输入预算」）：以技能名在文本里每次出现的位置为中心，
+   取前后各 `MATCH_SNIPPET_RADIUS = 80` 字，一条 `(技能, 经历, 字段)` 最多一个窗口。返回给用户的 `covered[].evidence[].snippet` 与交给模型的片段是同一份，
+   所以「模型看到的」与「我们核验的」与「用户读到的」三者逐字相同，§3 那条连续子串闸门才有意义。
 3. 服务端核验：模型引用了我们没给过的片段编号 → 丢弃并计数；模型给出技能名不在我们给它命中的集合里 → 丢弃并计数；`strength` 越界 → 夹到 [0,1] 并计数。
 4. 模型**从不**被问「这个学生匹不匹配这个岗位」，也从不收到完整简历或完整 JD——只收到已经定位好的片段。这样它既无法发明覆盖，也拿不到可以反推身份的整体上下文。
 5. 无 Key / Key 无效 / 超时 / 429：`证据强度` 项退化为**确定性代理值**（命中经历条数 / min(条数,3)，见 §7.2），并在 `data.meta.evidence_mode` 与 UI 文案里**显式说明当前是关键词模式**，绝不静默降级（AGENTS.md §3.2 那条「失败时必须由用户点出来」的口径沿用）。
+   退化必须**可归因**：`data.meta.degrade_reason ∈ {key_missing, key_invalid, upstream, bad_output, timeout}`，AI 正常参与时为 `null`。
+   这五个值是 `app/main.py:252/259/270` 三个处理器今天各自对应的失败（400/401/502）加上「输出不可用」的两类，
+   在 service 层一一对应转换：`ResumeApiKeyMissingError → key_missing`、`ResumeCopyRejectedError → key_invalid`、
+   `ResumeCopyUnavailableError`（及其子类 `SkillExtract*` 翻译过来的超时/上游错）`→ upstream|timeout`、JSON 不可解析/空内容 `→ bad_output`。
+   **实现要求**：五种情形各一个测试，断言 200 + `evidence_mode="keyword_fallback"` + 正确的 `degrade_reason`，
+   并且断言**没有任何一种**走到 `app/main.py` 的 AI 处理器（否则 §3 那条状态码边界就是空话）。
+   UI 文案按 `degrade_reason` 分句，不许把「你没配 Key」和「DeepSeek 正在超时」写成同一句话——两者的用户动作完全不同。
+
+**输入预算**（§13 复核新增，之前这一条是漏的）：交给模型的字符数不能由用户的自由文本决定。实测：
+单档案技能 ≤8（`app/schemas/profile.py:271`）、经历 ≤3（`:272`），但 `description`/`responsibility` 在
+`app/schemas/resume.py:67-68` 是**裸 `str`、没有任何长度约束**，库里是 `Text`（`student_profile_repository.py:129-130`）。
+dev 库现有 8 条经历的 `description` 长度是 p50 44 / p90 102 / **max 615** 字——也就是说今天最真实的一条已经能到几百字，
+而 3 条经历 × 2 个字段 × 8 个技能若整段送，最坏情况没有上界。窗口规则（上面第 2 点）把上界变成
+「命中次数 × 160 字」，与自由文本长度**解耦**，因此不需要给 `ExperienceInput` 加 `max_length`（那会是对用户数据的截断式改动，属于另一个决定）。
+`data.meta.fragments_truncated` 记录被窗口切掉的片段数。
+> 附带记录一个**不在本切片范围**的既有事实：润色端点是整段送 `description`/`responsibility`（`app/integrations/copy_writer.py:171-172`，
+> 只有输出侧的字数指引，没有输入侧上限）。这是 ADR-010 的既有暴露面，本轮不动它，也不假装它不存在。
 
 调用参数照 ADR-009/011：`deepseek-flash`、`stream=False`、`thinking.disabled`、`max_retries=0`、30 秒预算、`max_tokens` 由实现时实测输出长度定（不预设 1500）。Key 仍然只在请求头，服务端不落库、不写日志、不进异常文本。
 
@@ -245,7 +302,8 @@ score = Σ(w_i · v_i | term i computable) / Σ(w_i | term i computable)
 ## 7. 五项分项的定义
 
 权重沿用 `docs/PRD.md:119`，常量与版本写在 `app/services/match_scoring.py`：
-`MATCH_WEIGHTS = {coverage: 0.45, evidence: 0.20, relevance: 0.15, preference: 0.10, freshness: 0.10}`，`MATCH_WEIGHTS_VERSION = "v1"`。
+`MATCH_WEIGHTS = {coverage: 0.45, evidence: 0.20, relevance: 0.15, preference: 0.10, remaining_time: 0.10}`，`MATCH_WEIGHTS_VERSION = "v1"`。
+（`freshness` → `remaining_time` 是 §7.5 改名的连带项，键名会直接进 `data.terms[].name`，所以是对外契约的一部分，定在本文而不是留给实现时随手起名。）
 
 ### 7.1 技能覆盖 0.45 —— 纯确定，可全测
 ```
@@ -279,13 +337,34 @@ tokens(x) = 对 match_key(x) 按非字母数字切分后的片段集合（中文
 ```
 0.2 而不是 0：填了偏好但不相干，本身是有效信息（说明这个人知道自己要什么，而这个岗位不是），归零会让「填偏好」变成纯亏。
 
-### 7.5 时效 0.10
+### 7.5 剩余投递时间 0.10（原名「时效」，§13 复核改名）
 ```
-deadline 为 NULL → value = 0.5，note = "no_deadline"      （未知不装作来得及）
+deadline 为 NULL → computed = False      （§13 更正，见下）
 已过期           → value = 0.0，computed = True
 距今 ≤ 7 天      → 0.4    ≤ 30 天 → 0.7    > 30 天 → 1.0
 ```
-判据用应用时钟，与 `is_expired`（`app/schemas/job.py:255` 注释指定的 2.G 判据）**同一函数**，不允许端点里再写一遍比较。
+判据用应用时钟，与 `JobService.is_expired`（`app/services/job_service.py:482`，读侧注释见 `app/schemas/job.py:233-234` 与 `:273`）
+**同一个函数**，不允许端点里再写一遍 `deadline < today` 的比较。（原稿这里引的是 `app/schemas/job.py:255`，
+是 §1.1 那批行号重新推导时漏掉的一格——`is_expired` 现在实测在 `:235` 与 `:275`，注释在 `:233`，`255` 那行是 `deadline` 字段本身。）
+
+两处更正，都是改我自己：
+
+1. **原名「时效」是错的标签**。这一项测的是「还剩多少天能投」，不是 JD 新旧。按 §7.3 立的那条判断力（不许用听起来理解了对方的词），
+   「时效」这个词会让人以为我们在评价岗位本身，所以改名。UI 说明文字写「距离该岗位投递截止还有多久」。
+   注意这是一次**解释而不是一次引用**：`docs/PRD.md:119` 的原文是「时效/可用性」，它自己就没说清算什么，我把它落到 `jobs.deadline` 上。
+   另一条路也物理存在，写清楚免得将来有人说我没看见：`jobs.created_at` 在库里（`app/repositories/job_repository.py:118`），
+   「岗位有多新」是可以算的。但对本仓库的岗位它测的是**我们入库的时刻**而不是招聘方发布的时刻——
+   实测种子脚本建的 5 个岗位（`company_name` 以「某」开头，全部 `published`）`created_at` 落在
+   `2026-11-07 10:04:50.563 ~ 10:04:51.718`，跨 1.2 秒：这一批就是同一次建号动作，用它算出来的「新鲜度」彼此几乎相同，
+   与岗位本身新旧无关。拿它当「岗位新鲜度」是把我们自己的动作当成别人的事实，所以不采用。
+   老板若真要「JD 发布日期」，那需要一个新列（招聘方提供或抓取）→ 新 ADR，不改这里的语义。
+2. **`NULL → 0.5` 参与加权与本 ADR 自己的原则冲突，已改为免加权。** §5.1 通篇说的是「算不出来的项不该进入分母」，
+   §7.4 对未填偏好也确实这么办；而 deadline 缺失记 0.5 还**留在分母里**，等于把每个人的总分往中间挤——
+   实测 dev 库 `status='published'` 共 6 行、其中 `deadline is null` 2 行；但那 2 行里有一行属于「已发布 + 已进回收站」的历史异常岗位
+   （§9 末段那条，用户看不到），所以**真实可点的 5 个种子里有 1 个走这一支（20%）**。
+   原稿那句「未知不装作来得及」的方向是对的，
+   但正确的做法是**这项不参与**，而不是用一个中位数假装知道。
+   连带后果：`meta.weight_sum_used` 会更经常地小于 1.0，UI 必须照 §8 把它显示出来，不能让「按 4 项算的」和「按 5 项算的」两个 0.72 看起来同义。
 
 ---
 
@@ -297,15 +376,33 @@ deadline 为 NULL → value = 0.5，note = "no_deadline"      （未知不装作
 |---|---|
 | `model` / `prompt_version` | 实际使用的模型与提示版本；AI 未参与时为 `null` |
 | `evidence_mode` | `ai_scored` \| `keyword_fallback` |
+| `degrade_reason` | `null` \| `key_missing` \| `key_invalid` \| `upstream` \| `timeout` \| `bad_output`（§6.5 第 5 点，退化必须可归因） |
 | `candidate_pairs` | 交给模型的 (技能, 片段) 候选对数量 |
 | `verified_pairs` | 通过引用核验、真正参与打分的对数 |
 | `dropped_unreferenced` | 模型引用了我们没给过的片段编号的对数 |
 | `dropped_unknown_skill` | 模型返回了不在命中集合里的技能名的对数 |
+| `dropped_missing_output` | 我们给了候选对、模型却没有回这一条评分的对数（§13 复核新增，理由见下） |
 | `clamped_strength` | `strength` 越界被夹过的次数 |
+| `fragments_truncated` | 被 §6 第 2 点的窗口切过端的片段数（输入预算的可见性） |
 | `truncated` / `finish_reason` | 与提取端点同义 |
 | `weight_sum_used` | 本次实际参与加权的权重之和（§5.1 归一后的分母） |
 
-算术上 `candidate_pairs ≥ verified_pairs`，差值应等于两个 `dropped_*` 之和；若不等，说明实现漏了计数路径——这条**故意不做闭合断言**（先例：ADR-011 的 `received = dropped + deduped + 返回 + 切掉` 中最后一格无字段）。
+算术闭合：`candidate_pairs = verified_pairs + dropped_unreferenced + dropped_unknown_skill + dropped_missing_output`。
+
+要让这个等式有意义，四个桶必须**互斥且穷尽**，所以核验按固定次序判，一条返回条目只会落进一个桶：
+① 技能名不在本次交给模型的命中集合里 → `dropped_unknown_skill`（判完即止，不再看它的编号）；
+② 引用的片段编号不在我们给过它的编号里 → `dropped_unreferenced`；
+③ 没有可用的 `strength`（缺字段、非数字，或越界到无法夹回）→ `dropped_missing_output`；
+④ 前三关都过 → `verified_pairs`（越界但可夹的在这里计入，同时 `clamped_strength` +1）。
+次序本身就是契约：换成「先判编号再判技能名」，两个计数器的值会变，而总分不变——这种「只有对账数字漂移」的差异，
+只有把次序写进 ADR 才守得住。
+
+原稿在这里写的是「差值应等于两个 `dropped_*` 之和……这条**故意不做闭合断言**」。这个决定是错的，而且错在一个具体的地方：
+少了 `dropped_missing_output` 这一格，等式在「模型只回了一半条目」时**必然不闭合**，
+于是我等于提前宣布「有一条损失通道我不数」——那不是诚实，那是把漏计写进设计。
+补上第四个计数器之后闭合是可证的，所以本 ADR 要求**写成断言**（AI fake 里造一个「少回一条」与一个「多回一条未知技能」的用例，两条断言分别钉住两个方向）。
+先例引用也要更正：ADR-011 那条 `received = dropped + deduped + 返回 + 切掉` 里无字段的最后一格是**已知缺陷**，
+不是可以照抄的判断，别拿它当先例给自己开路。
 
 ---
 
@@ -342,15 +439,28 @@ deadline 为 NULL → value = 0.5，note = "no_deadline"      （未知不装作
    - **a/b 已执行**：档案侧 `SkillInput.name` 补 strip + 去重改用 `skill_name_key`，键本体移入
      `app/core/skill_names.py`（详见 §1.3 的两处偏差说明）。
    - **c 未执行**：前端角标改为消费后端结果。它需要一个确定性的、不调 AI 的重叠查询端点，
-     与第 6 步一起做，不单独开（否则等于把同一个岗位读两遍的代价先付一次）。
+     与第 7 步一起做，不单独开（否则等于把同一个岗位读两遍的代价先付一次）。
 
 4. ~~`self_rating` 删除（§4，含迁移与降级测试 + 前后端 + API.md）~~ → **已执行**，见 §4.1。
 5. ~~`target_role` 新列（§5，含迁移与档案接口/表单）~~ → **已执行**，见 §5.2。
-6. 评分与匹配服务 + `POST /jobs/{job_id}/match`（§6–§8，含 404-not-403、限流、AI 失败四情形、`main.py` 处理器作用域从「两个端点」改「三个端点」的注释与测试）。
-7. 前端匹配卡（三档展示 + `evidence_mode` 可见 + 375px 实测）。
-8. `docs/API.md` 新章节与 §1.1 错误码可达性更新。
+6. ~~架构复核（§13）与其更正值落文档~~ → **已执行**（本 PR，先于实现合入）。
+7. **评分与匹配服务 + `POST /jobs/{job_id}/match`**（§6–§8）。这一条内部有四个必须一起做的部分，缺一个就是假交付：
+   - **7a 纯打分层** `app/services/match_scoring.py`：权重常量与版本、五项分项、窗口化片段与 `fragments_truncated`、
+     §8 的四桶闭合核验（**不碰 DB、不碰 FastAPI**，契约已强制，单测全覆盖）。
+   - **7b 适配层** `app/integrations/evidence_scorer.py`：`EvidenceScorer` 协议 + `DeepSeekEvidenceScorer`，
+     与 `skill_extractor.py` 同一族异常（`SkillExtractorError` 的三个子类那样），测试用 fake，且 fake 要能**分别**造出 §6.5 的五种退化。
+   - **7c 编排层** `app/services/match_service.py` + **一个** `get_match_service(request)`：同一个 `session_scope()` 里装
+     `JobRepository` + `StudentProfileRepository` + scorer。🚩 复核定的结构约束：**不许**复用 `get_job_service()` + `get_profile_service()`
+     拼两个 session（`app/services/dependencies.py:66-78` 的先例是一 service 一 session；两个 session 等于同一次请求占两条连接，
+     且两侧读到的是两个快照）。
+   - **7d 路由与闸门**：`POST` 路由 + `@limiter.limit(MATCH_RATE_LIMIT, key_func=<按用户>)`（§3）、404-not-403、
+     `main.py` 处理器作用域从「两个端点」改「三个端点」的注释与测试、`client.ts` 白名单第 3 条 + §6.1 的三条断言（含路由表闭合）。
+8. 前端匹配卡（三档展示 + `evidence_mode` 与 `degrade_reason` 分句可见 + `weight_sum_used` 显示 + **必须显式点击才请求**，
+   不许在岗位详情页 `onMounted` 里自动调用：那是拿用户的 Key 换页面浏览量）+ 375px 实测。
+9. 第 3c 条（角标消费后端确定性端点）与第 7 条同 PR 或紧随其后，理由见 §10 末。
+10. `docs/API.md` 新章节与 §1.1 错误码可达性更新。
 
-第 3 条必须在第 6 条之前：否则匹配与角标各用各的键，§1.3 那屏自相矛盾会成为产品事实。
+第 3 条必须在第 7 条之前：否则匹配与角标各用各的键，§1.3 那屏自相矛盾会成为产品事实。
 
 ---
 
@@ -359,6 +469,11 @@ deadline 为 NULL → value = 0.5，note = "no_deadline"      （未知不装作
 - 简历生成路径的技能条目失去「熟练度」概念（本来就没有，只是这次把假字段拿掉）。
 - 匹配度是一个**代理指标**，不是录用概率。UI 必须这么写。分数只用于「差在哪」的解释，不用于排序，也不用于任何对外承诺（PRD `:218` 的「只做辅助排序」在当前范围里进一步收紧为「只做解释」）。
 - BYOK 白名单从 2 条 URL 变 3 条，且第 3 条是模式匹配而非整段相等——安全注释必须同步重写，不能只加一行代码。
+  🚩 复核更正：`client.ts` 现在只有 `includes(path)` 这一种判据，所以这不是「往列表里加一项」，而是**引入第二种判据**。
+  重写注释时要同时改掉那句「宁可写死两条精确路径」——它今天仍然正确，但从第 3 条起不再充分，留着会误导下一个改这里的人。
+- 限流第一次出现**两种键**（IP 与用户）共存。`app/core/rate_limit.py` 的模块注释现在通篇按「键 = IP」写，
+  加第二条端点时必须把「为什么这一条例外」写进同一个文件，否则下一次「统一成一种键」的重构会把它悄悄改回按 IP，
+  而这个退化在测试里是不可见的（测试只测端点自己那条规则能不能触发）。
 - 两处破坏性变更（`SkillInput` 少字段、`POST /jobs/{id}/match` 新端点），无外部客户端，前端同 PR 改完即可。
 - 成本与延迟：一次匹配 = 最多一次 DeepSeek 调用（候选对已经过第 1 层裁剪），30 秒预算内；用户看不到「正在打分」之外的等待理由，所以按钮要有 loading 态与失败重试，沿用 C2 的提取交互。
 
@@ -369,3 +484,30 @@ deadline 为 NULL → value = 0.5，note = "no_deadline"      （未知不装作
 - **AI 直接判整体匹配度**（把 JD 和简历全文丢给模型出 0..1）：省掉五项设计，但分数不可解释、不可测、且违反 PRD `:152` 的可展开理由要求；同时把完整个人内容交给第三方模型，是 §6 第 4 点专门避免的。不采用。
 - **中文分词库做语义相关度**：新增运行时依赖，收益是 §7.3 那个代理指标更漂亮一点。不采用，先把代理指标的诚实标签立住。
 - **保留 `self_rating` 并把它变成 AI 打分结果**：让一个 UI 不再采集的字段悄悄换语义，是对数据历史的伪造。不采用。
+
+---
+
+## 13. 架构复核（2026-11-07，实现之前）
+
+方式：调用 `architect-review` 技能，把 §3/§6/§7/§8 的设计逐条**对着代码核**，不接受设计稿自己的说法。
+下面是复核发现的问题、取证方式与处置。结论一句话：**结构方向不需要改**（纯打分层 + 「AI 只判强弱不判有无」的分层是对的），
+但设计稿里有两处**如果照原样实现就会做错**的表述，和两处我原来写得不成立的话。
+
+| # | 发现 | 取证（实测，不是推断） | 处置 |
+|---|---|---|---|
+| 1 | 限流口径与仓库机制不符，按 IP 会让局域网测试互相抢额度 | `app/core/rate_limit.py:44` `key_func=get_remote_address`；`:35` 自记多 worker 局限；`Limiter.limit` 签名实测支持 `key_func=` 覆盖 | §3 改为按用户键 + 新增 `MATCH_RATE_LIMIT`，另三条规则不动 |
+| 2 | 「AI 失败退化成 200」与三个全局 AI 处理器冲突，实现时最自然的写法会把它变成红字报错 | `app/main.py:252/259/270` 分别 400/401/502；异常类 `ResumeApiKeyMissingError` / `ResumeCopyRejectedError` / `ResumeCopyUnavailableError`（`app/services/resume_service.py:43/47/51`） | §3 新增「状态码边界」；§6.5 新增 `degrade_reason` 五值 + 五情形各一测试 |
+| 3 | 交给模型的输入没有上界，而它由用户自由文本决定 | 技能 ≤8 / 经历 ≤3（`app/schemas/profile.py:271-272`），但 `description`/`responsibility` 无长度约束（`app/schemas/resume.py:67-68`，列型 `Text`）；dev 库 8 条经历 `description` p50 44 / p90 102 / **max 615** | §6 第 2 点改窗口化（±80 字）+ `fragments_truncated`；不给 `ExperienceInput` 加 `max_length`（那是截断用户数据，另一个决定） |
+| 4 | §7.5 与 §5.1 的「未知怎么办」自相矛盾，常数 0.5 进分母会把总分往中间挤 | `status='published'` 6 行、`deadline is null` 2 行（其中 1 行是回收站异常行）→ 真实可点 5 个里 1 个走这一支 | §7.5 改为 `computed=False`，键名 `freshness` → `remaining_time`，UI 改名「剩余投递时间」 |
+| 5 | §6 的白名单自证不成立：正则也命中**不存在**的路径，那些请求不转发 DeepSeek | `client.ts:224` 现在是 `BYOK_KEY_PATHS.includes(path)` 整段相等，模式机制今天不存在；`:229` 只做查询串与尾斜杠归一化 | §6.1 换成路由表论证 + 三条断言（正向 / 不扩张 / 已注册路由闭合），并进 `byok.spec.ts` 现有注入矩阵 |
+| 6 | §8 故意不做计数闭合，等于把一条漏计写进设计 | 少一个「模型没回这条」的通道，等式必然不闭合 | 新增 `dropped_missing_output` + 四桶互斥次序 + **要求写成断言**；同时更正我引用的 ADR-011 「先例」其实是已知缺陷 |
+| 7 | 「请求体为空 ⇒ 用哪份档案」是隐式选择，用户会以为分数算错 | `student_profiles.is_default`（`app/repositories/student_profile_repository.py:76`）；岗位页与编辑页无共享档案上下文 | §3 响应新增 `profile_id` / `profile_title` / `job_id` 回显 |
+| 8 | 编排层若复用两个既有 DI 会开两个 session、两个快照 | `app/services/dependencies.py:66-78`：每个 `get_*_service` 各自 `session_scope()` | §10 第 7c 条：一个新 DI、一个 session、两个仓储 |
+
+**复核没有改的东西**（写下来是为了让「改了什么」有边界）：五项权重数值与 PRD 出处、`score` 只做解释不做排序、
+分数不落库、v1 只支持默认档案、404-not-403、`deepseek-flash` + BYOK + 非流式 + `max_retries=0`、模型不被问「匹不匹配」。
+这些经复核仍然成立，没有一条是被我为了显得认真而动的。
+
+**复核发现但不属于本切片的**：润色端点整段发送 `description`/`responsibility`、输入侧无上界
+（`app/integrations/copy_writer.py:171-172`）。这是 ADR-010 的既有暴露面，本轮只记录、不修改——
+把它顺手改掉会让「一条切片一条分支」变成一屏无法审的 diff。

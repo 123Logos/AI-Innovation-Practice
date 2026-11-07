@@ -151,17 +151,30 @@ MVP 不引入未经验证的全网爬虫；岗位变化雷达只使用合法来�
   本地分支在切回 `master` 后删。理由不是整洁：一条已经合入的分支留着，下一次开工时很容易在它上面
   继续提交，于是「一条切片一条分支」变成「一条切片两条历史」。
   实测：2026-11-07 清理后远端只剩 `master` 一条分支（`gh api repos/…/branches` → `["master"]`）。
-- 上面两条现在是**机器强制**的，不是约定：master 由 ruleset `26754995`（`enforcement: active`，
+  **这一条不是机器强制的**：仓库设置 `delete_branch_on_merge` 实测为 `false`，删分支仍是一次人动作。
+  要变成自动的，把它设成 `true` 即可（一条 PATCH，改不改都不影响下面的闸门）。
+- 「只接受 CI 绿的 PR 合入」这半条现在是**机器强制**的：master 由 ruleset `26754995`（`enforcement: active`，
   作用于 `~DEFAULT_BRANCH`）保护，规则为 `pull_request` + `update` + `deletion` + `required_status_checks`，
   逐字段读回值：`required_approving_review_count: 0`、`allowed_merge_methods: ["merge"]`（只允许 merge commit，
   保留「ADR 提交在前、实现在后」的顺序）、状态检查 context `test`、`strict_required_status_checks_policy: true`
   （合入前必须先 rebase/merge 到最新 master，防「两个各自绿的 PR 合出红的 master」）、
   分支不可删、不可 force push。
+  仓库级 `allow_squash_merge` / `allow_rebase_merge` 实测仍为 `true`，但对 master 无效——ruleset 的
+  `allowed_merge_methods` 覆盖面更窄的那一条说了算；其它分支不受约束，所以「在 feature 分支上随便 squash」是允许的。
   **一个必须知道的口子**：`bypass_actors` 里有一条 `actor_id: 5 / actor_type: RepositoryRole / bypass_mode: always`，
   即仓库管理员可以无条件绕过全部规则，`current_user_can_bypass: "always"`。所以闸门对非管理员是硬的，
   对管理员只是默认路径——管理员直推 `master` 仍然物理可行，禁止它靠本节，而不是靠 GitHub。
   没把它关掉的原因：需要保留一次紧急回滚通道。若要改成「管理员也要走 PR」，把该 actor 的 `bypass_mode`
   改为 `never` 或直接删掉 `bypass_actors`，改前先想清楚应急路径。
+- **闸门的「非管理员路径」至今没有被真实验证过**，这条要显式记账，别把上面那段读成「闸门已经跑通过」。
+  PR #9（2026-11-07，target_role）合并时：两条 `test` 检查都已 `pass`，
+  但 `gh pr merge` 报 `base branch policy prohibits the merge`、`mergeStateStatus: BLOCKED`，
+  我随后用 `PUT /pulls/9/merge` 以管理员身份合入（merge commit `c87a0cd`，`merged_by: 123Logos`）。
+  两个事实因此都成立：**实质闸门满足了**（CI 绿 + 必需检查齐 + merge 方式合规），
+  **但我没有证明 GitHub 会不会自己放行这一合**，也就是无法排除「策略里有一条我没读到的东西在挡正常合入」。
+  这不是小事：如果它连自己的 PR 都挡，将来只会逼着所有人用管理员绕过，闸门就退化成装饰。
+  下一个人工动作：在下一个 PR 上，先 `gh api …/actions/required-check-reports` 读评估明细，再用不带管理员权限的方式试合，
+  把结果（放行 or 哪条规则阻塞）记在这里。
 - **不做**长期 `develop` 分支，**不做** `release`/版本号分支：服务尚未公网部署，
   现在造版本号是给不存在的发布流程做兼容。真到部署那步，按 §4.6 另出 ADR。
 
