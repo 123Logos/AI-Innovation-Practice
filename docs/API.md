@@ -403,7 +403,7 @@
 ```json
 {
   "profile_id": "uuid", "profile_title": "默认简历", "job_id": "uuid",
-  "score": 0.612, "weights_version": "v1",
+  "score": 0.612, "weights_version": "v2",
   "terms": [{"name": "coverage", "weight": 0.45, "value": 0.75, "computed": true, "note": null}],
   "covered": [{"skill": "Python", "evidence": [{"experience_id": "uuid", "field": "description", "snippet": "用 Python 重写订单服务", "strength": 0.667}]}],
   "partial": [{"skill": "Docker", "reason": "技能名命中，但经历里找不到出处"}],
@@ -417,6 +417,10 @@
 1. **`terms[].value` 可以是 `null`**，含义是「这一项没算出来」，与「算出来是 0」是两件事。
    `computed=false` 的项**退出分母**（`meta.weight_sum_used` 如实记录这次用了多少权重）。
    今天恒不参与的是 `relevance`（`note="not_measurable_v1"`，理由与被测出的 0/40 见 ADR-013 §7.3.1）；
+   `preference` 有三种来路（老板 2026-11-08 裁定，§7.4）：没填目标岗位 ⇒ 免加权 `no_target_role`；
+   词面判得出方向一致 ⇒ `contains` 1.0 / `token_overlap` 0.6；
+   **都对不上 ⇒ `conflict` 记 0 分并且真的计入分母**（旧值 `unrelated` 0.2 已删，它不参与）。
+   **但 `weight_sum_used` 只是「这一项算出来了」的账，不是「一定会给你一个分数」**——见第 7 条。
    条件性不参与的是 `preference`（没填目标岗位）与 `remaining_time`（岗位没有截止时间）。
    所以「两个都是 0.61 的人」不必同义——这是把 `weight_sum_used` 放进 API 的原因，
    尽管按老板 2026-11-07 的裁定它**不进用户界面**。
@@ -443,18 +447,19 @@
    五种非 null 值 = AI 想参与但失败。界面必须分句，因为用户动作完全不同：前者是「把经历写出来」，
    后两种是「去 AI 设置补 / 修 Key」，后三种是「稍后再试」。
 
-7. **`score` 可以是 `null`**（老板 2026-11-08 裁定 F1:A）。五项全都得不出时，归一化的分母是 0，
-   那不是一个分数：`null` 必配 `meta.note="nothing_computable"`，界面显示「—」而不是 0%。
-   `0.0` 保留原意（「算出来了，算出来是零覆盖」），两种情况**不许压成一个数**。
-   **`null` 只会与 `meta.no_required_skills=true` 同时出现**（枚举 81 个组合证明的单向蕴含，
-   `tests/test_match_scoring.py::test_score_is_null_only_when_the_job_has_no_required_skills`），
-   所以前端不为 `null` 单独配文案——那一屏由 `meta.no_required_skills`（岗位一条要求技能都没填）
-   那行说明负责，它说的也不是「你去修」：用户做任何事都改变不了这一屏。
-   反方向**不成立**：`required=()` + 填了目标岗位 ⇒ 只剩一项参与加权 ⇒ 实测能给出 1.0，
-   这一格要不要一律不给分尚未裁定，见 ADR-013 §5.1 末与 §7.4。
-   为什么改：改之前这里返回 `0.0`，而 §5.1 否决「缺项记 0 分」引用的理由恰恰是
-   「那会让刚注册、什么都没填的用户稳定拿到 0 分」——同一个现象不能既是拒绝替代方案的依据，
-   又是本端点的行为（证据见 `tests/test_job_match.py::test_score_is_null_when_nothing_is_computable`）。
+7. **`score` 可以是 `null`，且现在 `score is null ⇔ meta.no_required_skills`**（老板 2026-11-08 两条裁定合成）。
+   机制是**核心 term 不在 ⇒ 整个不评估**：这份分数测的是「技能要求对上了几条」，岗位一条要求技能
+   都没填时没有任何东西可比，此时哪怕 `preference` 或 `remaining_time` 算得出来，也**不给分数**
+   （旧行为会把 0.10 的分母重归一成整份分数，实测在真实账号上显示「100% 匹配度」，取证见 ADR-013 §5.1 末）。
+   `meta.note` 在这个角落写 `not_evaluated`；`nothing_computable`（分母为 0）保留为 F1:A 的名字，
+   本层已发不出来，仍由 `normalize_score` 的单测守着。
+   **`terms[]` 与 `weight_sum_used` 不跟着抹平**——那几项确实算出来了，只是不构成匹配分数。
+   `0.0` 仍然只有一种含义：「算出来了，零覆盖」，即岗位**有**要求技能而一条都没对上。
+   两种情况不许压成一个数（证据见 `tests/test_job_match.py::test_skillless_job_is_not_evaluated_end_to_end`
+   与 `::test_zero_coverage_still_returns_a_number`，一对儿）。
+   界面侧：`null` 显示「—」，那一屏由「这个岗位还没有填写技能要求」那行说明负责，
+   **不给用户派活**（他修不动岗位）。为什么当初要改：F1:A 之前这一格返回 `0.0`，
+   而 §5.1 否决「缺项记 0 分」引用的理由恰恰是「那会让刚注册、什么都没填的用户稳定拿到 0 分」。
 8. **`meta.matcher_version` 是写法判据的版本号**，与 §4.10.1 那个端点同源（同一个常量
    `app/core/skill_names.py::SKILL_MATCHER_VERSION`）。它不是为了展示，是为了让
    「角标与匹配卡各说一套」变成一次可断言的失败（判据 (c)）。什么时候必须 +1 写在那个常量的注释里。
@@ -494,7 +499,7 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 | `job_id` / `profile_id` / `profile_title` | `str` / `str\|null` / `str\|null` | 与匹配端点同样的回显：角标是按哪份简历标的 |
 | `coverage[]` | 数组，**顺序与条数都等于** `GET /jobs/{job_id}` 的 `skills` | 老板判据 (a) 的基准域 U；少一行就等于那一行永远长不出角标 |
 | `coverage[].name` | `str` | 岗位侧原写法，逐字回显 |
-| `coverage[].status` | `"covered" \| "partial" \| "missing"` | 前两档都算「写法命中」；`covered` / `partial` 的分界来自**关键词模式**，与匹配卡上可能被 AI 挪动的那条线无关——角标只回答命中没有。**挪档挪不出并集**：装配三档时「命中却拿不到强度」一律落 `partial`（`app/services/match_scoring.py:715`），所以配了 Key 的那些次点击里，`status ∈ {covered, partial}` 的集合仍与匹配卡 `covered ∪ partial` 逐字相同，这一点由 `test_badge_union_still_equals_match_union_in_ai_mode` 在 AI 模式下单独测过 |
+| `coverage[].status` | `"covered" \| "partial" \| "missing"` | 前两档都算「写法命中」；`covered` / `partial` 的分界来自**关键词模式**，与匹配卡上可能被 AI 挪动的那条线无关——角标只回答命中没有。**挪档挪不出并集**：装配三档时「命中却拿不到强度」一律落 `partial`（`app/services/match_scoring.py:742`），所以配了 Key 的那些次点击里，`status ∈ {covered, partial}` 的集合仍与匹配卡 `covered ∪ partial` 逐字相同，这一点由 `test_badge_union_still_equals_match_union_in_ai_mode` 在 AI 模式下单独测过 |
 | `coverage[].matched_form` | `str\|null` | 学生技能表里真正命中的那个写法（岗位 `Python` ↔ 简历 `Python3`）；`missing` 时恒为 `null`，不许拿岗位那侧的字面填进去 |
 | `meta.matcher_version` | `str` | 与 §4.10 的 `data.meta.matcher_version` 同一个常量 |
 
@@ -515,7 +520,7 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 没有 `429`，三个 `AI_*` 码也不可达（§1.1）。
 
 **前端调用**：`frontend/src/api/jobs.ts::getRequirementMatch(jobId)` →
-`frontend/src/stores/job.ts::loadRequirementMatch` → 角标判据 `frontend/src/stores/job.ts:748-751` 的
+`frontend/src/stores/job.ts::loadRequirementMatch` → 角标判据 `frontend/src/stores/job.ts:750-753` 的
 `isRequirementHit(name)`。为什么要多这一个布尔函数而不是让模板写 `v-if="skillStatus(name)"`：
 `missing` 也是非空字符串、在 Vue 里是**真值**，第一版就是这么渲染出「每条技能都长角标」的，
 用例当场红（那条断言留在 `JobDetailView.spec.ts` 里防复发）。

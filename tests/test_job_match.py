@@ -195,7 +195,11 @@ def test_match_returns_score_terms_and_three_lists(client: TestClient) -> None:
     assert response.status_code == 200, response.text
     data = response.json()["data"]
 
-    assert data["weights_version"] == "v1"
+    # 写字面量而不是等于常量：这一格的意义就是「改版本必须有人 consciously 改这里」。
+    # v1 → v2 的原因是**算法含义**变了而不是权重表变了（2026-11-08 裁定：核心 term 不在就整个
+    # 不给分、`preference` 不相干拆成不可比/明确冲突并删掉 0.2）。同一个人同一份数据在两个版本下
+    # 会得到不同的数，而 FR-05 要求「分数版本」可追溯——追溯的正是这件事。
+    assert data["weights_version"] == "v2"
     assert {term["name"] for term in data["terms"]} == {
         "coverage",
         "evidence",
@@ -752,8 +756,36 @@ def test_only_the_match_route_is_byok_eligible_among_all_methods(client: TestCli
 # ---------------------------------------------------------------- F1:A：算不出的分数
 
 
+def test_skillless_job_is_not_evaluated_end_to_end(client: TestClient) -> None:
+    """裁定「核心 term 不在 ⇒ 整个不评估」的端到端版本（老板 2026-11-08）。
+
+    这一格与上一款的差别就是那条被真浏览器量出来的荒谬：**其它项算得出来**。
+    岗位仍然没填任何要求技能，但目标岗位与标题逐字相同 ⇒ `preference` 参与、
+    分母 0.10。旧行为是给一个分数（实测 1.0，界面「100% 匹配度」）；新行为必须是 `null`，
+    同时响应里要看得见「preference 确实算出来了」——那才是对账，而不是把证据抹掉。
+    """
+    token = _register_and_login(client, prefix="no_core")
+    _put_profile(client, token, skills=[], experiences=[], target_role="Python 后端开发工程师")
+    job_id = _create_published_job(
+        client, token, skills=[], deadline=None, title="Python 后端开发工程师"
+    )
+    data = client.post(match_url(job_id), headers=_headers(token)).json()["data"]
+    assert data["score"] is None
+    assert data["meta"]["note"] == "not_evaluated"
+    assert data["meta"]["no_required_skills"] is True
+    assert data["meta"]["weight_sum_used"] == 0.1
+    preference = next(item for item in data["terms"] if item["name"] == "preference")
+    assert preference == {
+        "name": "preference",
+        "weight": 0.10,
+        "value": 1.0,
+        "computed": True,
+        "note": "contains",
+    }
+
+
 def test_score_is_null_when_nothing_is_computable(client: TestClient) -> None:
-    """F1:A 的端到端版本：五项全免加权 ⇒ `score=null` + `meta.note="nothing_computable"`。
+    """F1:A 的端到端版本：五项全免加权 ⇒ `score=null`（现在由「整个不评估」这条规则给出）。
 
     数据是这个角落的最小构造：岗位无要求技能、无截止时间；简历无技能无经历、没填目标偏好。
     改之前这里返回 `0.0`，界面读作「0% 匹配度」——那正是 §5.1 用来否决「缺项记 0 分」的现象本身。
@@ -764,7 +796,7 @@ def test_score_is_null_when_nothing_is_computable(client: TestClient) -> None:
     data = client.post(match_url(job_id), headers=_headers(token)).json()["data"]
     assert data["score"] is None
     assert data["meta"]["weight_sum_used"] == 0.0
-    assert data["meta"]["note"] == "nothing_computable"
+    assert data["meta"]["note"] == "not_evaluated"
     # 角标那侧在这个角落仍然要能读：全是 missing，而不是跟着报错
     coverage = client.get(coverage_url(job_id), headers=_headers(token)).json()["data"]
     assert coverage["coverage"] == []

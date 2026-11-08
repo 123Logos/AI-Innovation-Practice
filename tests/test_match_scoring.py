@@ -21,6 +21,7 @@ from app.services.match_scoring import (
     MATCH_WEIGHTS_VERSION,
     MAX_SNIPPETS_PER_SKILL,
     PARTIAL_STRENGTH_THRESHOLD,
+    PREFERENCE_TOKEN_RATIO,
     AiScoring,
     Candidate,
     ExperienceText,
@@ -522,11 +523,34 @@ class TestPreference:
         match = score_match(facts(target_role=role))
         assert term(match, "preference").value == 1.0
 
-    def test_unrelated_target_gets_0_2_not_0(self) -> None:
+    def test_conflicting_target_is_zero_and_still_in_the_denominator(self) -> None:
+        """老板 2026-11-08 裁定：`0.2` 那一档删掉，「不相干」拆成两格。
+
+        这里是**明确冲突**那格：`computed=True` + `value=0.0`，也就是真的参与加权、真的扣分。
+        原来的 0.2 是「缺项记 0 分」的变体——它用一个没有依据的软分数把「不同方向」这件真事
+        稀释成一点点扣分。免加权只留给下一款那种「没有可比的内容」。
+        """
         match = score_match(facts(target_role="想做游戏策划"))
         item = term(match, "preference")
-        assert item.value == 0.2
+        assert item.value == 0.0
         assert item.computed is True
+        assert item.note == "conflict"
+
+    def test_weak_overlap_below_the_ratio_line_counts_as_conflict(self) -> None:
+        """词面只对上一点点（`0 < overlap_ratio < 0.5`）也按冲突记 0 分，**不许逃进免加权**。
+
+        这一格是我自己归的边，实测它有多小：dev 库 7 个岗位标题 × 10 条常见目标岗位 = 70 对里
+        只有 1 对落进来（`Python 后端开发工程师` vs `前端开发实习生`，重合 0.333，只共用「开发」
+        这一个二元组）。真实形状里它几乎就是「不同方向碰巧撞了个通用词」，所以按冲突处理；
+        代价与修正路径（阶段 2 的 L1 别名表）写在 ADR-013 §7.4。
+        """
+        match = score_match(facts(job_title="前端开发实习生", target_role="Python 后端开发工程师"))
+        ratio = overlap_ratio("Python 后端开发工程师", "前端开发实习生")
+        assert 0.0 < ratio < PREFERENCE_TOKEN_RATIO
+        item = term(match, "preference")
+        assert item.value == 0.0
+        assert item.computed is True
+        assert item.note == "conflict"
 
     def test_partial_overlap_gets_middle_credit(self) -> None:
         """不相干但词面确实重合：0.6，而不是「看不懂就归零」。"""
@@ -570,16 +594,29 @@ class TestScoreMatchContract:
         """
         assert score_match(facts()).meta.matcher_version == SKILL_MATCHER_VERSION
 
-    def test_score_is_null_and_note_set_when_nothing_is_computable(self) -> None:
-        """F1:A：五项全免加权 ⇒ `score=null` + `meta.note="nothing_computable"`。
+    def test_no_required_skills_is_not_evaluated_even_when_other_terms_compute(self) -> None:
+        """老板 2026-11-08 裁定的直接回归锁：**核心 term 不在 ⇒ 整个不给分**。
 
-        这一格数据就是那个被实测出来的角落：岗位没写要求技能（覆盖免算）、学生没命中
-        （证据免算）、没填目标偏好、岗位没有截止时间。v1 的相关度恒不参与。
+        这一格就是那条被真浏览器量出来的荒谬：岗位没填任何要求技能，但用户填了目标岗位
+        且标题逐字相同 ⇒ `preference` 单独参与、分母只剩 0.10，重归一把它放大成 **1.0**，
+        屏幕上写着「100% 匹配度」，同一屏另一行写着「没有可比对的条目」。
+        现在它必须是 `null`。同时 `terms[]` 与 `weight_sum_used` **不许被抹平**——
+        「算出来了但没用于评分」是对账要看见的事实，抹掉它就成了另一种掩耳盗铃。
         """
+        match = score_match(facts(required=(), student=(), target_role="Python 后端开发工程师"))
+        assert match.score is None
+        assert match.meta.note == "not_evaluated"
+        assert match.meta.no_required_skills is True
+        assert term(match, "preference").computed is True
+        assert term(match, "preference").value == 1.0
+        assert match.meta.weight_sum_used == 0.1
+
+    def test_score_is_null_and_note_set_when_nothing_is_computable(self) -> None:
+        """五项全免加权那一格同样不给分（F1:A 的原始角落，现在被上一款的规则覆盖）。"""
         match = score_match(facts(required=(), student=()))
         assert match.score is None
         assert match.meta.weight_sum_used == 0.0
-        assert match.meta.note == "nothing_computable"
+        assert match.meta.note == "not_evaluated"
 
     def test_zero_coverage_still_has_a_score_and_no_note(self) -> None:
         """上一条件的对照：有项可算、算出来是 0，仍然是分数。
@@ -591,17 +628,14 @@ class TestScoreMatchContract:
         assert match.score == 0.0
         assert match.meta.note is None
 
-    def test_score_is_null_only_when_the_job_has_no_required_skills(self) -> None:
-        """枚举 3×3×3×3 = 81 个组合证明单向蕴含：`score=null` **只**出现在「岗位没填要求技能」那一格。
+    def test_score_is_null_exactly_when_the_job_has_no_required_skills(self) -> None:
+        """枚举 81 个组合证明**双向**等价：`score is None` ⇔ 岗位没填要求技能。
 
-        这条是给前端用的：`JobDetailView` 里 null 分数不再配独立文案，改由
-        `no_required_skills` 那行 `.empty` 说话。这个推断成不成立不取决于注释，
-        取决于这里——2026-11-08 真浏览器验收时我先写了三份同义反复，就是因为没有这条枚举。
+        2026-11-08 裁定之前这里只有单向（`⇒`），而反方向不成立正是那一格荒谬的来源
+        （`required=()` + 填了偏好 ⇒ 给出 1.0）。现在两边焊死，所以：
 
-        **反方向不成立**，而且是实测出来的：`required=()` 但填了目标岗位或写了截止时间，
-        就还剩 preference / remaining_time 参与加权（分母只有 0.10 或 0.20），
-        此时分数能刷到 1.0。那一条属于 §5.1「有效分母不同」的已接受代价里最极端的角落，
-        是否要让无技能要求的岗位一律不给分，留给人类负责人裁定，不在这里定。
+        1. 前端可以为 `null` 而不派活——那一屏必然写着「岗位没填技能要求」；
+        2. `0.0` 只可能来自**真的有要求技能但一条没对上**，`null` 永不会被读成「你不行」。
         """
         seen_null = 0
         for required in ((), (RequiredSkill("Python", "hard"),), (RequiredSkill("Rust"),)):
@@ -616,11 +650,18 @@ class TestScoreMatchContract:
                                 deadline=deadline,
                             )
                         )
+                        assert (scored.score is None) == (not required), (
+                            required,
+                            student,
+                            target_role,
+                            deadline,
+                            scored.score,
+                        )
                         if scored.score is None:
                             seen_null += 1
-                            assert not required, (student, target_role, deadline)
-                        if required:
-                            assert scored.score is not None, (student, target_role, deadline)
+                            assert scored.meta.note == "not_evaluated"
+                        else:
+                            assert scored.meta.note is None
         assert seen_null > 0, "枚举没覆盖到 null 那一格，这条测试就是空跑"
 
     def test_relevance_never_enters_the_score_in_v1(self) -> None:

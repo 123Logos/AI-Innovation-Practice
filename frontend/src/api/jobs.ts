@@ -520,8 +520,11 @@ export interface MatchMeta {
    */
   matcher_version: string
   /**
-   * 目前只有一个值 `nothing_computable`：五项全都得不出、`score` 为 `null` 时的分句判据。
-   * 有分数时恒为 `null`。
+   * 不给分的原因。界面能看到的只有一种：`not_evaluated` = 岗位没填要求技能，核心 term 不在，
+   * 整个不评估（ADR-013 §5.1 末，老板 2026-11-08 裁定）。`nothing_computable`（分母为 0）
+   * 是 F1:A 留下的另一个值，后端现在发不出来。有分数时恒为 `null`。
+   * 前端**不许**按它分句：`score=null` 与 `no_required_skills` 现在是同一件事，
+   * 那一屏的说明由 `no_required_skills` 那行负责。
    */
   note: string | null
 }
@@ -538,9 +541,12 @@ export interface MatchResult {
   profile_title: string | null
   job_id: string
   /**
-   * `null` = 这次**没有可加权的项**，算不出来（老板 2026-11-08 裁定 F1:A）。
-   * 它与 `0` 是两件事：`0` 是「算出来了，零覆盖」，`null` 必须配一句用户修得动的话
-   * （见 `meta.note`）。把两者压成一个数，界面就会对什么都没填的新用户喊「0% 匹配度」。
+   * `null` = **这次不构成一个匹配分数**。现在只有一种来路：岗位没填要求技能，核心 term 不在，
+   * 整个不评估（ADR-013 §5.1 末，老板 2026-11-08 裁定；F1:A 的「分母为 0」已被这条覆盖）。
+   * 它与 `0` 是两件事：`0` 是「算出来了，零覆盖」，那是一句关于这个人的判断；
+   * `null` 说的只是「没有可比对的东西」，用户修不动岗位，所以界面只陈述那一条
+   * （`meta.no_required_skills` 那一行），不给他派活。
+   * 把两者压成一个数，界面就会对什么都没填的新用户喊「0% 匹配度」。
    */
   score: number | null
   weights_version: string

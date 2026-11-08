@@ -446,11 +446,13 @@ onBeforeUnmount(() => {
             </ul>
 
             <!--
-              `score === null` 不再单独配一句说明（2026-11-08 真浏览器实测撤掉了那一句）：
-              实测证明五项全不得分**必然**伴随 `no_required_skills`（岗位没有要求技能，
-              coverage 与 evidence 就无从算起；见 `tests/test_match_scoring.py` 的枚举断言），
-              所以下面那行 `.empty` 已经是这一屏的说明。原先那句独立文案与它同屏重复，
-              档案为空时还会与上面 `.match-source` 的「你还没有保存的简历…」撞成三行同义反复。
+              `score === null` 不配独立文案（2026-11-08 老板裁定 + 同日真浏览器实测）：
+              `score is null` 与 `no_required_skills` 是**同一件事**——核心 term 不在就整个不给分
+              （`app/services/match_scoring.py` 的短路，枚举 81 组合由
+              `tests/test_match_scoring.py::test_score_is_null_exactly_when_the_job_has_no_required_skills`
+              钉住），所以下面那行 `.empty` 就是这一屏唯一的说明。
+              这里曾经有三行同义反复（新文案 + `.empty` + 档案为空时的 `.match-source`），
+              计数断言 `occurrences()` 是它的回归锁。
               权重、分母、`weight_sum_used` 都不出现在这里——那是响应里给对账用的，不是给用户读的。
             -->
             <p v-if="match.meta.no_required_skills" class="empty">

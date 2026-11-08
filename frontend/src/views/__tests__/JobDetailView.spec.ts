@@ -120,7 +120,7 @@ function makeMatchPayload(overrides: Record<string, unknown> = {}): Record<strin
     job_id: 'job-42',
     // 0.45×0.667 + 0.20×0.667 = 0.4349，除以本次真正参与的权重之和 0.65 → 0.669。
     score: 0.669,
-    weights_version: 'v1',
+    weights_version: 'v2',
     terms: [
       { name: 'coverage', weight: 0.45, value: 0.667, computed: true, note: null },
       { name: 'evidence', weight: 0.2, value: 0.667, computed: true, note: null },
@@ -843,20 +843,20 @@ describe('匹配卡：只有点按钮才算', () => {
    * 而 `evidence_mode` / `degrade_reason` 那两句不在此列（作用域见 ADR-013 §7.5）。
    */
   /**
-   * `score = null` 的**唯一**真实来路（老板 2026-11-08 裁定 F1:A）。
+   * `score = null` 的**唯一**来路（老板 2026-11-08 裁定：核心 term 不在就整个不评估）。
    *
-   * 这一格的载荷必须是「岗位没填技能要求」：五项全不得分必然意味着 coverage 不得分，
-   * 而 coverage 只在 `required` 为空时不得分。这条等价关系由
-   * `tests/test_match_scoring.py::test_score_is_null_only_when_the_job_has_no_required_skills`
-   * 用枚举钉住，所以这里不再为「score=null 但岗位有要求技能」写用例——那种载荷后端发不出来，
-   * 而为发不出来的载荷配的文案，实测会在同一屏说两遍（2026-11-08 真浏览器里抓到）。
+   * 现在是**双向**等价：`score is null ⇔ no_required_skills`。岗位有要求技能时 coverage 必然参与
+   * （哪怕算出来是 0），所以「null 但岗位填了要求」这种载荷后端发不出来——
+   * 由 `tests/test_match_scoring.py::test_score_is_null_exactly_when_the_job_has_no_required_skills`
+   * 用 81 组合枚举钉住。这里不为发不出来的载荷写用例，也不给 `null` 配第二句文案
+   * （2026-11-08 真浏览器里抓到过同一屏说两遍）。
    */
   it('score=null（F1:A）：显示「—」而不是 0%，同一句说明只出现一次', async () => {
     matchPayload = makeMatchPayload({
       score: null,
       profile_id: null,
       profile_title: null,
-      meta: keywordMeta(null, { note: 'nothing_computable', no_required_skills: true }),
+      meta: keywordMeta(null, { note: 'not_evaluated', no_required_skills: true }),
     })
     const { wrapper } = await mountDetail()
     await wrapper.find('[data-testid="match-run"]').trigger('click')
@@ -873,7 +873,7 @@ describe('匹配卡：只有点按钮才算', () => {
   it('score=null 且岗位没填技能要求：只说一句，且不骗用户去补东西', async () => {
     matchPayload = makeMatchPayload({
       score: null,
-      meta: keywordMeta(null, { note: 'nothing_computable', no_required_skills: true }),
+      meta: keywordMeta(null, { note: 'not_evaluated', no_required_skills: true }),
     })
     const { wrapper } = await mountDetail()
     await wrapper.find('[data-testid="match-run"]').trigger('click')

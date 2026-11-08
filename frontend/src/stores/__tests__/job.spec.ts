@@ -242,7 +242,7 @@ function defaultMatchEnvelope(overrides: Partial<JobsContract.MatchResult> = {})
       profile_title: '默认简历',
       job_id: 'job-1',
       score: 0.669,
-      weights_version: 'v1',
+      weights_version: 'v2',
       terms: [
         { name: 'coverage', weight: 0.45, value: 0.667, computed: true, note: null },
         { name: 'evidence', weight: 0.2, value: 0.667, computed: true, note: null },

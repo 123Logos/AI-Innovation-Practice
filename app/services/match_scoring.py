@@ -34,7 +34,12 @@ MATCH_WEIGHTS: dict[str, float] = {
     "preference": 0.10,
     "remaining_time": 0.10,
 }
-MATCH_WEIGHTS_VERSION = "v1"
+#: 什么时候必须 +1：这张表里任何一个数变了，**或者分数的算法含义变了**
+#: （哪些项参与归一、什么情况下整个不给分）。
+#: v1 → v2 的理由是后者：2026-11-08 老板裁定「核心 term 不在就整个不评估」+
+#: 「preference 不相干拆成不可比/明确冲突」，权重一个没动，但同一个用户在不同版本下
+#: 会拿到不同的数——FR-05 要求「分数版本」可追溯，追溯的就是这件事。
+MATCH_WEIGHTS_VERSION = "v2"
 
 #: 一个片段 = 命中位置前后各扩这么多**原文**字符（§6 第 2 点的输入预算）。
 #: 有了它，送进模型的字数与用户写的经历长度解耦：库里 `description` 是无长度约束的 `Text`，
@@ -64,11 +69,15 @@ PARTIAL_STRENGTH_THRESHOLD = 0.3
 EVIDENCE_MODE_AI = "ai_scored"
 EVIDENCE_MODE_KEYWORD = "keyword_fallback"
 
-#: §7.4 的三档。0.2 而不是 0：填了偏好但不相干本身是有效信息（说明这个人知道自己要什么，
-#: 而这个岗位不是），归零会让「填偏好」变成纯亏。
+#: §7.4 的档位（2026-11-08 老板裁定重构，**0.2 那一档删掉了**）。
+#: 原来的理由「填了偏好但不相干本身是有效信息，归零会让填偏好变成纯亏」只在定分母下成立；
+#: 重归一之后 0.2 的实际作用是给「不同方向」这件真事发一个没有依据的软分数，
+#: 与 §5.1 否决「缺项记 0 分」是同一种病。现在只有三条路：
+#: 词面包含 ⇒ 1.0；重合比例达标 ⇒ 0.6；**都对不上 ⇒ 0.0 并且计入分母**（明确冲突）。
+#: 免加权只留给「没有可比的内容」那一格（`target_role` 为空），不许拿来逃避负面信号。
 PREFERENCE_EXACT = 1.0
 PREFERENCE_PARTIAL = 0.6
-PREFERENCE_UNRELATED = 0.2
+PREFERENCE_CONFLICT = 0.0
 PREFERENCE_TOKEN_RATIO = 0.5
 
 #: §7.5 的四档剩余投递时间（天）。
@@ -244,7 +253,9 @@ class MatchMeta:
     no_required_skills: bool
     #: 「这次用的是哪版写法判据」，与第 3c 条端点同源（`SKILL_MATCHER_VERSION`）。
     matcher_version: str = SKILL_MATCHER_VERSION
-    #: 目前只有一个值：`nothing_computable`（总分算不出来时给前端的分句判据，F1:A）。
+    #: 为什么不给分。目前本层只会写 `not_evaluated`（岗位没填要求技能 ⇒ 核心 term 不在，
+    #: 整个不评估，老板 2026-11-08 裁定）；`nothing_computable` 是 F1:A 给「分母为 0」留的名字，
+    #: 在本层已经到不了（岗位有要求技能时 coverage 必然参与），仍由 `normalize_score` 的单测守着。
     note: str | None = None
 
 
@@ -663,12 +674,16 @@ def score_match(
     else:
         role = facts.target_role
         folded_role, folded_title = skill_name_key(role), skill_name_key(facts.job_title)
+        ratio = overlap_ratio(role, facts.job_title)
         if folded_role and (folded_role in folded_title or folded_title in folded_role):
             value, note = PREFERENCE_EXACT, "contains"
-        elif overlap_ratio(role, facts.job_title) >= PREFERENCE_TOKEN_RATIO:
+        elif ratio >= PREFERENCE_TOKEN_RATIO:
             value, note = PREFERENCE_PARTIAL, "token_overlap"
         else:
-            value, note = PREFERENCE_UNRELATED, "unrelated"
+            # 「判不出方向相关」就是冲突，不是「不知道所以不算」。v1 只有词面这一把尺子，
+            # 代价是「同方向不同词」（`React 工程师` vs `前端开发`）会被记 0 分——
+            # 那一格由阶段 2 的 L1 别名表修，不靠免加权躲过去（ADR-013 §7.4）。
+            value, note = PREFERENCE_CONFLICT, "conflict"
         preference = Term("preference", MATCH_WEIGHTS["preference"], value, True, note)
 
     remaining_value, remaining_computed, remaining_note = remaining_time_value(
@@ -684,6 +699,18 @@ def score_match(
 
     terms = (coverage, evidence_term, relevance, preference, remaining)
     score, weight_sum_used = normalize_score(terms)
+    if no_required_skills:
+        # **核心 term 不在 ⇒ 整个不评估**（老板 2026-11-08 裁定，取证与代价见 ADR-013 §5.1 末）。
+        # 这份分数测的是「技能要求对上了几条」；岗位一条要求都没填时没有任何东西可比，
+        # 而 §5.1 的重归一会把剩下那一两项弱信号放大成整份分数——实测能放大到 100%
+        # （同一账号：目标岗位 `Python 后端开发工程师` × 标题逐字相同的无要求岗位 ⇒ 1.0）。
+        # `terms[]` 与 `weight_sum_used` **保持原样**：那几项确实算出来了，只是不构成匹配分数，
+        # 对账时看得见的「算出来但没用于评分」比把它们抹掉诚实。
+        score = None
+    # 短路之后 `score is None` 与 `no_required_skills` 是同一件事（岗位有要求技能时 coverage
+    # 必然参与，`used ≥ 0.45`），所以这里不再为「分母为 0 但不是这一格」留分支——
+    # `normalize_score` 自己的 `(None, 0.0)` 仍由它的单测守着，那是一条通用数学契约，不是本层的来路。
+    score_note = "not_evaluated" if no_required_skills else None
 
     covered: list[Covered] = []
     partial: list[Partial] = []
@@ -733,7 +760,7 @@ def score_match(
         fragments_truncated=evidence.fragments_truncated,
         weight_sum_used=weight_sum_used,
         no_required_skills=no_required_skills,
-        note="nothing_computable" if score is None else None,
+        note=score_note,
     )
     return ScoredMatch(
         score=score,
