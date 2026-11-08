@@ -226,21 +226,6 @@ const matchScoreLabel = computed(() => {
 })
 
 /**
- * 算不出匹配度时说的那一句（`score` 为 `null` 时才有）。
- *
- * 三种来路分开说是因为**修法不同**：没简历的人要去填简历；岗位没写要求技能的，
- * 用户做任何事都改变不了这一屏（那句陈述不能写成让他去补东西）。
- * 权重、分母、`weight_sum_used` 都不出现在这里——那是响应里给对账用的，不是给用户读的。
- */
-const matchUncomputableLine = computed(() => {
-  const current = match.value
-  if (!current || current.score !== null) return ''
-  if (!current.profile_id) return '你还没有保存的简历，先去「我的简历」填一份，才算得出匹配度。'
-  if (current.meta.no_required_skills) return '这个岗位没有填写技能要求，暂时没有可比对的要求条目。'
-  return '你的简历里还没有能与这个岗位比对的内容——补一条技能或一段项目经历，再算一次。'
-})
-
-/**
  * 角标的悬停说明：命中用的到底是用户自己写的哪个写法。
  *
  * 岗位要求 `Python`、简历写的是 `Python3` 时，「你已具备」背后是一次**版本号判等**
@@ -460,10 +445,14 @@ onBeforeUnmount(() => {
               <li v-for="line in matchHintLines" :key="line">{{ line }}</li>
             </ul>
 
-            <p v-if="matchUncomputableLine" class="match-degrade" role="status">
-              {{ matchUncomputableLine }}
-            </p>
-
+            <!--
+              `score === null` 不再单独配一句说明（2026-11-08 真浏览器实测撤掉了那一句）：
+              实测证明五项全不得分**必然**伴随 `no_required_skills`（岗位没有要求技能，
+              coverage 与 evidence 就无从算起；见 `tests/test_match_scoring.py` 的枚举断言），
+              所以下面那行 `.empty` 已经是这一屏的说明。原先那句独立文案与它同屏重复，
+              档案为空时还会与上面 `.match-source` 的「你还没有保存的简历…」撞成三行同义反复。
+              权重、分母、`weight_sum_used` 都不出现在这里——那是响应里给对账用的，不是给用户读的。
+            -->
             <p v-if="match.meta.no_required_skills" class="empty">
               这个岗位还没有填写技能要求，所以没有可比对的条目。
             </p>

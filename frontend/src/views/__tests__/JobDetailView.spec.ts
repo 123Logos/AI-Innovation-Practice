@@ -519,6 +519,17 @@ function dialogOpen(): boolean {
 }
 
 /**
+ * 一句话说了几遍。
+ *
+ * `toContain` 只能证明「出现过」，而 2026-11-08 真浏览器实测抓到的正是**出现两遍**：
+ * `matchUncomputableLine` 与 `.empty` 在同一屏各说一句「岗位没填技能要求」。
+ * 所以这里数次数，不数存在性。
+ */
+function occurrences(text: string, phrase: string): number {
+  return text.split(phrase).length - 1
+}
+
+/**
  * 真实 DOM 上的一次点击。
  * 不用 `wrapper.trigger()` 是因为它只能打在组件树内的节点上；
  * 用 `.click()` 顺带保证了 `@click.self` 的语义被如实测到
@@ -831,14 +842,21 @@ describe('匹配卡：只有点按钮才算', () => {
    * 各计数、`weight_sum_used` 都只留在响应里。这一条守的是**别把它们显示出来**，
    * 而 `evidence_mode` / `degrade_reason` 那两句不在此列（作用域见 ADR-013 §7.5）。
    */
-  it('score=null（F1:A）：显示「—」而不是 0%，并说一句用户修得动的话', async () => {
-    // 这一格是「五项全都得不出」的最小载荷：还没有档案，因而也没有分数。
-    // 显示 0% 会把「没东西可算」说成「你一条都不符合」——两者的下一步完全不同。
+  /**
+   * `score = null` 的**唯一**真实来路（老板 2026-11-08 裁定 F1:A）。
+   *
+   * 这一格的载荷必须是「岗位没填技能要求」：五项全不得分必然意味着 coverage 不得分，
+   * 而 coverage 只在 `required` 为空时不得分。这条等价关系由
+   * `tests/test_match_scoring.py::test_score_is_null_only_when_the_job_has_no_required_skills`
+   * 用枚举钉住，所以这里不再为「score=null 但岗位有要求技能」写用例——那种载荷后端发不出来，
+   * 而为发不出来的载荷配的文案，实测会在同一屏说两遍（2026-11-08 真浏览器里抓到）。
+   */
+  it('score=null（F1:A）：显示「—」而不是 0%，同一句说明只出现一次', async () => {
     matchPayload = makeMatchPayload({
       score: null,
       profile_id: null,
       profile_title: null,
-      meta: keywordMeta(null, { note: 'nothing_computable' }),
+      meta: keywordMeta(null, { note: 'nothing_computable', no_required_skills: true }),
     })
     const { wrapper } = await mountDetail()
     await wrapper.find('[data-testid="match-run"]').trigger('click')
@@ -847,10 +865,12 @@ describe('匹配卡：只有点按钮才算', () => {
 
     expect(wrapper.find('[data-testid="match-score"]').text()).toBe('—')
     expect(wrapper.text()).not.toContain('0%')
-    expect(wrapper.text()).toContain('你还没有保存的简历')
+    // 「没有档案」这件事由 `.match-source` 那行说，且只说一次：
+    // 曾经这里还有第二句同义反复，浏览器里连着 `.empty` 一共三行。
+    expect(occurrences(wrapper.text(), '你还没有保存的简历')).toBe(1)
   })
 
-  it('score=null 且岗位没填技能要求：那句不许骗用户去补简历', async () => {
+  it('score=null 且岗位没填技能要求：只说一句，且不骗用户去补东西', async () => {
     matchPayload = makeMatchPayload({
       score: null,
       meta: keywordMeta(null, { note: 'nothing_computable', no_required_skills: true }),
@@ -859,23 +879,9 @@ describe('匹配卡：只有点按钮才算', () => {
     await wrapper.find('[data-testid="match-run"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('这个岗位没有填写技能要求')
+    expect(occurrences(wrapper.text(), '这个岗位还没有填写技能要求')).toBe(1)
+    expect(wrapper.text()).not.toContain('暂时没有可比对的要求条目')
     expect(wrapper.text()).not.toContain('先去「我的简历」填一份')
-  })
-
-  it('score=null 但档案与要求技能都在：说的是「补一条经历再算」', async () => {
-    matchPayload = makeMatchPayload({
-      score: null,
-      covered: [],
-      partial: [],
-      gaps: [],
-      meta: keywordMeta(null, { note: 'nothing_computable' }),
-    })
-    const { wrapper } = await mountDetail()
-    await wrapper.find('[data-testid="match-run"]').trigger('click')
-    await flushPromises()
-
-    expect(wrapper.text()).toContain('补一条技能或一段项目经历')
   })
 
   it('技术构成与计数不进界面：分数之外只有三档清单和那两句能修的说明', async () => {

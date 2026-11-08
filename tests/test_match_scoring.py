@@ -591,6 +591,38 @@ class TestScoreMatchContract:
         assert match.score == 0.0
         assert match.meta.note is None
 
+    def test_score_is_null_only_when_the_job_has_no_required_skills(self) -> None:
+        """枚举 3×3×3×3 = 81 个组合证明单向蕴含：`score=null` **只**出现在「岗位没填要求技能」那一格。
+
+        这条是给前端用的：`JobDetailView` 里 null 分数不再配独立文案，改由
+        `no_required_skills` 那行 `.empty` 说话。这个推断成不成立不取决于注释，
+        取决于这里——2026-11-08 真浏览器验收时我先写了三份同义反复，就是因为没有这条枚举。
+
+        **反方向不成立**，而且是实测出来的：`required=()` 但填了目标岗位或写了截止时间，
+        就还剩 preference / remaining_time 参与加权（分母只有 0.10 或 0.20），
+        此时分数能刷到 1.0。那一条属于 §5.1「有效分母不同」的已接受代价里最极端的角落，
+        是否要让无技能要求的岗位一律不给分，留给人类负责人裁定，不在这里定。
+        """
+        seen_null = 0
+        for required in ((), (RequiredSkill("Python", "hard"),), (RequiredSkill("Rust"),)):
+            for student in ((), ("Python",), ("Python 3.13",)):
+                for target_role in (None, "Python 后端开发工程师", "运营助理"):
+                    for deadline in (None, TODAY, date(2099, 1, 1)):
+                        scored = score_match(
+                            facts(
+                                required=required,
+                                student=student,
+                                target_role=target_role,
+                                deadline=deadline,
+                            )
+                        )
+                        if scored.score is None:
+                            seen_null += 1
+                            assert not required, (student, target_role, deadline)
+                        if required:
+                            assert scored.score is not None, (student, target_role, deadline)
+        assert seen_null > 0, "枚举没覆盖到 null 那一格，这条测试就是空跑"
+
     def test_relevance_never_enters_the_score_in_v1(self) -> None:
         """§7.3 的代理指标实测 0/40，所以 v1 显式不参与；而且必须能被对账。
 

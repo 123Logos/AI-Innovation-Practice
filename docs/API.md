@@ -444,8 +444,14 @@
    后两种是「去 AI 设置补 / 修 Key」，后三种是「稍后再试」。
 
 7. **`score` 可以是 `null`**（老板 2026-11-08 裁定 F1:A）。五项全都得不出时，归一化的分母是 0，
-   那不是一个分数：`null` 必配 `meta.note="nothing_computable"`，界面显示「—」并说一句用户修得动的话，
-   而不是 0%。`0.0` 保留原意（「算出来了，算出来是零覆盖」），两种情况**不许压成一个数**。
+   那不是一个分数：`null` 必配 `meta.note="nothing_computable"`，界面显示「—」而不是 0%。
+   `0.0` 保留原意（「算出来了，算出来是零覆盖」），两种情况**不许压成一个数**。
+   **`null` 只会与 `meta.no_required_skills=true` 同时出现**（枚举 81 个组合证明的单向蕴含，
+   `tests/test_match_scoring.py::test_score_is_null_only_when_the_job_has_no_required_skills`），
+   所以前端不为 `null` 单独配文案——那一屏由 `meta.no_required_skills`（岗位一条要求技能都没填）
+   那行说明负责，它说的也不是「你去修」：用户做任何事都改变不了这一屏。
+   反方向**不成立**：`required=()` + 填了目标岗位 ⇒ 只剩一项参与加权 ⇒ 实测能给出 1.0，
+   这一格要不要一律不给分尚未裁定，见 ADR-013 §5.1 末与 §7.4。
    为什么改：改之前这里返回 `0.0`，而 §5.1 否决「缺项记 0 分」引用的理由恰恰是
    「那会让刚注册、什么都没填的用户稳定拿到 0 分」——同一个现象不能既是拒绝替代方案的依据，
    又是本端点的行为（证据见 `tests/test_job_match.py::test_score_is_null_when_nothing_is_computable`）。
