@@ -1202,10 +1202,23 @@ describe('人岗匹配（显式点击、纯计算、退化可归因）', () => {
       expect(text).toContain('稍后再算一次')
     }
 
-    // 关键词模式却没有原因（后端不该给；真给了也不许替它编一个）。
+    // 零候选**不是退化**：`degrade_reason` 为 null 的关键词模式只有一个来源——
+    // 命中的技能在经历里找不到出处，根本没向模型提问。此时说「按关键词算法给分」是假的，
+    // 而用户能修的动作也不是配 Key（老板 2026-11-08 实测到的那一格）。
+    const nothingToScore = matchDegradeLines(
+      matchMetaFixture({ evidence_mode: 'keyword_fallback', degrade_reason: null }),
+    )
+    expect(nothingToScore).toHaveLength(2)
+    expect(nothingToScore.join('\n')).toContain('找不到出处')
+    expect(nothingToScore.join('\n')).not.toContain('关键词')
+    expect(nothingToScore.join('\n')).not.toContain('AI 设置')
+
+    // 岗位没填技能要求时一句都不给：没有可比对的东西，解释「证据强度怎么算」是噪音。
     expect(
-      matchDegradeLines(matchMetaFixture({ evidence_mode: 'keyword_fallback', degrade_reason: null })),
-    ).toHaveLength(1)
+      matchDegradeLines(
+        matchMetaFixture({ evidence_mode: 'keyword_fallback', degrade_reason: null, no_required_skills: true }),
+      ),
+    ).toEqual([])
   })
 
   it('真的失败按码分支：429 等一分钟、404 说岗位读不到、401 说重新登录', () => {

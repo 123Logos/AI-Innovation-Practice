@@ -12,13 +12,14 @@
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 
 from app.core.deadline import is_expired
-from app.core.skill_names import skill_name_key
+from app.core.skill_names import skill_forms_match, skill_name_key, skill_stem
 
 #: 五项权重，沿用 `docs/PRD.md:119`。键名直接进 `data.terms[].name`，属于对外契约。
 MATCH_WEIGHTS: dict[str, float] = {
@@ -268,29 +269,58 @@ def fold_with_positions(text: str) -> tuple[str, list[int]]:
     return "".join(chars), positions
 
 
+#: 命中区间两侧不许紧贴的字符（折叠空间）。字母与数字挡掉 `Java` 命中 `JavaScript`、
+#: `Go` 命中 `Golang`；`+` / `#` 挡掉 `C` 命中 `C++` 与 `C#`；`-` 挡掉 `C` 命中 `C-Sharp`。
+#: **不含** `.`（`Vue` 该命中 `Vue.js`）也不含中日韩（`C语言`、`Python编程` 都该命中）。
+_BOUNDARY_BLOCKED = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_+-#")
+
+#: 紧跟在词干后面的版本号，用于并进命中区间：`Python 3.13`、`Python3`、`JDK-1.8`。
+_TRAILING_VERSION = re.compile(r"[ \t._/-]*\d+(?:[./]\d+)*")
+
+
 def locate_snippets(text: str, skill: str) -> tuple[tuple[str, bool], ...]:
     """在 `text` 里定位 `skill`，返回 `(原文连续片段, 是否被窗口切过端)`。
 
-    每个命中位置一个窗口；片段返回前再自检一次折叠后是否仍含技能键，
-    不含就丢弃（只有上面那个谚文边角会触发）。
+    三步，缺一不可（老板 2026-11-08 实测出的两个坑）：
+
+    1. **按词干找**：岗位要求 `Python3` 时，正文里的写法是 `Python 3.13`，
+       拿整串 `python3` 去子串搜会得到 0 处命中——覆盖判据修好了也仍然「已具备但零片段」，
+       于是分数走的是证据 0 分那一支。所以搜索词是 `skill_stem` 剥完版本号的那一截。
+    2. **把版本号并进命中区间，再拿区间原文复核一次判据**：要求 `Python3` 时正文写
+       `Python2` 不算证据（两侧都带版本号、主号不同 → `skill_forms_match` 判否）。
+       这一步同时取代了旧版那句「片段里还得含技能键」的自检。
+    3. **词边界检查**（见 `_BOUNDARY_BLOCKED`）：没有它，`C` 会在 `C++` 里被找到、
+       `Java` 会在 `JavaScript` 里被找到，而这两条正是「不同技能」的教科书反例。
+
+    方向仍然是保守的：宁可少给一条证据，也不给一条假证据（谚文整串合成那类边角
+    在这里表现为「找不到」而不是「找错」）。
     """
     if not text or not skill:
         return ()
-    needle = skill_name_key(skill)
-    if not needle:
+    stem, _ = skill_stem(skill)
+    if not stem:
         return ()
     folded_text, positions = fold_with_positions(text)
     found: list[tuple[str, bool]] = []
-    at = folded_text.find(needle)
+    at = folded_text.find(stem)
     while at >= 0:
-        start = positions[at]
-        end = positions[at + len(needle) - 1] + 1
-        window_start = max(0, start - MATCH_SNIPPET_RADIUS)
-        window_end = min(len(text), end + MATCH_SNIPPET_RADIUS)
-        snippet = text[window_start:window_end]
-        if needle in skill_name_key(snippet):
-            found.append((snippet, window_start > 0 or window_end < len(text)))
-        at = folded_text.find(needle, at + len(needle))
+        end = at + len(stem)
+        tail = _TRAILING_VERSION.match(folded_text, end)
+        if tail is not None:
+            end = tail.end()
+        before = folded_text[at - 1] if at > 0 else ""
+        after = folded_text[end] if end < len(folded_text) else ""
+        if before not in _BOUNDARY_BLOCKED and after not in _BOUNDARY_BLOCKED:
+            start = positions[at]
+            stop = positions[end - 1] + 1
+            surface = text[start:stop]
+            if skill_forms_match(skill, surface):
+                window_start = max(0, start - MATCH_SNIPPET_RADIUS)
+                window_end = min(len(text), stop + MATCH_SNIPPET_RADIUS)
+                found.append(
+                    (text[window_start:window_end], window_start > 0 or window_end < len(text))
+                )
+        at = folded_text.find(stem, at + len(stem))
     return tuple(found)
 
 
@@ -360,12 +390,18 @@ def unique_required(skills: Sequence[RequiredSkill]) -> tuple[RequiredSkill, ...
 def matched_required_skills(
     required: Sequence[RequiredSkill], student: Sequence[str]
 ) -> tuple[RequiredSkill, ...]:
-    """岗位要求里学生技能命中的那些（§7.1 的分子集合）。入参应已按 `unique_required` 去重。"""
-    student_keys = {skill_name_key(name) for name in student if name.strip()}
+    """岗位要求里学生技能命中的那些（§7.1 的分子集合）。入参应已按 `unique_required` 去重。
+
+    判据是 `skill_forms_match`（全等 + 受控版本号剥离），不是裸的键全等：
+    学生填 `Python3`、岗位要求 `Python` 今天会被判「还缺」，而这条差距纯粹是写法。
+    为什么不用子串/前缀推断，见 §7.1 与 `skill_forms_match` 的 docstring。
+    """
+    filled = [name for name in student if name.strip()]
     return tuple(
         item
         for item in required
-        if skill_name_key(item.name) and skill_name_key(item.name) in student_keys
+        if skill_name_key(item.name)
+        and any(skill_forms_match(item.name, candidate) for candidate in filled)
     )
 
 

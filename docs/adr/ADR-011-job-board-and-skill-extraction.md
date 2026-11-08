@@ -46,7 +46,7 @@
 
 - 需求要的是「老师/在校生/校友都能录」，用「都能录」实现即可，结论与「不区分角色」一致，而鉴权面一分没扩。
 - `MVP_SCOPE.md:88`「不做管理后台，数据修正由开发者直接操作数据库」——`role` 一进表，第一件事就变成「谁能改 role」，而改 role 需要后台界面；没有后台的 `role` 只会退化成一个没人管的字符串，却已经真实扩大了授权面。
-- 一旦有 `role`，每个岗位端点都得回答「这一步是不是 teacher 才能做」，包括审核与候选人导出（`docs/API.md:110`、L186-190 预先写了这些）。而现在既没有审核人也没有后台，**那些端点无论怎么设计都是假权限**。不引入 `role`，就把它们整批推迟到有真实审核角色为止。
+- 一旦有 `role`，每个岗位端点都得回答「这一步是不是 teacher 才能做」，包括审核与候选人导出（当时写在 `docs/API.md` 权限矩阵里，现已按 1.A 作废；候选人那条由 §4.11 继续挂着）。而现在既没有审核人也没有后台，**那些端点无论怎么设计都是假权限**。不引入 `role`，就把它们整批推迟到有真实审核角色为止。
 - 完整 RBAC（`schema-draft.sql` L28-48 的 `roles`/`memberships`）对应 PRD §3 的五角色 + 默认拒绝模型，本文明确不采用。
 
 #### 1.B `jobs` 表字段 —— 已定
@@ -176,7 +176,7 @@
 ```
 POST /api/v1/jobs/extract-skills     请求头 X-DeepSeek-Key（+ Authorization）
   body: { "description": "…JD 原文…", "title": "可选岗位名" }
-  resp（v10 按实现校正：统一信封 `app/core/responses.py:9-10` 会把结果包进 `data`，
+  resp（v10 按实现校正：统一信封 `app/core/responses.py:10-11` 会把结果包进 `data`，
         所以有**两个** `meta`——外层只有 `request_id`，本文说的七个计数在 `data.meta`）:
   { "data": { "skills": [ { "name", "type", "evidence", "confidence" } ],
               "meta":   { "model", "prompt_version", "received_count", "dropped_count",

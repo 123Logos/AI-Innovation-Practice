@@ -556,14 +556,30 @@ export function extractFailureText(error: unknown): string {
  * 「模型读完你的经历认为它偏薄」。两种情况下用户的下一步动作完全不同，
  * 所以按 AGENTS.md §3.2「失败必须由用户点出来」的口径，这里不许静默省略。
  *
- * 五种原因**分句而不合并**也是同一理由：前两种用户自己就能修（去「AI 设置」补 Key / 修 Key），
- * 后三种只能稍后重试。把它们写成同一句「AI 不可用」，用户会去改一个本来没坏的 Key。
+ * **三种情况分开说**（老板 2026-11-08 实测出来的第三种，前两版都把它说错了）：
+ * - AI 正常参与 → 一句都不给；
+ * - AI 想参与但失败（`degrade_reason` 五种之一）→ 算法那句 + 该原因的动作。
+ *   五种**分句而不合并**也是同一理由：前两种用户自己就能修（去「AI 设置」补 / 修 Key），
+ *   后三种只能稍后重试。写成同一句「AI 不可用」，用户会去改一个本来没坏的 Key。
+ * - **零候选不是退化**：`degrade_reason` 为 `null` 的 `keyword_fallback` 只有一个来源
+ *   ——命中的技能在经历里找不到任何出处，所以一个片段都没切出来、**根本没向模型提问**
+ *   （这条短路在检查 Key 之前，所以配了 Key 也一样）。此时说「按关键词算法给分」是假的：
+ *   关键词算法什么都没算，那一格记的是 0 分并参与加权（`terms[].note=matched_without_evidence`）。
+ *   用户能修的动作也不是配 Key，而是把那段经历写出来。
  *
  * 与之相反，权重构成、`weight_sum_used`、各计数**不进界面**（2026-11-07 人类负责人裁定
  * 「不用向客户说明技术上的设计」，作用域见 ADR-013 §7.5）：它们留在响应里给我们自己对账。
  */
 export function matchDegradeLines(meta: MatchMeta): string[] {
   if (meta.evidence_mode !== 'keyword_fallback') return []
+  // 岗位压根没填技能要求：没有可比对的东西，说一句「证据强度怎么算的」反而是噪音。
+  if (meta.no_required_skills) return []
+  if (meta.degrade_reason === null) {
+    return [
+      '你命中的技能在经历里找不到出处，所以这次没有向 AI 提问，也没花你的额度。',
+      '把那段经历写进简历（做了什么 → 怎么做的 → 结果如何），再算一次才会有证据强度。',
+    ]
+  }
   const lines = ['本次的「证据强度」按关键词算法给分，没有让 AI 读你的经历。']
   switch (meta.degrade_reason) {
     case 'key_missing':
@@ -582,10 +598,6 @@ export function matchDegradeLines(meta: MatchMeta): string[] {
       break
     case 'upstream':
       lines.push('DeepSeek 当前不可用（上游报错），所以没拿到证据强度。稍后再算一次即可。')
-      break
-    default:
-      // 关键词模式必然带原因（§6.5 要求退化可归因）。真出现 `null` 时只说上面那一句，
-      // 不替后端编一个它没给过的原因。
       break
   }
   return lines

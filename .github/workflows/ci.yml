@@ -50,6 +50,12 @@ jobs:
       - name: Import architecture check
         run: uv run lint-imports
 
+      # 文档里的 `路径:行号` 引用必须还能指到真实代码。ADR-013 §10 第 10 步曾用一次性脚本机械平移，
+      # 结果写出 12 处「首行是空行」的引用，而我在交付说明里声明过「全部指向非空行」——
+      # 声明不算检查，这一步才是（AGENTS.md §7.6）。
+      - name: Docs citation check
+        run: uv run python scripts/check_docs_citations.py
+
       # test_migrations covers upgrade/downgrade against the MySQL service.
       - name: Test and migration check
         run: uv run pytest -q

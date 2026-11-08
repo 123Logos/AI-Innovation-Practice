@@ -222,6 +222,36 @@ def test_evidence_snippets_are_substrings_of_the_stored_text(client: TestClient)
             assert evidence["snippet"] in original
 
 
+def test_versioned_spelling_is_covered_and_evidenced(client: TestClient) -> None:
+    """老板 2026-11-08 那一屏的端到端回归：技能写 `Python3`、正文写 `Python 3.13`。
+
+    这条同时钉住两处（分开修都只修一半）：覆盖判据要认这个写法，
+    证据定位也要能在带号的原话里找到片段——只修前者的话，这一格会落到
+    「已具备但零片段」，分数照旧按证据 0 分走。
+    """
+    token = _register_and_login(client, prefix="matchver")
+    _put_profile(
+        client,
+        token,
+        skills=[{"name": "Python3"}],
+        experiences=[
+            {
+                "title": "订单服务重构",
+                "start_date": "2024-03-01",
+                "end_date": "2024-06-30",
+                "description": "后端采用 Python 3.13 重写订单接口",
+                "responsibility": "负责压测与灰度发布",
+            }
+        ],
+    )
+    job_id = _create_published_job(client, token, skills=[{"name": "Python", "type": "hard"}])
+
+    data = client.post(match_url(job_id), headers=_headers(token)).json()["data"]
+    assert [item["skill"] for item in data["covered"]] == ["Python"]
+    assert "Python 3.13" in data["covered"][0]["evidence"][0]["snippet"]
+    assert data["gaps"] == []
+
+
 def test_unmeasurable_relevance_is_visible_in_meta_but_not_in_score(client: TestClient) -> None:
     """§7.3.1：v1 这一项恒不参与，`weight_sum_used` 如实少 0.15（老板裁定它不进 UI，但必须在 API 里）。"""
     token = _register_and_login(client)

@@ -151,7 +151,7 @@
 | 岗位不存在 / 不属于当前用户 / 已在回收站 | 404 | `NOT_FOUND`（处理器的固定文案「资源不存在。」） | 抛出 `app/api/v1/jobs.py:68-70`；映射 `app/main.py:189-191` |
 | 提取请求缺 `X-DeepSeek-Key` | 400 | `AI_KEY_MISSING`，`retryable: false` | `app/services/job_service.py:204-205` → `app/main.py:259-264` |
 | DeepSeek 拒绝该 Key（鉴权失败） | 401 | `AI_KEY_INVALID` | `app/integrations/skill_extractor.py:294-298` → `app/services/job_service.py:208-209` → `app/main.py:266-275` |
-| 上游不可用 / 输出不是可解析 JSON / 内容为空 / 无一可回溯 | 502 | `AI_SERVICE_UNAVAILABLE`，`retryable: true` | `app/main.py:277-290`（异常族 `app/services/job_service.py:210-216`、`:270-281`） |
+| 上游不可用 / 输出不是可解析 JSON / 内容为空 / 无一可回溯 | 502 | `AI_SERVICE_UNAVAILABLE`，`retryable: true` | `app/main.py:277-290`（异常族 `app/services/job_service.py:204-213`、`:270-281`） |
 | 输出被服务端 `max_tokens` 切断（`finish_reason == "length"`） | 502 | `AI_SERVICE_UNAVAILABLE`，`retryable: true`，**并在外层 `meta.finish_reason` 回显 `"length"`** | 就地组装 `app/api/v1/jobs.py:151-160`，文案 `EXTRACT_TRUNCATED_MESSAGE` `app/api/v1/jobs.py:62-65` |
 | 提取超过 `EXTRACT_RATE_LIMIT`（`10/minute`，按客户端 IP） | 429 | `RATE_LIMITED`，`retryable: true`，响应头 `Retry-After: 60` | 常量 `app/core/rate_limit.py:39`；装饰器 `app/api/v1/jobs.py:122`；映射 `app/main.py:217-237` |
 | 匹配超过 `MATCH_RATE_LIMIT`（`10/minute`，**按用户**而不是按 IP） | 429 | `RATE_LIMITED`，`retryable: true`，响应头 `Retry-After: 60` | 常量 `app/core/rate_limit.py:42`；键函数 `:45`；装饰器 `app/api/v1/jobs.py:197`；映射同一个 `app/main.py:217-237`（§4.10） |
@@ -169,11 +169,11 @@
 | 2 | `GET /jobs/{job_id}` | `published`：任何登录用户；`draft`：仅创建者 | 404 | 200 / 404 | `app/api/v1/jobs.py:181-193`、`app/repositories/job_repository.py:198-207`、`:458-463` |
 | 3 | `POST /jobs` | 任何登录用户 | — | 201 / 422 / 401 | `app/api/v1/jobs.py:109-118` |
 | 4 | `PUT /jobs/{job_id}` | 仅创建者 | 404 | 200 / 404 | `app/api/v1/jobs.py:229-242`、`app/repositories/job_repository.py:209-224` |
-| 5 | `DELETE /jobs/{job_id}` | 仅创建者 | 404 | 200 / 404 | `app/api/v1/jobs.py:275-287`、`app/services/job_service.py:370-378` |
-| 6 | `PUT /jobs/{job_id}/publish`、`/unpublish` | 仅创建者 | 404 | 200 / 404 | `app/api/v1/jobs.py:245-272`、`app/services/job_service.py:362-368` |
-| 7 | `POST /jobs/extract-skills` | 任何登录用户 | 无归属概念（纯计算，不落库） | 200 / 400 / 401 / 422 / 429 / 502 | `app/api/v1/jobs.py:121-161`、`app/services/job_service.py:192-216` |
-| 8 | `GET /jobs/trash` | 任何登录用户 | 只返回**自己的**软删岗位（过滤在 SQL 里） | 200 | `app/api/v1/jobs.py:164-178`、`app/repositories/job_repository.py:286-297` |
-| 9 | `PUT /jobs/{job_id}/restore` | 仅创建者 | 404；「岗位存在但不在回收站」同样是 404 | 200 / 404 | `app/api/v1/jobs.py:290-308`、`app/services/job_service.py:380-395` |
+| 5 | `DELETE /jobs/{job_id}` | 仅创建者 | 404 | 200 / 404 | `app/api/v1/jobs.py:275-287`、`app/services/job_service.py:368-376` |
+| 6 | `PUT /jobs/{job_id}/publish`、`/unpublish` | 仅创建者 | 404 | 200 / 404 | `app/api/v1/jobs.py:245-272`、`app/services/job_service.py:360-366` |
+| 7 | `POST /jobs/extract-skills` | 任何登录用户 | 无归属概念（纯计算，不落库） | 200 / 400 / 401 / 422 / 429 / 502 | `app/api/v1/jobs.py:121-161`、`app/services/job_service.py:190-214` |
+| 8 | `GET /jobs/trash` | 任何登录用户 | 只返回**自己的**软删岗位（过滤在 SQL 里） | 200 | `app/api/v1/jobs.py:164-178`、`app/repositories/job_repository.py:284-295` |
+| 9 | `PUT /jobs/{job_id}/restore` | 仅创建者 | 404；「岗位存在但不在回收站」同样是 404 | 200 / 404 | `app/api/v1/jobs.py:290-308`、`app/services/job_service.py:378-393` |
 | 10 | `POST /jobs/{job_id}/match` | `published`：任何登录用户；`draft`：仅创建者 | 404（他人的草稿**包括**回收站里的） | 200 / 401 / 404 / 422 / 429 | `app/api/v1/jobs.py:196-226`、`app/services/match_service.py:100-148` |
 
 三条实现约束（都有代码兜住，不是口头承诺）：
@@ -211,9 +211,9 @@
 
 四条服务端派生规则（这是「`origin` 不在请求体里」的完整含义）：
 
-1. `POST /jobs` 恒落 `status='draft'`（`app/services/job_service.py:331-346`）；`PUT` 不改 `status` 也不改 `deleted_at`（`app/repositories/job_repository.py:364-366`）。发布 / 下架是独立动作。
-2. 每条技能的 `origin` 由服务层现场派生：该条 `evidence_text` 与岗位 `description` 各过四步归一化（NFKC → casefold → 去空白 → 去标点）后，前者是后者的子串 → `jd_verifiable`，否则 → `unverified`（`app/services/job_service.py:457-482`，归一化与子串判定在 `app/integrations/skill_extractor.py:189-227`；值域常量 `app/repositories/job_repository.py:69-70`）。`evidence_text` 为空即 `unverified`——空串是任何文本的子串，必须先挡掉（`app/integrations/skill_extractor.py:220-226`）。
-3. 三列提取溯源戳由服务端在本次保存里盖：本次提交的技能里**只要有任何一条**被判为 `jd_verifiable`，就写入 `extract_model`（固定 `"deepseek-flash"`，`app/integrations/copy_writer.py:40`）、`extract_prompt_version`（`"v1"`，`app/integrations/skill_extractor.py:56`）、`extracted_at`（应用时钟 UTC naive，`app/services/job_service.py:438-455`）；一条都没有则三列保持 `null`。`PUT` 会**整批重算**这三列，不是「只在有值时覆盖」（`app/repositories/job_repository.py:371-373`）。
+1. `POST /jobs` 恒落 `status='draft'`（`app/services/job_service.py:329-344`）；`PUT` 不改 `status` 也不改 `deleted_at`（`app/repositories/job_repository.py:364-366`）。发布 / 下架是独立动作。
+2. 每条技能的 `origin` 由服务层现场派生：该条 `evidence_text` 与岗位 `description` 各过四步归一化（NFKC → casefold → 去空白 → 去标点）后，前者是后者的子串 → `jd_verifiable`，否则 → `unverified`（`app/services/job_service.py:456-480`，归一化与子串判定在 `app/integrations/skill_extractor.py:189-225`；值域常量 `app/repositories/job_repository.py:69-70`）。`evidence_text` 为空即 `unverified`——空串是任何文本的子串，必须先挡掉（`app/integrations/skill_extractor.py:216-225`）。
+3. 三列提取溯源戳由服务端在本次保存里盖：本次提交的技能里**只要有任何一条**被判为 `jd_verifiable`，就写入 `extract_model`（固定 `"deepseek-flash"`，`app/integrations/copy_writer.py:40`）、`extract_prompt_version`（`"v1"`，`app/integrations/skill_extractor.py:56`）、`extracted_at`（应用时钟 UTC naive，`app/services/job_service.py:437-453`）；一条都没有则三列保持 `null`。`PUT` 会**整批重算**这三列，不是「只在有值时覆盖」（`app/repositories/job_repository.py:371-373`）。
 4. 一次提交里的技能名重复先报 422「`skill names must be unique`」（`app/schemas/job.py:175-194`），判定键是 `skill_name_key()` = NFKC + casefold，**只有两步**，与上面第 2 条那个四步归一化函数是两回事（`app/core/skill_names.py`；为什么必须分开见 ADR-011 §2.D.2）。数据库侧的 `UNIQUE (job_id, name)` 名为 `uq_job_skills_job_name`（`alembic/versions/20261105_0012_job_skills.py:96`）。
 
 过期是**读侧判定，不落状态、不写库**：`deadline is not None and deadline < date.today()`（判据 `app/core/deadline.py:15-21`，`JobService.is_expired` 只是委托它，`app/services/job_service.py:483-490`；取「今天」的调用点 `:153`）。「今天」取**应用进程时钟**，SQL 里不出现数据库侧的当日函数（`app/repositories/job_repository.py:243`、`:490-492` 的谓词只吃绑定参数）。`deadline` 为 `null` 视为长期有效。`jobs.status` 的值域只有 `draft` / `published`（`app/repositories/job_repository.py:56-57`，CHECK `ck_jobs_status` 见 `alembic/versions/20261105_0011_jobs.py:84-88`）——**没有 `expired`，也没有 `closed`**，旧版那句「过期岗位自动转为 `expired`」作废。
@@ -232,7 +232,7 @@
 
 排序固定 `created_at DESC, id DESC`（`app/repositories/job_repository.py:245`、`:257`），不提供排序参数。软删的行永远不在列表里（`:253-254`）。
 
-返回 `200`，`data.jobs` 是 `JobSummary` 数组（字段见 4.9），`meta` 带 `page` / `page_size` / `total` / `request_id`；`total` 与列表共用同一套谓词，所以筛选后它会跟着变（`app/repositories/job_repository.py:261-284`）。
+返回 `200`，`data.jobs` 是 `JobSummary` 数组（字段见 4.9），`meta` 带 `page` / `page_size` / `total` / `request_id`；`total` 与列表共用同一套谓词，所以筛选后它会跟着变（`app/repositories/job_repository.py:259-282`）。
 
 ### 4.4 POST `/jobs` — 录入
 
@@ -273,9 +273,9 @@
 |---|---|---|---|---|
 | `/jobs/{job_id}/publish` | **PUT**（不是 POST） | `status` → `published`，进广场 | `200` + `data.job` | `app/api/v1/jobs.py:245-257` |
 | `/jobs/{job_id}/unpublish` | **PUT** | `status` → `draft`，广场立刻读不到 | `200` + `data.job` | `app/api/v1/jobs.py:260-272` |
-| `/jobs/{job_id}` | DELETE | 软删除：只打 `deleted_at`，`job_skills` 一行不动（恢复后内容必须还在） | `200` + `{"data": {"job_id": "…", "deleted": true}}` | `app/api/v1/jobs.py:275-287`、`app/repositories/job_repository.py:435-445` |
-| `/jobs/trash` | GET | **自己的**软删岗位，按 `deleted_at DESC, id DESC` | `200` + `data.jobs`（`JobSummary` 数组），`meta` 只有 `request_id`（**无分页参数、无 `total`**） | `app/api/v1/jobs.py:164-178`、`app/repositories/job_repository.py:286-297` |
-| `/jobs/{job_id}/restore` | PUT | `deleted_at` 清回 `null`，`status` 原样保留（删掉已发布岗位再恢复，它仍是已发布） | `200` + `data.job` | `app/api/v1/jobs.py:290-308`、`app/services/job_service.py:380-395` |
+| `/jobs/{job_id}` | DELETE | 软删除：只打 `deleted_at`，`job_skills` 一行不动（恢复后内容必须还在） | `200` + `{"data": {"job_id": "…", "deleted": true}}` | `app/api/v1/jobs.py:275-287`、`app/repositories/job_repository.py:433-443` |
+| `/jobs/trash` | GET | **自己的**软删岗位，按 `deleted_at DESC, id DESC` | `200` + `data.jobs`（`JobSummary` 数组），`meta` 只有 `request_id`（**无分页参数、无 `total`**） | `app/api/v1/jobs.py:164-178`、`app/repositories/job_repository.py:284-295` |
+| `/jobs/{job_id}/restore` | PUT | `deleted_at` 清回 `null`，`status` 原样保留（删掉已发布岗位再恢复，它仍是已发布） | `200` + `data.job` | `app/api/v1/jobs.py:290-308`、`app/services/job_service.py:378-393` |
 
 **没有 `/jobs/{job_id}/close`**，也没有 `/archive`、`/expire` 之类的端点（OpenAPI 实测 11 个操作里没有）。发布与下架都是 `PUT` 且仅创建者可调，非创建者一律 404（4.1 #6），旧版「`/publish` 需要审核权限」作废。
 
@@ -287,7 +287,7 @@
 
 **200 同步返回**，需要两个请求头：`Authorization: Bearer <access_token>`（`app/api/v1/jobs.py:128`）与 `X-DeepSeek-Key`（BYOK，常量 `DEEPSEEK_KEY_HEADER` `app/services/dependencies.py:37`；只从请求头读，不落库、不写日志、不进异常消息）。Key 缺失或为空串时服务层抛 `ResumeApiKeyMissingError`（`app/services/job_service.py:204-205`）。
 
-本端点**既不读库也不写库**（`app/services/job_service.py:192-203`；ADR-011 附录指定用挂在 **Engine** 上的 `before_cursor_execute` 把这条钉成断言）。提取结果先回显给用户，用户逐条删改后走 `POST/PUT /jobs` 才落库——AI 无法只凭一次点击改动数据库。
+本端点**既不读库也不写库**（`app/services/job_service.py:190-203`；ADR-011 附录指定用挂在 **Engine** 上的 `before_cursor_execute` 把这条钉成断言）。提取结果先回显给用户，用户逐条删改后走 `POST/PUT /jobs` 才落库——AI 无法只凭一次点击改动数据库。
 
 调用参数（`app/integrations/skill_extractor.py:280-293`）：`model = "deepseek-flash"`、`stream=False`、`max_tokens=1500`（`MAX_OUTPUT_TOKENS` `:61`）、`extra_body={"thinking": {"type": "disabled"}}`、`max_retries=0`、超时 30 秒（`app/integrations/copy_writer.py:43`）；不启用 `response_format`（理由见 ADR-011「替代方案」）。
 
@@ -323,7 +323,7 @@
 
 `data.skills[]` 四格（`ExtractedSkillRead`，`app/schemas/job.py:313-327`）：`name`、`type`（`hard`/`soft`/`domain` 或 `null`）、`evidence`、`confidence`（`float | null`）。字段名是 **`evidence`**，不是 `evidence_text`：这里是「模型给的原话」，还没经过落库判定；用户确认后保存时同一串文字走 `skills[].evidence_text` 进列（`app/schemas/job.py:317-318`）。数组**至少一条**（`min_length=1`，`app/schemas/job.py:369`）——一条都不剩时不是空列表而是 502。
 
-`data.meta` 七个字段逐个的语义（模型 `app/schemas/job.py:330-359`，赋值点 `app/services/job_service.py:293-304`）：
+`data.meta` 七个字段逐个的语义（模型 `app/schemas/job.py:330-359`，赋值点 `app/services/job_service.py:293-302`）：
 
 | 字段 | 类型 | 含义 | 值的来源 |
 |---|---|---|---|
@@ -337,7 +337,7 @@
 
 三个计数之间的算术关系（`docs/adr/ADR-011-job-board-and-skill-extraction.md` §2.D.2）：`received_count = dropped_count + deduped_count + 返回条数 + 被 15 条封顶切掉的条数`，最后那格**没有对应字段**（已定不加第 8 个计数），所以 `truncated` 为真时前三项之和必然小于 `received_count`。`dropped_count` 与 `deduped_count` 各说各的、绝不互相串味：核验失败的条目不进重名集合（`app/services/job_service.py:260-263`）。核验、合并都跑在截断**之前**（`:240-246` 的注释），否则这两句前端文案都会变成假话。`truncated` 只在确实切的时候为真。
 
-服务端强制的七条规则（不指望 Prompt，全部在 `app/services/job_service.py:218-327`）：`evidence` 归一化后必须是 `description` 归一化文本的子串，否则丢弃；`name` 为空或 >40 字（`MAX_SKILL_NAME_CHARS` `app/integrations/skill_extractor.py:75`）丢弃；`evidence` 为空或 >60 字丢弃；`type` 不在 `hard/soft/domain` 内则**保留该条**、`type` 置 `null`（`EXTRACTED_SKILL_TYPES` `:90`）；重名合并保留第一条；>15 条截断并置 `truncated=true`；一条都不剩 → 502，**绝不返回空列表**。
+服务端强制的七条规则（不指望 Prompt，全部在 `app/services/job_service.py:216-325`）：`evidence` 归一化后必须是 `description` 归一化文本的子串，否则丢弃；`name` 为空或 >40 字（`MAX_SKILL_NAME_CHARS` `app/integrations/skill_extractor.py:75`）丢弃；`evidence` 为空或 >60 字丢弃；`type` 不在 `hard/soft/domain` 内则**保留该条**、`type` 置 `null`（`EXTRACTED_SKILL_TYPES` `:90`）；重名合并保留第一条；>15 条截断并置 `truncated=true`；一条都不剩 → 502，**绝不返回空列表**。
 
 七种失败情形的实际落点（对应 ADR-011 附录的验收清单）：
 
@@ -345,7 +345,7 @@
 |---|---|---|---|
 | 1 | 请求头没有 Key | 400 `AI_KEY_MISSING` | `app/services/job_service.py:204-205` → `app/main.py:259-264` |
 | 2 | DeepSeek 拒绝该 Key | 401 `AI_KEY_INVALID` | `app/integrations/skill_extractor.py:294-298` → `app/services/job_service.py:208-209` → `app/main.py:266-275` |
-| 3 | 网络超时 / 上游 4xx·5xx | 502 `AI_SERVICE_UNAVAILABLE` | `app/integrations/skill_extractor.py:299-303` → `app/services/job_service.py:214-215` |
+| 3 | 网络超时 / 上游 4xx·5xx | 502 `AI_SERVICE_UNAVAILABLE` | `app/integrations/skill_extractor.py:299-303` → `app/services/job_service.py:212-213` |
 | 4 | 返回内容不是可解析的 JSON 对象 | 502 `AI_SERVICE_UNAVAILABLE` | `app/integrations/skill_extractor.py:327-343` |
 | 5 | 所有条目的 `evidence` 都回溯不到原文 | 502 `AI_SERVICE_UNAVAILABLE` | `app/services/job_service.py:270-281` |
 | 6 | `choices[0].message.content` 为空或全空白 | 502 `AI_SERVICE_UNAVAILABLE` | `app/integrations/skill_extractor.py:320-323` |
@@ -410,7 +410,7 @@
 }
 ```
 
-四条读这个响应时必须知道的口径：
+六条读这个响应时必须知道的口径：
 
 1. **`terms[].value` 可以是 `null`**，含义是「这一项没算出来」，与「算出来是 0」是两件事。
    `computed=false` 的项**退出分母**（`meta.weight_sum_used` 如实记录这次用了多少权重）。
@@ -428,6 +428,18 @@
 4. **`gaps[].action` / `verify` 是模板文案**，按岗位技能的 `type`（`hard`/`soft`/`domain`/`null`）选，
    不经模型生成。理由写在 ADR-013 §7.2：建议给用户看，模型写得好看不等于写得对，
    而这类建议错了用户没法自检。
+5. **「同一个技能」的判据不是字符串全等**，是 `app/core/skill_names.py::skill_forms_match`
+   （ADR-013 §1.3 的 2026-11-08 更正）：`Python3` 顶得住 `Python`、`SPSS 26` 顶得住 `SPSS`，
+   而 `C++` 顶不住 `C`、`JavaScript` 顶不住 `Java`、`MySQL` 顶不住 `SQL`。
+   四条规则里**没有任何领域词表**，所以非计算机专业同样适用；缩写别名（`K8s`↔`Kubernetes`）
+   不在其中——那需要一张 L1 词表，2026-11-08 裁定暂缓。
+   判据同时作用于**覆盖**与**证据定位**两处：只改一处就会出现「已具备但零片段」，
+   而那一格走的是下面第 6 条而不是报错。
+6. **`evidence_mode="keyword_fallback"` 有两种，`degrade_reason` 是它们的分流键**：
+   `null` = **零候选，不是退化**（一个片段都没切出来，根本没向模型提问，配了 Key 也一样，
+   此时 `terms[evidence].note="matched_without_evidence"` 且该项记 0 分并参与加权）；
+   五种非 null 值 = AI 想参与但失败。界面必须分句，因为用户动作完全不同：前者是「把经历写出来」，
+   后两种是「去 AI 设置补 / 修 Key」，后三种是「稍后再试」。
 
 **限流键**：本端点是全仓库第一条**按用户**而不是按 IP 的限流规则
 （`app/core/rate_limit.py::get_user_or_remote_address`，装饰器级 `key_func` 覆盖，
@@ -452,7 +464,7 @@
 - 按 `location` / `salary` / `experience_required` 筛选：**存而不筛**，谓词函数里没有这三列（`app/repositories/job_repository.py:463-491`、ADR-011 1.G）。
 - 岗位收藏、投递记录、批量导出：无端点（ADR-011 议题 3.C）。
 - `/teacher/jobs/{job_id}/candidates` 与 `/export`（见本文件 §8）：候选人查询与导出**继续冻结**，本轮无实现。# PHASE-2: not wired
-- 岗位与学生技能字典的合并或外键：**不建**（ADR-011 1.E）。「你已具备」是**前端只读比对**，无后端端点、不写任何表、不产匹配分数（`frontend/src/stores/job.ts:481`，ADR-011 2.E）。**后半句已作废**（2026-11-07）：人岗匹配按 ADR-013 解冻并落地为 §4.10 的 `POST /jobs/{job_id}/match`，它是同步纯计算、不落库；而「你已具备」那条前端只读比对**原样保留**，两者不是同一件事，也没有合并。批量匹配（`/match-runs`）与教师端候选人仍在冻结清单。
+- 岗位与学生技能字典的合并或外键：**不建**（ADR-011 1.E）。「你已具备」是**前端只读比对**，无后端端点、不写任何表、不产匹配分数（`frontend/src/stores/job.ts:717-720` 的 `matchesMySkill()`，ADR-011 2.E）。**后半句已作废**（2026-11-07）：人岗匹配按 ADR-013 解冻并落地为 §4.10 的 `POST /jobs/{job_id}/match`，它是同步纯计算、不落库；而「你已具备」那条前端只读比对**原样保留**，两者不是同一件事，也没有合并。批量匹配（`/match-runs`）与教师端候选人仍在冻结清单。
 - `work_mode`（远程/驻场）列：**有意留下的缺口**，本轮只有 `employment_type`（ADR-011 1.G）；远程/驻场信息留在 `description` 文本里。
 
 
@@ -489,7 +501,7 @@
 ### POST `/resumes/generate`
 
 请求：`{"student_id":"uuid","job_id":"uuid","template":"clean_white","max_pages":1.5}`。只能使用学生已确认资料；**同步返回 `200` 与生成结果，不返回 `202`、不创建 `ai_job_id`**（`app/api/v1/resumes.py:43-63` 直接 `success_response(..., resume.model_dump(...))`；`POST /api/v1/resumes/generate` 的 OpenAPI `responses` 实测为 `200`、`422`）。
-<!-- 本行的请求体示例仍是旧口径：实际模型是 `app/schemas/resume.py:77-97` 的 `{title, profile_id}`。该差异属 §6 简历章节，不在本轮「岗位 + 错误码」范围内，已列入交付说明的未解决问题。 -->
+<!-- 本行的请求体示例仍是旧口径：实际模型是 `app/schemas/resume.py:79-91` 的 `{title, profile_id}`。该差异属 §6 简历章节，不在本轮「岗位 + 错误码」范围内，已列入交付说明的未解决问题。 -->
 
 ### GET `/resumes` / GET `/resumes/{resume_id}`
 

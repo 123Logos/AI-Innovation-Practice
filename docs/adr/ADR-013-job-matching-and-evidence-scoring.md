@@ -44,7 +44,7 @@ dev 库实测：`published` 岗位 **0** 条，`draft` 3 条，回收站 1 条�
 取材时有一条必须先划的红线：真实 JD 里高频出现「2027 届本科及以上在读」「无挂科」「可加班」「限男性」「35 岁以下」这类表述。其中**毕业年份是年龄的代理变量**，学历/户籍/性别是 PRD 明令禁止的排序依据（`docs/PRD.md:200`）。内部测试岗位只写技能、项目、到岗时长类要求，**一律不写**上面这些，哪怕真实 JD 都这么写。
 
 ### 1.2 `self_rating` 是零信息常量
-- 定义：`app/schemas/resume.py:32-34` `SkillInput.self_rating: int = Field(ge=1, le=5)`（必填）；列在 `skills` 表 `SmallInteger NOT NULL`（`app/repositories/student_profile_repository.py:116`，DDL `alembic/versions/20261023_0001_initial_phase1.py:60-78`，带 CHECK 1..5）。
+- 定义：`SkillInput.self_rating: int = Field(ge=1, le=5)`（必填）；列在 `skills` 表 `SmallInteger NOT NULL`，DDL `alembic/versions/20261023_0001_initial_phase1.py:60-78`（65 行建列、68 行 CHECK 1..5）。**代码与列都已被 §10 第 4 步删除**（`alembic/versions/20261107_0013_drop_skill_self_rating.py`），故本条不给 Python 侧行号。
 - UI 不再采集：`frontend/src/stores/resume.ts:12` 写明「技能熟练度（`self_rating`）与年级已从 UI 移除」，`:1092` 写明「后端仍必填，UI 不再采集，统一写 3」，常量在 `:264` `DEFAULT_SKILL_RATING = 3`。
 - 渲染也不用：`app/integrations/resume_generator.py:104` 「只渲染技能名：熟练度已从产品中移除，`self_rating` 仅作为入参保留校验」。
 - 库里的分布（实测）：`{2: 1, 3: 23, 4: 1}` —— 25 行里 23 行是那个常量 3，另外 2 行是熟练度下线前留下的。
@@ -54,10 +54,10 @@ dev 库实测：`published` 岗位 **0** 条，`draft` 3 条，回收站 1 条�
 | 位置 | 规则 | 实测 |
 |---|---|---|
 | MySQL 唯一索引 | `utf8mb4_0900_ai_ci`，**NO PAD** | `SELECT ('Python ' = 'Python') → 0`，即带空格的两个名字可以共存 |
-| 后端 `skill_name_key`（`app/schemas/job.py:74-92`） | NFKC + casefold，**不 strip** | `'Python '` vs `'Python'` → 不同 |
-| 前端角标 `normalizeSkillName`（`frontend/src/stores/job.ts:200-203`） | trim + NFKC + toLowerCase | 同上 → 相同 |
+| 后端 `skill_name_key`（诊断时在 `app/schemas/job.py`，现居 `app/core/skill_names.py`，见下方两处偏差说明） | NFKC + casefold，**不 strip** | `'Python '` vs `'Python'` → 不同 |
+| 前端角标 `normalizeSkillName`（`frontend/src/stores/job.ts:207-209`） | trim + NFKC + toLowerCase | 同上 → 相同 |
 
-除首尾空白外三套行为一致（`Web␣␣开发` 内部空格、`ß`/`strasse`、`Ｃ#` 都判不同，实测过）。岗位侧在 API 边界已 strip（`app/schemas/job.py:127-130`），**学生侧没有**：`SkillInput.name` 无校验器，档案技能去重用的是裸相等（`app/schemas/profile.py:290-295`）。今天库里 0 条带首尾空白的技能名，但门开着：一旦学生存进 `"Python "`，服务端算「未覆盖」而前端角标显示「已具备」，同一屏上自相矛盾。
+除首尾空白外三套行为一致（`Web␣␣开发` 内部空格、`ß`/`strasse`、`Ｃ#` 都判不同，实测过）。岗位侧在 API 边界已 strip（`app/schemas/job.py:99-110`），**学生侧没有**：`SkillInput.name` 无校验器，档案技能去重用的是裸相等（`app/schemas/profile.py`，修复前的状态，无行号可指）。今天库里 0 条带首尾空白的技能名，但门开着：一旦学生存进 `"Python "`，服务端算「未覆盖」而前端角标显示「已具备」，同一屏上自相矛盾。
 
 **2026-11-07 已消除（§10 第 3 步的 a/b 两半）**，并且实测出一个比文档描述更严重的后果：
 裸相等让 `Python` + `python` 通过校验、走到 INSERT，再由 `uq_skills_profile_name`
@@ -71,6 +71,36 @@ dev 库实测：`published` 岗位 **0** 条，`draft` 3 条，回收站 1 条�
    两端空白仍归各自的**输入边界**负责（岗位侧 `JobSkillInput.normalize_name`、
    现在档案侧 `SkillInput.normalize_name`、提取侧 `_verify_item`），键本身仍是两步
    （NFKC + casefold），ADR-011 §2.D.2 的口径一字未改。
+   > **2026-11-08 更正：这条结论被推翻了，但推翻它的是事实而不是口味。**
+   > 当时两个键回答的是**同一个问题**（去重），多一个名字确实只是多一层转发。
+   > 现在它们回答的确实是两个问题了，所以新增 `skill_forms_match()`（`app/core/skill_names.py`）：
+   >
+   > | 键 | 回答的问题 | 必须怎么判 |
+   > |---|---|---|
+   > | `skill_name_key`（不变） | 这两行是不是重复，要不要报 422 / 要不要合并 | `Python` 与 `Python3` **算两行**——用户想同时列 `C` 与 `C++` 时不许被拦 |
+   > | `skill_forms_match`（新） | 岗位要求这一格，学生的技能算不算顶住 | `Python` 与 `Python3` **算同一个**——否则写法差异直接吃掉 0.45 那一项 |
+   >
+   > 触发这条更正的是老板 2026-11-08 的实测：他技能表里写 `Python3`、岗位要求 `Python`，
+   > 那一格被判「还缺」并附一句「补一条真的用 Python 做过的项目经历」——而他自己的经历正文里
+   > 就写着 `Python 3.13`。
+   >
+   > 判据四条，**刻意不含任何领域词表**（本项目面向的是所有专业的用户，
+   > 一张计算机别名表会让财务/机械/设计/护理的用户系统性吃亏，而我们连发现的机会都没有——
+   > 库里 5 条种子岗位实测全是技术岗，就是这个偏置的样本）：
+   > ① 折叠后全等；② 词干不同 → 不同（**禁止前缀/子串推断**，于是 `C`/`C++`/`C#`、
+   > `Java`/`JavaScript`、`SQL`/`MySQL`、`Go`/`Golang`、`R`/`React` 全部分得开）；
+   > ③ 词干相同、恰好一侧带版本号 → 同一个（白名单是**对面真写过的那个不带号的写法**，
+   > 不是我手写的词表，所以 `SPSS 26`↔`SPSS`、`AutoCAD 2022`↔`AutoCAD` 天然同规则）；
+   > ④ 两侧都带版本号 → **主版本号相同**才算同一个（`Python3` 认 `Python 3.13`，
+   > `Python2` 不认 `Python3`，`Vue 2` 不认 `Vue 3`）。
+   >
+   > **暂缓的一半（老板 2026-11-08 裁定 ③）**：缩写别名（`K8s`↔`Kubernetes`、`PS`↔`Photoshop`、
+   > `Golang`↔`Go`）需要一张 L1 词表，非计算机领域的冲突反例与别名**先不建**，
+   > 靠真实用户撞出来再收。L1 落地时 `meta` 必须带 `alias_version`，理由见 §11 的分数漂移那条。
+   >
+   > 同一个判据必须**同时**用在两处，只修一处是半修：覆盖判定（本节）与
+   > 证据定位（§6 的 `locate_snippets`）。实测过反例：岗位要求 `Python3`、正文写 `Python 3.13`，
+   > 整串子搜得 **0 处**——覆盖修好了仍会落到「已具备但零片段」，也就是 §6.5 那条第三种情形。
 2. **键从 `app/schemas/job.py` 移到 `app/core/skill_names.py`**。原因不是我嫌乱，是契约是**传递**的：
    档案侧一旦 `import app.schemas.job`，就出现
    `integrations.resume_generator → schemas.profile → schemas.job → repositories.job_repository`
@@ -282,6 +312,13 @@ score = Σ(w_i · v_i | term i computable) / Σ(w_i | term i computable)
    **实现要求**：五种情形各一个测试，断言 200 + `evidence_mode="keyword_fallback"` + 正确的 `degrade_reason`，
    并且断言**没有任何一种**走到 `app/main.py` 的 AI 处理器（否则 §3 那条状态码边界就是空话）。
    UI 文案按 `degrade_reason` 分句，不许把「你没配 Key」和「DeepSeek 正在超时」写成同一句话——两者的用户动作完全不同。
+   > **2026-11-08 补第三种，它不是退化**：`evidence_mode="keyword_fallback"` 且 `degrade_reason=null`
+   > 只有一个来源——命中的技能在经历里**一个片段都没切出来**，`_score_with_ai` 在检查 Key **之前**
+   > 就短路返回了，所以根本没向模型提问（配了 Key 也一样，老板实测到的正是这一格）。
+   > 此时「按关键词算法给分」是**假话**：关键词算法什么都没算，那一格记的是 0 分并参与加权
+   > （`terms[].note="matched_without_evidence"`）；而用户能修的动作也不是配 Key，是把经历写出来。
+   > 界面因此分三句：AI 参与 → 不说；AI 失败 → 算法句 + 原因句；零候选 → 「没向 AI 提问、也没花额度」
+   > + 「把那段经历写进简历再算一次」。岗位没填技能要求（`no_required_skills=True`）时一句都不说。
 
    > **实现时的一处偏离（7d，已执行）**：§10 第 6 步原稿写着「`main.py` 处理器作用域从『两个端点』改
    > 『三个端点』的注释与测试」。这句在本节定稿之后**就不成立了**——匹配故意不进那三个处理器，
@@ -316,9 +353,13 @@ dev 库现有 8 条经历的 `description` 长度是 p50 44 / p90 102 / **max 61
 ### 7.1 技能覆盖 0.45 —— 纯确定，可全测
 ```
 R = 岗位要求技能（仓储全量，去重后）；M = 学生技能
-coverage = |key(M) ∩ key(R)| / |key(R)|      |key(R)| == 0 → value=0, computed=False, meta.no_required_skills=True
+coverage = |{ s ∈ R : ∃ m ∈ M, forms_match(s, m) }| / |R|      |R| == 0 → value=0, computed=False, meta.no_required_skills=True
 ```
 分母只用 R：学生多出来的技能不加分，避免「技能堆得多」把匹配度刷高。`computed=False` 时该项退出加权（§5.1）。
+
+`forms_match` 是 `skill_forms_match`（§1.3 的 2026-11-08 更正）而不是裸的键全等：
+`Python3` 顶得住 `Python`，但 `C++`、`JavaScript`、`MySQL` 顶不住 `C`、`Java`、`SQL`。
+去重键 `skill_name_key` 不受影响，两行照样存两行。
 
 ### 7.2 证据强度 0.20 —— 两层，AI 只在外层
 ```
@@ -587,10 +628,11 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
      把卡放在技能表之后，实测按钮距顶 1776px（1280）/ 2218px（375），也就是要翻完整份 JD 加整张技能表
      才够得着——一个必须点击才发真实计费请求的功能埋在那儿等于没有。改到 JD **之前**，
      两个视口分别 497px / 694px，都在首屏内。这条不是审美调整，是量出来的。
-   - **本轮没有验证的**：`ai_scored` 那一支的真实 DeepSeek 往返。开发主机上这个会话没有配 BYOK Key，
-     浏览器里跑通的是 `keyword_fallback`；`ai_scored` 只由后端 fake 适配器与前端 fixture 覆盖。
-     要补这一步需要人类负责人在自己的浏览器「AI 设置」里填 Key 后点一次，界面与 `terms` 都该照常，
-     而 `meta.model` 变成 `deepseek-flash`。
+   - ~~**本轮没有验证的**：`ai_scored` 那一支的真实 DeepSeek 往返~~ → **已由人类负责人在 2026-11-08 浏览器实测补齐**：
+     他自己的标签页配了 Key、点了一次「算一次匹配」，退化框整个不出现（`evidence_mode=ai_scored` 的界面判据），
+     分数 26% 也与 AI 强度自洽（同一条 MySQL 经历在关键词模式下该给 `min(hits,3)/3 = 1.0`，算出来约 33%）。
+     同一屏还暴露了两个真实缺陷，分别是下面第 11 步的两种情形：`Python3` 不被认成 `Python`（写法判据）、
+     以及命中但零片段时那句半截退化说明（§6.5 的第三种）。
 9. 第 3c 条（角标消费后端确定性端点）与第 7 条同 PR 或紧随其后，理由见 §10 末。
 10. `docs/API.md` 新章节与 §1.1 错误码可达性更新。
     → **已实现**（本次）：新增 §4.10 描述真实契约、§4.11 承接原「未接通」清单；§1.1 补一句
@@ -598,7 +640,27 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
     权限矩阵补第 10 行；§4.11 与 §5 里「人岗匹配整条仍在冻结清单」那句按实现更正。
     新增路由让 `app/api/v1/jobs.py` 等五个文件之后的行号全部漂移，所以两份文档里指向它们的行号引用**逐条重新推导**过
     （用 master→HEAD 的逐行对齐映射机械平移，再对手写的那两条 `is_expired` 引用按语义改写），
-    最后跑一遍机器检查：`docs/` 与 `AGENTS.md` 里 206 条 `app/*.py:行号` 引用全部在文件范围内且指向非空行。
+    最后跑一遍机器检查：`docs/` 与 `AGENTS.md` 里指向代码的 `路径:行号` 引用全部在文件范围内且首末行非空。
+    > **2026-11-08 更正：第 10 步那句「全部…指向非空行」当时并不成立，而且我复查过一次才发现。**
+    > 把判据从「区间里至少有一行非空」换成「**首行与末行都必须非空**」，再加一条 AST 判据（区间末尾不得溢到
+    > **下一个同级函数**），当场查出 12 处首/末行落在空行、7 处末尾溢出到邻近函数，集中在
+    > `job_service.py` / `job_repository.py` / `skill_extractor.py`。根因是机械平移的性质：difflib 只保证
+    > 「原来那一行还在不在」，不保证「这一行还是被引的那件事」。逐条按代码语义重新落点之后，
+    > **检查已做成一条脚本并进 CI**（`scripts/check_docs_citations.py`，纯文本扫描；没做成 pytest 是因为 `tests/conftest.py` 的 autouse 夹具会为一次文本检查去连 MySQL），不再靠我在交付说明里声明。
+    > 另有 4 处是**历史引用**，代码状态本身已不存在、行号无处可指，改成只留文件与符号并注明时点：
+    > ADR-012 的 `aiError()`（已删）、本 ADR §1.2 的 `self_rating`（§10 第 4 步删）、
+    > §1.3 表里的 `skill_name_key`（已搬到 `app/core/skill_names.py`）、§1.3 正文的学生侧裸相等（第 3 步修）。
+    > 还有一处口径错误顺手改掉：§1.3 正文说岗位侧 strip 在 `app/schemas/job.py:127-130`，
+    > 那个位置现在是 `dedup_key`，`normalize_name` 在 `:99-110`。
+11. **写法判据与零候选文案**（2026-11-08 老板三条裁定：并进 PR #11 / 技能补全只抽取不推断 / 非计算机别名暂缓）。
+    → **已实现**：`app/core/skill_names.py::skill_forms_match`（四条规则，理由与被推翻的旧结论见 §1.3）+
+    `matched_required_skills` 与 `locate_snippets` **两处同修**（只修一处会落到「已具备但零片段」，
+    这是实测出来的）+ 前端 `matchDegradeLines` 三分句（§6.5 的第三种）。
+    顺带修掉两个旧的假阳性：定位现在带词边界，`Java` 不再命中 `JavaScript`、`C` 不再命中 `C++`
+    ——旧实现是纯子串搜，这两条一直在给**假证据**。
+    测试按老板「不要花大量时间在不必要的测试上」收紧：一张参数化判据表（19 行，每行双向测 + 覆盖判定同测）
+    取代逐个用例，端到端只加 1 条；反向探针跑过——把判据退回裸键全等，那条端到端立刻
+    `assert [] == ['Python']` 红，不是空检。
 
 第 3 条必须在第 7 条之前：否则匹配与角标各用各的键，§1.3 那屏自相矛盾会成为产品事实。
 
@@ -616,6 +678,11 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
   而这个退化在测试里是不可见的（测试只测端点自己那条规则能不能触发）。
 - 两处破坏性变更（`SkillInput` 少字段、`POST /jobs/{id}/match` 新端点），无外部客户端，前端同 PR 改完即可。
 - 成本与延迟：一次匹配 = 最多一次 DeepSeek 调用（候选对已经过第 1 层裁剪），30 秒预算内；用户看不到「正在打分」之外的等待理由，所以按钮要有 loading 态与失败重试，沿用 C2 的提取交互。
+- **分数会随写法判据漂移（2026-11-08）**：`skill_forms_match` 让 `Python3` 顶住 `Python` 之后，
+  同一个人对同一个岗位的分数**只会往上走、不会往下走**（新增的是认写法，不是松判据）。
+  因此 2026-11-08 之前记录下来的匹配分数**不可与之后的直接比较**——本轮没有落库任何分数，
+  所以这个断层只影响我们自己翻旧的实测记录，不影响用户屏幕上的任何东西。
+  L1 别名词表落地时必须带 `meta.alias_version`，否则下一次漂移又会没有坐标可对账。
 
 ## 12. 替代方案
 

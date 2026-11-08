@@ -11,6 +11,7 @@ from datetime import date
 
 import pytest
 
+from app.core.skill_names import skill_forms_match
 from app.services.match_scoring import (
     EVIDENCE_MODE_AI,
     EVIDENCE_MODE_KEYWORD,
@@ -131,6 +132,40 @@ class TestLocateSnippets:
         assert all(0 <= index < len(text) for index in positions)
         assert positions == sorted(positions)
 
+    # --- 写法等价与词边界（ADR-013 §1.3 的 2026-11-08 更正）-------------------
+
+    @pytest.mark.parametrize(
+        ("required", "text", "expected_hits"),
+        [
+            # 岗位要求带版本号、正文写的是 `Python 3.13`：整串子搜会 0 命中，
+            # 而老板 2026-11-08 实测到的正是这一格——覆盖修好了也仍走「证据 0 分」。
+            ("Python3", "后端采用 Python 3.13 与 FastAPI", 1),
+            # 反过来：岗位要求不带号、正文带号。
+            ("Python", "后端采用 Python 3.13", 1),
+            # 主号不同不算：这一段是 Python2 的代码，不能替 Python3 作证。
+            ("Python3", "维护过一段 Python2 的老代码", 0),
+            # 词边界：`Java` 不许在 `JavaScript` 里被找到，`C` 不许在 `C++` / `C#` 里被找到。
+            ("Java", "用过 JavaScript", 0),
+            ("C", "用过 C++ 与 C#", 0),
+            ("C++", "用过 C++ 与 C#", 1),
+            # 中文紧挨着不算越界：`C语言`、`Python编程` 都是真命中。
+            ("C", "熟悉 C语言 与 数据结构", 1),
+            # 缩写不是别名（L1 词表暂缓），所以 `Go` 不许命中 `Golang`。
+            ("Go", "用 Golang 写过服务", 0),
+        ],
+    )
+    def test_version_and_word_boundary_rules(
+        self, required: str, text: str, expected_hits: int
+    ) -> None:
+        assert len(locate_snippets(text, required)) == expected_hits
+
+    def test_matched_surface_stays_inside_the_returned_snippet(self) -> None:
+        """片段仍然必须是原文连续子串（反幻觉闸门没因为新的并进逻辑而松动）。"""
+        text = "后端采用 Python 3.13 与 FastAPI"
+        ((snippet, was_cut),) = locate_snippets(text, "Python3")
+        assert snippet == text
+        assert was_cut is False
+
 
 # ------------------------------------------------------------------- 命中集合
 
@@ -154,6 +189,51 @@ class TestMatchedRequiredSkills:
     def test_distinct_skills_are_not_merged(self) -> None:
         """去重不能顺把 C# 和 C 合成一个（`skill_name_key` 不去标点的理由在这里生效）。"""
         assert len(unique_required([RequiredSkill("C#"), RequiredSkill("C")])) == 2
+
+    # --- 写法等价（ADR-013 §1.3 的 2026-11-08 更正）---------------------------
+
+    #: `(岗位写法, 学生写法, 该不该算同一个技能)`。每一行都**双向**测，
+    #: 因为「岗位带号」与「学生带号」命中的是不同分支，只测单向会漏掉一半。
+    @pytest.mark.parametrize(
+        ("left", "right", "same_skill"),
+        [
+            # 该认的：纯粹是版本号写法之差，与领域无关（财务的 SPSS 26、机械的 AutoCAD 2022 同理）。
+            ("Python", "Python3", True),
+            ("Python", "Python 3.13", True),
+            ("Python3", "Python 3.13", True),
+            ("C++", "C++11", True),
+            ("SQL Server", "SQL Server 2019", True),
+            ("Excel", "Excel2016", True),
+            # 必须判不同的：允许前缀/子串推断，这些全会被误并。
+            ("C", "C++", False),
+            ("C", "C#", False),
+            ("C++", "C#", False),
+            ("Java", "JavaScript", False),
+            ("SQL", "MySQL", False),
+            ("Go", "Golang", False),
+            ("R", "React", False),
+            # 主版本号不同就是两件事（这条是「Python3 认 Python」不被推成「什么号都认」的边界）。
+            ("Python2", "Python3", False),
+            ("Vue 2", "Vue 3", False),
+            # 非计算机领域的反例（老板 ③：别名表暂缓，这里只钉住「不许误并」这一半）。
+            ("会计", "审计", False),
+            ("护理", "助产", False),
+            ("平面设计", "室内设计", False),
+            ("市场营销", "营销", False),
+        ],
+    )
+    def test_equivalence_table(self, left: str, right: str, same_skill: bool) -> None:
+        assert skill_forms_match(left, right) is same_skill
+        assert skill_forms_match(right, left) is same_skill
+        matched = matched_required_skills([RequiredSkill(left)], [right])
+        assert bool(matched) is same_skill
+
+    def test_coverage_counts_the_versioned_spelling(self) -> None:
+        """老板 2026-11-08 那一屏的回归：技能 `Python3` 该顶住岗位要求 `Python`。"""
+        match = score_match(
+            facts(required=(RequiredSkill("Python"), RequiredSkill("Django")), student=("Python3",))
+        )
+        assert term(match, "coverage").value == 0.5
 
 
 # ------------------------------------------------------------------ 证据构建
