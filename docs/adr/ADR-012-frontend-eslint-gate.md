@@ -116,7 +116,7 @@ ESLint couldn't find an eslint.config.(js|mjs|cjs) file.
   `eslint.config.js` 自己），其中 `src/**` 42 个。
 - 本地与 CI 都需要重新 `npm ci` 拉这 4 个包；CI 在同一个 `test` job 里多一个 step，时长略增。
 - **闸门上线当天就抓到 3 个真问题**，全部与格式无关：
-  1. `frontend/src/stores/__tests__/job.spec.ts:146` 的 `aiError()` **定义了但从未被调用**——
+  1. `frontend/src/stores/__tests__/job.spec.ts` 的 `aiError()`（当时在 146 行）**定义了但从未被调用**——
      C2 轮那七种 AI 失败情形实际是各用例内联构造错误体的。已删除。
      （曾考虑反向修法「把用例改成调用它」，不采用：那是借 lint 之名重构测试，§7.8。）
   2. `frontend/src/env.d.ts:6` 的 `DefineComponent<{}, {}, unknown>`：`{}` 允许 `0`、`""` 等任意非空值，

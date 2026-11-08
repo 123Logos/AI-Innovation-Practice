@@ -248,6 +248,13 @@ def create_app() -> FastAPI:
     # 一个错误码都没新增（ADR-011 2.F），于是 Starlette 按 MRO 把两个端点的失败
     # 都送进同一个处理器。任何「润色 / 简历」专属的句子都会在岗位录入页说出
     # 一句与用户当前操作无关、甚至为假的话（他此刻在录岗位，不在生成简历）。
+    #
+    # **第三个 AI 端点 `POST /jobs/{job_id}/match` 刻意不在这两个处理器里**（ADR-013 §3
+    # 的状态码边界、§6.5）：匹配在 AI 失败时仍然要给分，只是退化成关键词模式并带上
+    # `degrade_reason`，所以异常在 `MatchService` 里就地吞掉，永远走不到这里。
+    # 换句话说本文件的三个处理器今天服务**两个**端点而不是三个——这不是遗漏，
+    # 是「同一个 AI 失败在不同端点上有不同正确后果」这件事的落地方式，
+    # 由 `tests/test_job_match.py` 里那组「五种退化都是 200、且没有一个进这里」的用例钉住。
 
     @app.exception_handler(ResumeApiKeyMissingError)
     async def resume_api_key_missing(_: Request, __: ResumeApiKeyMissingError) -> JSONResponse:

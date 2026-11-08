@@ -187,11 +187,44 @@ MVP 不引入未经验证的全网爬虫；岗位变化雷达只使用合法来�
   上面那段就是教训：我读回了 `enforcement: active` 与四个规则名，便写下「现在是机器强制的」，
   而它强制的结果是「谁也合不进去，除了绕过的人」。
   判据：`gh api repos/…/pulls/{n} --jq '.mergeable_state'` 必须是 `clean`，不是 `blocked`。
+- **这条纪律已经在 PR #11 上执行过一次（2026-11-07）**：两条 `test` 检查 `pass`（4m0s / 3m47s）之后读回
+  `{"mergeable": true, "mergeable_state": "clean"}`，也就是闸门不再挡正常合入路径。
+  还差的一件事不是忘了，是做不了：**由非管理员真的点一次合入**。这个 PR 的作者就是我，
+  GitHub 的 self-approval 策略会挡住我自己合，而绕过按钮在管理员侧总是可用——
+  所以「clean」是目前能拿到的最强证据，最后那一次点击仍然属于人类负责人：
+  如果 PR 页面上没有出现「Bypass rules and merge」那个红按钮，就说明闸门对正常路径是通的。
 - **不做**长期 `develop` 分支，**不做** `release`/版本号分支：服务尚未公网部署，
   现在造版本号是给不存在的发布流程做兼容。真到部署那步，按 §4.6 另出 ADR。
 
 下面 10.1 里「E2E：注册→画像→岗位→匹配→简历→面试」那条提到的**匹配**，
-在它的 ADR 落地之前仍是 AGENTS.md §3.2 的冻结项（见 `docs/MVP_SCOPE.md`）。
+后端与前端卡都已按 `docs/adr/ADR-013-job-matching-and-evidence-scoring.md` 落地（同步、单岗位、纯计算不落库）；
+其中**批量匹配与教师端候选人视图仍是 AGENTS.md §3.2 的冻结项**（见 `docs/MVP_SCOPE.md`）。
+
+### 10.2 375px / 1280px 的实测方法（AGENTS.md §3.1 要求的那一步）
+
+本机既没有 Docker 也没有 Playwright/Puppeteer，而 browser-use 那套 MCP **没有 resize 工具**
+（`window.resizeTo()` 对受控页面无效：`innerWidth` 不变、`outerWidth` 报 0），
+所以视口测量走「headless Edge + CDP」这条零安装的路子：
+
+1. 起两个进程：`uv run uvicorn app.main:app --host 127.0.0.1 --port 8000` 与 `frontend` 下 `npm run dev`；
+2. `msedge --headless=new --remote-debugging-port=<端口> --user-data-dir=<临时目录>`；
+3. Node（≥21 有原生 `WebSocket`，不必装任何驱动库）连浏览器级 WS，
+   `Target.createTarget` + `Target.attachToTarget{flatten:true}` 拿到 `sessionId`；
+4. 视口用 `Emulation.setDeviceMetricsOverride{width,height,mobile}` 切，
+   整页图用 `Page.captureScreenshot{captureBeyondViewport:true}`；
+5. 交互一律用 `Runtime.evaluate` 里的**真实 DOM 操作**：
+   `input.value = …` 之后必须 `dispatchEvent(new Event('input',{bubbles:true}))` 才进得了 `v-model`，
+   点按钮用 `el.click()`——MCP 那种 `uid` 式点击不触发 Vue 的事件处理器；
+6. 「有没有自动发请求」这类断言用 `Network.requestWillBeSent` 事件数，而不是读界面。
+   **每一轮测量前要把事件缓冲清空**：它是跨视口累计的，不清就会把上一轮那一次请求
+   读成本轮「点按钮之前就发过一次」，看起来像自动调用。
+
+判据（本轮 2026-11-07 对 `POST /jobs/{id}/match` 那张卡量的）：
+`document.documentElement.scrollWidth <= innerWidth`（无横向滚动条）、
+匹配卡内没有任何元素的 `right > innerWidth + 1` 或 `left < -1`、
+关键元素 `getBoundingClientRect().top` 落在首屏内、且点击前匹配请求数为 0。
+实测结果：1280×900 与 375×780 两个视口下 `scrollWidth` 分别 1265 / 375（都不溢出），
+按钮距顶 497px / 694px（都在首屏内），点击前 0 次、点击后 1 次匹配请求。
 
 ### 10.1 质量模型条目（验收基线，非现状）
 

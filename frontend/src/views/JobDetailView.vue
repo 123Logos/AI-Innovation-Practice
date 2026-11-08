@@ -15,8 +15,15 @@
  * 4. **确认弹窗一律用页面内的 `.ui-overlay` / `.ui-panel`**，不用 `window.confirm`：
  *    原生对话框阻塞 CDP，自动化验收走不完（理由与事故记录写在 `askDelete()` 上方）。
  *
- * 「你已具备」是只读比对（2.E）：与当前登录用户默认简历的技能名做归一化等值比较，
- * 不写表、不打分、不排序。
+ * 「你已具备」角标的数据来自 `GET /jobs/{job_id}/requirement-match`（ADR-013 §10 第 3c 步）：
+ * 一次只读 GET，判等在后端，与匹配共用同一版写法判据；不写表、不打分、不排序、不花额度。
+ *
+ * 它与下面的「匹配度」卡（第 8 步）是同一版判据的两个视图：
+ * 角标只回答「这条要求我命中了吗」，匹配卡额外回答「这段经历撑不撑得起它」。
+ * 两边不可能不一致，因为**前端不参与判等**（以前这里是一套本地归一化比对，
+ * 于是同一屏会出现角标与清单各说一套——那是 §1.3 那屏矛盾的第二半，2026-11-08 消除）。
+ * **只有点按钮才发匹配请求**：那一步每次都可能向 DeepSeek 真实调用、花用户自己的 Key，
+ * 所以不许在 `onMounted` 里自动算（`load()` / `loadCoverage()` 是两个只读 GET，与它不同）。
  *
  * 只有创建者能看到「发布 / 下架 / 删除」——后端对非创建者一律 404（1.F），
  * 摆一个必然失败的按钮比不摆更糟。
@@ -31,6 +38,8 @@ import {
   JOB_ORIGIN_BADGES,
   JOB_SKILL_TYPE_LABELS,
   JOB_STATUS_LABELS,
+  matchDegradeLines,
+  matchFailureText,
   useJobStore,
 } from '@/stores/job'
 import { formatDate, formatDateTime } from '@/utils/datetime'
@@ -134,11 +143,15 @@ async function load(): Promise<void> {
   }
 }
 
-async function loadMine(): Promise<void> {
+async function loadCoverage(): Promise<void> {
+  const jobId = String(route.params.id ?? '')
+  if (!jobId) return
   try {
-    await store.loadMySkillNames()
+    await store.loadRequirementMatch(jobId)
   } catch {
-    // 「你已具备」是增益信息：拉不到就一条都不标，不能因为它让详情页报错。
+    // 角标是增益信息：拉不到就一条都不标。
+    // 但它**不报错也不重试**是有边界的——不能顺带把详情也拖红，那两件事互不依赖。
+    store.clearRequirementMatch()
   }
 }
 
@@ -190,6 +203,59 @@ async function handleDelete(): Promise<void> {
   }
 }
 
+/* -------------------------------- 人岗匹配 -------------------------------- */
+
+/**
+ * 匹配失败的红字（429 / 404 / 401 / 网络 / 500）。
+ *
+ * **AI 失败不在这里**：后端把它翻译成 `200 + meta.degrade_reason`，
+ * 由 `matchDegradeLines()` 分行显示在结果区里。把它做成红字会同时犯两个错——
+ * 用户以为这次什么都没算出来（其实分数是真的），而且看不出自己该去补 Key 还是该等。
+ */
+const matchError = ref('')
+
+const match = computed(() => store.matchResult)
+const matchHintLines = computed(() => (match.value ? matchDegradeLines(match.value) : []))
+
+/** 分数只给一个整数百分比：`0.612` 在屏幕上没有额外含义，而 61% 有。 */
+const matchScoreLabel = computed(() => {
+  const score = match.value?.score
+  // `null` 显示成「—」而不是 0%（F1:A，老板 2026-11-08 裁定）：
+  // 「0%」是一句关于能力的判断，而真相是「这次没有可比对的内容」，两者修法完全不同。
+  return score === null || score === undefined ? '—' : `${Math.round(score * 100)}%`
+})
+
+/**
+ * 角标的悬停说明：命中用的到底是用户自己写的哪个写法。
+ *
+ * 岗位要求 `Python`、简历写的是 `Python3` 时，「你已具备」背后是一次**版本号判等**
+ * （`skill_forms_match` 的第 ③/④ 条）。把对面那个写法说出来，用户才知道我们没有瞎认；
+ * 而它只放在 `title` 里：这是解释性的增益信息，不是用户修得动的失败原因，
+ * 不值得在 375px 的一行里再挤出一段文字。
+ */
+function badgeTitle(name: string): string {
+  const form = store.matchedFormOf(name)
+  return form && form !== name ? `按你简历里写的「${form}」认的` : '这条技能在你的简历里'
+}
+
+/** 证据出自经历的哪一栏；标签与简历编辑器里同一栏的名字逐字一致。 */
+function evidenceFieldLabel(field: string): string {
+  if (field === 'title') return '项目名称'
+  if (field === 'responsibility') return '个人职责'
+  return '项目描述'
+}
+
+async function handleMatch(): Promise<void> {
+  const current = job.value
+  if (!current || store.matching) return
+  matchError.value = ''
+  try {
+    await store.runMatch(current.id)
+  } catch (error) {
+    matchError.value = matchFailureText(error)
+  }
+}
+
 /* ------------------------------ 删除确认弹窗 ------------------------------ */
 
 /**
@@ -225,7 +291,7 @@ function onDialogKeydown(event: KeyboardEvent): void {
 onMounted(() => {
   document.addEventListener('keydown', onDialogKeydown)
   void load()
-  void loadMine()
+  void loadCoverage()
 })
 
 onBeforeUnmount(() => {
@@ -335,6 +401,109 @@ onBeforeUnmount(() => {
           <p v-if="actionNotice" class="feedback feedback--ok" role="status">{{ actionNotice }}</p>
         </section>
 
+        <!--
+          匹配卡排在 JD **前面**（第一条内容块）。理由不是排版偏好，是量出来的：
+          放在技能表后面时，实测这条种子岗位的按钮在 1280px 下距视口顶 1776px、375px 下 2218px，
+          也就是要翻完整份 JD 加整张技能表才看得见——一个必须点击才会发真实请求的功能被埋在那儿，
+          等于没有。改到最前面之后同一岗位、同一账号复测：按钮距顶 497px（1280×900）与
+          694px（375×780），两个视口都还在首屏内。
+        -->
+        <section class="detail-block match-block" data-testid="match-block">
+          <h2 class="block-title">我和这个岗位的匹配度</h2>
+          <p class="block-hint">
+            匹配度是参考，不是录用概率：它只按你的简历与这个岗位的技能要求算重合，
+            不看经验年限、薪资与面试表现。
+            这一步会向 DeepSeek 发一次真实请求、用的是你自己的额度，所以只在你点下面这个按钮时才发生。
+          </p>
+          <button
+            class="row-button row-button--primary"
+            type="button"
+            data-testid="match-run"
+            :aria-busy="store.matching"
+            :disabled="store.matching"
+            @click="handleMatch"
+          >
+            {{ store.matching ? '正在匹配…' : match ? '再算一次' : '算一次匹配' }}
+          </button>
+          <p v-if="matchError" class="feedback feedback--error" role="alert">{{ matchError }}</p>
+
+          <div v-if="match" class="match-result">
+            <p class="match-score">
+              <span class="match-score__value" data-testid="match-score">{{ matchScoreLabel }}</span>
+              <span class="match-score__caption">匹配度</span>
+            </p>
+            <!-- 用的是哪一份档案由响应回显（ADR-013 §13 第 7 条）：请求体是空的，
+                 不写这一行，编辑器里开着 B 档案的人会把 A 档案的分数读成自己的。 -->
+            <p class="match-source">
+              <template v-if="match.profile_id">按《{{ match.profile_title || '未命名简历' }}》打分</template>
+              <template v-else>
+                你还没有保存的简历，这次是按<b>空简历</b>打的分——先去「我的简历」填一份，分数才有意义。
+              </template>
+            </p>
+
+            <ul v-if="matchHintLines.length" class="match-degrade" role="status">
+              <li v-for="line in matchHintLines" :key="line">{{ line }}</li>
+            </ul>
+
+            <!--
+              `score === null` 不配独立文案（2026-11-08 老板裁定 + 同日真浏览器实测）：
+              `score is null` 与 `no_required_skills` 是**同一件事**——核心 term 不在就整个不给分
+              （`app/services/match_scoring.py` 的短路，枚举 81 组合由
+              `tests/test_match_scoring.py::test_score_is_null_exactly_when_the_job_has_no_required_skills`
+              钉住），所以下面那行 `.empty` 就是这一屏唯一的说明。
+              这里曾经有三行同义反复（新文案 + `.empty` + 档案为空时的 `.match-source`），
+              计数断言 `occurrences()` 是它的回归锁。
+              权重、分母、`weight_sum_used` 都不出现在这里——那是响应里给对账用的，不是给用户读的。
+            -->
+            <p v-if="match.meta.no_required_skills" class="empty">
+              这个岗位还没有填写技能要求，所以没有可比对的条目。
+            </p>
+            <div v-else class="match-tiers">
+              <section v-if="match.covered.length" class="match-tier match-tier--covered">
+                <h3 class="tier-title">已具备 {{ match.covered.length }} 项</h3>
+                <ul class="tier-list">
+                  <li v-for="item in match.covered" :key="item.skill" class="tier-item">
+                    <span class="tier-skill">{{ item.skill }}</span>
+                    <!-- 片段是经历原文的连续子串（服务端切的），这里原样显示、不改写不截断：
+                         用户能一眼认出那是自己写过的话，这才叫可核对。 -->
+                    <ul class="tier-evidence">
+                      <li
+                        v-for="entry in item.evidence"
+                        :key="`${entry.experience_id}:${entry.field}`"
+                        class="evidence-line"
+                      >
+                        <span class="evidence-from">{{ evidenceFieldLabel(entry.field) }}</span>
+                        <span class="evidence-text">{{ entry.snippet }}</span>
+                      </li>
+                    </ul>
+                  </li>
+                </ul>
+              </section>
+
+              <section v-if="match.partial.length" class="match-tier match-tier--partial">
+                <h3 class="tier-title">部分具备 {{ match.partial.length }} 项</h3>
+                <ul class="tier-list">
+                  <li v-for="item in match.partial" :key="item.skill" class="tier-item">
+                    <span class="tier-skill">{{ item.skill }}</span>
+                    <span class="tier-reason">{{ item.reason }}</span>
+                  </li>
+                </ul>
+              </section>
+
+              <section v-if="match.gaps.length" class="match-tier match-tier--gap">
+                <h3 class="tier-title">还缺 {{ match.gaps.length }} 项</h3>
+                <ul class="tier-list">
+                  <li v-for="gap in match.gaps" :key="gap.skill" class="tier-item">
+                    <span class="tier-skill">{{ gap.skill }}</span>
+                    <p class="tier-action">{{ gap.action }}</p>
+                    <p class="tier-verify">{{ gap.verify }}</p>
+                  </li>
+                </ul>
+              </section>
+            </div>
+          </div>
+        </section>
+
         <section class="detail-block">
           <h2 class="block-title">岗位描述（JD 原文）</h2>
           <p class="description">{{ descriptionText }}</p>
@@ -366,7 +535,12 @@ onBeforeUnmount(() => {
                   {{ skillTypeLabel(skill.type) }}
                 </span>
                 <span class="badge badge--origin">{{ originBadge(skill.origin) }}</span>
-                <span v-if="store.matchesMySkill(skill.name)" class="badge badge--mine">你已具备</span>
+                <span
+                  v-if="store.isRequirementHit(skill.name)"
+                  class="badge badge--mine"
+                  :title="badgeTitle(skill.name)"
+                  >你已具备</span
+                >
               </div>
               <!--
                 `evidence_text` 为 NULL 时整块不渲染：不留下空的展开区、也不写「无依据」占位。
@@ -479,6 +653,38 @@ onBeforeUnmount(() => {
 .skill-name { color: var(--ui-ink); font-size: 13px; font-weight: 600; }
 .skill-evidence { margin: 0; border-left: 2px solid var(--theme-rule-soft); padding-left: 8px; color: var(--ui-ink-faint); font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .empty { margin: 0; color: var(--ui-ink-faint); font-size: 13px; }
+
+/* 匹配卡：一个分数 + 三档清单。刻意不显示权重与计数（ADR-013 §7.5 的 2026-11-07 裁定）。 */
+.match-block { display: grid; gap: 12px; }
+/* 按钮按内容宽而不是撑满这一栏：它是一次会计费的调用，不该在视觉上比「发布 / 删除」更强势。 */
+.match-block > .row-button { justify-self: start; }
+.match-result { display: grid; gap: 14px; border-top: 1px solid var(--ui-surface-sunken); padding-top: 14px; }
+.match-score { display: flex; align-items: baseline; gap: 8px; margin: 0; }
+.match-score__value { color: var(--theme-primary-strong); font-size: 30px; font-weight: 700; line-height: 1.1; }
+.match-score__caption { color: var(--ui-ink-faint); font-size: 12px; letter-spacing: .04em; }
+.match-source { margin: 0; color: var(--ui-ink-muted); font-size: 12px; line-height: 1.6; }
+.match-source b { color: var(--ui-ink); font-weight: 600; }
+/* 退化提示用中性虚线框：它不是错误（分数是真的），但也不能长得像正文，
+   否则用户会把它当成一次普通的说明读过去。 */
+.match-degrade { display: grid; gap: 4px; margin: 0; padding: 10px 12px; border: 1px dashed var(--ui-border-strong); border-radius: var(--ui-radius); background: var(--ui-surface-soft); list-style: none; color: var(--ui-ink-muted); font-size: 12px; line-height: 1.6; }
+.match-tiers { display: grid; gap: 16px; }
+.match-tier { display: grid; gap: 8px; }
+.tier-title { margin: 0; color: var(--ui-ink); font-size: 13px; font-weight: 650; }
+.tier-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.tier-item { display: grid; gap: 4px; border-left: 2px solid var(--ui-surface-sunken); padding-left: 10px; }
+.match-tier--covered .tier-item { border-left-color: var(--theme-primary); }
+.match-tier--partial .tier-item { border-left-color: var(--theme-rule-soft); }
+.tier-skill { color: var(--ui-ink); font-size: 13px; font-weight: 600; }
+.tier-reason { color: var(--ui-ink-faint); font-size: 12px; line-height: 1.6; }
+.tier-action, .tier-verify { margin: 0; color: var(--ui-ink-faint); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.tier-verify { color: var(--ui-ink-muted); }
+/* 证据片段是用户自己写过的原文：保留换行、允许断词，但不允许撑破容器。 */
+.tier-evidence { display: grid; gap: 4px; margin: 2px 0 0; padding: 0; list-style: none; }
+/* 每条片段两行：上面那行是「出自哪一栏」，下面才是原文。
+   不分行会把标签和原文连成一句（「项目描述用 Python 重写了…」），读起来像原文里有这个词。 */
+.evidence-line { display: grid; gap: 1px; }
+.evidence-from { color: var(--ui-ink-faint); font-size: 11px; letter-spacing: .04em; }
+.evidence-text { color: var(--ui-ink-muted); font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* 删除确认弹层：外壳是全局 `.ui-overlay` / `.ui-panel`，这里只补这一页特有的三件。 */
 .dialog-title { margin: 0; color: var(--ui-ink); font-size: 17px; font-weight: 650; }

@@ -437,3 +437,203 @@ export async function extractJobSkills(
   )
   return unwrap(response)
 }
+
+/* ------------------------------ 人岗匹配（ADR-013） ------------------------------ */
+
+/** 五项分项的名字。与后端 `MATCH_WEIGHTS` 的键逐字一致，由契约测试双向比对。 */
+export type MatchTermName =
+  | 'coverage'
+  | 'evidence'
+  | 'relevance'
+  | 'preference'
+  | 'remaining_time'
+
+/**
+ * `meta.evidence_mode`：这一份分数里的「证据强度」是谁算的。
+ *
+ * 这一格必须显示给用户，理由不是美观而是 §6.5 的「不许静默降级」：
+ * `keyword_fallback` 意味着 DeepSeek 没参与，此时 `partial` 里那句「证据偏薄」
+ * 说的是「只在一条经历里出现过」，而不是「模型认为这句话撑不起这个技能」。
+ */
+export type EvidenceMode = 'ai_scored' | 'keyword_fallback'
+
+/** 退化的五种原因（§6.5）。前端按它分句，所以是一个封闭枚举而不是自由文案。 */
+export type DegradeReason = 'key_missing' | 'key_invalid' | 'upstream' | 'timeout' | 'bad_output'
+
+export interface MatchTerm {
+  name: MatchTermName
+  weight: number
+  /**
+   * `null` = 这一项**没算出来**，与「算出来是 0」是两件事（§5.1）。
+   * 压成 0 会让前端再也解释不了为什么两个人的 0.72 不同义。
+   */
+  value: number | null
+  computed: boolean
+  note: string | null
+}
+
+export interface MatchEvidence {
+  experience_id: string
+  field: 'title' | 'description' | 'responsibility'
+  /** 经历原文的**连续子串**（后端由构造保证，§3 的反幻觉闸门）。 */
+  snippet: string
+  strength: number
+}
+
+export interface MatchCovered {
+  skill: string
+  evidence: MatchEvidence[]
+}
+
+export interface MatchPartial {
+  skill: string
+  reason: string
+}
+
+export interface MatchGap {
+  skill: string
+  action: string
+  verify: string
+}
+
+export interface MatchMeta {
+  model: string | null
+  prompt_version: string | null
+  evidence_mode: EvidenceMode
+  degrade_reason: DegradeReason | null
+  candidate_pairs: number
+  verified_pairs: number
+  dropped_unreferenced: number
+  dropped_unknown_skill: number
+  dropped_unusable_strength: number
+  dropped_missing_output: number
+  clamped_strength: number
+  fragments_truncated: number
+  truncated: boolean
+  finish_reason: string | null
+  weight_sum_used: number
+  no_required_skills: boolean
+  /**
+   * 本次用的是**哪一版写法判据**（`app/core/skill_names.py::SKILL_MATCHER_VERSION`）。
+   * 与 `GET /jobs/{job_id}/requirement-match` 的 `meta.matcher_version` 同源，
+   * 两边必须报同一个值——那是「同屏一致」的另一半证明（老板 2026-11-08 判据 (c)）。
+   */
+  matcher_version: string
+  /**
+   * 不给分的原因。界面能看到的只有一种：`not_evaluated` = 岗位没填要求技能，核心 term 不在，
+   * 整个不评估（ADR-013 §5.1 末，老板 2026-11-08 裁定）。`nothing_computable`（分母为 0）
+   * 是 F1:A 留下的另一个值，后端现在发不出来。有分数时恒为 `null`。
+   * 前端**不许**按它分句：`score=null` 与 `no_required_skills` 现在是同一件事，
+   * 那一屏的说明由 `no_required_skills` 那行负责。
+   */
+  note: string | null
+}
+
+export interface MatchResult {
+  /**
+   * 本次被打分的是哪一份档案（§13 第 7 条）。
+   *
+   * 请求体为空 ⇒ 用的是**默认档案**，这是一个用户看不见的隐式选择。
+   * 不回显这两格，编辑器里开着 B 档案的人会在岗位页拿到 A 档案的分数，
+   * 而他的第一反应一定是「分数算错了」。
+   */
+  profile_id: string | null
+  profile_title: string | null
+  job_id: string
+  /**
+   * `null` = **这次不构成一个匹配分数**。现在只有一种来路：岗位没填要求技能，核心 term 不在，
+   * 整个不评估（ADR-013 §5.1 末，老板 2026-11-08 裁定；F1:A 的「分母为 0」已被这条覆盖）。
+   * 它与 `0` 是两件事：`0` 是「算出来了，零覆盖」，那是一句关于这个人的判断；
+   * `null` 说的只是「没有可比对的东西」，用户修不动岗位，所以界面只陈述那一条
+   * （`meta.no_required_skills` 那一行），不给他派活。
+   * 把两者压成一个数，界面就会对什么都没填的新用户喊「0% 匹配度」。
+   */
+  score: number | null
+  weights_version: string
+  terms: MatchTerm[]
+  covered: MatchCovered[]
+  partial: MatchPartial[]
+  gaps: MatchGap[]
+  meta: MatchMeta
+}
+
+/** 匹配请求的超时：与润色/提取同口径（30 秒上游预算 + 余量，NFR 见 `MVP_SCOPE.md`）。 */
+export const MATCH_TIMEOUT_MS = 45_000
+
+/**
+ * `POST /api/v1/jobs/{job_id}/match`：算一次人岗匹配（ADR-013 §3）。
+ *
+ * 三条与既有端点不同的口径，都写在类型上而不是靠注释提醒：
+ *
+ * 1. **POST 而不是 GET**：它会向 DeepSeek 发起一次真实调用、花用户自己的额度。
+ * 2. **AI 失败不是错误**：本函数**没有**「AI 挂了」这个分支——后端把失败翻译成
+ *    `meta.degrade_reason` 后照样返回 200 与分数。所以调用方不许在这里 catch 出
+ *    一个红色报错，也不许因为 `evidence_mode === 'keyword_fallback'` 就当失败处理。
+ * 3. **必须由用户显式点击**：不能在岗位详情页 `onMounted` 里自动调用，
+ *    那是拿用户的 Key 换页面浏览量（§10 第 8 步）。
+ *
+ * `X-DeepSeek-Key` 由 `client.ts` 的白名单注入（那里第三条、也是唯一一条模式判据），
+ * 这里不手工加头。
+ */
+export async function matchJob(jobId: string): Promise<MatchResult> {
+  const response = await http.post<ApiSuccess<MatchResult>>(
+    `/jobs/${jobId}/match`,
+    undefined,
+    { timeout: MATCH_TIMEOUT_MS },
+  )
+  return unwrap(response)
+}
+
+/* ------------------------- 要求覆盖查询（ADR-013 §10 第 3c 步） ------------------------- */
+
+/**
+ * 岗位的一条要求技能，当前用户处在哪个状态。三档与匹配卡的 `covered/partial/gaps` 同义。
+ *
+ * 判等**不在前端做**（原来那套 `trim + NFKC + toLowerCase` 认不出 `Python3` 与 `Python`
+ * 是同一个技能，于是角标说「不具备」而匹配卡说「已具备」，同一屏两个口径）。
+ * 这里只做一件事：后端怎么判，界面就怎么标。
+ */
+export type RequirementStatus = 'covered' | 'partial' | 'missing'
+
+export interface RequirementCoverageRow {
+  /** 岗位侧的原写法，逐字回显——详情页的技能行就是按它对齐的。 */
+  name: string
+  status: RequirementStatus
+  /**
+   * 学生技能表里真正命中的那个写法（岗位要求 `Python`、简历写 `Python3` 时是 `Python3`）。
+   * `missing` 时恒为 `null`。
+   */
+  matched_form: string | null
+}
+
+export interface RequirementMatchMeta {
+  /** 与 `MatchMeta.matcher_version` 同一个常量：两条链路用的是同一版写法判据。 */
+  matcher_version: string
+}
+
+export interface RequirementMatchResponse {
+  job_id: string
+  profile_id: string | null
+  profile_title: string | null
+  /** 顺序与条数都和 `GET /jobs/{job_id}` 的 `skills` 一致（老板判据 (a) 的基准域 U）。 */
+  coverage: RequirementCoverageRow[]
+  meta: RequirementMatchMeta
+}
+
+/**
+ * `GET /api/v1/jobs/{job_id}/requirement-match`：一次读，拿到这个岗位每条要求的状态。
+ *
+ * 三条口径要记住：
+ *
+ * 1. **它不调 AI、不产生分数、不花钱**，所以是 GET；也因此**不在** `client.ts` 的
+ *    BYOK 白名单里（那条模式判据只认 `POST /jobs/{id}/match`）。`byok.spec.ts` 有
+ *    一条反向用例专门钉「这条 URL 拿不到 Key」。
+ * 2. **一次详情页一次请求**：`coverage` 是全量的，不要按技能行逐条去问。
+ * 3. 它失败时**只让角标消失**，不许把详情页拖成错误态——角标是增益信息。
+ */
+export async function getRequirementMatch(jobId: string): Promise<RequirementMatchResponse> {
+  const response = await http.get<ApiSuccess<RequirementMatchResponse>>(
+    `/jobs/${jobId}/requirement-match`,
+  )
+  return unwrap(response)
+}

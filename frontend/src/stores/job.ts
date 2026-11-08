@@ -17,10 +17,17 @@
  * 3. **AI 提取结果的草稿态**（`extractSkills()` + `mergeExtractedInto()`）。
  *    提取是纯计算（2.A），结果只存在这个 store 里，表单行由视图承接，
  *    **库里要到用户点「保存岗位」才被动**；`reset()` 连这份草稿一起清掉。
- * 4. **「你已具备」的只读比对**（`loadMySkillNames()` + `matchesMySkill()`）。
- *    按 2.E：拿当前登录用户**默认简历**的技能名与 `job_skills.name` 做归一化等值比较
- *    （口径与后端同：`trim` → NFKC → 小写，见 `normalizeSkillName()`），命中就标一下。
- *    不写任何表、不产生匹配分数、不排序——人岗匹配仍在 AGENTS.md §3.2 的冻结清单里。
+ * 4. **「你已具备」角标的数据源**（`loadRequirementMatch()` + `skillStatus()`，ADR-013 §10 第 3c 步）。
+ *    判等**不在前端做**：数据来自 `GET /jobs/{job_id}/requirement-match`——确定性、不调 AI、
+ *    不花钱的后端端点，它与匹配共用同一份写法判据（两边 `meta.matcher_version` 同一个常量）。
+ *    原来这里是一套本地 `trim → NFKC → toLowerCase` 比对，认不出 `Python3` 与 `Python` 是
+ *    同一个技能，于是同一屏会出现「角标说不具备、匹配卡说已具备」（§1.3 那屏矛盾的第二半）。
+ *    这个端点不写任何表、不产生分数、不排序。
+ * 5. **人岗匹配**（`runMatch()` + `matchDegradeLines()` + `matchFailureText()`，ADR-013 §10 第 8 步）。
+ *    第 4 条现在已经不是「与匹配并行的第二套判据」：两边的**写法命中**出自同一个函数，
+ *    区别只在于匹配另外算了分数、并给每条命中找了出处。
+ *    匹配是**显式点击**才发的（`JobDetailView` 的按钮，不在 `onMounted` 里），
+ *    因为它每次都可能向 DeepSeek 发一次真实请求、花调用者自己的额度。
  *
  * 过期判定不在这里：后端 `JobSummary.is_expired` / `JobRead.is_expired` 已用**应用时钟**
  * 算好（2.G 明确禁止前端各写一份 `deadline < 今天`，两处实现必然漂移），前端只读那个布尔。
@@ -33,7 +40,7 @@
 import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 
-import { jobsApi, profilesApi, isApiError } from '@/api'
+import { jobsApi, isApiError } from '@/api'
 import type { jobsApi as JobsContract } from '@/api'
 import { useAuthStore } from '@/stores/auth'
 
@@ -43,6 +50,9 @@ type JobStatus = JobsContract.JobStatus
 type JobSkillType = JobsContract.JobSkillType
 type EmploymentType = JobsContract.EmploymentType
 type ExtractSkillsResult = JobsContract.ExtractSkillsResult
+type MatchResult = JobsContract.MatchResult
+type RequirementCoverageRow = JobsContract.RequirementCoverageRow
+type RequirementStatus = JobsContract.RequirementStatus
 
 /* -------------------------------- 展示文案 -------------------------------- */
 
@@ -182,15 +192,18 @@ export function createEmptyJobForm(): JobFormInput {
 /**
  * 技能名的归一化键：`trim` → NFKC（全角→半角、兼容字符归一）→ 小写。
  *
- * **口径对齐后端**：判定「同一个技能」用的是
- * `unicodedata.normalize("NFKC", name).casefold()`（`app/schemas/job.py` 的
- * `JobSkillInput.dedup_key`，ADR-011 §2.D.1 定义得更完整），列的排序规则
- * `utf8mb4_0900_ai_ci` 同样是全半角、大小写都不敏感。B2 只做 `trim` + 小写，
- * 后果在两个用途上都看得见：
- * - 「你已具备」（2.E 只读比对）：用户档案里写成 `Ｐython` 就标不上；
- * - 录入页重名自检（`validateJobForm`）：前端放过、后端 422，用户看到的是
- *   「我明明没重复却被拒了」。
- * 两端同口径才能既不漏标也不漏拦。
+ * **它现在只剩一个用途：输入侧的重名自检**（`validateJobForm` 与 AI 提取结果的合并去重）。
+ * 「这条技能我具备吗」不再由它回答——那是第 3c 条那个后端端点唯一的职责，判据是
+ * `app/core/skill_names.py::skill_forms_match`（`Python3` 与 `Python` 算同一个技能）。
+ * 本地这套只做全等，够不着版本号那一格；继续拿它做判定就会在同一屏上造出
+ * 「角标说不具备、匹配卡说已具备」（ADR-013 §1.3 的第二半，2026-11-08 消除）。
+ *
+ * 为什么输入侧这一半还留着：它挡的是「同一次提交里写了两遍」，要的是**当场**变色，
+ * 后端那关（`skill_name_key`）发生在落库时，给用户的是 422 而不是提示，
+ * 两者回答的其实是两个时刻。`utf8mb4_0900_ai_ci` 那侧的宽容度与
+ * `JobSkillInput.dedup_key` 同一个口径（ADR-011 §2.D.1 定义得更完整），
+ * B2 只做 `trim` + 小写的后果当年就看得见：前端放过、后端 422，
+ * 用户拿到的是「我明明没重复却被拒了」。
  *
  * 已知差异（本轮接受，不写特例）：JS 的 `toLowerCase()` 与 Python 的 `casefold()`
  * 在极少数语言上不等价（`ß` → JS `ß` / Python `ss`；`İ` → JS `i̇` / Python `i̇` 亦不同）。
@@ -539,6 +552,96 @@ export function extractFailureText(error: unknown): string {
   }
 }
 
+/* -------------------------------- 匹配文案 -------------------------------- */
+
+/**
+ * 匹配退化的分句：`evidence_mode` 一句 + `degrade_reason` 一句（ADR-013 §6.5 第 5 点）。
+ *
+ * 为什么这两句必须显示：`keyword_fallback` 下 `partial` 里那句「证据偏薄」说的是
+ * 「这条技能只在你的经历里出现过，撑不起一个结论」，而 `ai_scored` 下同一句说的是
+ * 「模型读完你的经历认为它偏薄」。两种情况下用户的下一步动作完全不同，
+ * 所以按 AGENTS.md §3.2「失败必须由用户点出来」的口径，这里不许静默省略。
+ *
+ * **三种情况分开说**（老板 2026-11-08 实测出来的第三种，前两版都把它说错了）：
+ * - AI 正常参与 → 一句都不给；
+ * - AI 想参与但失败（`degrade_reason` 五种之一）→ 算法那句 + 该原因的动作。
+ *   五种**分句而不合并**也是同一理由：前两种用户自己就能修（去「AI 设置」补 / 修 Key），
+ *   后三种只能稍后重试。写成同一句「AI 不可用」，用户会去改一个本来没坏的 Key。
+ * - **零候选不是退化**：`degrade_reason` 为 `null` 的 `keyword_fallback` 有**两个**来源
+ *   （上一版这里写的是「只有一个」，那句是错的——F1:A 的那组数据把它撞出来了）：
+ *   ① 命中的技能在经历里找不到任何出处（`terms[].note=matched_without_evidence`）：
+ *      一个片段都没切出来、**根本没向模型提问**（这条短路在检查 Key 之前，配了 Key 也一样），
+ *      此时说「按关键词算法给分」是假的，用户能修的动作也不是配 Key，而是把那段经历写出来；
+ *   ② 一条技能都没命中（`terms[].note=no_matched_skills`）：没有任何出处可找，也就没有
+ *      「找不到出处」这件事可说——那两句在这里是**假话**。这种情形一句都不给，
+ *      下面的「还缺 N 项」清单自己会把话说明白。
+ *
+ * 与之相反，权重构成、`weight_sum_used`、各计数**不进界面**（2026-11-07 人类负责人裁定
+ * 「不用向客户说明技术上的设计」，作用域见 ADR-013 §7.5）：它们留在响应里给我们自己对账。
+ */
+export function matchDegradeLines(result: MatchResult): string[] {
+  const meta = result.meta
+  if (meta.evidence_mode !== 'keyword_fallback') return []
+  // 岗位压根没填技能要求：没有可比对的东西，说一句「证据强度怎么算的」反而是噪音。
+  if (meta.no_required_skills) return []
+  // 分①与②要读的是证据那一项的 note：后端已经把这两种 null 分开了，前端不许再猜。
+  const evidenceNote = result.terms.find((item) => item.name === 'evidence')?.note
+  if (evidenceNote === 'matched_without_evidence') {
+    return [
+      '你命中的技能在经历里找不到出处，所以这次没有向 AI 提问，也没花你的额度。',
+      '把那段经历写进简历（做了什么 → 怎么做的 → 结果如何），再算一次才会有证据强度。',
+    ]
+  }
+  if (meta.degrade_reason === null) return []
+  const lines = ['本次的「证据强度」按关键词算法给分，没有让 AI 读你的经历。']
+  switch (meta.degrade_reason) {
+    case 'key_missing':
+      lines.push('还没配置你的 DeepSeek API Key：点右上角「AI 设置」填好，再算一次会更准。')
+      break
+    case 'key_invalid':
+      lines.push(
+        '你的 DeepSeek API Key 无效或已欠费：打开「AI 设置」检查后再算一次。（与登录状态无关，不需要重新登录。）',
+      )
+      break
+    case 'timeout':
+      lines.push('AI 这次响应超时，所以没拿到证据强度。稍后再算一次即可。')
+      break
+    case 'bad_output':
+      lines.push('AI 这次没有按约定格式返回，所以没拿到证据强度。稍后再算一次即可。')
+      break
+    case 'upstream':
+      lines.push('DeepSeek 当前不可用（上游报错），所以没拿到证据强度。稍后再算一次即可。')
+      break
+  }
+  return lines
+}
+
+/**
+ * 匹配**请求本身**失败的分支文案。
+ *
+ * 与 `extractFailureText()` 的关键差别：AI 失败不在这里。后端把五种 AI 失败翻译成
+ * `200 + meta.degrade_reason`（ADR-013 §3 的状态码边界），所以走到这个函数的
+ * 只有「没到模型那就失败」的分支——429 / 404 / 401 / 网络超时 / 500。
+ * 这里绝不允许出现「AI 挂了」之类的红字，那会把一条本可以解释的退化说成一次故障。
+ */
+export function matchFailureText(error: unknown): string {
+  if (!isApiError(error)) return '匹配失败，请稍后重试。你的资料与这条岗位都没有被改动。'
+  switch (error.code) {
+    case 'RATE_LIMITED':
+      return '一分钟内算得太多次了，请等一分钟再试——每一次都可能向 DeepSeek 发一次真实请求。'
+    case 'NOT_FOUND':
+      return '这个岗位不存在、是别人的草稿，或已经在回收站里，所以没法匹配。'
+    case 'CLIENT_ERROR':
+      return '登录状态已失效，请重新登录后再算一次。'
+    case 'NETWORK_ERROR':
+      return '等后端响应超时或连不上服务，请确认后端在跑，然后重试。'
+    case 'VALIDATION_ERROR':
+      return '匹配请求没有被接受：这个岗位 id 的格式不对，请回到列表重新点进来。'
+    default:
+      return `${error.message}（你的资料与这条岗位都没有被改动。）`
+  }
+}
+
 /* --------------------------------- store ---------------------------------- */
 
 export const useJobStore = defineStore('job', () => {
@@ -569,9 +672,14 @@ export const useJobStore = defineStore('job', () => {
   const trash = ref<JobSummary[]>([])
   const trashLoading = ref(false)
 
-  /** 「我」的技能名（默认简历的技能），只用于详情页的只读比对。 */
-  const mySkillNames = ref<string[]>([])
-  const mySkillNamesLoading = ref(false)
+  /**
+   * 这条岗位的逐条要求状态（ADR-013 §10 第 3c 步）。
+   *
+   * 空数组有两种来路：还没拉、以及拉失败。两者都表现为「一条都不标」——
+   * 角标是增益信息，不许因为它把详情页拖进错误态（视图那边 catch 掉）。
+   */
+  const requirementCoverage = ref<RequirementCoverageRow[]>([])
+  const requirementLoading = ref(false)
 
   /** 新建 / 发布 / 下架 / 删除等写操作进行中，视图据此禁用按钮。 */
   const submitting = ref(false)
@@ -596,23 +704,64 @@ export const useJobStore = defineStore('job', () => {
   /** 上一次提取加进表单的行数（=0 表示这批候选一条都没落地，视图该说一句为什么）。 */
   const extractedAddedCount = computed(() => extractPlan.value?.added.length ?? 0)
 
+  /**
+   * 人岗匹配的结果与在途标记（ADR-013 §10 第 8 步）。
+   *
+   * 与 `extractDraft` 同一处置：**只在内存里**，不写 localStorage / sessionStorage。
+   * 理由不是省事——`covered[].evidence[].snippet` 是用户经历原文的连续子串，
+   * 落盘等于把「上一个人的屏幕」留给下一个共用这台电脑的人。
+   *
+   * 这里**没有** `matchError`：匹配失败的文案是视图按分支渲染的一次性提示，
+   * 换岗位、重试都要立刻清掉，存进 store 只会让下一个用户看见上一个人的红字
+   * （与 `extractFailureText` 的既有分工一致）。
+   */
+  const matchResult = ref<MatchResult | null>(null)
+  const matching = ref(false)
+
   const hasPrevPage = computed(() => page.value > 1)
   const hasNextPage = computed(() => page.value * pageSize.value < total.value)
   const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 
-  /** 归一化后的「我」的技能名集合：比对只做一次 O(n) 构建，不在每次渲染里重建。 */
-  const mySkillKeys = computed(() => new Set(mySkillNames.value.map(normalizeSkillName)))
+  /**
+   * 岗位原写法 → 后端判出来的那一行。
+   *
+   * 按**字面**对齐，不做任何归一：后端回的就是 `job_skills.name` 原文，视图渲染的也是同一列，
+   * 这里再折一次就等于偷偷把判等搬回前端——第 3c 步要消灭的正是这件事。
+   */
+  const requirementByName = computed(
+    () => new Map(requirementCoverage.value.map((row) => [row.name, row])),
+  )
+
+  /** 详情页用：这条岗位要求现在处于哪个状态；`null` = 还没拉到数据（一条都不标）。 */
+  function skillStatus(name: string): RequirementStatus | null {
+    return requirementByName.value.get(name)?.status ?? null
+  }
+
+  /**
+   * 这条岗位要求**命中了没有**——角标唯一的判据。
+   *
+   * 为什么单独有这一个函数而不是让视图写 `v-if="skillStatus(name)"`：`missing` 也是**非空字符串**，
+   * 在 Vue 里是真值，那样一渲染就是每条技能都长角标（第一版就是这么错的，用例当场红）。
+   * `covered` 与 `partial` 都算命中：角标回答的是「写法对上没有」，
+   * 证据够不够是匹配卡那一层的事（老板 2026-11-08 判据 (b) 断言的正是这两档的并集）。
+   * 别把它「改成与卡逐档对齐」：配了 Key 之后 AI 只会把一条命中从 `covered` 挪到 `partial`，
+   * 挪不出这个并集（后端 `match_scoring.py` 装配三档时补的那一漏），两边比的从来不是同一件事。
+   */
+  function isRequirementHit(name: string): boolean {
+    const status = skillStatus(name)
+    return status === 'covered' || status === 'partial'
+  }
+
+  /** 命中的是用户自己写的哪个写法（岗位要求 `Python`、简历写 `Python3` 时是 `Python3`）。 */
+  function matchedFormOf(name: string): string | null {
+    return requirementByName.value.get(name)?.matched_form ?? null
+  }
 
   /** 当前登录用户是不是这条岗位的创建者（后端只有创建者能改/删/发布）。 */
   function isCreatorOf(job: JobSummary | JobRead | null): boolean {
     if (!job) return false
     const userId = useAuthStore().user?.id
     return Boolean(userId) && userId === job.created_by_user_id
-  }
-
-  /** 详情页用：这条技能名是否命中「我」的技能。 */
-  function matchesMySkill(skillName: string): boolean {
-    return mySkillKeys.value.has(normalizeSkillName(skillName))
   }
 
   /* ------------------------------- 列表与筛选 ------------------------------ */
@@ -672,6 +821,12 @@ export const useJobStore = defineStore('job', () => {
   async function loadDetail(jobId: string): Promise<JobRead | null> {
     detailLoading.value = true
     detail.value = null
+    // 上一条岗位的匹配结果必须一起清掉：`matchResult` 挂在 store 上而不是组件上，
+    // 从广场「返回→点另一条」时详情页会重新挂载，但 store 不会——留着就是
+    // 「A 岗位的分数显示在 B 岗位上」，而这屏唯一的数字看起来完全可信。
+    matchResult.value = null
+    // 逐条状态同理：它是「这条岗位 × 这份档案」的产物，留着会给 B 岗位长出 A 岗位的角标。
+    clearRequirementMatch()
     try {
       detail.value = await jobsApi.getJob(jobId)
       return detail.value
@@ -736,6 +891,39 @@ export const useJobStore = defineStore('job', () => {
   function clearExtract(): void {
     extractDraft.value = null
     extractPlan.value = null
+  }
+
+  /* -------------------------------- 人岗匹配 ------------------------------- */
+
+  /**
+   * 「算一次匹配」：发 `POST /jobs/{id}/match`，结果进 `matchResult`，**不发任何写请求**。
+   *
+   * 三条约束：
+   * - **只由显式点击进来**：视图不在 `onMounted` 里调它（ADR-013 §10 第 8 步：
+   *   自动调用等于拿用户的 Key 换页面浏览量）。这条在测试里是「mount 完不发请求」的断言。
+   * - **在途时重复点击直接返回 `null`**：这条限流按用户算 10/minute，按钮连点两次
+   *   就是两次真实计费。视图也禁了按钮，两道闸都要有。
+   * - **不吞异常也不降级**：AI 失败由后端翻译成 `200 + meta.degrade_reason`，
+   *   由视图用 `matchDegradeLines()` 显示；这里只负责把真的失败原样抛给调用方，
+   *   由视图用 `matchFailureText()` 翻译。
+   */
+  async function runMatch(jobId: string): Promise<MatchResult | null> {
+    if (matching.value) return null
+    matching.value = true
+    // 重算前先清空上一次的结果：屏幕上挂着上一份分数、底下却正在算新的那一份，
+    // 用户分不清哪一行对应哪一次点击。
+    matchResult.value = null
+    try {
+      matchResult.value = await jobsApi.matchJob(jobId)
+      return matchResult.value
+    } finally {
+      matching.value = false
+    }
+  }
+
+  /** 清掉匹配结果（换岗位、登出）。一个请求都不发。 */
+  function clearMatch(): void {
+    matchResult.value = null
   }
 
   /* --------------------------------- 写入 --------------------------------- */
@@ -858,29 +1046,42 @@ export const useJobStore = defineStore('job', () => {
   /* ---------------------------- 「你已具备」比对 ---------------------------- */
 
   /**
-   * 拉当前登录用户的技能名（2.E 的只读比对）。
+   * 拉这条岗位的逐条要求状态（ADR-013 §10 第 3c 步）。
    *
-   * 走 `GET /profiles/me`（默认简历）而不是复用编辑器的 Pinia 草稿：
-   * 用户完全可能直接从 `/jobs/:id` 进来，那一刻编辑器的 `draft` 还是空白骨架，
-   * 拿它比对会**静默**一条都标不上。这里多发一次只读 GET，换「结果与来源都确定」。
-   * 还没有任何档案时后端返回 `{ profile: null }`，翻成空数组而不是报错。
+   * 为什么是「拉」而不是「比」：判据住在后端，与匹配同一份（`SKILL_MATCHER_VERSION`），
+   * 前端不参与判等——本地那套 `trim + NFKC + toLowerCase` 认不出版本号写法，
+   * 于是角标和匹配卡会在同一屏上各说一套。
+   *
+   * 为什么仍然单独发一次而不是塞进 `GET /jobs/{job_id}`：详情响要是**岗位自身**的内容
+   * （广场列表、编辑页、详情页共用同一份载荷），而逐条状态是「岗位 × 当前登录用户的默认档案」。
+   * 把后者并进前者会让详情载荷变成按人而异的响应，缓存与权限都得跟着重做（ADR-011 1.E 的原话
+   * 是「不合并」，这条把它落实成了两个端点）。
+   *
+   * 异常**不吞**也不外抛：调用方（详情页）catch 掉并让角标整体不显示，所以这里保持原样传播，
+   * 与 `runMatch()` 同一口径——静默吞掉会让「角标全没有」和「这条岗位确实你没命中」看起来一模一样。
    */
-  async function loadMySkillNames(): Promise<string[]> {
-    mySkillNamesLoading.value = true
+  async function loadRequirementMatch(jobId: string): Promise<RequirementCoverageRow[]> {
+    requirementLoading.value = true
     try {
-      const profile = await profilesApi.getMyProfile()
-      mySkillNames.value = (profile?.skills ?? []).map((skill) => skill.name)
-      return mySkillNames.value
+      const result = await jobsApi.getRequirementMatch(jobId)
+      requirementCoverage.value = result.coverage
+      return result.coverage
     } finally {
-      mySkillNamesLoading.value = false
+      requirementLoading.value = false
     }
+  }
+
+  /** 换岗位 / 登出时清掉：逐条状态是「这条岗位 × 这份档案」的产物，留着就是上一个人的屏幕。 */
+  function clearRequirementMatch(): void {
+    requirementCoverage.value = []
   }
 
   /**
    * 登出 / 离开编辑链路时清空，避免下一个账号短暂看到上一个人的岗位。
    *
-   * `clearExtract()` 在这一串里：AI 提取的草稿带着 JD 原文片段（evidence），
-   * 它是「上一个人的屏幕」的一部分，漏掉就等于把候选技能连带留给了下一个账号。
+   * `clearExtract()` 与 `clearMatch()` 都在这一串里：AI 提取的草稿带着 JD 原文片段（evidence），
+   * 匹配结果带着**用户自己经历**的原文片段（`covered[].evidence[].snippet`），
+   * 它们是「上一个人的屏幕」的一部分，漏掉就等于把候选技能连带留给了下一个账号。
    * 视图里的表单数组不在 store 里，由 `JobCreateView` 自己 `reset` 时重建。
    */
   function reset(): void {
@@ -889,11 +1090,13 @@ export const useJobStore = defineStore('job', () => {
     page.value = 1
     detail.value = null
     trash.value = []
-    mySkillNames.value = []
+    clearRequirementMatch()
     filter.keyword = ''
     filter.status = 'published'
     filter.includeExpired = false
     clearExtract()
+    // 匹配结果里同样是用户的经历原文片段，属于「上一个人的屏幕」。
+    clearMatch()
   }
 
   return {
@@ -932,10 +1135,17 @@ export const useJobStore = defineStore('job', () => {
     extractSkills,
     discardExtraction,
     clearExtract,
-    mySkillNames,
-    mySkillNamesLoading,
-    loadMySkillNames,
-    matchesMySkill,
+    matchResult,
+    matching,
+    runMatch,
+    clearMatch,
+    requirementCoverage,
+    requirementLoading,
+    loadRequirementMatch,
+    clearRequirementMatch,
+    skillStatus,
+    isRequirementHit,
+    matchedFormOf,
     isCreatorOf,
     reset,
   }

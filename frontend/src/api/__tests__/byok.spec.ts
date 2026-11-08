@@ -246,7 +246,7 @@ describe('Key 注入矩阵：岗位侧只扩 `/jobs/extract-skills` 这一个 UR
     expect(sentHeaders.map((item) => item.url)).toEqual(['/resumes/polish', '/jobs/extract-skills'])
   })
 
-  it('`/jobs` 下其余七个端点一律不带 Key', async () => {
+  it('`/jobs` 下其余九个端点一律不带 Key（含第 3c 条的 requirement-match）', async () => {
     // 这一串就是「宽判据会把 Key 送到哪儿」的清单：`includes('/jobs')` 会把它们全纳进去。
     await jobsApi.listJobs({ status: 'draft' })
     await jobsApi.getJob('job-42')
@@ -257,8 +257,11 @@ describe('Key 注入矩阵：岗位侧只扩 `/jobs/extract-skills` 这一个 UR
     await jobsApi.listJobTrash()
     await jobsApi.restoreJob('job-42')
     await jobsApi.deleteJob('job-42')
+    // 第 3c 条：这条 GET 是纯计算的只读端点，**不进**白名单。Key 在这里没有转发对象——
+    // 后端 `requirement_match()` 不 import `app/integrations`，一次出网请求都不产生。
+    await jobsApi.getRequirementMatch('job-42')
 
-    expect(sentHeaders.length).toBe(9)
+    expect(sentHeaders.length).toBe(10)
     for (const item of sentHeaders) {
       expect(item.key, `${item.method} ${item.url} 不该携带 DeepSeek Key`).toBeUndefined()
     }
@@ -267,6 +270,7 @@ describe('Key 注入矩阵：岗位侧只扩 `/jobs/extract-skills` 这一个 UR
       'delete /jobs/job-42',
       'get /jobs',
       'get /jobs/job-42',
+      'get /jobs/job-42/requirement-match',
       'get /jobs/trash',
       'post /jobs',
       'put /jobs/job-42',
@@ -274,6 +278,18 @@ describe('Key 注入矩阵：岗位侧只扩 `/jobs/extract-skills` 这一个 UR
       'put /jobs/job-42/restore',
       'put /jobs/job-42/unpublish',
     ])
+  })
+
+  it('第三条模式判据认不到 requirement-match：同形不同尾，注入面不扩张', async () => {
+    // 这条是「白名单第 3 条是 `[^/]+/match` 整尾」的直接后果：
+    // `/jobs/{id}/requirement-match` 与它同形（一段 id + 一段静态尾），
+    // 但尾段不同。如果谁把判据松成 `/jobs/[^/]+/.*match` 或 `includes('match')`，
+    // 用户的 Key 就会被送到一条**根本不转发 DeepSeek** 的只读端点上——那是 2026-11-07
+    // 「答不上来就不许加」明确挡住的那类错误。
+    await http.get('/jobs/job-42/requirement-match')
+    await http.get('/jobs/job-42/match') // 换方法（GET 而非 POST）也不算注入面
+
+    expect(sentHeaders.map((item) => item.key)).toEqual([undefined, undefined])
   })
 
   it('近似路径也不带：`/jobs/{id}/extract-skills`、`/jobs/extract-skills/extra`、`/jobs/extract-skills-today`', async () => {
@@ -287,6 +303,50 @@ describe('Key 注入矩阵：岗位侧只扩 `/jobs/extract-skills` 这一个 UR
     expect(sentHeaders[1]?.key).toBeUndefined()
     expect(sentHeaders[2]?.key).toBeUndefined()
     expect(sentHeaders[3]?.key).toBe(TEST_KEY)
+  })
+
+  it('白名单第三条是**唯一一条模式**：`POST /jobs/{id}/match` 带 Key', async () => {
+    // ADR-013 §6.1 的「正向」断言。id 故意取两种形状：一个像 uuid，一个完全不像——
+    // 判据如果不小心被写成 `[0-9a-f-]{36}` 这种「更像 id」的模式，第二条就会红。
+    await http.post('/jobs/3f2a1b9c-0000-4000-8000-000000000001/match')
+    await http.post('/jobs/not-a-uuid/match')
+
+    expect(sentHeaders.map((item) => item.key)).toEqual([TEST_KEY, TEST_KEY])
+  })
+
+  it('这条模式不扩张：多一段、少一段、换方法、都不注入', async () => {
+    // 前四条是模式本身不该吃到的形状；最后一条是 §6.1 里「判据绑方法」这条纪律：
+    // GET `/jobs/{id}/match` 今天不存在，但「模式不看方法」一旦落地，
+    // 任何拼错的 GET 都会带着用户的 Key 出门。
+    await http.post('/jobs/a/b/match')
+    await http.post('/jobs/match')
+    await http.post('/jobs/1/match/extra')
+    await http.post('/resumes/polish/match')
+    await http.get('/jobs/1/match')
+
+    for (const item of sentHeaders) {
+      expect(item.key, `${item.method} ${item.url} 不该携带 DeepSeek Key`).toBeUndefined()
+    }
+  })
+
+  it('归一化后的两种写法仍算同一条：尾斜杠与查询串', async () => {
+    // `client.ts` 先剥查询串、再剥尾斜杠，然后才比判据——这条次序是既有行为，
+    // 新模式必须沿用，否则「同一个端点带不带 Key」会取决于 URL 怎么写。
+    await http.post('/jobs/1/match/')
+    await http.post('/jobs/1/match?retry=1')
+    await http.post('/jobs/1/match/?retry=1')
+
+    expect(sentHeaders.map((item) => item.key)).toEqual([TEST_KEY, TEST_KEY, TEST_KEY])
+  })
+
+  it('`matchJob()` 走的是那条模式，而不是手工加头', async () => {
+    await jobsApi.matchJob('job-42')
+    expect(sentHeaders).toHaveLength(1)
+    expect(sentHeaders[0]).toMatchObject({
+      method: 'post',
+      url: '/jobs/job-42/match',
+      key: TEST_KEY,
+    })
   })
 
   it('提取请求撞 AI_KEY_INVALID(401) 时不进刷新重放、不踢下线（复用既有分流）', async () => {

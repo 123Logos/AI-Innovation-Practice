@@ -28,20 +28,27 @@ from typing import Annotated, Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
 from app.core.errors import error_response
-from app.core.rate_limit import EXTRACT_RATE_LIMIT, limiter
+from app.core.rate_limit import (
+    EXTRACT_RATE_LIMIT,
+    MATCH_RATE_LIMIT,
+    get_user_or_remote_address,
+    limiter,
+)
 from app.core.responses import request_id, success_response
 from app.schemas.auth import UserRead
 from app.schemas.job import MAX_PAGE_SIZE, ExtractSkillsRequest, JobWriteRequest
-from app.services.dependencies import get_current_user, get_job_service
+from app.services.dependencies import get_current_user, get_job_service, get_match_service
 from app.services.job_service import (
     JobNotFoundError,
     JobService,
     JobSkillExtractTruncatedError,
 )
+from app.services.match_service import MatchService
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 JobServiceDep = Annotated[JobService, Depends(get_job_service)]
+MatchServiceDep = Annotated[MatchService, Depends(get_match_service)]
 CurrentUserDep = Annotated[UserRead, Depends(get_current_user)]
 
 #: 1.F #1：列表默认只给已发布，自己的草稿要显式传 `status=draft`。
@@ -184,6 +191,77 @@ def read_job(
     except JobNotFoundError as error:
         raise _not_found() from error
     return success_response(request, {"job": job.model_dump(mode="json")})
+
+
+@router.post("/{job_id}/match")
+@limiter.limit(MATCH_RATE_LIMIT, key_func=get_user_or_remote_address)
+def match_job(
+    job_id: str,
+    request: Request,
+    service: MatchServiceDep,
+    current_user: CurrentUserDep,
+) -> dict[str, Any]:
+    """人岗匹配（ADR-013 §3）：**POST 而不是 GET**，它会向 DeepSeek 发起一次真实调用、
+    花用户自己的额度，语义上是「执行一次计算」，与 `/jobs/extract-skills` 同族。
+
+    三条与既有端点不同的地方，都在这个函数体里，不在服务层偷偷做：
+
+    1. **AI 失败不往外抛**。`MatchService` 已经把它们翻译成 `degrade_reason` 并继续给分，
+       所以本函数**没有** `except EvidenceScore*`，也没有第 7 情形那种就地构造响应体——
+       匹配不像提取那样「一条都拿不到就没意义」。因此这三个 AI 处理器在本端点上永不命中
+       （见 `app/main.py` 的那段注释）。
+    2. **限流键是用户而不是 IP**（`get_user_or_remote_address`）：按 IP 会让同一出口下
+       前两个人把整组人的额度点光，而后面的人没做错任何事。
+    3. **不可见岗位 404 不是 403**：与 `read_job` 同一谓词、同一 `_not_found()`；
+       403 会确认「该 id 存在」。
+
+    请求体为空是刻意的（§3 决策 2）：v1 只匹配当前用户的**默认档案**，
+    而用的是哪一份必须由响应里的 `profile_id` / `profile_title` 说出来，
+    不能让用户自己去猜分数是谁的。
+    """
+    try:
+        result = service.match(current_user.id, job_id)
+    except JobNotFoundError as error:
+        raise _not_found() from error
+    return success_response(request, result.model_dump(mode="json"))
+
+
+@router.get("/{job_id}/requirement-match")
+def requirement_match_job(
+    job_id: str,
+    request: Request,
+    service: MatchServiceDep,
+    current_user: CurrentUserDep,
+) -> dict[str, Any]:
+    """第 3c 条（ADR-013 §10）：这条岗位的每条要求技能，当前用户处在哪个状态。
+
+    它是**确定性、不调 AI、不产生分数、不落库**的读端点，存在的唯一理由是把
+    「你已具备」的判据从前端搬到后端——前端那套 `trim + NFKC + toLowerCase` 认不出
+    `Python3` 与 `Python` 是同一个技能，于是角标说「不具备」而匹配卡说「已具备」，
+    同一屏两个口径（§1.3 那一屏自相矛盾的第二半）。
+
+    四条刻意的选择：
+
+    1. **GET 而不是 POST**：与 `/match` 相反，这里没有任何出网调用与额度消耗。
+       路由表论证：本函数只调 `MatchService.requirement_match`，它不 import
+       `app.integrations`、不发一次 HTTP 请求，所以 `X-DeepSeek-Key` 在这条 URL 上
+       **没有转发对象**——它因此**不进** BYOK 白名单（`frontend/src/api/client.ts`），
+       这条「不许加」由 `byok.spec.ts` 的反向用例钉住。
+    2. **不限流**：纯读两张表、按岗位一次一个请求。给它加限额反而造出一种新故障
+       （「角标时有时无」），而那种故障比它要防的脚本刷更难排查。
+    3. **可见性与 `/match`、`GET /jobs/{job_id}` 同一谓词**（`get_readable`）：他人的 `draft`
+       包括回收站里的都是同一个 404。三条读径口径不同会出现「详情读得到、角标读不到」，
+       那比没有角标更糟。
+    4. **档案语义与 `/match` 同一条**（默认档案，无默认退最新）：角标与分数必须按同一份简历说。
+
+    顺序上没有 `/trash` 那种坑：这条是 `/{job_id}/requirement-match`，
+    与 `/jobs/{job_id}` 的模板不同形（路径参数不跨 `/`），已注册路由闭合用例覆盖它。
+    """
+    try:
+        result = service.requirement_match(current_user.id, job_id)
+    except JobNotFoundError as error:
+        raise _not_found() from error
+    return success_response(request, result.model_dump(mode="json"))
 
 
 @router.put("/{job_id}")

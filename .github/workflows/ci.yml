@@ -25,12 +25,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: astral-sh/setup-uv@v4
+      # 2026-11-08 老板裁定的升级（原话「升级到 setup-uv@v7.6.0 或更高」，实测最新 v10.3.3）：
+      # v4 这个 action 跑在 Node 20 上、被 runner 强制切 24 并天天告警，新版下载 uv 时带 token 与重试。
+      # 但**升级本身没有挡住那条 504**——我先以为 setup-uv 的 `python-version` 会把 Python 装好，
+      # 那是错的（README 原文：它只是「set UV_PYTHON to」）。`146b249` 那两条 run 的日志原文：
+      #
+      #   error: Request failed after 3 retries
+      #     Caused by: Failed to download https://github.com/astral-sh/python-build-standalone/…
+      #     Caused by: HTTP status server error (504 Gateway Timeout)
+      #
+      # 真正去掉这条网络请求的是下面两步的组合：`actions/setup-python` 从 GitHub 自己的分发装 3.13，
+      # `UV_PYTHON_PREFERENCE=only-system` 则**禁止 uv 去下载托管 CPython**。
+      # 判 `only-system` 而不是 `system`：后者仍会在找不到时回落下载，那就等于没改。
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           version: "0.9.13"
+          python-version: "3.13"
 
       # GitHub Actions uses public PyPI; local development uses the configured mirror.
       - name: Install dependencies
+        env:
+          UV_PYTHON_PREFERENCE: only-system
         run: uv sync
 
       # 格式化闸。基线是 c9f935a 那一次全仓 `ruff format`，所以这一步从上线那天起就是绿的：
@@ -49,6 +69,12 @@ jobs:
 
       - name: Import architecture check
         run: uv run lint-imports
+
+      # 文档里的 `路径:行号` 引用必须还能指到真实代码。ADR-013 §10 第 10 步曾用一次性脚本机械平移，
+      # 结果写出 12 处「首行是空行」的引用，而我在交付说明里声明过「全部指向非空行」——
+      # 声明不算检查，这一步才是（AGENTS.md §7.6）。
+      - name: Docs citation check
+        run: uv run python scripts/check_docs_citations.py
 
       # test_migrations covers upgrade/downgrade against the MySQL service.
       - name: Test and migration check
