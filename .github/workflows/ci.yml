@@ -1,7 +1,13 @@
 name: CI
 
+# 2026-11-08 老板裁定删掉 `push` 触发。原来 `push`（不限分支）与 `pull_request` 命中同一个单 job，
+# 所以推一次特性分支会跑两条内容完全相同的 run——那不是矩阵，是两个事件各触发一次。
+#
+# 删掉后 master 依然有绿保证，判据不在这份 yaml 里，在仓库 ruleset 26754995
+# 「master: 只能经 PR 合入且 CI 必须绿」：`pull_request` + `test` 状态检查 +
+# `strict_required_status_checks_policy: true`（合入前源分支必须先更新到 master）。
+# 于是每个进 master 的提交，其内容树都等于一条已经跑绿的 SHA，`push` 触发不提供额外保证。
 on:
-  push:
   pull_request:
 
 jobs:
