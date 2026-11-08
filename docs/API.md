@@ -484,7 +484,7 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 
 **请求**：路径里一个 `job_id`，无请求体、无查询参数。用的是**当前用户的默认档案**，
 与 `POST /jobs/{job_id}/match` 同一个 `get_readable` 可见性谓词、同一个 `_gather`
-（`app/services/match_service.py:196-241`：一个 session、一份数据快照）。
+（`app/services/match_service.py:199-244`：一个 session、一份数据快照）。
 两条链路如果读的不是同一时刻，「同屏一致」就只能靠运气。
 
 **响应 `data`**（模型 `app/schemas/match.py::RequirementMatchResponse`）：
@@ -494,7 +494,7 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 | `job_id` / `profile_id` / `profile_title` | `str` / `str\|null` / `str\|null` | 与匹配端点同样的回显：角标是按哪份简历标的 |
 | `coverage[]` | 数组，**顺序与条数都等于** `GET /jobs/{job_id}` 的 `skills` | 老板判据 (a) 的基准域 U；少一行就等于那一行永远长不出角标 |
 | `coverage[].name` | `str` | 岗位侧原写法，逐字回显 |
-| `coverage[].status` | `"covered" \| "partial" \| "missing"` | 前两档都算「写法命中」；`covered` / `partial` 的分界来自**关键词模式**，与匹配卡上可能被 AI 挪动的那条线无关——角标只回答命中没有 |
+| `coverage[].status` | `"covered" \| "partial" \| "missing"` | 前两档都算「写法命中」；`covered` / `partial` 的分界来自**关键词模式**，与匹配卡上可能被 AI 挪动的那条线无关——角标只回答命中没有。**挪档挪不出并集**：装配三档时「命中却拿不到强度」一律落 `partial`（`app/services/match_scoring.py:715`），所以配了 Key 的那些次点击里，`status ∈ {covered, partial}` 的集合仍与匹配卡 `covered ∪ partial` 逐字相同，这一点由 `test_badge_union_still_equals_match_union_in_ai_mode` 在 AI 模式下单独测过 |
 | `coverage[].matched_form` | `str\|null` | 学生技能表里真正命中的那个写法（岗位 `Python` ↔ 简历 `Python3`）；`missing` 时恒为 `null`，不许拿岗位那侧的字面填进去 |
 | `meta.matcher_version` | `str` | 与 §4.10 的 `data.meta.matcher_version` 同一个常量 |
 

@@ -660,6 +660,13 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
      在 Vue 里是真值，于是每条技能都长了角标；改成 `isRequirementHit()`（只认 covered/partial）之后
      那条用例仍留在测试里防复发。判据 (b) 也解释了两档为什么可以合并成一个布尔：角标回答的只有「命中没有」，
      证据够不够是匹配卡那一层的事。
+     **并集恒等不是巧合**：`score_match` 装配三档时把「命中却拿不到强度」的技能一律补进 `partial`
+     （`app/services/match_scoring.py:715` 那一段），所以模型漏答、拒答、给出不可用强度都只能把一条
+     命中从 `covered` 挪到 `partial`，挪不出并集。这件事原先只是我读代码推的，现在是一条测试：
+     `test_badge_union_still_equals_match_union_in_ai_mode` 把每条 AI 强度都判成 0.1（全低于
+     `PARTIAL_STRENGTH_THRESHOLD`），于是卡上 `covered` 必须全空、角标那侧仍有 `covered`——
+     两边**逐档不等而并集相等**，否则这条断言就是在「两边恰好同模式」的巧合上过关。
+     反向探针跑过：把端点里的 `partial` 一档判成 `missing`，两条并集用例立刻红，已还原。
 
      真浏览器实测（2026-11-08，Vite dev + uvicorn + 新建探针账号，档案技能写 `Python3`、
      经历原文含 `Python 3.13`，未配 Key 即关键词模式）三条都过：

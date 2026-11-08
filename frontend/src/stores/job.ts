@@ -744,6 +744,8 @@ export const useJobStore = defineStore('job', () => {
    * 在 Vue 里是真值，那样一渲染就是每条技能都长角标（第一版就是这么错的，用例当场红）。
    * `covered` 与 `partial` 都算命中：角标回答的是「写法对上没有」，
    * 证据够不够是匹配卡那一层的事（老板 2026-11-08 判据 (b) 断言的正是这两档的并集）。
+   * 别把它「改成与卡逐档对齐」：配了 Key 之后 AI 只会把一条命中从 `covered` 挪到 `partial`，
+   * 挪不出这个并集（后端 `match_scoring.py` 装配三档时补的那一漏），两边比的从来不是同一件事。
    */
   function isRequirementHit(name: string): boolean {
     const status = skillStatus(name)

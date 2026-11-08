@@ -152,6 +152,16 @@ class FakeScorer:
             raise EvidenceScoreEmptyContentError("空内容")
         if self.mode == "truncated":
             raise EvidenceScoreTruncatedError("被切断", finish_reason="length")
+        if self.mode == "weak":
+            # 每条片段都判 0.1 < `PARTIAL_STRENGTH_THRESHOLD`：把匹配卡的边界整体推到
+            # `partial`，好让「并集相等」这条断言不能在边界相同的情况下蒙过去。
+            return EvidenceScores(
+                items=[
+                    ScoredFragment(fragment_id=item.fragment_id, skill=item.skill, strength=0.1)
+                    for item in fragments
+                ],
+                finish_reason="stop",
+            )
         return EvidenceScores(
             items=[
                 ScoredFragment(fragment_id=item.fragment_id, skill=item.skill, strength=0.9)
@@ -540,10 +550,17 @@ def coverage_url(job_id: str) -> str:
     return f"{JOBS_URL}/{job_id}/requirement-match"
 
 
-def _coverage_and_match(client: TestClient, token: str, job_id: str) -> tuple[dict, dict]:
-    """同一份数据、两个真实端点各调一次。判据 (b)(c) 的公共前置。"""
-    coverage = client.get(coverage_url(job_id), headers=_headers(token)).json()["data"]
-    matched = client.post(match_url(job_id), headers=_headers(token)).json()["data"]
+def _coverage_and_match(
+    client: TestClient, token: str, job_id: str, extra: dict[str, str] | None = None
+) -> tuple[dict, dict]:
+    """同一份数据、两个真实端点各调一次。判据 (b)(c) 的公共前置。
+
+    `extra` 用来带上 `X-DeepSeek-Key`：不带就是关键词模式，带上才让匹配卡走 AI 那一支
+    （角标端点带不带都一样，它按定义不调 AI）。
+    """
+    headers = _headers(token, **(extra or {}))
+    coverage = client.get(coverage_url(job_id), headers=headers).json()["data"]
+    matched = client.post(match_url(job_id), headers=headers).json()["data"]
     return coverage, matched
 
 
@@ -599,6 +616,39 @@ def test_badge_set_equals_match_covered_union_partial(client: TestClient) -> Non
     }
     assert hit == from_match
     assert hit, "两边都空的话这条断言就成了空检"
+
+
+def test_badge_union_still_equals_match_union_in_ai_mode(
+    client: TestClient, fake_scorer: FakeScorer
+) -> None:
+    """判据 (b) 在 **AI 模式**下重新跑一遍——上面那条只走过关键词模式。
+
+    为什么必须单独有这一条：老板的出口标准是「同屏一致性 100%」，而同屏两只手是在**不同模式**下算的
+    （角标端点按定义不调 AI，匹配卡配了 Key 就会调）。如果两档的并集不恒等，
+    「你已具备」就会与卡上的清单在同一天花板上互相打脸——而这件事以前只是我读代码推出来的。
+
+    取证方式是真的把边界挪开：`mode="weak"` 让每一条 AI 强度都落在 `PARTIAL_STRENGTH_THRESHOLD` 之下，
+    于是卡上 `covered` 必须全空、角标那侧仍然有 `covered`（关键词强度是 1/3）。
+    两边逐档**不等**而并集**相等**，这条才算数。
+    """
+    fake_scorer.mode = "weak"
+    token = _register_and_login(client, prefix="cov_ai")
+    _put_profile(client, token)
+    job_id = _create_published_job(client, token)
+    coverage, matched = _coverage_and_match(
+        client, token, job_id, extra={"X-DeepSeek-Key": "sk-fake"}
+    )
+    assert fake_scorer.sent, "没走 AI 就说明装配分支没被这条用例碰到"
+    assert matched["meta"]["evidence_mode"] == "ai_scored"
+
+    hit = {row["name"] for row in coverage["coverage"] if row["status"] in ("covered", "partial")}
+    from_match = {item["skill"] for item in matched["covered"]} | {
+        item["skill"] for item in matched["partial"]
+    }
+    assert hit == from_match
+    # 边界确实被挪开了（否则上面那条相等就是「两边恰好同模式」的巧合）：
+    assert not matched["covered"], "weak 模式下卡上不该有 covered，这条用例的前置条件没成立"
+    assert any(row["status"] == "covered" for row in coverage["coverage"])
 
 
 def test_both_endpoints_report_the_same_matcher_version(client: TestClient) -> None:
