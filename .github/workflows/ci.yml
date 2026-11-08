@@ -25,18 +25,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 2026-11-08 老板裁定的升级（原话「升级到 setup-uv@v7.6.0 或更高」，实测最新是 v10.3.3）。
-      # 挡的是什么：`v4` 这个 action 跑在 Node 20 上，被 runner 强制切到 Node 24 并天天告警；
-      # 更要命的是它下载 uv/CPython 的那条路径没有带 `github.token`、也没有重试，
-      # 于是 GitHub 侧一发 504 就整条 CI 红——2026-11-08 连红三轮、失败步全是
-      # `Run astral-sh/setup-uv@v4` / `Install dependencies`，而**同一条 commit 的另一侧全绿**
-      # （`on: push` 与 `on: pull_request` 各跑一次，所以是两条 run，不是矩阵）。
+      # 2026-11-08 老板裁定的升级（原话「升级到 setup-uv@v7.6.0 或更高」，实测最新 v10.3.3）：
+      # v4 这个 action 跑在 Node 20 上、被 runner 强制切 24 并天天告警，新版下载 uv 时带 token 与重试。
+      # 但**升级本身没有挡住那条 504**——我先以为 setup-uv 的 `python-version` 会把 Python 装好，
+      # 那是错的（README 原文：它只是「set UV_PYTHON to」）。`146b249` 那两条 run 的日志原文：
       #
-      # `python-version: "3.13"` 才是去掉那个下载面的关键：`pyproject.toml` 写
-      # `requires-python = ">=3.13"`，而 runner 镜像的系统 Python 是 3.12，
-      # 所以 `uv sync` 每次都得自己去 `github.com/astral-sh/python-build-standalone`
-      # 拉一个托管 CPython（日志里 504 的正是这个 URL）。让 setup-uv 用带 token 与重试的
-      # 路径把 3.13 装好并设 `UV_PYTHON`，`uv sync` 就不再有那条网络请求。
+      #   error: Request failed after 3 retries
+      #     Caused by: Failed to download https://github.com/astral-sh/python-build-standalone/…
+      #     Caused by: HTTP status server error (504 Gateway Timeout)
+      #
+      # 真正去掉这条网络请求的是下面两步的组合：`actions/setup-python` 从 GitHub 自己的分发装 3.13，
+      # `UV_PYTHON_PREFERENCE=only-system` 则**禁止 uv 去下载托管 CPython**。
+      # 判 `only-system` 而不是 `system`：后者仍会在找不到时回落下载，那就等于没改。
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
       - uses: astral-sh/setup-uv@v10.3.3
         with:
           version: "0.9.13"
@@ -44,6 +49,8 @@ jobs:
 
       # GitHub Actions uses public PyPI; local development uses the configured mirror.
       - name: Install dependencies
+        env:
+          UV_PYTHON_PREFERENCE: only-system
         run: uv sync
 
       # 格式化闸。基线是 c9f935a 那一次全仓 `ruff format`，所以这一步从上线那天起就是绿的：
