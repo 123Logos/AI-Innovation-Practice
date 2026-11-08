@@ -25,9 +25,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: astral-sh/setup-uv@v4
+      # 2026-11-08 老板裁定的升级（原话「升级到 setup-uv@v7.6.0 或更高」，实测最新是 v10.3.3）。
+      # 挡的是什么：`v4` 这个 action 跑在 Node 20 上，被 runner 强制切到 Node 24 并天天告警；
+      # 更要命的是它下载 uv/CPython 的那条路径没有带 `github.token`、也没有重试，
+      # 于是 GitHub 侧一发 504 就整条 CI 红——2026-11-08 连红三轮、失败步全是
+      # `Run astral-sh/setup-uv@v4` / `Install dependencies`，而**同一条 commit 的另一侧全绿**
+      # （`on: push` 与 `on: pull_request` 各跑一次，所以是两条 run，不是矩阵）。
+      #
+      # `python-version: "3.13"` 才是去掉那个下载面的关键：`pyproject.toml` 写
+      # `requires-python = ">=3.13"`，而 runner 镜像的系统 Python 是 3.12，
+      # 所以 `uv sync` 每次都得自己去 `github.com/astral-sh/python-build-standalone`
+      # 拉一个托管 CPython（日志里 504 的正是这个 URL）。让 setup-uv 用带 token 与重试的
+      # 路径把 3.13 装好并设 `UV_PYTHON`，`uv sync` 就不再有那条网络请求。
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           version: "0.9.13"
+          python-version: "3.13"
 
       # GitHub Actions uses public PyPI; local development uses the configured mirror.
       - name: Install dependencies
