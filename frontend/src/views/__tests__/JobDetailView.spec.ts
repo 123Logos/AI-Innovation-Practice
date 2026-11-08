@@ -48,6 +48,15 @@ let failDelete = false
  * 「mount 完没有 POST /match」这条断言真的能测到东西。
  */
 let matchPayload: Record<string, unknown> | null = null
+
+/**
+ * `GET /jobs/{id}/requirement-match` 的 `coverage`（ADR-013 §10 第 3c 步）。
+ * 默认那份对应下面两条角标用例里的岗位技能行；每条用例跑完在 `beforeEach` 里复位。
+ */
+let requirementCoverage: Array<{ name: string; status: string; matched_form: string | null }> = [
+  { name: 'FastAPI', status: 'covered', matched_form: ' FastAPI ' },
+  { name: 'Kubernetes', status: 'missing', matched_form: null },
+]
 /** 匹配失败的真实形状（429 / 404），与 `failDelete` 同一个理由。 */
 let matchFailure: { status: number; code: string; message: string } | null = null
 /** 当前在挂的组件实例的卸载钩子，见 `afterEach` 里那段为什么要 unmount。 */
@@ -157,6 +166,8 @@ function makeMatchPayload(overrides: Record<string, unknown> = {}): Record<strin
       finish_reason: 'stop',
       weight_sum_used: 0.65,
       no_required_skills: false,
+      matcher_version: 'v1',
+      note: null,
     },
     ...overrides,
   }
@@ -171,10 +182,18 @@ function fakeAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse>
   const url = config.url ?? ''
   calls.push({ method, url })
 
-  if (url === '/profiles/me') {
+  if (method === 'get' && /^\/jobs\/[^/]+\/requirement-match$/.test(url)) {
+    // 第 3c 条：逐条状态由后端给。用例改 `requirementCoverage` 就能模拟 covered/partial/missing
+    // 任意组合——包括「前端本地那套归一化会判错」的那些写法组合。
     return Promise.resolve(
       envelope(config, {
-        data: { profile: { skills: [{ id: 'mine-1', name: ' FastAPI ' }] } },
+        data: {
+          job_id: 'job-42',
+          profile_id: 'profile-mine',
+          profile_title: '默认简历',
+          coverage: requirementCoverage,
+          meta: { matcher_version: 'v1' },
+        },
         meta: { request_id: 'req-test' },
       }),
     )
@@ -315,6 +334,10 @@ beforeEach(() => {
   failDelete = false
   matchPayload = null
   matchFailure = null
+  requirementCoverage = [
+    { name: 'FastAPI', status: 'covered', matched_form: ' FastAPI ' },
+    { name: 'Kubernetes', status: 'missing', matched_form: null },
+  ]
   unmountCurrent = null
   savedAdapter = http.defaults.adapter
   http.defaults.adapter = fakeAdapter
@@ -382,7 +405,7 @@ describe('详情页如实展示提取产物（C1 之后这两格有真值了）'
     expect(wrapper.find('.badge--origin').text()).toBe('未标注出处')
   })
 
-  it('「你已具备」按归一化命中（档案里是 ` FastAPI `、岗位写的是 FastAPI）', async () => {
+  it('「你已具备」的角标来自 requirement-match：后端说具备才具备', async () => {
     const { wrapper } = await mountDetail({
       skills: [
         skillRow('s1', 'FastAPI'),
@@ -393,10 +416,48 @@ describe('详情页如实展示提取产物（C1 之后这两格有真值了）'
     const mine = wrapper.findAll('.badge--mine')
     expect(mine).toHaveLength(1)
     expect(mine[0]?.text()).toBe('你已具备')
-    // 只读比对：不写任何表，也不发匹配请求（匹配只在用户点按钮时才发，见下面那一组）。
+    // `partial` 也是「命中」：角标只回答写法这一件事，证据够不够由匹配卡说。
+    expect(mine[0]?.attributes('title')).toContain('FastAPI')
+
+    // 一次详情页一次覆盖查询；仍然不发匹配请求（那要用户点按钮）。
+    expect(callsFor('get', '/jobs/job-42/requirement-match')).toHaveLength(1)
     expect(callsFor('post')).toEqual([])
     expect(callsFor('put')).toEqual([])
     expect(callsFor('delete')).toEqual([])
+  })
+
+  it('版本号写法：岗位要 Python、简历写 Python3，角标跟着后端判并且说出对面写法', async () => {
+    // 这一条是老板 2026-11-08 那一屏的界面版。本地那套 trim+NFKC+小写判不出这一格，
+    // 所以只要有人把判定搬回前端，`covered` 就会变成 `missing`，这条当场红。
+    requirementCoverage = [{ name: 'Python', status: 'covered', matched_form: 'Python3' }]
+    const { wrapper } = await mountDetail({ skills: [skillRow('s1', 'Python')] })
+
+    const badge = wrapper.find('.badge--mine')
+    expect(badge.exists()).toBe(true)
+    expect(badge.attributes('title')).toBe('按你简历里写的「Python3」认的')
+  })
+
+  it('后端判 missing 时，简历里有一样名字也不许标「已具备」（判定不许留在前端）', async () => {
+    requirementCoverage = [{ name: 'Python', status: 'missing', matched_form: null }]
+    const { wrapper } = await mountDetail({ skills: [skillRow('s1', 'Python')] })
+
+    expect(wrapper.find('.badge--mine').exists()).toBe(false)
+  })
+
+  it('覆盖查询失败时角标整体不显示，但详情页仍然读得出岗位', async () => {
+    http.defaults.adapter = (config: InternalAxiosRequestConfig) => {
+      calls.push({ method: (config.method ?? 'get').toLowerCase(), url: config.url ?? '' })
+      if (/requirement-match$/.test(config.url ?? '')) {
+        return Promise.reject(new AxiosError('连不上。', 'ERR_NETWORK'))
+      }
+      return fakeAdapter(config)
+    }
+    const { wrapper } = await mountDetail({ skills: [skillRow('s1', 'Python')] })
+
+    expect(wrapper.text()).toContain('Python')
+    expect(wrapper.find('.badge--mine').exists()).toBe(false)
+    // 岗位本身没读失败：角标是增益信息，不许因为它把详情页拖进错误态。
+    expect(wrapper.text()).not.toContain('读取岗位详情失败')
   })
 
   it('过期只看后端 `is_expired`：前端不再自己比一次日期', async () => {
@@ -586,7 +647,10 @@ describe('删除确认：页面内弹层，不再用 window.confirm', () => {
  * 4. **技术构成不进界面**：权重、`weight_sum_used`、各计数留在响应里对账
  *    （2026-11-07 人类负责人裁定「不用向客户说明技术上的设计」，作用域见 §7.5）。
  */
-function keywordMeta(reason: string): Record<string, unknown> {
+function keywordMeta(
+  reason: string | null,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
   return {
     model: null,
     prompt_version: null,
@@ -604,6 +668,9 @@ function keywordMeta(reason: string): Record<string, unknown> {
     finish_reason: null,
     weight_sum_used: 0.65,
     no_required_skills: false,
+    matcher_version: 'v1',
+    note: null,
+    ...overrides,
   }
 }
 
@@ -764,6 +831,53 @@ describe('匹配卡：只有点按钮才算', () => {
    * 各计数、`weight_sum_used` 都只留在响应里。这一条守的是**别把它们显示出来**，
    * 而 `evidence_mode` / `degrade_reason` 那两句不在此列（作用域见 ADR-013 §7.5）。
    */
+  it('score=null（F1:A）：显示「—」而不是 0%，并说一句用户修得动的话', async () => {
+    // 这一格是「五项全都得不出」的最小载荷：还没有档案，因而也没有分数。
+    // 显示 0% 会把「没东西可算」说成「你一条都不符合」——两者的下一步完全不同。
+    matchPayload = makeMatchPayload({
+      score: null,
+      profile_id: null,
+      profile_title: null,
+      meta: keywordMeta(null, { note: 'nothing_computable' }),
+    })
+    const { wrapper } = await mountDetail()
+    await wrapper.find('[data-testid="match-run"]').trigger('click')
+    await flushPromises()
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="match-score"]').text()).toBe('—')
+    expect(wrapper.text()).not.toContain('0%')
+    expect(wrapper.text()).toContain('你还没有保存的简历')
+  })
+
+  it('score=null 且岗位没填技能要求：那句不许骗用户去补简历', async () => {
+    matchPayload = makeMatchPayload({
+      score: null,
+      meta: keywordMeta(null, { note: 'nothing_computable', no_required_skills: true }),
+    })
+    const { wrapper } = await mountDetail()
+    await wrapper.find('[data-testid="match-run"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('这个岗位没有填写技能要求')
+    expect(wrapper.text()).not.toContain('先去「我的简历」填一份')
+  })
+
+  it('score=null 但档案与要求技能都在：说的是「补一条经历再算」', async () => {
+    matchPayload = makeMatchPayload({
+      score: null,
+      covered: [],
+      partial: [],
+      gaps: [],
+      meta: keywordMeta(null, { note: 'nothing_computable' }),
+    })
+    const { wrapper } = await mountDetail()
+    await wrapper.find('[data-testid="match-run"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('补一条技能或一段项目经历')
+  })
+
   it('技术构成与计数不进界面：分数之外只有三档清单和那两句能修的说明', async () => {
     matchPayload = makeMatchPayload({ meta: keywordMeta('key_missing') })
     const { wrapper } = await mountDetail()

@@ -15,13 +15,15 @@
  * 4. **确认弹窗一律用页面内的 `.ui-overlay` / `.ui-panel`**，不用 `window.confirm`：
  *    原生对话框阻塞 CDP，自动化验收走不完（理由与事故记录写在 `askDelete()` 上方）。
  *
- * 「你已具备」是只读比对（2.E）：与当前登录用户默认简历的技能名做归一化等值比较，
- * 不写表、不打分、不排序。
+ * 「你已具备」角标的数据来自 `GET /jobs/{job_id}/requirement-match`（ADR-013 §10 第 3c 步）：
+ * 一次只读 GET，判等在后端，与匹配共用同一版写法判据；不写表、不打分、不排序、不花额度。
  *
- * 下面的「匹配度」卡（ADR-013 §10 第 8 步）与它是两件事，各自独立显示：
- * 「你已具备」说的是「这条技能名我在简历里写过吗」，匹配卡说的是「这段经历撑不撑得起这条技能」。
- * **只有点按钮才发请求**：这一步每次都可能向 DeepSeek 真实调用、花用户自己的 Key，
- * 所以不许在 `onMounted` 里自动算（`load()` / `loadMine()` 是两个只读 GET，与它不同）。
+ * 它与下面的「匹配度」卡（第 8 步）是同一版判据的两个视图：
+ * 角标只回答「这条要求我命中了吗」，匹配卡额外回答「这段经历撑不撑得起它」。
+ * 两边不可能不一致，因为**前端不参与判等**（以前这里是一套本地归一化比对，
+ * 于是同一屏会出现角标与清单各说一套——那是 §1.3 那屏矛盾的第二半，2026-11-08 消除）。
+ * **只有点按钮才发匹配请求**：那一步每次都可能向 DeepSeek 真实调用、花用户自己的 Key，
+ * 所以不许在 `onMounted` 里自动算（`load()` / `loadCoverage()` 是两个只读 GET，与它不同）。
  *
  * 只有创建者能看到「发布 / 下架 / 删除」——后端对非创建者一律 404（1.F），
  * 摆一个必然失败的按钮比不摆更糟。
@@ -141,11 +143,15 @@ async function load(): Promise<void> {
   }
 }
 
-async function loadMine(): Promise<void> {
+async function loadCoverage(): Promise<void> {
+  const jobId = String(route.params.id ?? '')
+  if (!jobId) return
   try {
-    await store.loadMySkillNames()
+    await store.loadRequirementMatch(jobId)
   } catch {
-    // 「你已具备」是增益信息：拉不到就一条都不标，不能因为它让详情页报错。
+    // 角标是增益信息：拉不到就一条都不标。
+    // 但它**不报错也不重试**是有边界的——不能顺带把详情也拖红，那两件事互不依赖。
+    store.clearRequirementMatch()
   }
 }
 
@@ -209,10 +215,43 @@ async function handleDelete(): Promise<void> {
 const matchError = ref('')
 
 const match = computed(() => store.matchResult)
-const matchHintLines = computed(() => (match.value ? matchDegradeLines(match.value.meta) : []))
+const matchHintLines = computed(() => (match.value ? matchDegradeLines(match.value) : []))
 
 /** 分数只给一个整数百分比：`0.612` 在屏幕上没有额外含义，而 61% 有。 */
-const matchScoreLabel = computed(() => `${Math.round((match.value?.score ?? 0) * 100)}%`)
+const matchScoreLabel = computed(() => {
+  const score = match.value?.score
+  // `null` 显示成「—」而不是 0%（F1:A，老板 2026-11-08 裁定）：
+  // 「0%」是一句关于能力的判断，而真相是「这次没有可比对的内容」，两者修法完全不同。
+  return score === null || score === undefined ? '—' : `${Math.round(score * 100)}%`
+})
+
+/**
+ * 算不出匹配度时说的那一句（`score` 为 `null` 时才有）。
+ *
+ * 三种来路分开说是因为**修法不同**：没简历的人要去填简历；岗位没写要求技能的，
+ * 用户做任何事都改变不了这一屏（那句陈述不能写成让他去补东西）。
+ * 权重、分母、`weight_sum_used` 都不出现在这里——那是响应里给对账用的，不是给用户读的。
+ */
+const matchUncomputableLine = computed(() => {
+  const current = match.value
+  if (!current || current.score !== null) return ''
+  if (!current.profile_id) return '你还没有保存的简历，先去「我的简历」填一份，才算得出匹配度。'
+  if (current.meta.no_required_skills) return '这个岗位没有填写技能要求，暂时没有可比对的要求条目。'
+  return '你的简历里还没有能与这个岗位比对的内容——补一条技能或一段项目经历，再算一次。'
+})
+
+/**
+ * 角标的悬停说明：命中用的到底是用户自己写的哪个写法。
+ *
+ * 岗位要求 `Python`、简历写的是 `Python3` 时，「你已具备」背后是一次**版本号判等**
+ * （`skill_forms_match` 的第 ③/④ 条）。把对面那个写法说出来，用户才知道我们没有瞎认；
+ * 而它只放在 `title` 里：这是解释性的增益信息，不是用户修得动的失败原因，
+ * 不值得在 375px 的一行里再挤出一段文字。
+ */
+function badgeTitle(name: string): string {
+  const form = store.matchedFormOf(name)
+  return form && form !== name ? `按你简历里写的「${form}」认的` : '这条技能在你的简历里'
+}
 
 /** 证据出自经历的哪一栏；标签与简历编辑器里同一栏的名字逐字一致。 */
 function evidenceFieldLabel(field: string): string {
@@ -267,7 +306,7 @@ function onDialogKeydown(event: KeyboardEvent): void {
 onMounted(() => {
   document.addEventListener('keydown', onDialogKeydown)
   void load()
-  void loadMine()
+  void loadCoverage()
 })
 
 onBeforeUnmount(() => {
@@ -421,6 +460,10 @@ onBeforeUnmount(() => {
               <li v-for="line in matchHintLines" :key="line">{{ line }}</li>
             </ul>
 
+            <p v-if="matchUncomputableLine" class="match-degrade" role="status">
+              {{ matchUncomputableLine }}
+            </p>
+
             <p v-if="match.meta.no_required_skills" class="empty">
               这个岗位还没有填写技能要求，所以没有可比对的条目。
             </p>
@@ -501,7 +544,12 @@ onBeforeUnmount(() => {
                   {{ skillTypeLabel(skill.type) }}
                 </span>
                 <span class="badge badge--origin">{{ originBadge(skill.origin) }}</span>
-                <span v-if="store.matchesMySkill(skill.name)" class="badge badge--mine">你已具备</span>
+                <span
+                  v-if="store.isRequirementHit(skill.name)"
+                  class="badge badge--mine"
+                  :title="badgeTitle(skill.name)"
+                  >你已具备</span
+                >
               </div>
               <!--
                 `evidence_text` 为 NULL 时整块不渲染：不留下空的展开区、也不写「无依据」占位。

@@ -55,7 +55,7 @@ dev 库实测：`published` 岗位 **0** 条，`draft` 3 条，回收站 1 条�
 |---|---|---|
 | MySQL 唯一索引 | `utf8mb4_0900_ai_ci`，**NO PAD** | `SELECT ('Python ' = 'Python') → 0`，即带空格的两个名字可以共存 |
 | 后端 `skill_name_key`（诊断时在 `app/schemas/job.py`，现居 `app/core/skill_names.py`，见下方两处偏差说明） | NFKC + casefold，**不 strip** | `'Python '` vs `'Python'` → 不同 |
-| 前端角标 `normalizeSkillName`（`frontend/src/stores/job.ts:207-209`） | trim + NFKC + toLowerCase | 同上 → 相同 |
+| 前端角标 `normalizeSkillName`（`frontend/src/stores/job.ts:213-215`） | trim + NFKC + toLowerCase | 同上 → 相同 |
 
 除首尾空白外三套行为一致（`Web␣␣开发` 内部空格、`ß`/`strasse`、`Ｃ#` 都判不同，实测过）。岗位侧在 API 边界已 strip（`app/schemas/job.py:99-110`），**学生侧没有**：`SkillInput.name` 无校验器，档案技能去重用的是裸相等（`app/schemas/profile.py`，修复前的状态，无行号可指）。今天库里 0 条带首尾空白的技能名，但门开着：一旦学生存进 `"Python "`，服务端算「未覆盖」而前端角标显示「已具备」，同一屏上自相矛盾。
 
@@ -183,7 +183,7 @@ dev 库实测：`published` 岗位 **0** 条，`draft` 3 条，回收站 1 条�
 data.profile_id         本次被打分的是哪一份档案（§13 复核新增：请求体为空 ⇒ 档案是隐式选择，必须回显）
 data.profile_title      档案标题，UI 直接写「本次按《xxx》这份简历计算」
 data.job_id             路径里那个岗位，回显而不是让前端自己拼
-data.score              0..1，总分（保留 3 位小数）
+data.score              0..1，总分（保留 3 位小数）；**五项全免加权时为 `null`**（§5.1 的 F1:A，2026-11-08）
 data.weights_version    "v1"
 data.terms              五项分项，每项 {name, weight, value, computed: bool, note}
 data.covered            [{skill, evidence: [{experience_id, snippet, strength}]}]
@@ -246,7 +246,25 @@ PRD `:181` 要求「至少展示三条可验证证据或明确缺口」：`cover
 score = Σ(w_i · v_i | term i computable) / Σ(w_i | term i computable)
 ```
 
-`data.terms[].computed` 与 `data.meta.weight_sum_used` 如实暴露「这次是几分母算的」。替代方案「缺项记 0 分」不采用：那会让「刚注册、什么都没填」的用户稳定拿到 0.1 以下，等于用分数惩罚沉默，产品上是错的，PRD `:200` 的禁止歧视虽不直接覆盖它，但同一判断力应该看得见这种后果。
+`data.terms[].computed` 与 `data.meta.weight_sum_used` 如实暴露「这次是几分母算的」，**两者自 2026-11-08 起是对外契约**（老板裁定：改名/删字段要另出 ADR，不再算实现细节）。替代方案「缺项记 0 分」不采用：那会让「刚注册、什么都没填」的用户稳定拿到 0.1 以下，等于用分数惩罚沉默，产品上是错的，PRD `:200` 的禁止歧视虽不直接覆盖它，但同一判断力应该看得见这种后果。
+
+**2026-11-08 补：这条理由当时被我们自己的行为打脸了一次（老板裁定 F1:A）。**
+归一化在「一项都得不出」时退化出 `used == 0`，实现里写的是 `return 0.0, 0.0`，
+于是新注册、什么都没填的人拿到的正是上面那句话点名的现象——0 分。取证：
+
+```
+score = 0.0  weight_sum_used = 0.0
+coverage=None/no_required_skills  evidence=None/no_matched_skills  relevance=None/not_measurable_v1
+preference=None/no_target_role    remaining_time=None/no_deadline
+```
+
+而 v1 实际出现过的有效分母是 8 个离散值（枚举 24 组合跑出来的，不是推的）：
+`0.0 / 0.10 / 0.20 / 0.45 / 0.55 / 0.65 / 0.75 / 0.85`。
+
+裁定：**`score` 改为可空**（`null` = 这次没有可加权的项），`meta.note="nothing_computable"`，
+界面显示「—」加一句用户修得动的话；`0.0` 保留原意（「算出来了，零覆盖」）。
+`None` 与 `0.0` 的分工必须由测试钉住，否则「压成一个数」仍然全绿
+（`tests/test_match_scoring.py::TestNormalizeScore` 两条一对，端到端各一条）。
 
 ### 5.2 已执行（2026-11-07，迁移 `20261107_0014`）
 
@@ -449,6 +467,20 @@ dev 库 5 个已发布岗位 × 8 条经历，**0/40 重合**。原因不是数�
 ```
 0.2 而不是 0：填了偏好但不相干，本身是有效信息（说明这个人知道自己要什么，而这个岗位不是），归零会让「填偏好」变成纯亏。
 
+**2026-11-08 实测补记（这一条尚未裁定，写下来是为了让「未改」是一个决定而不是遗漏。）**
+上面那句理由在**定分母**下成立，在 §5.1 的重归一下只成立一半：免加权拿的是其余项的加权均值，
+所以「填了但不相干」比「留白」更低。同一个人、同一份档案、同一岗位，只有偏好一格之差（真实跑 `score_match`）：
+
+```
+岗位无 deadline：留白 0.449 → 填不相干 0.415（−3.4 个点）→ 填相干 0.522（+7.3 个点）
+岗位有 deadline：留白 0.482 → 填不相干 0.449（−3.3 个点）→ 填相干 0.543（+6.1 个点）
+```
+
+三个选项：**(a)** 保留 0.2（本轮按此项实现，未改代码）；**(b)** 「不相干」也记 `computed=False`，
+于是填与不填同分，代价是丢掉「你的目标不是这个岗位」这条真实信息；**(c)** 保留 0.2 但在界面解释分母——
+与 2026-11-07「权重/分母不进 UI」的裁定冲突，且不是一句用户修得动的话（唯一修法是改口填相干的，那是造假）。
+幅度只有 3 个点、分数不做排序（§12 未改项），所以本轮按 (a) 走并把数值留在这里，等老板拍。
+
 ### 7.5 剩余投递时间 0.10（原名「时效」，§13 复核改名）
 ```
 deadline 为 NULL → computed = False      （§13 更正，见下）
@@ -513,7 +545,9 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
 | `clamped_strength` | `strength` 越界被夹过的次数 |
 | `fragments_truncated` | 被 §6 第 2 点的窗口切过端的片段数（输入预算的可见性） |
 | `truncated` / `finish_reason` | 与提取端点同义 |
-| `weight_sum_used` | 本次实际参与加权的权重之和（§5.1 归一后的分母） |
+| `weight_sum_used` | 本次实际参与加权的权重之和（§5.1 归一后的分母，**对外契约**） |
+| `matcher_version` | 本次用的是哪一版「写法等价」判据（`app/core/skill_names.py::SKILL_MATCHER_VERSION`）。与 §10 第 3c 条那个端点的同名字段同源，一致性断言 (c) 靠它 |
+| `note` | 目前只有 `nothing_computable`：`score` 为 `null` 时给前端的分句判据（§5.1 F1:A）。有分数时恒为 `null` |
 
 计数有**两个分区**，各自精确闭合，单位不同，不许混进一个式子：
 
@@ -578,8 +612,22 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
 3. **匹配键统一**（§1.3）：
    - **a/b 已执行**：档案侧 `SkillInput.name` 补 strip + 去重改用 `skill_name_key`，键本体移入
      `app/core/skill_names.py`（详见 §1.3 的两处偏差说明）。
-   - **c 未执行**：前端角标改为消费后端结果。它需要一个确定性的、不调 AI 的重叠查询端点，
-     与第 7 步一起做，不单独开（否则等于把同一个岗位读两遍的代价先付一次）。
+   - **c 已执行**（2026-11-08 老板裁定：并进阶段 1，即本 PR；命名与判据都按他给的定义）。
+     端点 `GET /jobs/{job_id}/requirement-match`（模型 `app/schemas/match.py::RequirementMatchResponse`），
+     逐条回 `name` / `status: covered|partial|missing` / `matched_form`。三条「同源」是实现约束而不是愿望：
+     取数同一个 `_gather`（一个 session、一份快照、同一个 `get_readable` 谓词）、
+     分区同一个 `score_match`（本端点**不调 AI**，也不外露 `evidence_mode`——按定义没参与的东西没有「退化」可言）、
+     写法命中同一个 `matched_with_forms`（`matched_required_skills` 改成它的投影，判等循环只剩一处）。
+     验收判据按老板给的定义落成集成测试（同一 fixture 调两个真实端点，不比源码）：
+     (a) `coverage` 的名字**顺序与条数**等于 `GET /jobs/{job_id}` 的 `skills`（U）；
+     (b) `status ∈ {covered, partial}` 的集合 == 匹配的 `covered ∪ partial`；
+     (c) 两边 `meta.matcher_version` 相等——**并且额外等于那个常量**，
+         否则两边同时是 `null` 也能过，那是空检。
+     `Python3` / `Python` 这条回归用例额外断言 `matched_form == "Python3"`。
+     实现期间被测试当场抓出的一个界面缺陷：`v-if="skillStatus(name)"` 里 `missing` 是**非空字符串**、
+     在 Vue 里是真值，于是每条技能都长了角标；改成 `isRequirementHit()`（只认 covered/partial）之后
+     那条用例仍留在测试里防复发。判据 (b) 也解释了两档为什么可以合并成一个布尔：角标回答的只有「命中没有」，
+     证据够不够是匹配卡那一层的事。
 
 4. ~~`self_rating` 删除（§4，含迁移与降级测试 + 前后端 + API.md）~~ → **已执行**，见 §4.1。
 5. ~~`target_role` 新列（§5，含迁移与档案接口/表单）~~ → **已执行**，见 §5.2。
@@ -676,7 +724,14 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
 - 限流第一次出现**两种键**（IP 与用户）共存。`app/core/rate_limit.py` 的模块注释现在通篇按「键 = IP」写，
   加第二条端点时必须把「为什么这一条例外」写进同一个文件，否则下一次「统一成一种键」的重构会把它悄悄改回按 IP，
   而这个退化在测试里是不可见的（测试只测端点自己那条规则能不能触发）。
-- 两处破坏性变更（`SkillInput` 少字段、`POST /jobs/{id}/match` 新端点），无外部客户端，前端同 PR 改完即可。
+- 破坏性变更到今天为止是四类：`SkillInput` 少字段（§4.1）、`POST /jobs/{id}/match` 新端点（§3）、
+  **`data.score` 由 `float` 变 `float | null`**（§5.1 F1:A，2026-11-08）、
+  `GET /jobs/{job_id}/requirement-match` 新端点（§10 第 3c 步）。无外部客户端，前端同 PR 改完即可。
+  `meta` 侧是**新增字段**（`matcher_version` / `note`）而不是改语义，所以对已写好的消费方是兼容的。
+- **判据版本号（2026-11-08）**：写法判据一改，同一个人同一岗位的判定结果就会变，而响应里原本没有任何东西
+  能说明「这次用的是哪版」。所以 `SKILL_MATCHER_VERSION` 从两条端点的 `meta.matcher_version` 同时对外，
+  一致性断言 (c) 拿它做锁。L1 别名词表（阶段 2）落地时另加 `meta.alias_version`——两者是不同的东西：
+  一个是判据规则的版本，一个是词表内容的版本，词表会随真实用户反馈频繁增删而规则不变。
 - 成本与延迟：一次匹配 = 最多一次 DeepSeek 调用（候选对已经过第 1 层裁剪），30 秒预算内；用户看不到「正在打分」之外的等待理由，所以按钮要有 loading 态与失败重试，沿用 C2 的提取交互。
 - **分数会随写法判据漂移（2026-11-08）**：`skill_forms_match` 让 `Python3` 顶住 `Python` 之后，
   同一个人对同一个岗位的分数**只会往上走、不会往下走**（新增的是认写法，不是松判据）。

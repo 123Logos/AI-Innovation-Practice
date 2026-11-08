@@ -70,7 +70,7 @@ function seedJobStore(): void {
   job.page = 3
   job.detail = { id: 'job-detail-of-previous-user' } as unknown as JobsContract.JobRead
   job.trash = [{ id: 'job-trash-of-previous-user' }] as unknown as JobsContract.JobSummary[]
-  job.mySkillNames = [' Python ']
+  job.requirementCoverage = [{ name: 'Python', status: 'covered', matched_form: ' Python ' }]
   job.filter.keyword = '字节'
   job.filter.status = 'draft'
   job.filter.includeExpired = true
@@ -233,7 +233,7 @@ describe('登出清空岗位 store（handleLogout 的不变量）', () => {
     expect(job.page).toBe(1)
     expect(job.detail).toBeNull()
     expect(job.trash).toEqual([])
-    expect(job.mySkillNames).toEqual([])
+    expect(job.requirementCoverage).toEqual([])
     // 筛选条件也是数据：留着会让下一个账号看到「上一个人筛过的那一屏」。
     expect(job.filter).toEqual({ keyword: '', status: 'published', includeExpired: false })
 

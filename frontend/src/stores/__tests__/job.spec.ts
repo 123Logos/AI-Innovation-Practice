@@ -56,12 +56,42 @@ let savedAdapter: typeof http.defaults.adapter
 const OWN_USER_ID = 'user-under-test'
 
 /**
- * `/profiles/me` 返回的「我的」技能名。默认那一条带首尾空格，是为了钉住 `trim`；
- * 「归一化口径」那一组用例把它改成全角写法（`mySkillNamesFromServer`），
- * 其余分支一概不动。
+ * `GET /jobs/{id}/requirement-match` 的可注入响应（ADR-013 §10 第 3c 步）。
+ * `null` = 用 `defaultRequirementEnvelope()`；每条用例跑完在 `beforeEach` 里复位。
+ *
+ * 默认那一份把 `Python` 判成 `covered` 且 `matched_form` 是带首尾空格的 `' Python '`：
+ * 这一格是**后端**回的东西，前端原样消费。留着它是为了钉住「前端不再判等」——
+ * 只要本地归一化还参与判定，把信封改成 `missing` 时角标就不会跟着变，用例当场红。
  */
-const DEFAULT_MY_SKILL_NAMES = [' Python ']
-let mySkillNamesFromServer: string[] = DEFAULT_MY_SKILL_NAMES
+let requirementEnvelope: unknown = null
+
+function requirementRow(
+  name: string,
+  status: JobsContract.RequirementStatus,
+  matchedForm: string | null = null,
+): JobsContract.RequirementCoverageRow {
+  return { name, status, matched_form: matchedForm }
+}
+
+function defaultRequirementEnvelope(
+  coverage: JobsContract.RequirementCoverageRow[] = [
+    requirementRow('Python', 'covered', ' Python '),
+    requirementRow('FastAPI', 'covered', 'FastAPI'),
+    requirementRow('MySQL', 'partial', 'MySQL'),
+    requirementRow('Docker', 'missing', null),
+  ],
+): unknown {
+  return {
+    data: {
+      job_id: 'job-1',
+      profile_id: 'profile-1',
+      profile_title: '默认简历',
+      coverage,
+      meta: { matcher_version: 'v1' },
+    },
+    meta: { request_id: 'req-test' },
+  }
+}
 
 function skillRow(id: string, name: string, overrides: Record<string, unknown> = {}) {
   return { id, name, type: 'hard', origin: 'unverified', confidence: null, evidence_text: null, ...overrides }
@@ -151,6 +181,28 @@ function defaultExtractEnvelope(skills: JobsContract.ExtractedSkill[] = [extract
 let matchEnvelope: unknown = null
 let matchErrorFactory: ((config: InternalAxiosRequestConfig) => AxiosResponse) | null = null
 
+/**
+ * `matchDegradeLines()` 的测试对象：一份完整的 `MatchResult`（不是只有 meta）。
+ *
+ * 签名从 `MatchMeta` 改成 `MatchResult` 不是洁癖：「命中了但经历里找不到出处」与
+ * 「一条都没命中」在 meta 里长得**一模一样**（`keyword_fallback` + `degrade_reason=null`），
+ * 分得开它们的只有 `terms[evidence].note`。少了这一格，文案会对什么都没命中的用户说
+ * 「你命中的技能找不到出处」——那是假话（F1:A 的那组数据把它撞出来的）。
+ */
+function degradeSubject(
+  metaOverrides: Partial<JobsContract.MatchMeta> = {},
+  evidenceNote: string | null = null,
+): JobsContract.MatchResult {
+  const result = (defaultMatchEnvelope() as { data: JobsContract.MatchResult }).data
+  return {
+    ...result,
+    terms: result.terms.map((item) =>
+      item.name === 'evidence' ? { ...item, note: evidenceNote } : item,
+    ),
+    meta: matchMetaFixture(metaOverrides),
+  }
+}
+
 function matchMetaFixture(
   overrides: Partial<JobsContract.MatchMeta> = {},
 ): JobsContract.MatchMeta {
@@ -171,6 +223,8 @@ function matchMetaFixture(
     finish_reason: 'stop',
     weight_sum_used: 0.65,
     no_required_skills: false,
+    matcher_version: 'v1',
+    note: null,
     ...overrides,
   }
 }
@@ -238,15 +292,9 @@ function fakeAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse>
   const body = typeof config.data === 'string' && config.data ? (JSON.parse(config.data) as unknown) : config.data
   captured.push({ method, url, query, body })
 
-  if (url === '/profiles/me') {
-    return Promise.resolve(
-      envelope(config, {
-        data: {
-          profile: { skills: mySkillNamesFromServer.map((name, index) => ({ id: `s${index + 1}`, name })) },
-        },
-        meta: { request_id: 'req-test' },
-      }),
-    )
+  if (method === 'get' && /^\/jobs\/[^/]+\/requirement-match$/.test(url)) {
+    // 第 3c 条：一次只读 GET 拿全量逐条状态。异常形状由用例改 adapter，这里只给成功信封。
+    return Promise.resolve(envelope(config, (requirementEnvelope ?? defaultRequirementEnvelope()) as never))
   }
 
   if (method === 'get' && url === '/jobs/trash') {
@@ -332,7 +380,7 @@ beforeEach(() => {
   setActivePinia(createPinia())
   localStorage.clear()
   captured = []
-  mySkillNamesFromServer = DEFAULT_MY_SKILL_NAMES
+  requirementEnvelope = null
   extractEnvelope = null
   extractErrorFactory = null
   matchEnvelope = null
@@ -551,20 +599,46 @@ describe('写侧请求体的反向断言', () => {
 })
 
 describe('详情页的只读信息', () => {
-  it('「你已具备」按 trim + NFKC + 小写比对，命中与不命中都只读，不写任何表', async () => {
+  it('「你已具备」的状态来自 requirement-match 端点，前端只消费不判断', async () => {
     const store = useJobStore()
-    await Promise.all([store.loadDetail('job-1'), store.loadMySkillNames()])
+    await Promise.all([store.loadDetail('job-1'), store.loadRequirementMatch('job-1')])
 
-    // `/profiles/me` 里的技能名是 `' Python '`（带空格），岗位技能是 `'Python'`。
-    expect(store.mySkillNames).toEqual([' Python '])
-    expect(store.matchesMySkill('Python')).toBe(true)
-    expect(store.matchesMySkill('python')).toBe(true)
-    expect(store.matchesMySkill('沟通能力强')).toBe(false)
+    expect(store.skillStatus('Python')).toBe('covered')
+    expect(store.skillStatus('MySQL')).toBe('partial')
+    expect(store.skillStatus('Docker')).toBe('missing')
+    expect(store.matchedFormOf('Python')).toBe(' Python ')
+    // 后端没回过的名字 = 这一行不存在，状态必须是 null 而不是「猜一个不具备」。
+    expect(store.skillStatus('沟通能力强')).toBeNull()
 
-    // 全程只有 GET：比对不产生写请求（人岗匹配仍冻结，见 ADR-011 2.E）。
+    // 一次详情页一次请求：不许退化成「每条技能问一遍」。
+    expect(requestsFor('get', '/jobs/job-1/requirement-match')).toHaveLength(1)
+    // 全程只有 GET：这条链路按定义不写任何表（ADR-011 1.E / 2.E）。
     expect(requestsFor('post')).toEqual([])
     expect(requestsFor('put')).toEqual([])
     expect(requestsFor('delete')).toEqual([])
+  })
+
+  it('换岗位时清空上一条的逐条状态：B 岗位不许长出 A 岗位的角标', async () => {
+    const store = useJobStore()
+    await store.loadRequirementMatch('job-1')
+    expect(store.requirementCoverage).toHaveLength(4)
+
+    await store.loadDetail('job-2')
+    expect(store.requirementCoverage).toEqual([])
+    expect(store.skillStatus('Python')).toBeNull()
+  })
+
+  it('拉不到就异常外抛，由视图 catch 后一条都不标（不许静默留旧值）', async () => {
+    const store = useJobStore()
+    await store.loadRequirementMatch('job-1')
+    expect(store.requirementCoverage).toHaveLength(4)
+
+    http.defaults.adapter = () => Promise.reject(new AxiosError('连不上。', 'ERR_NETWORK'))
+    await expect(store.loadRequirementMatch('job-2')).rejects.toBeInstanceOf(Error)
+    // store 这边不清（清不清是调用方的决定），但 `clearRequirementMatch()` 必须是可用的那条路。
+    expect(store.requirementCoverage).toHaveLength(4)
+    store.clearRequirementMatch()
+    expect(store.requirementCoverage).toEqual([])
   })
 
   it('isCreatorOf 用 JWT 里的用户 id 比对 created_by_user_id，非创建者拿 false', () => {
@@ -604,23 +678,27 @@ describe('技能名归一化口径（与后端 dedup_key 同：trim → NFKC →
     expect(normalizeSkillName(' 沟通能力强 ')).toBe('沟通能力强')
   })
 
-  it('用途一「你已具备」：全角写法双向都能命中，不命中依旧不命中', async () => {
+  it('用途一已下线：判定归后端，本地归一化再也标不出一个「已具备」', async () => {
     const store = useJobStore()
 
-    // 档案（`/profiles/me`）里是半角 `Python`，岗位技能写成全角 `Ｐython`。
-    await store.loadMySkillNames()
-    expect(store.matchesMySkill('Ｐython')).toBe(true)
-    expect(store.matchesMySkill('ＰＹＴＨＯＮ')).toBe(true)
+    // 后端说 missing，界面就必须说不出「已具备」——哪怕简历里明明白白写着 Python。
+    // 这一条存在的意义是：本地那套 trim+NFKC+小写比对曾经自己判过一次，
+    // 于是同一屏会出现角标与匹配卡各说一套（ADR-013 §1.3 的第二半）。
+    requirementEnvelope = defaultRequirementEnvelope([
+      requirementRow('Python', 'missing', null),
+      requirementRow('Ｐython', 'missing', null),
+    ])
+    await store.loadRequirementMatch('job-1')
+    expect(store.skillStatus('Python')).toBe('missing')
+    expect(store.skillStatus('Ｐython')).toBe('missing')
 
-    // 反向：档案里是全角，岗位技能是半角。
-    mySkillNamesFromServer = ['Ｐython']
-    await store.loadMySkillNames()
-    expect(store.matchesMySkill('python')).toBe(true)
-    expect(store.matchesMySkill('Python ')).toBe(true)
-
-    // 放宽只到「全半角 + 大小写 + 首尾空格」这一档，没有变成前缀/包含匹配。
-    expect(store.matchesMySkill('PyTorch')).toBe(false)
-    expect(store.matchesMySkill('沟通能力强')).toBe(false)
+    // 反向：后端按版本号判成 covered、对面写法是 `Python3`，前端也不许把它改回 missing。
+    requirementEnvelope = defaultRequirementEnvelope([requirementRow('Python', 'covered', 'Python3')])
+    await store.loadRequirementMatch('job-1')
+    expect(store.skillStatus('Python')).toBe('covered')
+    expect(store.matchedFormOf('Python')).toBe('Python3')
+    // 本地那套键**够不着**这一格：拿它自己判就会判成不相等——这正是判定必须下线的理由。
+    expect(normalizeSkillName('Python')).not.toBe(normalizeSkillName('Python3'))
   })
 
   it('用途二 录入页重名自检：全角同名在提交前拦下，不再发请求给后端 422', async () => {
@@ -1183,13 +1261,13 @@ describe('人岗匹配（显式点击、纯计算、退化可归因）', () => {
   })
 
   it('退化分句：ai_scored 一句都不给，五种原因两两不同，前两种给出去哪儿修', () => {
-    expect(matchDegradeLines(matchMetaFixture())).toEqual([])
+    expect(matchDegradeLines(degradeSubject())).toEqual([])
 
     const reasons = ['key_missing', 'key_invalid', 'upstream', 'timeout', 'bad_output'] as const
     const texts = reasons.map((reason) =>
-      matchDegradeLines(
-        matchMetaFixture({ evidence_mode: 'keyword_fallback', degrade_reason: reason }),
-      ).join('\n'),
+      matchDegradeLines(degradeSubject({ evidence_mode: 'keyword_fallback', degrade_reason: reason })).join(
+        '\n',
+      ),
     )
     expect(new Set(texts).size).toBe(5)
     for (const text of texts) expect(text).toContain('关键词')
@@ -1202,21 +1280,31 @@ describe('人岗匹配（显式点击、纯计算、退化可归因）', () => {
       expect(text).toContain('稍后再算一次')
     }
 
-    // 零候选**不是退化**：`degrade_reason` 为 null 的关键词模式只有一个来源——
-    // 命中的技能在经历里找不到出处，根本没向模型提问。此时说「按关键词算法给分」是假的，
-    // 而用户能修的动作也不是配 Key（老板 2026-11-08 实测到的那一格）。
+    // 零候选**不是退化**（其一）：命中的技能在经历里找不到出处，根本没向模型提问。
+    // 此时说「按关键词算法给分」是假的，而用户能修的动作也不是配 Key（老板 2026-11-08 实测到的那一格）。
     const nothingToScore = matchDegradeLines(
-      matchMetaFixture({ evidence_mode: 'keyword_fallback', degrade_reason: null }),
+      degradeSubject({ evidence_mode: 'keyword_fallback', degrade_reason: null }, 'matched_without_evidence'),
     )
     expect(nothingToScore).toHaveLength(2)
     expect(nothingToScore.join('\n')).toContain('找不到出处')
     expect(nothingToScore.join('\n')).not.toContain('关键词')
     expect(nothingToScore.join('\n')).not.toContain('AI 设置')
 
+    // 零候选**不是退化**（其二）：一条技能都没命中时，上面那两句是**假话**——
+    // 没有「命中的技能」可解释，缺口清单自己会说话。两种 null 必须分得开。
+    expect(
+      matchDegradeLines(
+        degradeSubject({ evidence_mode: 'keyword_fallback', degrade_reason: null }, 'no_matched_skills'),
+      ),
+    ).toEqual([])
+
     // 岗位没填技能要求时一句都不给：没有可比对的东西，解释「证据强度怎么算」是噪音。
     expect(
       matchDegradeLines(
-        matchMetaFixture({ evidence_mode: 'keyword_fallback', degrade_reason: null, no_required_skills: true }),
+        degradeSubject(
+          { evidence_mode: 'keyword_fallback', degrade_reason: null, no_required_skills: true },
+          'no_matched_skills',
+        ),
       ),
     ).toEqual([])
   })

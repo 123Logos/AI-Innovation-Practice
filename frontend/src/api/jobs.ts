@@ -513,6 +513,17 @@ export interface MatchMeta {
   finish_reason: string | null
   weight_sum_used: number
   no_required_skills: boolean
+  /**
+   * 本次用的是**哪一版写法判据**（`app/core/skill_names.py::SKILL_MATCHER_VERSION`）。
+   * 与 `GET /jobs/{job_id}/requirement-match` 的 `meta.matcher_version` 同源，
+   * 两边必须报同一个值——那是「同屏一致」的另一半证明（老板 2026-11-08 判据 (c)）。
+   */
+  matcher_version: string
+  /**
+   * 目前只有一个值 `nothing_computable`：五项全都得不出、`score` 为 `null` 时的分句判据。
+   * 有分数时恒为 `null`。
+   */
+  note: string | null
 }
 
 export interface MatchResult {
@@ -526,7 +537,12 @@ export interface MatchResult {
   profile_id: string | null
   profile_title: string | null
   job_id: string
-  score: number
+  /**
+   * `null` = 这次**没有可加权的项**，算不出来（老板 2026-11-08 裁定 F1:A）。
+   * 它与 `0` 是两件事：`0` 是「算出来了，零覆盖」，`null` 必须配一句用户修得动的话
+   * （见 `meta.note`）。把两者压成一个数，界面就会对什么都没填的新用户喊「0% 匹配度」。
+   */
+  score: number | null
   weights_version: string
   terms: MatchTerm[]
   covered: MatchCovered[]
@@ -558,6 +574,60 @@ export async function matchJob(jobId: string): Promise<MatchResult> {
     `/jobs/${jobId}/match`,
     undefined,
     { timeout: MATCH_TIMEOUT_MS },
+  )
+  return unwrap(response)
+}
+
+/* ------------------------- 要求覆盖查询（ADR-013 §10 第 3c 步） ------------------------- */
+
+/**
+ * 岗位的一条要求技能，当前用户处在哪个状态。三档与匹配卡的 `covered/partial/gaps` 同义。
+ *
+ * 判等**不在前端做**（原来那套 `trim + NFKC + toLowerCase` 认不出 `Python3` 与 `Python`
+ * 是同一个技能，于是角标说「不具备」而匹配卡说「已具备」，同一屏两个口径）。
+ * 这里只做一件事：后端怎么判，界面就怎么标。
+ */
+export type RequirementStatus = 'covered' | 'partial' | 'missing'
+
+export interface RequirementCoverageRow {
+  /** 岗位侧的原写法，逐字回显——详情页的技能行就是按它对齐的。 */
+  name: string
+  status: RequirementStatus
+  /**
+   * 学生技能表里真正命中的那个写法（岗位要求 `Python`、简历写 `Python3` 时是 `Python3`）。
+   * `missing` 时恒为 `null`。
+   */
+  matched_form: string | null
+}
+
+export interface RequirementMatchMeta {
+  /** 与 `MatchMeta.matcher_version` 同一个常量：两条链路用的是同一版写法判据。 */
+  matcher_version: string
+}
+
+export interface RequirementMatchResponse {
+  job_id: string
+  profile_id: string | null
+  profile_title: string | null
+  /** 顺序与条数都和 `GET /jobs/{job_id}` 的 `skills` 一致（老板判据 (a) 的基准域 U）。 */
+  coverage: RequirementCoverageRow[]
+  meta: RequirementMatchMeta
+}
+
+/**
+ * `GET /api/v1/jobs/{job_id}/requirement-match`：一次读，拿到这个岗位每条要求的状态。
+ *
+ * 三条口径要记住：
+ *
+ * 1. **它不调 AI、不产生分数、不花钱**，所以是 GET；也因此**不在** `client.ts` 的
+ *    BYOK 白名单里（那条模式判据只认 `POST /jobs/{id}/match`）。`byok.spec.ts` 有
+ *    一条反向用例专门钉「这条 URL 拿不到 Key」。
+ * 2. **一次详情页一次请求**：`coverage` 是全量的，不要按技能行逐条去问。
+ * 3. 它失败时**只让角标消失**，不许把详情页拖成错误态——角标是增益信息。
+ */
+export async function getRequirementMatch(jobId: string): Promise<RequirementMatchResponse> {
+  const response = await http.get<ApiSuccess<RequirementMatchResponse>>(
+    `/jobs/${jobId}/requirement-match`,
   )
   return unwrap(response)
 }

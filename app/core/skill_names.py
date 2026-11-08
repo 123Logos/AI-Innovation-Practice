@@ -14,6 +14,18 @@
 import re
 import unicodedata
 
+#: 「写法等价」判据的版本号，随两个响应一起对外（`meta.matcher_version`）。
+#:
+#: 为什么要有这个常量：`skill_forms_match` 的四条规则一旦改动，同一个人、同一份档案、
+#: 同一个岗位的判定结果就会变，而响应里没有任何东西能说明「这次用的是哪版判据」——
+#: 用户看到的现象是「昨天还标已具备，今天没了」，谁都排查不出来。
+#: 第 3c 条的 `GET /jobs/{job_id}/requirement-match` 与匹配端点**共用同一份判据**，
+#: 所以两边必须吐同一个值；ADR-013 §11 定的回归断言就是拿这个字段做锁。
+#:
+#: 什么时候必须 +1：改动 `skill_forms_match` / `skill_stem` 的四条规则、分隔符集合
+#: `_VERSION_TAIL`、或主版本号比较方式。只改注释、只改文档不算。
+SKILL_MATCHER_VERSION = "v1"
+
 #: 版本号尾巴：`Python3` / `Python 3.13` / `Office2019` / `JDK 1.8` / `C++11` 的最后一截。
 #: 分隔符集合刻意不含 `+` 与 `#`——那两类是语言名的一部分，不是版本号的分隔。
 _VERSION_TAIL = re.compile(r"[ \t._/-]*\d+(?:[./]\d+)*$")

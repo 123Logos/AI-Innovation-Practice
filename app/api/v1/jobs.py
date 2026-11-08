@@ -226,6 +226,44 @@ def match_job(
     return success_response(request, result.model_dump(mode="json"))
 
 
+@router.get("/{job_id}/requirement-match")
+def requirement_match_job(
+    job_id: str,
+    request: Request,
+    service: MatchServiceDep,
+    current_user: CurrentUserDep,
+) -> dict[str, Any]:
+    """第 3c 条（ADR-013 §10）：这条岗位的每条要求技能，当前用户处在哪个状态。
+
+    它是**确定性、不调 AI、不产生分数、不落库**的读端点，存在的唯一理由是把
+    「你已具备」的判据从前端搬到后端——前端那套 `trim + NFKC + toLowerCase` 认不出
+    `Python3` 与 `Python` 是同一个技能，于是角标说「不具备」而匹配卡说「已具备」，
+    同一屏两个口径（§1.3 那一屏自相矛盾的第二半）。
+
+    四条刻意的选择：
+
+    1. **GET 而不是 POST**：与 `/match` 相反，这里没有任何出网调用与额度消耗。
+       路由表论证：本函数只调 `MatchService.requirement_match`，它不 import
+       `app.integrations`、不发一次 HTTP 请求，所以 `X-DeepSeek-Key` 在这条 URL 上
+       **没有转发对象**——它因此**不进** BYOK 白名单（`frontend/src/api/client.ts`），
+       这条「不许加」由 `byok.spec.ts` 的反向用例钉住。
+    2. **不限流**：纯读两张表、按岗位一次一个请求。给它加限额反而造出一种新故障
+       （「角标时有时无」），而那种故障比它要防的脚本刷更难排查。
+    3. **可见性与 `/match`、`GET /jobs/{job_id}` 同一谓词**（`get_readable`）：他人的 `draft`
+       包括回收站里的都是同一个 404。三条读径口径不同会出现「详情读得到、角标读不到」，
+       那比没有角标更糟。
+    4. **档案语义与 `/match` 同一条**（默认档案，无默认退最新）：角标与分数必须按同一份简历说。
+
+    顺序上没有 `/trash` 那种坑：这条是 `/{job_id}/requirement-match`，
+    与 `/jobs/{job_id}` 的模板不同形（路径参数不跨 `/`），已注册路由闭合用例覆盖它。
+    """
+    try:
+        result = service.requirement_match(current_user.id, job_id)
+    except JobNotFoundError as error:
+        raise _not_found() from error
+    return success_response(request, result.model_dump(mode="json"))
+
+
 @router.put("/{job_id}")
 def update_job(
     job_id: str,

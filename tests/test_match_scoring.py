@@ -11,7 +11,7 @@ from datetime import date
 
 import pytest
 
-from app.core.skill_names import skill_forms_match
+from app.core.skill_names import SKILL_MATCHER_VERSION, skill_forms_match
 from app.services.match_scoring import (
     EVIDENCE_MODE_AI,
     EVIDENCE_MODE_KEYWORD,
@@ -34,6 +34,7 @@ from app.services.match_scoring import (
     keyword_strength,
     locate_snippets,
     matched_required_skills,
+    matched_with_forms,
     normalize_score,
     overlap_ratio,
     remaining_time_value,
@@ -235,6 +236,33 @@ class TestMatchedRequiredSkills:
         )
         assert term(match, "coverage").value == 0.5
 
+    def test_projection_reports_the_students_own_spelling(self) -> None:
+        """第 3c 条要用「对面写的是哪个写法」，不是我们再猜一个规范名。"""
+        rows = matched_with_forms([RequiredSkill("Python")], ["Python3"])
+        assert [(item.name, form) for item, form in rows] == [("Python", "Python3")]
+
+    def test_projection_takes_the_first_hit_not_the_neatest(self) -> None:
+        """可复现性优先：「第一个」是录入顺序决定的，「最好的」需要再造一套排序判据。"""
+        rows = matched_with_forms([RequiredSkill("Python")], ["Python 3.13", "PYTHON"])
+        assert rows[0][1] == "Python 3.13"
+
+    def test_both_projections_come_from_the_same_loop(self) -> None:
+        """`matched_required_skills` 必须是 `matched_with_forms` 的投影，不是第二份判据。
+
+        这条不是形式主义：第 3c 条与匹配一旦各走一份判据，同屏一致性就只能是巧合，
+        而老板 2026-11-08 定的验收标准恰恰是「同屏一致性 100%」。
+        """
+        required = [
+            RequiredSkill("Python"),
+            RequiredSkill("C"),
+            RequiredSkill("Go"),
+            RequiredSkill("Docker"),
+        ]
+        student = ("Python3", "C++", "用 Golang 写过服务", " ")
+        assert [item for item, _ in matched_with_forms(required, student)] == list(
+            matched_required_skills(required, student)
+        )
+
 
 # ------------------------------------------------------------------ 证据构建
 
@@ -435,8 +463,17 @@ class TestNormalizeScore:
         assert excluded == 1.0
         assert penalized == 0.5
 
-    def test_nothing_computed_is_zero_not_crash(self) -> None:
-        assert normalize_score([Term("a", 0.5, None, False)]) == (0.0, 0.0)
+    def test_nothing_computed_is_null_not_zero(self) -> None:
+        """F1:A（老板 2026-11-08 裁定）：分母为 0 时是「算不出来」，不是 0 分。
+
+        原来这一条钉的是 `(0.0, 0.0)`，而那个 0 恰好是 §5.1 否决「缺项记 0 分」时引用的现象
+        ——新注册、什么都没填的人稳定看到 0%。两头不能同时成立，所以改的是实现。
+        """
+        assert normalize_score([Term("a", 0.5, None, False)]) == (None, 0.0)
+
+    def test_zero_coverage_is_still_a_score(self) -> None:
+        """与上一条配对：`computed=True` 且值为 0 必须仍然给分数，否则 F1 会被过度解读。"""
+        assert normalize_score([Term("coverage", 0.45, 0.0, True)]) == (0.0, 0.45)
 
 
 # ------------------------------------------------------- 剩余投递时间（§7.5）
@@ -524,6 +561,35 @@ class TestScoreMatchContract:
         match = score_match(facts())
         assert match.weights_version == MATCH_WEIGHTS_VERSION
         assert {item.name: item.weight for item in match.terms} == MATCH_WEIGHTS
+
+    def test_matcher_version_is_reported_and_shared(self) -> None:
+        """`meta.matcher_version` 与写法判据同源，是第 3c 条一致性断言的另一半。
+
+        断言它等于常量而不是等于某个字面量：这样「改了判据忘了升版本」仍会被
+        `app/core/skill_names.py` 里那条规则抓住（升版本才让这条测试继续有意义）。
+        """
+        assert score_match(facts()).meta.matcher_version == SKILL_MATCHER_VERSION
+
+    def test_score_is_null_and_note_set_when_nothing_is_computable(self) -> None:
+        """F1:A：五项全免加权 ⇒ `score=null` + `meta.note="nothing_computable"`。
+
+        这一格数据就是那个被实测出来的角落：岗位没写要求技能（覆盖免算）、学生没命中
+        （证据免算）、没填目标偏好、岗位没有截止时间。v1 的相关度恒不参与。
+        """
+        match = score_match(facts(required=(), student=()))
+        assert match.score is None
+        assert match.meta.weight_sum_used == 0.0
+        assert match.meta.note == "nothing_computable"
+
+    def test_zero_coverage_still_has_a_score_and_no_note(self) -> None:
+        """上一条件的对照：有项可算、算出来是 0，仍然是分数。
+
+        少了这条，`score is None` 与 `score == 0.0` 的分工就只是我的一句话。
+        """
+        match = score_match(facts(required=(RequiredSkill("Docker"),), student=()))
+        assert term(match, "coverage").value == 0.0
+        assert match.score == 0.0
+        assert match.meta.note is None
 
     def test_relevance_never_enters_the_score_in_v1(self) -> None:
         """§7.3 的代理指标实测 0/40，所以 v1 显式不参与；而且必须能被对账。

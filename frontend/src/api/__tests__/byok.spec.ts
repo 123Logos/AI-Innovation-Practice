@@ -246,7 +246,7 @@ describe('Key 注入矩阵：岗位侧只扩 `/jobs/extract-skills` 这一个 UR
     expect(sentHeaders.map((item) => item.url)).toEqual(['/resumes/polish', '/jobs/extract-skills'])
   })
 
-  it('`/jobs` 下其余七个端点一律不带 Key', async () => {
+  it('`/jobs` 下其余九个端点一律不带 Key（含第 3c 条的 requirement-match）', async () => {
     // 这一串就是「宽判据会把 Key 送到哪儿」的清单：`includes('/jobs')` 会把它们全纳进去。
     await jobsApi.listJobs({ status: 'draft' })
     await jobsApi.getJob('job-42')
@@ -257,8 +257,11 @@ describe('Key 注入矩阵：岗位侧只扩 `/jobs/extract-skills` 这一个 UR
     await jobsApi.listJobTrash()
     await jobsApi.restoreJob('job-42')
     await jobsApi.deleteJob('job-42')
+    // 第 3c 条：这条 GET 是纯计算的只读端点，**不进**白名单。Key 在这里没有转发对象——
+    // 后端 `requirement_match()` 不 import `app/integrations`，一次出网请求都不产生。
+    await jobsApi.getRequirementMatch('job-42')
 
-    expect(sentHeaders.length).toBe(9)
+    expect(sentHeaders.length).toBe(10)
     for (const item of sentHeaders) {
       expect(item.key, `${item.method} ${item.url} 不该携带 DeepSeek Key`).toBeUndefined()
     }
@@ -267,6 +270,7 @@ describe('Key 注入矩阵：岗位侧只扩 `/jobs/extract-skills` 这一个 UR
       'delete /jobs/job-42',
       'get /jobs',
       'get /jobs/job-42',
+      'get /jobs/job-42/requirement-match',
       'get /jobs/trash',
       'post /jobs',
       'put /jobs/job-42',
@@ -274,6 +278,18 @@ describe('Key 注入矩阵：岗位侧只扩 `/jobs/extract-skills` 这一个 UR
       'put /jobs/job-42/restore',
       'put /jobs/job-42/unpublish',
     ])
+  })
+
+  it('第三条模式判据认不到 requirement-match：同形不同尾，注入面不扩张', async () => {
+    // 这条是「白名单第 3 条是 `[^/]+/match` 整尾」的直接后果：
+    // `/jobs/{id}/requirement-match` 与它同形（一段 id + 一段静态尾），
+    // 但尾段不同。如果谁把判据松成 `/jobs/[^/]+/.*match` 或 `includes('match')`，
+    // 用户的 Key 就会被送到一条**根本不转发 DeepSeek** 的只读端点上——那是 2026-11-07
+    // 「答不上来就不许加」明确挡住的那类错误。
+    await http.get('/jobs/job-42/requirement-match')
+    await http.get('/jobs/job-42/match') // 换方法（GET 而非 POST）也不算注入面
+
+    expect(sentHeaders.map((item) => item.key)).toEqual([undefined, undefined])
   })
 
   it('近似路径也不带：`/jobs/{id}/extract-skills`、`/jobs/extract-skills/extra`、`/jobs/extract-skills-today`', async () => {

@@ -19,7 +19,12 @@ from dataclasses import dataclass
 from datetime import date
 
 from app.core.deadline import is_expired
-from app.core.skill_names import skill_forms_match, skill_name_key, skill_stem
+from app.core.skill_names import (
+    SKILL_MATCHER_VERSION,
+    skill_forms_match,
+    skill_name_key,
+    skill_stem,
+)
 
 #: 五项权重，沿用 `docs/PRD.md:119`。键名直接进 `data.terms[].name`，属于对外契约。
 MATCH_WEIGHTS: dict[str, float] = {
@@ -237,11 +242,16 @@ class MatchMeta:
     fragments_truncated: int
     weight_sum_used: float
     no_required_skills: bool
+    #: 「这次用的是哪版写法判据」，与第 3c 条端点同源（`SKILL_MATCHER_VERSION`）。
+    matcher_version: str = SKILL_MATCHER_VERSION
+    #: 目前只有一个值：`nothing_computable`（总分算不出来时给前端的分句判据，F1:A）。
+    note: str | None = None
 
 
 @dataclass(frozen=True)
 class ScoredMatch:
-    score: float
+    #: `None` = 没有任何一项能参与加权（F1:A），不是 0 分。
+    score: float | None
     weights_version: str
     terms: tuple[Term, ...]
     covered: tuple[Covered, ...]
@@ -387,22 +397,44 @@ def unique_required(skills: Sequence[RequiredSkill]) -> tuple[RequiredSkill, ...
     return tuple(item for key, item in seen.items() if key)
 
 
-def matched_required_skills(
+def matched_with_forms(
     required: Sequence[RequiredSkill], student: Sequence[str]
-) -> tuple[RequiredSkill, ...]:
-    """岗位要求里学生技能命中的那些（§7.1 的分子集合）。入参应已按 `unique_required` 去重。
+) -> tuple[tuple[RequiredSkill, str], ...]:
+    """**唯一一处**把「岗位要求」与「学生技能」放在一起判的循环。入参应已按 `unique_required` 去重。
+
+    返回 `(岗位那条要求, 学生侧真正命中的那个写法)`。第二个元素是给第 3c 条的
+    `GET /jobs/{job_id}/requirement-match` 用的：岗位写 `Python`、学生写 `Python3` 时，
+    光说「已具备」用户看不出我们是按哪条判据认的；把对面那个写法回给他，是一条**他能改**
+    的信息（写成同一个写法以后，去重键那条路也一起顺了）。
 
     判据是 `skill_forms_match`（全等 + 受控版本号剥离），不是裸的键全等：
     学生填 `Python3`、岗位要求 `Python` 今天会被判「还缺」，而这条差距纯粹是写法。
     为什么不用子串/前缀推断，见 §7.1 与 `skill_forms_match` 的 docstring。
+
+    取**第一个**命中的写法（按学生技能表的录入顺序），不是最好的那个：
+    「第一个」是可复现的，「最好的」需要再定一套排序判据，而那一套又会变成第二个口径。
     """
     filled = [name for name in student if name.strip()]
-    return tuple(
-        item
-        for item in required
-        if skill_name_key(item.name)
-        and any(skill_forms_match(item.name, candidate) for candidate in filled)
-    )
+    rows: list[tuple[RequiredSkill, str]] = []
+    for item in required:
+        if not skill_name_key(item.name):
+            continue
+        for candidate in filled:
+            if skill_forms_match(item.name, candidate):
+                rows.append((item, candidate))
+                break
+    return tuple(rows)
+
+
+def matched_required_skills(
+    required: Sequence[RequiredSkill], student: Sequence[str]
+) -> tuple[RequiredSkill, ...]:
+    """§7.1 分子集合的**投影**，判等本体在 `matched_with_forms`。
+
+    为什么还留着：调用方有七八处只要那批岗位要求（打分、建候选、测覆盖），
+    而多一个返回值会把这些地方都变成解包。投影只做一次列表推导，没有第二套判据。
+    """
+    return tuple(item for item, _ in matched_with_forms(required, student))
 
 
 def build_evidence(facts: MatchFacts, matched: Sequence[RequiredSkill]) -> EvidenceBundle:
@@ -538,14 +570,22 @@ def remaining_time_value(
     return REMAINING_TIME_OPEN, True, "open"
 
 
-def normalize_score(terms: Sequence[Term]) -> tuple[float, float]:
-    """§5.1 归一：只把算得出来的项放进分母。返回 `(总分, 实际用到的权重之和)`。"""
+def normalize_score(terms: Sequence[Term]) -> tuple[float | None, float]:
+    """§5.1 归一：只把算得出来的项放进分母。返回 `(总分 | None, 实际用到的权重之和)`。
+
+    `used == 0` 时返回 `None`，不是 `0.0`（老板 2026-11-08 裁定 F1:A）。理由是被实测逼出来的：
+    归一化在「一项都得不出」时退化出的那个 0，正是 §5.1 用来否决「缺项记 0 分」的现象本身
+    （新注册、什么都没填的人稳定拿到 0 分）。留 `0.0` 等于把同一句话写在同一份 ADR 的两端。
+
+    `None` 与 `0.0` 的分工：`0.0` 是「算出来了，算出来是零覆盖」；`None` 是「这次没有可算的项」。
+    前者用户要看到的是分数，后者必须看到一句他能照着修的话——`meta.note` 负责把它们分开。
+    """
     usable = [
         (term.weight, term.value) for term in terms if term.computed and term.value is not None
     ]
     used = sum(weight for weight, _ in usable)
     if used == 0:
-        return 0.0, 0.0
+        return None, 0.0
     total = sum(weight * value for weight, value in usable)
     return round(total / used, 3), round(used, 4)
 
@@ -562,6 +602,8 @@ def score_match(
     而单测与「不走 AI 的调用方」不需要多写一遍。
 
     `ai is None` 就是关键词模式；调用方必须给 `degrade_reason` 说明为什么没有 AI（§6.5）。
+    唯一的例外是 `MatchService.requirement_match`（第 3c 条）：它**按定义**不调 AI，
+    也不把 `meta.evidence_mode` / `degrade_reason` 往外暴露一个字节，留 `None` 是真话而不是漏填。
     """
     required = unique_required(facts.required_skills)
     matched = matched_required_skills(required, facts.student_skills)
@@ -691,6 +733,7 @@ def score_match(
         fragments_truncated=evidence.fragments_truncated,
         weight_sum_used=weight_sum_used,
         no_required_skills=no_required_skills,
+        note="nothing_computable" if score is None else None,
     )
     return ScoredMatch(
         score=score,

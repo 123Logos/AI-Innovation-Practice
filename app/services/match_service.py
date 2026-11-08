@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date
 
+from app.core.skill_names import skill_name_key
 from app.integrations.copy_writer import DEEPSEEK_MODEL
 from app.integrations.evidence_scorer import (
     EVIDENCE_PROMPT_VERSION,
@@ -32,7 +34,7 @@ from app.integrations.evidence_scorer import (
     EvidenceScoreUnavailableError,
     ScoringFragment,
 )
-from app.repositories.job_repository import JobRepository
+from app.repositories.job_repository import Job, JobRepository
 from app.repositories.student_profile_repository import StudentProfileRepository
 from app.schemas.match import (
     MatchCovered,
@@ -42,6 +44,10 @@ from app.schemas.match import (
     MatchPartial,
     MatchResult,
     MatchTerm,
+    RequirementCoverageRow,
+    RequirementMatchMeta,
+    RequirementMatchResponse,
+    RequirementStatus,
 )
 from app.services.job_service import JobNotFoundError
 from app.services.match_scoring import (
@@ -54,6 +60,7 @@ from app.services.match_scoring import (
     apply_model_scores,
     build_evidence,
     matched_required_skills,
+    matched_with_forms,
     score_match,
     unique_required,
 )
@@ -80,8 +87,22 @@ class _AiAttempt:
         return self.finish_reason == "length"
 
 
+@dataclass(frozen=True)
+class _MatchInputs:
+    """`_gather()` 读出来的两侧事实：岗位行、用了哪份档案、以及装配好的 `MatchFacts`。
+
+    之所以带上 `job`：两个公开方法都要回 `job_id`，而档案两格已经摊平成 `profile_id` /
+    `profile_title`（`profile` 可能为 `None`，摊平后调用方不必各自判一次空）。
+    """
+
+    job: Job
+    profile_id: str | None
+    profile_title: str | None
+    facts: MatchFacts
+
+
 class MatchService:
-    """一条岗位 × 当前用户的默认档案 = 一次匹配。"""
+    """一条岗位 × 当前用户的默认档案 = 一次匹配（或一次不算分的要求覆盖查询）。"""
 
     def __init__(
         self,
@@ -99,6 +120,86 @@ class MatchService:
 
     def match(self, user_id: str, job_id: str) -> MatchResult:
         """算一次匹配。岗位不可读 → `JobNotFoundError`（404，不是 403）。"""
+        inputs = self._gather(user_id, job_id)
+        facts = inputs.facts
+        evidence = build_evidence(
+            facts,
+            matched_required_skills(unique_required(facts.required_skills), facts.student_skills),
+        )
+        attempt = self._score_with_ai(evidence.candidates)
+        scored = score_match(facts, evidence, attempt.scores, attempt.degrade_reason)
+        self._log(user_id, inputs.job.id, scored, attempt)
+        return self._to_result(
+            profile_id=inputs.profile_id,
+            profile_title=inputs.profile_title,
+            job_id=inputs.job.id,
+            scored=scored,
+            finish_reason=attempt.finish_reason,
+        )
+
+    def requirement_match(self, user_id: str, job_id: str) -> RequirementMatchResponse:
+        """第 3c 条：这条岗位的每条要求技能，当前用户处在什么状态（给「你已具备」角标用）。
+
+        与 `match()` 三处同源，一处都不另起炉灶——这正是老板 2026-11-08「禁止两套判定」那条：
+
+        1. **取数**同一个 `_gather`：同一 session、同一默认档案语义、同一 `get_readable` 可见性；
+        2. **分区**同一个 `score_match`：三档（`covered` / `partial` / `gaps`）由它装配，
+           本方法只是把它们压回「一条要求 → 一个状态」，不重新判一遍；
+        3. **写法命中**同一个 `matched_with_forms`：`matched_form` 就是打分用的那次循环的产物。
+
+        这里**不调 AI**，所以拿到的是关键词模式那份分区：`covered` 与 `partial` 的分界
+        可能与匹配卡不同（卡上的分界会被 AI 的强度判断挪动），但「写法命中」这件事两边一致，
+        而角标回答的恰好只有这一半——老板判据 (b) 断言的也是两边的**并集**相等。
+
+        为什么值得单开一个端点而不是让前端自己比：前端那套 `trim + NFKC + toLowerCase`
+        认不出 `Python3` 与 `Python` 是同一个技能（§1.3 那一屏自相矛盾的第二半），
+        而它本来也不该再养一套判据。
+        """
+        inputs = self._gather(user_id, job_id)
+        facts = inputs.facts
+        scored = score_match(facts)
+        covered_keys = {skill_name_key(item.skill) for item in scored.covered}
+        partial_keys = {skill_name_key(item.skill) for item in scored.partial}
+        forms = {
+            skill_name_key(required.name): matched_form
+            for required, matched_form in matched_with_forms(
+                unique_required(facts.required_skills), facts.student_skills
+            )
+        }
+
+        def status_for(key: str) -> RequirementStatus:
+            if key in covered_keys:
+                return "covered"
+            if key in partial_keys:
+                return "partial"
+            return "missing"
+
+        return RequirementMatchResponse(
+            job_id=inputs.job.id,
+            profile_id=inputs.profile_id,
+            profile_title=inputs.profile_title,
+            #: 逐条对着岗位自己的行说，顺序与条数都跟 `GET /jobs/{job_id}` 的 `skills` 一致
+            #: （判据 (a) 的基准域 U 就是这么定的）。重复写法在这里不会丢行：查表按技能键。
+            coverage=[
+                RequirementCoverageRow(
+                    name=item.name,
+                    status=status_for(skill_name_key(item.name)),
+                    matched_form=forms.get(skill_name_key(item.name)),
+                )
+                for item in facts.required_skills
+            ],
+            meta=RequirementMatchMeta(matcher_version=scored.meta.matcher_version),
+        )
+
+    # ------------------------------------------------------------------ 取数
+
+    def _gather(self, user_id: str, job_id: str) -> _MatchInputs:
+        """读「这条岗位 + 当前用户的默认档案」，装配成一份事实。两个公开方法共用。
+
+        为什么必须是同一个方法而不是各读各的：分数与角标要能在同一屏上对账，
+        前提是两侧读的是**同一时刻的同一份数据**。分两遍读，中间用户改了简历，
+        屏幕上就是半个新半个旧——那种不一致没人能复现，也没法测。
+        """
         job = self._jobs.get_readable(job_id, user_id)
         if job is None:
             raise JobNotFoundError(job_id)
@@ -124,27 +225,19 @@ class MatchService:
                 for experience in self._profiles.list_experiences(profile.id)
             ]
 
-        facts = MatchFacts(
-            job_title=job.title,
-            required_skills=required,
-            student_skills=student_skills,
-            experiences=experiences,
-            target_role=target_role,
-            deadline=job.deadline,
-            today=self._today(),
-        )
-        evidence = build_evidence(
-            facts, matched_required_skills(unique_required(required), student_skills)
-        )
-        attempt = self._score_with_ai(evidence.candidates)
-        scored = score_match(facts, evidence, attempt.scores, attempt.degrade_reason)
-        self._log(user_id, job.id, scored, attempt)
-        return self._to_result(
+        return _MatchInputs(
+            job=job,
             profile_id=profile.id if profile is not None else None,
             profile_title=profile.title if profile is not None else None,
-            job_id=job.id,
-            scored=scored,
-            finish_reason=attempt.finish_reason,
+            facts=MatchFacts(
+                job_title=job.title,
+                required_skills=required,
+                student_skills=student_skills,
+                experiences=experiences,
+                target_role=target_role,
+                deadline=job.deadline,
+                today=self._today(),
+            ),
         )
 
     # ------------------------------------------------------------------ AI
@@ -292,5 +385,7 @@ class MatchService:
                 finish_reason=finish_reason,
                 weight_sum_used=meta.weight_sum_used,
                 no_required_skills=meta.no_required_skills,
+                matcher_version=meta.matcher_version,
+                note=meta.note,
             ),
         )

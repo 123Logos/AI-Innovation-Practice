@@ -531,3 +531,206 @@ def test_match_service_is_registered_as_a_dependency(client: TestClient) -> None
     source = inspect.getsource(jobs)
     assert "Depends(get_match_service)" in source
     assert "MatchServiceDep" in source
+
+
+# ------------------------------------------------- §10 第 3c 条：requirement-match
+
+
+def coverage_url(job_id: str) -> str:
+    return f"{JOBS_URL}/{job_id}/requirement-match"
+
+
+def _coverage_and_match(client: TestClient, token: str, job_id: str) -> tuple[dict, dict]:
+    """同一份数据、两个真实端点各调一次。判据 (b)(c) 的公共前置。"""
+    coverage = client.get(coverage_url(job_id), headers=_headers(token)).json()["data"]
+    matched = client.post(match_url(job_id), headers=_headers(token)).json()["data"]
+    return coverage, matched
+
+
+def test_requirement_match_covers_every_job_skill_in_order(client: TestClient) -> None:
+    """判据 (a)：`coverage` 的名字集合 == `GET /jobs/{job_id}` 的技能名集合 U。
+
+    断得比「集合相等」更严：**顺序与条数**也要一致（列表相等蕴含集合相等）。
+    严的那一半才有意义——角标是逐行渲染的，`coverage` 少一行就等于那一行永远长不出角标，
+    而集合相等看不出这一点。
+    """
+    token = _register_and_login(client, prefix="cov_a")
+    _put_profile(client, token)
+    job_id = _create_published_job(client, token)
+    detail = client.get(f"{JOBS_URL}/{job_id}", headers=_headers(token)).json()["data"]["job"]
+    coverage = client.get(coverage_url(job_id), headers=_headers(token)).json()["data"]
+    assert [row["name"] for row in coverage["coverage"]] == [
+        skill["name"] for skill in detail["skills"]
+    ]
+    assert len(coverage["coverage"]) == len(JOB_SKILLS)
+
+
+def test_requirement_match_status_and_form_are_per_skill(client: TestClient) -> None:
+    """三档各有对象，且 `matched_form` 回的是**学生那一侧**的写法（用户改得动的那条信息）。"""
+    token = _register_and_login(client, prefix="cov_forms")
+    _put_profile(
+        client, token, skills=[{"name": "Python3"}, {"name": "FastAPI"}, {"name": "Docker"}]
+    )
+    job_id = _create_published_job(client, token)
+    coverage = client.get(coverage_url(job_id), headers=_headers(token)).json()["data"]
+    by_name = {row["name"]: row for row in coverage["coverage"]}
+
+    assert by_name["Python"] == {"name": "Python", "status": "covered", "matched_form": "Python3"}
+    # Docker：技能名命中，但经历里一次都没写过 → partial，仍然回显对面写法
+    assert by_name["Docker"] == {"name": "Docker", "status": "partial", "matched_form": "Docker"}
+    # MySQL：简历里根本没这条 → missing，`matched_form` 必须是 null（不许拿岗位那侧填）
+    assert by_name["MySQL"] == {"name": "MySQL", "status": "missing", "matched_form": None}
+
+
+def test_badge_set_equals_match_covered_union_partial(client: TestClient) -> None:
+    """判据 (b)：`status ∈ {covered, partial}` 的名字集合 == 匹配卡的 `covered ∪ partial`。
+
+    这就是老板 2026-11-08 那条「同屏一致性 100%」的机械形式。为什么断**并集**而不是逐档相等：
+    关键词模式与 AI 模式对「证据够不够」的分界可以不同（AI 会把只提了一句的判薄），
+    但「写法命中」这一件事两边必须一致——而角标回答的恰好只有这一件。
+    """
+    token = _register_and_login(client, prefix="cov_b")
+    _put_profile(client, token)
+    job_id = _create_published_job(client, token)
+    coverage, matched = _coverage_and_match(client, token, job_id)
+    hit = {row["name"] for row in coverage["coverage"] if row["status"] in ("covered", "partial")}
+    from_match = {item["skill"] for item in matched["covered"]} | {
+        item["skill"] for item in matched["partial"]
+    }
+    assert hit == from_match
+    assert hit, "两边都空的话这条断言就成了空检"
+
+
+def test_both_endpoints_report_the_same_matcher_version(client: TestClient) -> None:
+    """判据 (c)：两个端点必须报同一版写法判据。
+
+    多加一条等于常量的断言：只比「两边相等」的话，两边同时是 `null` 也能过 —— 那是空检。
+    """
+    from app.core.skill_names import SKILL_MATCHER_VERSION
+
+    token = _register_and_login(client, prefix="cov_c")
+    _put_profile(client, token)
+    job_id = _create_published_job(client, token)
+    coverage, matched = _coverage_and_match(client, token, job_id)
+    assert coverage["meta"]["matcher_version"] == matched["meta"]["matcher_version"]
+    assert coverage["meta"]["matcher_version"] == SKILL_MATCHER_VERSION
+
+
+def test_requirement_match_never_calls_the_scorer(
+    client: TestClient, fake_scorer: FakeScorer
+) -> None:
+    """「不调 AI」必须是行为而不是承诺：带着真 Key 来，也不许有一次外呼。
+
+    这条同时是 BYOK 那条路由表论证的正面证据：Key 真的传到了装配点、scorer 真的被装上，
+    但 `score()` 一次都没被调到。
+    """
+    token = _register_and_login(client, prefix="cov_noai")
+    _put_profile(client, token)
+    job_id = _create_published_job(client, token)
+    response = client.get(
+        coverage_url(job_id), headers=_headers(token, **{"X-DeepSeek-Key": "sk-fake"})
+    )
+    assert response.status_code == 200, response.text
+    assert fake_scorer.sent == []
+
+
+def test_requirement_match_404_for_others_draft_and_401_without_token(client: TestClient) -> None:
+    """可见性与 `/match` 同一条谓词：他人的草稿 404（不是 403），没登录 401。"""
+    owner = _register_and_login(client, prefix="cov_owner")
+    viewer = _register_and_login(client, prefix="cov_viewer")
+    _put_profile(client, viewer)
+    created = client.post(
+        JOBS_URL,
+        json={
+            "company_name": "某教育科技公司",
+            "title": "算法实习生",
+            "location": "北京",
+            "employment_type": "internship",
+            "description": "负责模型微调，需要 Python。",
+            "salary_min": None,
+            "salary_max": None,
+            "experience_required": None,
+            "deadline": None,
+            "skills": [{"name": "Python", "type": "hard"}],
+        },
+        headers=_headers(owner),
+    )
+    job_id = created.json()["data"]["job"]["id"]
+
+    blocked = client.get(coverage_url(job_id), headers=_headers(viewer))
+    assert blocked.status_code == 404, blocked.text
+    assert blocked.json()["error"]["code"] == "NOT_FOUND"
+    anonymous = client.get(coverage_url(job_id))
+    assert anonymous.status_code == 401, anonymous.text
+
+
+def test_empty_profile_marks_every_requirement_missing(client: TestClient) -> None:
+    """还没填技能的人：全条 `missing`，且**没有一条**带 `matched_form`。"""
+    token = _register_and_login(client, prefix="cov_empty")
+    _put_profile(client, token, skills=[], experiences=[])
+    job_id = _create_published_job(client, token)
+    coverage = client.get(coverage_url(job_id), headers=_headers(token)).json()["data"]
+    assert [row["status"] for row in coverage["coverage"]] == ["missing"] * len(JOB_SKILLS)
+    assert all(row["matched_form"] is None for row in coverage["coverage"])
+
+
+def test_only_the_match_route_is_byok_eligible_among_all_methods(client: TestClient) -> None:
+    """白名单闭包的补齐：那条正则只能命中 POST `/match`，**任何方法**的路由都不许多命中一条。
+
+    原来那条闭合用例（上面）只遍历 `post`，所以它看不见「新增一条 GET `/jobs/{x}/…`」会不会
+    撞上白名单。这条把遍历范围改成全部方法，缺口就堵上了——老板 2026-11-07 的口径：
+    答不出「这条 URL 真的转发 DeepSeek 吗」就不许加。
+    """
+    import re
+
+    from app.main import app
+
+    pattern = re.compile(r"^/api/v1/jobs/[^/]+/match$")
+    http_methods = {"get", "put", "post", "delete", "patch"}
+    operations = [
+        (method, path)
+        for path, item in app.openapi()["paths"].items()
+        for method in item
+        if method in http_methods
+    ]
+    hit = sorted((method, path) for method, path in operations if pattern.match(path))
+    assert hit == [("post", "/api/v1/jobs/{job_id}/match")]
+    # 非空检：新路由确实在表里，于是上面那句「没命中」是真的没命中，而不是它压根不在
+    assert ("get", "/api/v1/jobs/{job_id}/requirement-match") in operations
+
+
+# ---------------------------------------------------------------- F1:A：算不出的分数
+
+
+def test_score_is_null_when_nothing_is_computable(client: TestClient) -> None:
+    """F1:A 的端到端版本：五项全免加权 ⇒ `score=null` + `meta.note="nothing_computable"`。
+
+    数据是这个角落的最小构造：岗位无要求技能、无截止时间；简历无技能无经历、没填目标偏好。
+    改之前这里返回 `0.0`，界面读作「0% 匹配度」——那正是 §5.1 用来否决「缺项记 0 分」的现象本身。
+    """
+    token = _register_and_login(client, prefix="f1_null")
+    _put_profile(client, token, skills=[], experiences=[], target_role=None)
+    job_id = _create_published_job(client, token, skills=[], deadline=None)
+    data = client.post(match_url(job_id), headers=_headers(token)).json()["data"]
+    assert data["score"] is None
+    assert data["meta"]["weight_sum_used"] == 0.0
+    assert data["meta"]["note"] == "nothing_computable"
+    # 角标那侧在这个角落仍然要能读：全是 missing，而不是跟着报错
+    coverage = client.get(coverage_url(job_id), headers=_headers(token)).json()["data"]
+    assert coverage["coverage"] == []
+
+
+def test_zero_coverage_still_returns_a_number(client: TestClient) -> None:
+    """F1:A 的对照：有项可算、算出来是零覆盖 ⇒ 仍是分数 `0.0`，`note` 为 `null`。
+
+    少了这条，`None` 与 `0.0` 的分工就只是我的一句话；实现里把它们压成一个数也能全绿。
+    """
+    token = _register_and_login(client, prefix="f1_zero")
+    _put_profile(client, token, skills=[{"name": "Blender"}], experiences=[], target_role=None)
+    job_id = _create_published_job(client, token, deadline=None)
+    data = client.post(match_url(job_id), headers=_headers(token)).json()["data"]
+    coverage_term = next(item for item in data["terms"] if item["name"] == "coverage")
+    assert coverage_term["computed"] is True and coverage_term["value"] == 0.0
+    assert data["score"] == 0.0
+    assert data["meta"]["weight_sum_used"] == 0.45
+    assert data["meta"]["note"] is None
