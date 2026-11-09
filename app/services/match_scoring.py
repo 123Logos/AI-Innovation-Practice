@@ -73,12 +73,18 @@ EVIDENCE_MODE_KEYWORD = "keyword_fallback"
 #: 原来的理由「填了偏好但不相干本身是有效信息，归零会让填偏好变成纯亏」只在定分母下成立；
 #: 重归一之后 0.2 的实际作用是给「不同方向」这件真事发一个没有依据的软分数，
 #: 与 §5.1 否决「缺项记 0 分」是同一种病。现在只有三条路：
-#: 词面包含 ⇒ 1.0；重合比例达标 ⇒ 0.6；**都对不上 ⇒ 0.0 并且计入分母**（明确冲突）。
+#: 词面包含 ⇒ 1.0；重合比例达标 ⇒ 0.6；**都对不上 ⇒ 0.0 并且计入分母**。
 #: 免加权只留给「没有可比的内容」那一格（`target_role` 为空），不许拿来逃避负面信号。
 PREFERENCE_EXACT = 1.0
 PREFERENCE_PARTIAL = 0.6
 PREFERENCE_CONFLICT = 0.0
 PREFERENCE_TOKEN_RATIO = 0.5
+
+#: 记 0 分那一格有**两个**原因码（老板 2026-11-09 裁定：值与加权都相同，只把语义分开）。
+#: `overlap_ratio == 0` ⇒ 词面零重合，这才叫冲突；`0 < ratio < 0.5` ⇒ 重合了但没过阈值线，
+#: 标签是「阈值以下」，不许再冒用「冲突」——两者的修法不同（后者等阶段 2 别名表，前者是真不相干）。
+PREFERENCE_NOTE_CONFLICT = "preference_conflict"
+PREFERENCE_NOTE_BELOW_THRESHOLD = "preference_below_threshold"
 
 #: §7.5 的四档剩余投递时间（天）。
 REMAINING_TIME_NEAR_DAYS = 30
@@ -679,11 +685,15 @@ def score_match(
             value, note = PREFERENCE_EXACT, "contains"
         elif ratio >= PREFERENCE_TOKEN_RATIO:
             value, note = PREFERENCE_PARTIAL, "token_overlap"
+        elif ratio > 0.0:
+            # 有词面重合但没过阈值线：分数与冲突一模一样，但**不是**「方向相反」，
+            # 只是词面信息不够。老板 2026-11-09 裁定单开一个原因码，别让它冒充冲突。
+            value, note = PREFERENCE_CONFLICT, PREFERENCE_NOTE_BELOW_THRESHOLD
         else:
-            # 「判不出方向相关」就是冲突，不是「不知道所以不算」。v1 只有词面这一把尺子，
-            # 代价是「同方向不同词」（`React 工程师` vs `前端开发`）会被记 0 分——
+            # 词面零重合 ⇒ 判不出方向相关，就是冲突，不是「不知道所以不算」。v1 只有词面
+            # 这一把尺子，代价是「同方向不同词」（`React 工程师` vs `前端开发`）会被记 0 分——
             # 那一格由阶段 2 的 L1 别名表修，不靠免加权躲过去（ADR-013 §7.4）。
-            value, note = PREFERENCE_CONFLICT, "conflict"
+            value, note = PREFERENCE_CONFLICT, PREFERENCE_NOTE_CONFLICT
         preference = Term("preference", MATCH_WEIGHTS["preference"], value, True, note)
 
     remaining_value, remaining_computed, remaining_note = remaining_time_value(
