@@ -206,7 +206,7 @@ api/ → services/ → repositories/ → integrations/
 
 **在 T1–T6 全部完成前，不接受任何冻结清单相关任务。**
 
-> **2026-11-09 更正**：T1–T7 已全部交付并验证（现在 `tests/` 是 486 条、`resumes`/`jobs`/匹配链路都在跑），本节是**历史开工顺序**，不再是「当前下一步」。当前下一步看批次计划 B1–B11（`docs/adr/ADR-015-profile-multivalue-and-resume-version-pointer.md` 第 5 节与 PRD §7 对照）；而那句「T1–T6 完成前不接受冻结任务」随 §3.2 的全面解除一起失效（`ADR-014`）。
+> **2026-11-09 更正**：T1–T7 已全部交付并验证（现在 `tests/` 是 487 条、`resumes`/`jobs`/匹配链路都在跑），本节是**历史开工顺序**，不再是「当前下一步」。当前下一步看 **`docs/ROADMAP.md`**——它是批次编号（前端轨 F1a–F7、后端轨 B1–B11）与开工顺序的**唯一来源**，谁挡它写在里面，口径本身仍归 `docs/adr/` 各张 ADR，用户可见物的判据归 `docs/FRONTEND_DESIGN.md`；而那句「T1–T6 完成前不接受冻结任务」随 §3.2 的全面解除一起失效（`ADR-014`）。
 
 ---
 
