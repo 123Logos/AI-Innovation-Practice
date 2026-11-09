@@ -40,7 +40,10 @@ portfolio_links(id PK, student_profile_id FK→… ON DELETE RESTRICT,
 
 上限：证书 5 / 作品链接 5（与 `educations` 同档；理由只有一条——一页 A4）。**不用 JSON 列**：JSON 里塞数组等于把「同名证书去重」「按条软删除」「将来被匹配读」这三件事降级成字符串游戏，而本仓库已经付过一次这种学费（`layout_config` 只能存顺序不能存内容，就是当年为了避免这种情况）。
 
-**全量替换 + 软删除**的确切含义（写路径只留这一套口径）：`PUT` 时把当前**活跃行**（`deleted_at IS NULL`）全部盖上 `deleted_at = now`，再插入本次提交的行；**不再执行 `DELETE`**。同一套改法**适用于现有三张子表**（skills / experiences / educations），理由见第 5 节第 ① 格——若只让新表软删、老表继续物理删，同一个档案就有两套写路径口径。
+**全量替换 + 软删除**的确切含义（写路径只留这一套口径）：`PUT` 时把当前**活跃行**（`deleted_at IS NULL`）全部盖上 `deleted_at = now`，再插入本次提交的行；**不再执行 `DELETE`**。同一套改法**适用于现有三张子表**（skills / experiences / educations）——老板 2026-11-09 拍的第 ① 格：「要」，理由与我提的一致：只让新表软删、老表继续物理删，同一个档案就有两套写路径口径。
+
+**这条裁定有一句必须同时生效的推论，否则它是破坏性的**：软删除一旦落在子表上，**所有读侧都要加 `deleted_at IS NULL`**，而这件事**只准写在仓储层那三个方法里**（`student_profile_repository.py:302 list_skills` / `:310 list_experiences` / `:318 list_educations`），调用方**一律不许自己再比一次**。今天这两个方法的调用点有 6 处（`profile_service.py:396/400/404`、`resume_service.py:179-180`、`match_service.py:213/220/228`），漏掉任何一处就是：档案页干净、生成的简历里多一条已删的技能、匹配的分母也被那条已删技能污染——而这三屏读数互不相同，正是本项目最贵的那种 bug。同理，**条数上限现在只数活跃行**（`skills:8 / experiences:3 / educations:5`，`app/schemas/profile.py:271-274`），否则用户存几次之后就永久加不进东西。`duplicate_profile` 也只复制活跃行。
+
 
 唯一键必须跟着改：`uq_skills_profile_name(student_profile_id, name)`（`20261023_0001:76`）这类约束在软删除下会**误伤**——用户删掉「Python」再加回「Python」，历史行还在，直接撞 MySQL 1062 变 500。机制：每张表加一个生成列 `active_marker AS (IF(deleted_at IS NULL, 1, NULL)) STORED`，唯一键改成 `(student_profile_id, name, active_marker)`。MySQL 的唯一索引**允许多个 NULL**，所以历史行自由重复，而活跃行仍逐字唯一。新表同理（证书按 `(profile_id, name, active_marker)`，链接按 `(profile_id, url, active_marker)`）。
 
@@ -71,7 +74,7 @@ portfolio_links(id PK, student_profile_id FK→… ON DELETE RESTRICT,
 
 - 一次迁移动 5 张表（2 张新表 + 3 张老子表加 `deleted_at`/生成列/唯一键 + `resumes` 加 3 列），必须附 upgrade 与 downgrade，并跑「空库 → head → base → head」那条既有测试。
 - 老客户端**能读能看，不能存不能生成**（读回落默认 / 写与生成 422），这是刻意的：宁可给一句修得动的报错，也不静默改人家的排版顺序。
-- 软删除让子表行数随保存次数增长，**「永久删除档案」的路径必须物理清干净**：现有实现按 `_CHILD_TABLES` 列表清子行（`app/repositories/student_profile_repository.py:49` = `("resumes", "educations", "experiences", "skills")`，`:628-643` 是执行处），**新表两张必须加进这个元组**，漏一张就是「档案删了、证书还活着」。好在该删除是物理 `DELETE ... WHERE student_profile_id IN`，不区分 `deleted_at`，所以软删除积累的历史行会一并清掉，不需要额外条件。
+- 软删除让子表行数随保存次数增长，**「永久删除档案」的路径必须物理清干净**：现有实现按 `_CHILD_TABLES` 列表清子行（`app/repositories/student_profile_repository.py:49` = `("resumes", "educations", "experiences", "skills")`，`:628-643` 是执行处），**新表三张必须一起加进这个元组**（`profile_certificates` / `portfolio_links` / `profile_city_preferences`，见 §5 第 ③ 格），漏一张就是「档案删了、证书还活着」。好在该删除是物理 `DELETE ... WHERE student_profile_id IN`，不区分 `deleted_at`，所以软删除积累的历史行会一并清掉，不需要额外条件。
 - 一页 A4 的约束现在要兜 5 个区块，证书/作品很容易把版面撑爆；B4 实现时必须实测 375px 与 1280px 两档，并把「超长时截断还是缩字号」当一条**可见文案**决定，不是 CSS 巧合。
 - 匹配（ADR-013）**暂时读不到**新表：`MatchFacts` 只装 `student_skills / experiences / target_role / deadline`（`app/services/match_service.py:199-244`），教育都从来不进。证书/作品要不要进匹配是**另一个 ADR**，不在本 ADR 里顺手定。
 
@@ -82,8 +85,15 @@ portfolio_links(id PK, student_profile_id FK→… ON DELETE RESTRICT,
 - **不给 `resumes` 加指针，改用「`updated_at` 最大即当前」**：这就是今天的实际行为（没有任何列说明哪条是当前版），B8 的「版本对比」要的是稳定身份，靠时间排序既不稳也不可用。
 - **`is_current BOOLEAN` 而不用链头自指**：`UNIQUE(profile_id, is_current)` 在 MySQL 里能保证至多一条，但要多维护一个「旧的置 false」的步骤，而指针方案顺带给出了版本序列（B8 的对比要的就是这个）。
 
-## 5. 待拍（三格，都是他能一句话定的，拍完并进本 ADR 再开工）
+## 5. 2026-11-09 同日拍完的三格（原为「待拍」，此处按裁定改为定稿，不留悬项）
 
-1. **现有三张子表是否同步转「软删除全量替换」**？我建议**是**（理由：只留一套写路径口径）。代价：技能/经历/教育的行会随保存累积，`uq_skills_profile_name` 等唯一键要一起改成带 `active_marker` 的形式。
-2. **证书与作品是两节还是一节**？我按两节写（可分别排序、分别隐藏），但这直接决定第 2.2 节的默认顺序和一页风险。
-3. **期望城市单值还是多值**？他没点这一格。FR-02 原文是「期望城市」；`ProfileInput` 今天连 `city` 列都没有（`student_profiles` 只有 `grade`/`contact`/`email`/`target_role`）。多值就再开一张子表，单值就一列——**这条决定的是要不要迁移，不是要不要加个 list**。
+老板第二轮回复原文：「2.1 要 / 2.2 两节 / 2.3 多值」。
+
+| 格 | 裁定 | 落到契约的结果 |
+|---|---|---|
+| ① 现有三张子表一起转「全量替换 + 软删除」 | **要** | 见 §2.1 那段推论：`active_marker` 唯一键要一起改到 `uq_skills_profile_name`（`20261023_0001:76`）与 experiences/educations 的对应约束上；**读侧过滤只写在 `list_skills/list_experiences/list_educations` 三个仓储方法里**（`student_profile_repository.py:302/310/318`），6 处调用点一律不自比；条数上限只数活跃行；`duplicate_profile` 只复制活跃行 |
+| ② 证书与作品算几节 | **两节** | `SECTION_IDS` = `educations / skills / experiences / certificates / portfolio` 共 5 段（§2.2 的默认顺序与标题照此，不需再改），两节各自可排序、可少于上限、独立截断 |
+| ③ 期望城市单值还是多值 | **多值** | 开**第三张子表**：`profile_city_preferences(id, student_profile_id FK RESTRICT, city VARCHAR(50) NOT NULL, deleted_at, created_at, updated_at)` + `active_marker` 唯一键 `(student_profile_id, city, active_marker)`，上限 5。**它不是简历区块**——`SECTION_IDS` 保持 5 段，期望城市不进 `content_html`：它是投递元数据（将来给 B7 的来源/城市匹配用），把它塞进简历会让「一页 A4」多一个我控制不了的变量。今天 `student_profiles` 连 `city` 列都没有（只有 `grade/contact/email/target_role`），所以这条是**新列都没有 → 直接开表**，不存在「先加列再迁」的第二步 |
+
+连带一处措辞要跟着改准：§3 里「新表必须加进 `_CHILD_TABLES`」现在是**三张**（`profile_certificates` / `portfolio_links` / `profile_city_preferences`），不是两张。
+
