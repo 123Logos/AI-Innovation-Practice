@@ -417,9 +417,11 @@
 1. **`terms[].value` 可以是 `null`**，含义是「这一项没算出来」，与「算出来是 0」是两件事。
    `computed=false` 的项**退出分母**（`meta.weight_sum_used` 如实记录这次用了多少权重）。
    今天恒不参与的是 `relevance`（`note="not_measurable_v1"`，理由与被测出的 0/40 见 ADR-013 §7.3.1）；
-   `preference` 有三种来路（老板 2026-11-08 裁定，§7.4）：没填目标岗位 ⇒ 免加权 `no_target_role`；
-   词面判得出方向一致 ⇒ `contains` 1.0 / `token_overlap` 0.6；
-   **都对不上 ⇒ `conflict` 记 0 分并且真的计入分母**（旧值 `unrelated` 0.2 已删，它不参与）。
+   `preference` 有四个原因码、三种分数（老板 2026-11-08 定分数与免加权，2026-11-09 拆原因码，ADR-013 §7.4）：
+   没填目标岗位 ⇒ 免加权 `no_target_role`；词面判得出方向一致 ⇒ `contains` 1.0 / `token_overlap` 0.6；
+   **词面重合不够 ⇒ `preference_below_threshold` 记 0 分并计入分母**（`0 < ratio < 0.5`）；
+   **词面零重合 ⇒ `preference_conflict` 记 0 分并计入分母**。后两个**分数、加权、对结果的影响完全相同**，
+   分开只是为了不说谎：一个是「信息不够」，一个是「方向相反」（旧值 `unrelated` 0.2 已删，它不参与）。
    **但 `weight_sum_used` 只是「这一项算出来了」的账，不是「一定会给你一个分数」**——见第 7 条。
    条件性不参与的是 `preference`（没填目标岗位）与 `remaining_time`（岗位没有截止时间）。
    所以「两个都是 0.61 的人」不必同义——这是把 `weight_sum_used` 放进 API 的原因，
@@ -499,7 +501,7 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 | `job_id` / `profile_id` / `profile_title` | `str` / `str\|null` / `str\|null` | 与匹配端点同样的回显：角标是按哪份简历标的 |
 | `coverage[]` | 数组，**顺序与条数都等于** `GET /jobs/{job_id}` 的 `skills` | 老板判据 (a) 的基准域 U；少一行就等于那一行永远长不出角标 |
 | `coverage[].name` | `str` | 岗位侧原写法，逐字回显 |
-| `coverage[].status` | `"covered" \| "partial" \| "missing"` | 前两档都算「写法命中」；`covered` / `partial` 的分界来自**关键词模式**，与匹配卡上可能被 AI 挪动的那条线无关——角标只回答命中没有。**挪档挪不出并集**：装配三档时「命中却拿不到强度」一律落 `partial`（`app/services/match_scoring.py:742`），所以配了 Key 的那些次点击里，`status ∈ {covered, partial}` 的集合仍与匹配卡 `covered ∪ partial` 逐字相同，这一点由 `test_badge_union_still_equals_match_union_in_ai_mode` 在 AI 模式下单独测过 |
+| `coverage[].status` | `"covered" \| "partial" \| "missing"` | 前两档都算「写法命中」；`covered` / `partial` 的分界来自**关键词模式**，与匹配卡上可能被 AI 挪动的那条线无关——角标只回答命中没有。**挪档挪不出并集**：装配三档时「命中却拿不到强度」一律落 `partial`（`app/services/match_scoring.py:752`），所以配了 Key 的那些次点击里，`status ∈ {covered, partial}` 的集合仍与匹配卡 `covered ∪ partial` 逐字相同，这一点由 `test_badge_union_still_equals_match_union_in_ai_mode` 在 AI 模式下单独测过 |
 | `coverage[].matched_form` | `str\|null` | 学生技能表里真正命中的那个写法（岗位 `Python` ↔ 简历 `Python3`）；`missing` 时恒为 `null`，不许拿岗位那侧的字面填进去 |
 | `meta.matcher_version` | `str` | 与 §4.10 的 `data.meta.matcher_version` 同一个常量 |
 

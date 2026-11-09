@@ -526,23 +526,24 @@ class TestPreference:
     def test_conflicting_target_is_zero_and_still_in_the_denominator(self) -> None:
         """老板 2026-11-08 裁定：`0.2` 那一档删掉，「不相干」拆成两格。
 
-        这里是**明确冲突**那格：`computed=True` + `value=0.0`，也就是真的参与加权、真的扣分。
-        原来的 0.2 是「缺项记 0 分」的变体——它用一个没有依据的软分数把「不同方向」这件真事
+        这里是**明确冲突**那格（词面零重合）：`computed=True` + `value=0.0`，也就是真的参与加权、
+        真的扣分。原来的 0.2 是「缺项记 0 分」的变体——它用一个没有依据的软分数把「不同方向」这件真事
         稀释成一点点扣分。免加权只留给下一款那种「没有可比的内容」。
         """
         match = score_match(facts(target_role="想做游戏策划"))
         item = term(match, "preference")
         assert item.value == 0.0
         assert item.computed is True
-        assert item.note == "conflict"
+        assert item.note == "preference_conflict"
 
-    def test_weak_overlap_below_the_ratio_line_counts_as_conflict(self) -> None:
-        """词面只对上一点点（`0 < overlap_ratio < 0.5`）也按冲突记 0 分，**不许逃进免加权**。
+    def test_weak_overlap_below_the_ratio_line_is_below_threshold_not_conflict(self) -> None:
+        """`0 < overlap_ratio < 0.5`：**分数与冲突完全相同，原因码必须不同**（老板 2026-11-09 裁定）。
 
-        这一格是我自己归的边，实测它有多小：dev 库 7 个岗位标题 × 10 条常见目标岗位 = 70 对里
-        只有 1 对落进来（`Python 后端开发工程师` vs `前端开发实习生`，重合 0.333，只共用「开发」
-        这一个二元组）。真实形状里它几乎就是「不同方向碰巧撞了个通用词」，所以按冲突处理；
-        代价与修正路径（阶段 2 的 L1 别名表）写在 ADR-013 §7.4。
+        这一格原先我自己归边归进了「冲突」，实测它有多小：dev 库 7 个岗位标题 × 10 条常见目标岗位
+        = 70 对里只有 1 对落进来（`Python 后端开发工程师` vs `前端开发实习生`，重合 0.333，只共用
+        「开发」这一个二元组）。归边判分没错，但把标签叫「冲突」是错的：它不是方向相反，
+        是词面信息不够，修它的是阶段 2 的 L1 别名表，不是让用户改目标岗位。
+        所以两个码同值同加权、只分原因——**不许因为换了码就逃进免加权**。
         """
         match = score_match(facts(job_title="前端开发实习生", target_role="Python 后端开发工程师"))
         ratio = overlap_ratio("Python 后端开发工程师", "前端开发实习生")
@@ -550,7 +551,15 @@ class TestPreference:
         item = term(match, "preference")
         assert item.value == 0.0
         assert item.computed is True
-        assert item.note == "conflict"
+        assert item.note == "preference_below_threshold"
+
+    def test_the_two_zero_codes_cost_exactly_the_same(self) -> None:
+        """拆码只拆语义，不许拆出分数差：两格的 `score` 必须逐位相同。"""
+        conflict = score_match(facts(target_role="想做游戏策划"))
+        below = score_match(facts(job_title="前端开发实习生", target_role="Python 后端开发工程师"))
+        assert term(conflict, "preference").value == term(below, "preference").value == 0.0
+        assert conflict.score == below.score
+        assert conflict.meta.weight_sum_used == below.meta.weight_sum_used
 
     def test_partial_overlap_gets_middle_credit(self) -> None:
         """不相干但词面确实重合：0.6，而不是「看不懂就归零」。"""
