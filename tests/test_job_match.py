@@ -19,6 +19,7 @@ AI 一律用假实现（AGENTS.md §4.4）：monkeypatch 的是 `dependencies` �
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -816,3 +817,82 @@ def test_zero_coverage_still_returns_a_number(client: TestClient) -> None:
     assert data["score"] == 0.0
     assert data["meta"]["weight_sum_used"] == 0.45
     assert data["meta"]["note"] is None
+
+
+# -------------------------------------------------- 过期跨端点一致性（ADR-017）
+
+
+def _list_jobs(client: TestClient, token: str, **params: str) -> list[dict[str, Any]]:
+    response = client.get(JOBS_URL, headers=_headers(token), params=params)
+    assert response.status_code == 200, response.text
+    jobs: list[dict[str, Any]] = response.json()["data"]["jobs"]
+    return jobs
+
+
+def test_expired_job_reads_agree_across_every_endpoint(client: TestClient) -> None:
+    """ADR-017 §2.4：同一条过期岗位，四个读端点的读数必须互相说得通。
+
+    **这条不改变任何行为**——四个端点今天本来就一致，它守的是「将来不许各写一份」。
+    分工写死在 ADR 里：列表**过滤**、详情**标注**、匹配把过期算成 `remaining_time` 的 0 分、
+    角标与时效**无关**。判据仍然只有 `app/core/deadline.is_expired` 一处（ADR-011 2.G），
+    而这里刻意不导入它：断言只比对端点读数，比对源码就成了自证。
+    """
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    token = _register_and_login(client, prefix="expiry")
+    _put_profile(client, token)
+    job_id = _create_published_job(client, token, deadline=yesterday)
+
+    assert job_id not in [job["id"] for job in _list_jobs(client, token)], (
+        "过期岗位默认不出现在列表（2.G）"
+    )
+
+    listed = next(
+        job for job in _list_jobs(client, token, include_expired="true") if job["id"] == job_id
+    )
+    assert listed["is_expired"] is True
+    assert listed["deadline"] == yesterday
+
+    detail = client.get(f"{JOBS_URL}/{job_id}", headers=_headers(token)).json()["data"]["job"]
+    assert detail["is_expired"] is True, "详情按 id 打得开过期岗位（test_jobs.py:937 的同一口径）"
+    assert detail["deadline"] == listed["deadline"], "列表与详情对同一行的时效读数不许分叉"
+
+    match = client.post(match_url(job_id), headers=_headers(token)).json()["data"]
+    remaining = next(item for item in match["terms"] if item["name"] == "remaining_time")
+    assert remaining == {
+        "name": "remaining_time",
+        "weight": 0.10,
+        "value": 0.0,
+        "computed": True,
+        "note": "expired",
+    }, "过期在匹配侧的表达只有这一格，不再造第五个字段（ADR-017 §2.1）"
+    assert match["score"] is not None, (
+        "过期 ≠ 不可评估——`score=null` 那一格只属于「岗位没填要求技能」（ADR-013 §5.1）"
+    )
+
+    coverage = client.get(coverage_url(job_id), headers=_headers(token)).json()["data"]
+    assert [row["name"] for row in coverage["coverage"]] == [
+        skill["name"] for skill in detail["skills"]
+    ], "角标与详情技能表的基准域 U 相同，且**不因过期而改变**（判据 (a) 的推广）"
+
+    # 哨兵：截止日期挪到「今天」，四格读数必须一起翻面。
+    # 没有它，「过期判断恒真」这种退化在本测试里是全绿的——本项目为恒返回 0 的命令记过账。
+    due_today = date.today().isoformat()
+    today_job_id = _create_published_job(
+        client, token, deadline=due_today, title="今天截止的后端岗"
+    )
+    assert today_job_id in [job["id"] for job in _list_jobs(client, token)], (
+        "`deadline = 今天` 仍可投递，列表必须出现"
+    )
+    today_detail = client.get(f"{JOBS_URL}/{today_job_id}", headers=_headers(token)).json()["data"][
+        "job"
+    ]
+    assert today_detail["is_expired"] is False
+    today_remaining = next(
+        item
+        for item in client.post(match_url(today_job_id), headers=_headers(token)).json()["data"][
+            "terms"
+        ]
+        if item["name"] == "remaining_time"
+    )
+    assert today_remaining["note"] == "urgent"
+    assert today_remaining["value"] is not None

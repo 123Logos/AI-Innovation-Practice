@@ -43,6 +43,15 @@
 
 ## 2. 认证与用户
 
+> **本节是目标契约，不是今天的读数**（老板 2026-11-09 定性：「register 收 email+role+organization_code、`GET /me` 返回「组织、角色和可用权限」是没问题的，后续的角色、组织、权限部分必须用」）。
+> 今天实际存在的是：`POST /auth/register` 收 `username`（必填，3–100）+ `password` + 可选 `email`（`app/schemas/auth.py:15-17`），**没有 `role`、没有 `organization_code`**；
+> `GET /me` 只回 `{user: {id, username, email, created_at}}`（`app/api/v1/auth.py:87-88`），组织 / 角色 / 权限三格在 `app/` 下零命中；
+> 登录标识今天的唯一入口是 `username`，且已做大小写归一（`app/services/auth_service.py:72` 的 `strip().lower()`）。
+> 差距由批次 **B5**（组织 + 角色 + 审计日志）与 **B6**（审核流 + 邮箱/手机号登录 + 改密）补齐——**那两批要实现本节，不是反过来把本节改成现状**。
+> 读这段的姿势：`role` / `organization_code` 现在**不是** 422，而是被 Pydantic 静默丢掉——实测（`RegisterRequest(username=..., password=..., role="student", organization_code="AI2026")`）`model_dump()` 只剩 `['email','password','username']`，因为 `app/schemas/auth.py:14` 没有 `extra="forbid"`。
+> **所以别把「客户端能提交」读成「服务端认了」**：今天任何人都注册成同一种身份，而声称自己是教师的那个请求会被无声降级。B5/B6 落 `role`/`organization` 时必须同时决定这一格走 `forbid` 还是显式校验，不能继续静默。
+
+
 ### POST `/auth/register`
 
 请求：
@@ -374,6 +383,7 @@
 - `Decimal` 在 `model_dump(mode="json")` 下输出为**字符串**（`"8000.00"`、`"0.9000"`），不是数字，为避免二进制浮点尾数噪声（`app/schemas/job.py:26-30`）。方向要说清：**响应侧一律是字符串**；**请求侧数字与数字串都收**（Pydantic 宽松模式转 `Decimal`），本文件 §4.4 的请求示例用字符串只是其中一种写法。`/jobs/extract-skills` 的 `data.skills[].confidence` 例外——它是 `float | null`（`app/schemas/job.py:327`，模型自报的原始数字，未经列宽约束），响应里就是 JSON 数字。
 - `created_at` / `updated_at` / `extracted_at` / `deleted_at` 输出为**带 `+08:00` 偏移**的 ISO 串，例如 `2026-11-02T21:25:00+08:00`（`app/core/datetime_display.py:33-44`，调用点 `app/schemas/job.py:237-243`、`:298-308`）。这与本文件 §1「时间：ISO 8601 UTC」那句不一致——§1 属本轮范围外、尚未按实现修订。
 - `is_expired` 是服务端算好的布尔值，前端不需要再实现一遍「`deadline < 今天`」（`app/schemas/job.py:233-235`）。判据对列表与详情是同一个，且不随 `include_expired` 或查看者身份变化（`app/core/deadline.py:15-21`，调用点 `app/services/job_service.py:515`、`:538`）。**比较本身自 ADR-013 §7.5 起住在 `app/core/deadline.py::is_expired`**，`JobService.is_expired` 只是委托——因为匹配侧的「剩余投递时间」必须与列表页的「已过期」用同一个函数，两处各写一份迟早漂移。
+- **过期的跨端点分工**（`ADR-017`，2026-11-09）：列表**过滤**、详情与回收站**标注**、匹配只经 `terms[remaining_time] = {0.0, computed true, note "expired"}` 表达、角标 `coverage` **与时效无关**。这四个动作是四个问题，不是四份判据；「详情也过滤掉过期岗位」被明确否决（写完回读走同一个 `get_readable`，会让刚存成功的过期岗位立刻 404）。这条分工由 `tests/test_job_match.py::test_expired_job_reads_agree_across_every_endpoint` 一个测试钉住，该测试自带「截止日期挪到今天必须翻面」的反面哨兵。
 - `meta.request_id` 取自请求头 `X-Request-ID`，没带时固定回 `req-local`（`app/core/responses.py:6-7`）。
 
 ### 4.10 POST `/jobs/{job_id}/match` — 人岗匹配（同步、纯计算、不落库）
