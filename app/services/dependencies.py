@@ -22,6 +22,7 @@ from app.integrations.skill_extractor import DeepSeekJobSkillExtractor
 from app.repositories.job_repository import JobRepository
 from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.resume_repository import ResumeRepository
+from app.repositories.skill_alias_repository import SkillAliasRepository
 from app.repositories.student_profile_repository import StudentProfileRepository
 from app.repositories.user_repository import UserRepository, session_scope
 from app.schemas.auth import UserRead
@@ -86,9 +87,13 @@ def get_job_service(request: Request) -> Iterator[JobService]:
 def get_match_service(request: Request) -> Iterator[MatchService]:
     """装配匹配服务（ADR-013 §10 第 7c 步的**结构约束**）。
 
-    一个 session、两个仓储、一个 scorer —— 这三样必须在同一次 `session_scope()` 里装好：
+    一个 session、**三个**仓储、一个 scorer —— 这三样必须在同一次 `session_scope()` 里装好：
     复用 `get_job_service()` + `get_profile_service()` 会开两条连接、拿到两个快照，
     而「岗位与档案是同一时刻的状态」是分数可复现的前提（§13 第 8 条）。
+    第三个仓储（`SkillAliasRepository`，B1）是同一句话的延伸而不是新增的例外：
+    别名词表也是这次判定的输入，它必须与岗位、档案同一个快照，否则「昨天灰的今天绿了」
+    连是不是同一次读数都说不清。三个仓储共享一条连接 ⇒ `_gather` 里那次
+    `load_index()` 天然就是**一次**（`ADR-016` §3 不许 N+1 的结构面保证）。
 
     Key 的取法与 `get_job_service` 完全同构：空 Key 时 scorer 装 `None`，
     由服务层翻译成 `degrade_reason="key_missing"`，**不在这里 4xx**——
@@ -99,6 +104,7 @@ def get_match_service(request: Request) -> Iterator[MatchService]:
         yield MatchService(
             job_repository=JobRepository(session),
             profile_repository=StudentProfileRepository(session),
+            alias_repository=SkillAliasRepository(session),
             scorer=DeepSeekEvidenceScorer(api_key) if api_key else None,
         )
 

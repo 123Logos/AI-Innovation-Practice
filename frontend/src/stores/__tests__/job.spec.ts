@@ -224,6 +224,8 @@ function matchMetaFixture(
     weight_sum_used: 0.65,
     no_required_skills: false,
     matcher_version: 'v1',
+    // 批次 B1 的第三条版本轴（ADR-016 §2.5）：词表是数据、判据是代码，两格分开报。
+    alias_version: 'v1',
     note: null,
     ...overrides,
   }
