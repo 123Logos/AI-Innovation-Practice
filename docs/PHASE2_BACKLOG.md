@@ -88,13 +88,13 @@
   - 待评估：需引入拖拽库或富文本编辑器；**重点评估对 A4 网格系统的影响**（分页、行高、打印边距不能因此失真）。
   - 现状（2026-11-07 复核）：`frontend/package.json` 里**没有任何拖拽库**，这是决定不是遗漏——
     纸面上有 13 处 `contenteditable`，`mousedown + mousemove` 会被浏览器解释成「选文字」，
-    拖拽与就地编辑必然抢手势（理由写在 `StylePanel.vue:264-266`，出处 ADR-007 §8.1）。
+    拖拽与就地编辑必然抢手势（理由写在 `StylePanel.vue`，出处 ADR-007 §8.1）。
     实际交付：`↑` / `↓` 调序（`:287/:297`，用例 `resume.spec.ts:120/:134`）、自定义栏目标题、
     纸张与主题；顺序与标题的解析契约由
     `tests/test_document_style_layout.py::test_valid_config_keeps_order_and_titles_verbatim` 钉住。
   - **本条当初的顾虑已经不适用**：排期时不要把「拖拽库对 A4 网格的影响」当成待评估的技术风险重排一遍。
-    仍然真实存在的缺口是**打印一致性靠人**：`ResumePreview.vue:766` 的 `@media print` 取消了缩放并置
-    `min-height: 0`，但 `StylePanel.vue:354` 要求用户自己在打印对话框里选对纸张并勾掉页眉页脚，
+    仍然真实存在的缺口是**打印一致性靠人**：`ResumePreview.vue` 的 `@media print` 取消了缩放并置
+    `min-height: 0`，但 `StylePanel.vue` 要求用户自己在打印对话框里选对纸张并勾掉页眉页脚，
     这一步没有回归测试，也不可能有——它发生在浏览器里。
 
 - [x] **多份简历 / 档案库**（2026-11-07 复核：已实现，上限 20 份）

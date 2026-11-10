@@ -47,9 +47,6 @@ SYMBOL_CITATION = re.compile(
     r"::([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)`"
 )
 
-#: 同一个反引号闭包之外、被文档点名的候选符号：`` `foo()` `` 或 `` `foo` ``。
-NAMED_SYMBOL = re.compile(r"`([A-Za-z_][A-Za-z0-9_]{2,})(?:\(\))?`")
-
 #: 只有这三种形态算「点名了代码符号」，其余反引号内容是文案、类名、枚举值。
 _SYMBOL_HINT = re.compile(r"(?:的|由|在|进|走|读|写)\s*`([A-Za-z_][A-Za-z0-9_]{2,})(?:\(\))?`")
 
@@ -107,10 +104,40 @@ def definition_line(body: list[str], name: str) -> int | None:
     return None
 
 
+#: 同一行里点名的裸文件名引用：`` `AppTopBar.vue:265-284` ``。
+#: v1 看不见这一类，而 `docs/FRONTEND_DESIGN.md` 的证据列恰恰就是这么写的——
+#: 不补上，(b)+(c) 等于留了一条「少写目录就绕过」的旁路。
+BARE_CITATION = re.compile(
+    r"`([A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:py|ts|vue|js|mjs|sql)):(\d+)(?:-(\d+))?`"
+)
+
+#: 同一行点名的符号：`` `foo()` `` 或 `` `foo` ``。
+_ANCHOR_HINT = re.compile(r"(?:的|由|在|进|走|读|写)\s*`([A-Za-z_][A-Za-z0-9_]{2,})(?:\(\))?`")
+
+#: 裸文件名的解析缓存（同名文件在两个目录都出现时不猜，直接放过并计入歧义数）。
+_index: dict[str, str | None] = {}
+
+
+def resolve_bare(name: str) -> str | None:
+    """把 `AppTopBar.vue` 解析成仓库内的唯一路径；有歧义或找不到返回 None。"""
+    if name in _index:
+        return _index[name]
+    hits = [
+        path.relative_to(ROOT).as_posix()
+        for path in ROOT.rglob(name)
+        if path.is_file()
+        and "node_modules" not in path.parts
+        and ".qoder" not in path.parts
+        and "dist" not in path.parts
+    ]
+    _index[name] = hits[0] if len(hits) == 1 else None
+    return _index[name]
+
+
 def check() -> tuple[list[str], dict[str, int]]:
     problems: list[str] = []
     cache: dict[str, list[str]] = {}
-    counts = {"line": 0, "symbol": 0, "anchored": 0}
+    counts = {"line": 0, "symbol": 0, "anchored": 0, "bare": 0}
 
     def body_of(rel: str) -> list[str] | None:
         if rel not in cache:
@@ -125,6 +152,31 @@ def check() -> tuple[list[str], dict[str, int]]:
         lines = doc.read_text(encoding="utf-8").splitlines()
         for line_no, text in enumerate(lines, start=1):
             at = f"{where}:{line_no}"
+
+            # --- 裸文件名形式（`AppTopBar.vue:265`）：先解析成真实路径，再走同一套判据 ---
+            for bare in BARE_CITATION.finditer(text):
+                counts["bare"] += 1
+                rel = resolve_bare(bare.group(1))
+                if rel is None:
+                    problems.append(
+                        f"{at}  裸文件名解析不了：{bare.group(1)}（不存在或有歧义，请写完整路径）"
+                    )
+                    continue
+                body = body_of(rel)
+                if body is None:
+                    problems.append(f"{at}  文件不存在：{rel}")
+                    continue
+                start, end = int(bare.group(2)), int(bare.group(3) or bare.group(2))
+                if end > len(body) or start < 1:
+                    problems.append(f"{at}  行号越界：{rel}:{start}-{end}（全文 {len(body)} 行）")
+                    continue
+                if not body[start - 1].strip() or not body[end - 1].strip():
+                    problems.append(f"{at}  区间首末行是空行：{rel}:{start}-{end}")
+                    continue
+                if rel in VOLATILE_PATHS:
+                    problems.append(
+                        f"{at}  易变文件不许留行号：{rel}:{start}-{end} → 改写成 `{bare.group(1)}::符号`"
+                    )
 
             # --- 形式一：path::symbol —— 符号必须有定义 ---
             for match in SYMBOL_CITATION.finditer(text):
@@ -184,8 +236,9 @@ def check() -> tuple[list[str], dict[str, int]]:
 def main() -> int:
     problems, counts = check()
     print(
-        f"文档代码引用检查：行号式 {counts['line']} 条、符号式 {counts['symbol']} 条、"
-        f"其中锚点核过 {counts['anchored']} 处，问题 {len(problems)} 处。"
+        f"文档代码引用检查：显式路径行号式 {counts['line']} 条、符号式 {counts['symbol']} 条、"
+        f"裸文件名式 {counts['bare']} 条、锚点核过 {counts['anchored']} 处，"
+        f"问题 {len(problems)} 处。"
     )
     for problem in problems:
         print(f"  {problem}", file=sys.stderr)

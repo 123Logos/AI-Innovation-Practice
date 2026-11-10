@@ -79,7 +79,7 @@ class ResumeGenerateRequest(BaseModel):
 ```
 
 服务层按 `user_id` 反查唯一档案，取全部技能/经历/教育交给生成器
-（`resume_service.py:34-47`）。因此同一用户连点三次「生成简历」，会得到
+（`resume_service.py`）。因此同一用户连点三次「生成简历」，会得到
 **3 行 `content_html` 完全相同、只有 `title` 与 `id` 不同的记录**。
 
 同时，`resumes` 目前**没有读取入口**：
@@ -140,12 +140,12 @@ A 的草稿会被 B 读到；反过来，切换后若不先解绑就回填，监
 
 | 位置 | 语义 |
 |---|---|
-| 后端 `resume_service.py:44-47` | `full_name` / `contact` 为空 → 400；无技能或无经历 → 400 |
+| 后端 `resume_service.py` | `full_name` / `contact` 为空 → 400；无技能或无经历 → 400 |
 | 前端 `stores/resume.ts:535 validateForGenerate()` | 同一套规则的中文版，另含邮箱格式、日期未来限制 |
 | 前端 `stores/resume.ts:606 validateForSave()` | 只管「能不能落库」，不拦完整性（保存 422 修复轮的产物） |
 
 改造后这两处都要从「当前用户的档案」改成「当前这份简历的内容」，
-且 `ProfileIncompleteError`（`resume_service.py:19`）的判定基准会变。
+且 `ProfileIncompleteError`（`resume_service.py`）的判定基准会变。
 这不是附带的文案调整，是**语义迁移**。
 
 ### 2.6 先把「多份」拆成两个需求（这一节决定选型方向）
@@ -525,7 +525,7 @@ POST   /resumes/generate             → 不变（生成时额外落一份 snaps
 
 ### 5.5 生成按钮与「当前简历」的绑定
 
-- `StylePanel.vue:56` 的 `store.generate('我的简历')` 必须改成用当前简历的 `title`；
+- `StylePanel.vue` 的 `store.generate('我的简历')` 必须改成用当前简历的 `title`；
 - `generatedResumeId` 目前只是展示用的 `#id`，改造后必须明确：
   它是「当前简历最近一次生成物」，切走再切回时**要不要重新展示**？
   建议切回时清空（宁可让用户重按一次生成，也不要显示一份可能已过期的 HTML）。
@@ -632,7 +632,7 @@ GROUP BY user_id ORDER BY resume_rows DESC LIMIT 10;
 
 - 新增「按用户 + 简历」的归属校验查询（§4.1 的 **【硬约束】**）。
 - `ResumeService` 的完整性判定基准从 `user_id` 换成「这一份简历」
-  （`resume_service.py:34-47`），`ProfileIncompleteError` 的文案也要区分
+  （`resume_service.py`），`ProfileIncompleteError` 的文案也要区分
   「还没建简历」和「简历内容不全」。
 - `ProfileService` 要么多一层 `list`，要么接入新仓储。
 - import-linter 的 5 条 contract 必须继续全绿（仓储不能反向依赖 services、API 不能碰

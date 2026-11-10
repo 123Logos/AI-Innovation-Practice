@@ -32,7 +32,7 @@ Phase 1 的简历生成走 `TemplateResumeGenerator`：字段完整、排版干�
 
 **不做**「模型直接返回整页 HTML」，四条理由都是可验证的既有契约：
 
-- `ResumePreview.vue:23` 用 `DOMParser().parseFromString(html).body.innerHTML` 注入、`:384` 用
+- `ResumePreview.vue` 用 `DOMParser().parseFromString(html).body.innerHTML` 注入、`:384` 用
   `v-html` 渲染。模型产 HTML 等于开一条**存储型 XSS** 通道（`<img onerror>` 会执行）；
   现在这条路径上每个用户字段仍由 `escape()` 兜住。
 - 生成物必须与预览 DOM 的类名一一对应（ADR-006/007），否则在线编辑与导出错位。

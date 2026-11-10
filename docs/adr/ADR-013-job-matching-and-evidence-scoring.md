@@ -205,7 +205,7 @@ PRD `:181` 要求「至少展示三条可验证证据或明确缺口」：`cover
 
 - 迁移：`skills` 表 drop `self_rating` 列；`downgrade` 重新加回为 `SmallInteger NOT NULL server_default '3'`（能回退，且回退后与今天的数据分布一致）。
 - 代码：`SkillInput` / `SkillRead` / `SkillDraft`（`app/schemas/resume.py:32`、`app/schemas/profile.py:170`、`app/services/profile_service.py:254`、`app/services/resume_service.py::generate`）同步去掉字段；仓储两处构造点删除。
-- 前端：`DEFAULT_SKILL_RATING`、草稿抹平逻辑、`api/types.ts:80`、以及 `resume.ts:984` 的字段白名单一并清理。
+- 前端：`DEFAULT_SKILL_RATING`、草稿抹平逻辑、`api/types.ts:80`、以及 `resume.ts` 的字段白名单一并清理。
 - 文档：`docs/API.md` 技能字段表与示例载荷。
 
 理由：留着它，等于让每一个新来的人（包括未来的我自己）以为「技能上有熟练度」，而它恒等于 3。**一个恒定值的必填字段比没有字段更坏**：它要求客户端必须编一个数。
@@ -352,7 +352,7 @@ preference=None/no_target_role    remaining_time=None/no_deadline
 
 ### 6.1 上面那句自证不够严（§13 复核更正，实现以此节为准）
 
-「匹配成功后请求确实会转发 DeepSeek」这句在字面上是**假的**，我写的时候没算过。实测 `client.ts:224-230` 现在的判据是
+「匹配成功后请求确实会转发 DeepSeek」这句在字面上是**假的**，我写的时候没算过。实测 `client.ts` 现在的判据是
 `BYOK_KEY_PATHS.includes(path)` —— **整段相等**，模式机制今天不存在，加正则等于新引入一种判据。而 `/^\/jobs\/[^/]+\/match$/`
 会命中 `/jobs/extract-skills/match`、`/jobs/trash/match` 这类**根本没有路由**的路径（`[^/]+` 吃得下 `extract-skills`），
 这些请求返回 404，一个字节都没发往 DeepSeek。所以「命中即转发」只能对**已注册的路由**说。
@@ -360,7 +360,7 @@ preference=None/no_target_role    remaining_time=None/no_deadline
 可辩护、且能测的版本是**路由表论证**，三条断言分工明确，全部加进 `frontend/src/api/__tests__/byok.spec.ts` 现有的注入矩阵：
 
 1. **正向**：`/jobs/{id}/match` 注入 Key（`{id}` 取一个真实 uuid 与一个非数字串，防止判据意外写成 uuid 形状）。
-2. **不扩张**：`/jobs/x/y/match`、`/jobs/match`、`/jobs/1/match/extra`、`/jobs/1/match/`（尾斜杠走 `client.ts:229` 的既有归一化）、`/jobs/1/match?x=1` 五种都不注入 —— 前四种是模式本身不该吃到的形状，后两种是「归一化之后仍只认那一条」。
+2. **不扩张**：`/jobs/x/y/match`、`/jobs/match`、`/jobs/1/match/extra`、`/jobs/1/match/`（尾斜杠走 `client.ts` 的既有归一化）、`/jobs/1/match?x=1` 五种都不注入 —— 前四种是模式本身不该吃到的形状，后两种是「归一化之后仍只认那一条」。
 3. **路由表闭合**：这条**不属于 vitest**（前端不知道后端有哪些路由）。它落在后端测试里：从 `app.openapi()["paths"]` 取 `/jobs` 下
    **所有已注册路由**，断言「凡是能被这条正则命中的 `POST` 路由，其处理器一定走 DeepSeek」。判定方式用白名单式的显式集合，
    而不是猜函数体：今天的答案是一个已知列表（`/jobs/{job_id}/match` 一条），将来新增匹配形状的路由时这条测试必须红。
@@ -927,7 +927,7 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
 | 2 | 「AI 失败退化成 200」与三个全局 AI 处理器冲突，实现时最自然的写法会把它变成红字报错 | `app/main.py:259/266/277` 分别 400/401/502；异常类 `ResumeApiKeyMissingError` / `ResumeCopyRejectedError` / `ResumeCopyUnavailableError`（`app/services/resume_service.py:43/47/51`） | §3 新增「状态码边界」；§6.5 新增 `degrade_reason` 五值 + 五情形各一测试 |
 | 3 | 交给模型的输入没有上界，而它由用户自由文本决定 | 技能 ≤8 / 经历 ≤3（`app/schemas/profile.py:271-272`），但 `description`/`responsibility` 无长度约束（`app/schemas/resume.py:67-68`，列型 `Text`）；dev 库 8 条经历 `description` p50 44 / p90 102 / **max 615** | §6 第 2 点改窗口化（±80 字）+ `fragments_truncated`；不给 `ExperienceInput` 加 `max_length`（那是截断用户数据，另一个决定） |
 | 4 | §7.5 与 §5.1 的「未知怎么办」自相矛盾，常数 0.5 进分母会把总分往中间挤 | `status='published'` 6 行、`deadline is null` 2 行（其中 1 行是回收站异常行）→ 真实可点 5 个里 1 个走这一支 | §7.5 改为 `computed=False`，键名 `freshness` → `remaining_time`，UI 改名「剩余投递时间」 |
-| 5 | §6 的白名单自证不成立：正则也命中**不存在**的路径，那些请求不转发 DeepSeek | `client.ts:224` 现在是 `BYOK_KEY_PATHS.includes(path)` 整段相等，模式机制今天不存在；`:229` 只做查询串与尾斜杠归一化 | §6.1 换成路由表论证 + 三条断言（正向 / 不扩张 / 已注册路由闭合），并进 `byok.spec.ts` 现有注入矩阵 |
+| 5 | §6 的白名单自证不成立：正则也命中**不存在**的路径，那些请求不转发 DeepSeek | `client.ts` 现在是 `BYOK_KEY_PATHS.includes(path)` 整段相等，模式机制今天不存在；`:229` 只做查询串与尾斜杠归一化 | §6.1 换成路由表论证 + 三条断言（正向 / 不扩张 / 已注册路由闭合），并进 `byok.spec.ts` 现有注入矩阵 |
 | 6 | §8 故意不做计数闭合，等于把一条漏计写进设计 | 少一个「模型没回这条」的通道，等式必然不闭合 | 新增 `dropped_missing_output` + 四桶互斥次序 + **要求写成断言**；同时更正我引用的 ADR-011 「先例」其实是已知缺陷 |
 | 7 | 「请求体为空 ⇒ 用哪份档案」是隐式选择，用户会以为分数算错 | `student_profiles.is_default`（`app/repositories/student_profile_repository.py:76`）；岗位页与编辑页无共享档案上下文 | §3 响应新增 `profile_id` / `profile_title` / `job_id` 回显 |
 | 8 | 编排层若复用两个既有 DI 会开两个 session、两个快照 | `app/services/dependencies.py:65-84`：每个 `get_*_service` 各自 `session_scope()` | §10 第 7c 条：一个新 DI、一个 session、两个仓储 |
