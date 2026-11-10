@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 
-import AppTopBar from '@/components/AppTopBar.vue'
 import ResumeEditor from '@/components/ResumeEditor.vue'
 import ResumePreview from '@/components/ResumePreview.vue'
 import StylePanel from '@/components/StylePanel.vue'
@@ -46,42 +45,37 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app-shell">
-    <AppTopBar />
+  <p v-if="loadError" class="load-error">{{ loadError }}</p>
+  <p v-else-if="store.loading" class="load-hint">正在加载档案…</p>
 
-    <p v-if="loadError" class="load-error">{{ loadError }}</p>
-    <p v-else-if="store.loading" class="load-hint">正在加载档案…</p>
-
-    <div v-if="store.pendingDraft" class="draft-banner-shell">
-      <section class="draft-banner">
-        <p class="draft-banner__text">
-          检测到上次未保存的草稿<template v-if="draftSavedAt">（{{ draftSavedAt }}）</template>，
-          是否恢复？
-        </p>
-        <div class="draft-banner__actions">
-          <button class="draft-banner__restore" type="button" @click="store.restoreDraft()">
-            恢复草稿
-          </button>
-          <button class="draft-banner__discard" type="button" @click="store.discardDraft()">
-            丢弃
-          </button>
-        </div>
-      </section>
-    </div>
-
-    <main class="resume-workspace">
-      <ResumeEditor class="editor" />
-      <ResumePreview />
-      <StylePanel class="style-panel" />
-      <p class="footer-hint">
-        表单与纸面的改动都要点「保存修改」才会保存 · 生成结果基于「已保存」的档案版本
+  <div v-if="store.pendingDraft" class="draft-banner-shell">
+    <section class="draft-banner">
+      <p class="draft-banner__text">
+        检测到上次未保存的草稿<template v-if="draftSavedAt">（{{ draftSavedAt }}）</template>，
+        是否恢复？
       </p>
-    </main>
+      <div class="draft-banner__actions">
+        <button class="draft-banner__restore" type="button" @click="store.restoreDraft()">
+          恢复草稿
+        </button>
+        <button class="draft-banner__discard" type="button" @click="store.discardDraft()">
+          丢弃
+        </button>
+      </div>
+    </section>
   </div>
+
+  <main class="resume-workspace">
+    <ResumeEditor class="editor" />
+    <ResumePreview />
+    <StylePanel class="style-panel" />
+    <p class="footer-hint">
+      表单与纸面的改动都要点「保存修改」才会保存 · 生成结果基于「已保存」的档案版本
+    </p>
+  </main>
 </template>
 
 <style scoped>
-.app-shell { min-height: 100vh; background: var(--ui-canvas); }
 .resume-workspace { display: grid; grid-template-columns: 340px minmax(420px, 1fr) 220px; align-items: start; gap: 32px; width: min(1440px, 100%); margin: 0 auto; padding: 32px 48px 72px; }
 .footer-hint { grid-column: 1 / -1; margin: 0; color: var(--ui-ink-faint); font-size: 12px; text-align: center; }
 .load-error, .load-hint { width: min(1440px, 100%); margin: 0 auto; padding: 12px 48px 0; font-size: 13px; }
@@ -123,8 +117,6 @@ onUnmounted(() => {
   .draft-banner__actions { justify-content: flex-end; }
 }
 @media print {
-  /* 纸张是白色介质：暗色模式的深底不能跟着进打印。 */
-  .app-shell { background: #fff; }
   .resume-workspace { display: block; padding: 0; }
   .editor, .style-panel, .footer-hint, .load-error, .load-hint, .draft-banner-shell { display: none; }
 }

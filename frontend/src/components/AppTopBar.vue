@@ -21,6 +21,7 @@ import { RouterLink, useRouter } from 'vue-router'
 
 import { clearDeepSeekKey, hasDeepSeekKey, isApiError, setDeepSeekKey } from '@/api'
 import type { ProfileSortField, ProfileSummary } from '@/api/types'
+import { TOP_BAR_MODULES } from '@/config/modules'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
 import { useJobStore } from '@/stores/job'
@@ -413,14 +414,29 @@ async function handleLogout(): Promise<void> {
 
     <div class="user-area">
       <!--
-        岗位库入口（ADR-011 议题 3.A）：顶栏一条文字入口，不加侧边栏。
-        与「AI 设置 / 退出登录」同一套 32px 控件规格与 `--ui-*` 令牌。
+        一级导航入口（ADR-011 议题 3.A + 守则 L4）。
+
+        模块名与路由一律来自模块表 `@/config/modules`，这里不写死任何模块名：
+        「一张表」的判据是**新增加一个模块时只改那张表**，而不是「这张表旁边另有一份也能用」。
+
+        其余取舍不变（议题 3.A / 3.D 裁定）：顶栏一条文字入口、不加侧边栏；
+        「岗位库」不进「更多」菜单、也不降级成图标——手机是学生的主力设备，
+        这条功能的入口藏起来等于没有。窄屏省下的宽度预算从「AI 设置 / 退出登录」出。
         岗位自己的回收站不在这里（顶栏的「回收站」属于简历，两个混在一层会让人
         分不清删掉的是什么），入口在 `/jobs` 列表页顶部的「我的删除」。
-        议题 3.D 明确它「不进更多菜单、也不降级成图标」：手机是学生的主力设备，
-        这条功能的入口藏起来等于没有；窄屏省下的宽度预算从「AI 设置 / 退出登录」出。
+
+        `class="jobs-entry"` 这个类名本批沿用不改：`AppTopBar.spec.ts` 的一级项顺序断言
+        按它取值（守则 R1 的结构锁，改写需要老板点头），而通用化命名属于批次 F3 的导航重排。
+        模块表的 `iconPaths` 本批也不渲染——加图标是视觉改动，同样归批次 F3。
       -->
-      <RouterLink class="jobs-entry" :to="{ name: 'job-board' }">岗位库</RouterLink>
+      <RouterLink
+        v-for="item in TOP_BAR_MODULES"
+        :key="item.key"
+        class="jobs-entry"
+        :to="{ name: item.routeName }"
+      >
+        {{ item.name }}
+      </RouterLink>
 
       <!-- 简历切换器 -->
       <div ref="menuRoot" class="profile-switcher">

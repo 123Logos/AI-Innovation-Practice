@@ -312,8 +312,9 @@ async function mountDetail(overrides: Record<string, unknown> = {}) {
   const wrapper = mount(JobDetailView, {
     attachTo,
     global: {
+      // 顶栏不再由本视图摆（批次 F2 · `AppLayout`），所以这里连 `stubs` 都不需要：
+      // mount 出来就是内容区，弹层与断言的落点一寸没动。
       plugins: [pinia, router],
-      stubs: { AppTopBar: true },
     },
   })
   await flushPromises()

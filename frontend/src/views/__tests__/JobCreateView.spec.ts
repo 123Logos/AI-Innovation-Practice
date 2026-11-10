@@ -178,9 +178,10 @@ async function mountView(props: Record<string, unknown> = {}) {
   const wrapper = mount(JobCreateView, {
     props,
     global: {
+      // 批次 F2 起这里不再需要 `stubs: { AppTopBar: true }`：顶栏已经由 `AppLayout` 摆，
+      // 视图本身不含顶栏，直接 mount 拿到的就是纯内容区（外框与顶栏的在场由
+      // `components/__tests__/AppLayout.spec.ts` 钉，不靠这里的桩间接保证）。
       plugins: [createPinia(), router],
-      // 顶栏自带两个 document 监听与一堆简历 store 依赖，与本页要验的东西无关。
-      stubs: { AppTopBar: true },
     },
   })
   await flushPromises()

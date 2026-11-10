@@ -1,0 +1,231 @@
+/**
+ * 布局守则的源码级闸门（批次 F2 · 守则 L1 / L2 / L4 / L5）。
+ *
+ * 为什么是「读源码」而不是「挂载后断言」：这三条的判据本身就是**写法**。
+ * jsdom 不跑媒体查询（`AppTopBar.spec.ts` 文件头同一句话），挂载测不出第五个断点；
+ * 而「顶栏被摆了两次」在页面里恰恰长得跟一次一样。能判它们的只有扫描 + 一条挂载断言，
+ * 挂载那一半在 `src/components/__tests__/AppLayout.spec.ts`，本文件是另一半。
+ *
+ * 与 `scripts/check_route_reachability.py`（G5）的分工：那条查「未挂路由的视图文件」，
+ * 属于**还没批进 CI 的闸**（`docs/ROADMAP.md` §6 第 2 条待老板拍），所以它不进本文件——
+ * 把待拍的闸借一条已批准的 vitest 步骤偷偷开起来，是越界，不是补位。
+ * 本文件只查已经白纸黑字批准在 CI 里的东西（守则 §9 G6：vitest 这道闸本来就在跑）。
+ */
+
+import { readFileSync, readdirSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+
+import { describe, expect, it } from 'vitest'
+
+import { APP_MODULES, TOP_BAR_MODULES } from '@/config/modules'
+import { BREAKPOINTS } from '@/composables/useViewport'
+import router from '@/router'
+
+/**
+ * 扫描根目录。
+ *
+ * 不用 `import.meta.url`：vitest 在 jsdom 环境里把模块 URL 报成 `http://`，
+ * `fileURLToPath` 当场抛「URL must be of scheme file」（实测）。`process.cwd()` 在
+ * vitest 与 CI 里都是 `frontend/`（`npm run test` / `working-directory: frontend`），
+ * 而目录不对时宁可在这里立刻炸掉，也不要让下面每条断言对着一个空文件列表假绿。
+ */
+const SRC_ROOT = resolve(process.cwd(), 'src')
+
+if (!readdirSync(SRC_ROOT, { withFileTypes: true }).some((entry) => entry.name === 'components')) {
+  throw new Error(`扫描根目录不像 frontend/src：${SRC_ROOT}`)
+}
+
+interface SourceFile {
+  /** 相对 `frontend/src` 的路径，斜杠统一成正斜杠，报错才读得懂。 */
+  rel: string
+  text: string
+}
+
+function walk(dir: string, out: SourceFile[] = []): SourceFile[] {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const absolute = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      // 测试目录里的桩合法地要写 `matchMedia`、`@media` 之类，扫它只会自缚手脚。
+      if (entry.name === '__tests__') continue
+      walk(absolute, out)
+      continue
+    }
+    if (!/\.(?:ts|vue|css)$/.test(entry.name)) continue
+    out.push({
+      // 相对 `frontend/src`、斜杠统一成正斜杠：断言里的期望值才写得干净，报错才读得懂。
+      rel: absolute.slice(SRC_ROOT.length + 1).split('\\').join('/'),
+      text: readFileSync(absolute, 'utf8'),
+    })
+  }
+  return out
+}
+
+const sources = walk(SRC_ROOT)
+
+function file(rel: string): SourceFile {
+  const found = sources.find((source) => source.rel === rel)
+  if (!found) throw new Error(`找不到源文件：${rel}`)
+  return found
+}
+
+/** 去掉 HTML 注释：判据管的是**渲染出来的标记**，注释里提一句模块名不算摆了一个入口。 */
+function withoutHtmlComments(text: string): string {
+  return text.replace(/<!--[\s\S]*?-->/g, '')
+}
+
+/** SFC 的 `<template>` 段（不含注释以外的东西一律不解析，够用且不会误伤 `<style>`）。 */
+function templateOf(text: string): string {
+  const match = /<template>([\s\S]*)<\/template>/.exec(text)
+  return match?.[1] ?? ''
+}
+
+/**
+ * 被路由真正引用的视图（从 `router/index.ts` 的 import 段读）。
+ *
+ * 只对这些文件提要求：`views/DashboardView.vue` 是守则 §11 登记的规划期资产
+ * （批次 F7 才对齐），它现在还自带 `app-shell`，把它算进来等于本批偷偷改了它的范围。
+ * 未被路由引用的视图由 G5 那条脚本负责，不在这里判。
+ */
+function routedViewFiles(): string[] {
+  const imports = [...file('router/index.ts').text.matchAll(/from '@\/views\/([\w.-]+\.vue)'/g)]
+  return imports.map((match) => `views/${match[1]}`)
+}
+
+describe('守则 L1：一个布局，一处定义', () => {
+  it('顶栏只被 AppLayout 摆一次', () => {
+    const placers = sources.filter((source) => source.text.includes('<AppTopBar'))
+
+    expect(placers.map((source) => source.rel)).toEqual(['components/AppLayout.vue'])
+  })
+
+  it('AppLayout 自己就是那一处：一个外框 + 一个顶栏 + 一个出口', () => {
+    const layout = withoutHtmlComments(templateOf(file('components/AppLayout.vue').text))
+
+    expect(layout.match(/class="app-shell"/g) ?? []).toHaveLength(1)
+    expect(layout.match(/<AppTopBar/g) ?? []).toHaveLength(1)
+    expect(layout.match(/<RouterView/g) ?? []).toHaveLength(1)
+  })
+
+  it('被路由引用的 8 个视图里既不摆顶栏，也不自带 app-shell 外框', () => {
+    const views = [...new Set(routedViewFiles())]
+    // 反向护栏：路由表读空了上面几条也会绿，所以先确认真的读到了 8 个视图
+    // （6 个带外框的 + 登录 + 注册；`job-create` 与 `job-edit` 共用一个组件，所以是 8 不是 9）。
+    expect(views).toHaveLength(8)
+    // DashboardView 不在这 8 个里，正是本用例**不**扫它的原因（它是 G5 的豁免项，批次 F7 才对齐）。
+    expect(views).not.toContain('views/DashboardView.vue')
+
+    for (const rel of views) {
+      const text = withoutHtmlComments(templateOf(file(rel).text))
+      expect(text, `${rel} 不许再手工摆顶栏`).not.toContain('<AppTopBar')
+      expect(text, `${rel} 不许再自带外框`).not.toContain('app-shell')
+    }
+  })
+
+  it('视图的 scoped 样式里也没有第二份 .app-shell 规则', () => {
+    for (const rel of routedViewFiles()) {
+      expect(file(rel).text, `${rel} 的外框样式应归 AppLayout`).not.toContain('.app-shell')
+    }
+  })
+})
+
+describe('守则 L2：断点只用同一组值', () => {
+  // `number` 而不是表推导出的字面量联合：扫描到的宽度是任意数字，
+  // 「在不在表里」正是本组用例要判的事，把它写进类型里等于提前把答案塞给断言。
+  const allowed = new Set<number>(Object.values(BREAKPOINTS))
+
+  it('扫描真的读到了带 @media 宽度的文件（否则下一条是空检）', () => {
+    const withWidthMedia = sources.filter((source) =>
+      /@media[^{]*\((?:max|min)-width:/.test(source.text),
+    )
+    expect(withWidthMedia.length).toBeGreaterThanOrEqual(5)
+  })
+
+  it('每一个 @media 宽度数值都来自 BREAKPOINTS 表', () => {
+    for (const source of sources) {
+      for (const match of source.text.matchAll(/@media[^{]*?\((?:max|min)-width:\s*(\d+)px\)/g)) {
+        const value = Number(match[1])
+        expect(
+          allowed.has(value),
+          `${source.rel} 用了表外的断点 ${value}px；要加先加进 composables/useViewport.ts`,
+        ).toBe(true)
+      }
+    }
+  })
+
+  it('宽度相关的 matchMedia 只出现在 composables/useViewport.ts 一处', () => {
+    // 正向护栏：收口点自己得真的在用 `matchMedia`，否则「别处都没有」这条会因为
+    // 全仓一处都不存在而假绿（`useViewport.ts` 被删空也会绿，那是要拦的）。
+    expect(file('composables/useViewport.ts').text).toContain('window.matchMedia(query)')
+
+    const offenders = sources
+      .filter((source) => source.rel !== 'composables/useViewport.ts')
+      .filter((source) => /matchMedia\s*\(/.test(source.text))
+      // `theme.ts` 那两处查的是 `prefers-color-scheme`：配色偏好不是视口宽度，不在 L2 射程内。
+      .filter((source) => /matchMedia\s*\(\s*['"`][^'"()]*width/.test(source.text))
+      .map((source) => source.rel)
+
+    expect(offenders).toEqual([])
+  })
+})
+
+describe('守则 L4：导航条目只有一张表', () => {
+  it('模块描述符的形状只存在于 config/modules.ts', () => {
+    const declarers = sources
+      .filter((source) => /routeName:/.test(source.text))
+      .map((source) => source.rel)
+
+    expect(declarers).toEqual(['config/modules.ts'])
+  })
+
+  it('顶栏模板里没有写死的模块名，文案一律来自表', () => {
+    const template = withoutHtmlComments(templateOf(file('components/AppTopBar.vue').text))
+
+    // 顶栏要渲染的那些名字（本批即「岗位库」）不许再以字面量出现在标记里。
+    for (const module of TOP_BAR_MODULES) {
+      expect(template).not.toContain(module.name)
+    }
+    // 正向：它确实读了表，否则上面那条会因为「什么都没渲染」而假绿。
+    expect(file('components/AppTopBar.vue').text).toContain("from '@/config/modules'")
+    expect(template).toContain('TOP_BAR_MODULES')
+  })
+
+  /**
+   * 这一条刻意**不**写成「视图里不许出现模块名」：`JobBoardView.vue` / `JobTrashView.vue`
+   * 的 `<p class="eyebrow">岗位库</p>` 是页面小标题，不是导航条目，扫它会误伤。
+   * L4 的「只有一张表」由上面两条合起来钉住：能当导航用的描述符形状（带 `routeName`）
+   * 全仓只有一处声明，而顶栏渲染的那几个名字在标记里没有字面量。
+   *
+   * 已知没被本文件钉住的一格：`views/DashboardView.vue:7-13` 那份硬编码模块数组
+   * （守则 L4 违例、§11 登记在册）。它归批次 F7，本批不许动那个文件，
+   * 所以也不在这里为它写豁免——登记在交付说明的「未解决」里。
+   */
+  it('除顶栏外，没有任何组件把模块表再抄一份成自己的数组', () => {
+    const consumers = sources
+      .filter((source) => /from '@\/config\/modules'/.test(source.text))
+      .map((source) => source.rel)
+
+    // 今天只许有顶栏这一个消费者；F3 的抽屉 / 切换器进来时改这一格，
+    // 而不是让谁「顺手」在组件里贴一份名字。
+    expect(consumers).toEqual(['components/AppTopBar.vue'])
+  })
+})
+
+describe('守则 L5：不进没有实现的入口', () => {
+  it('表不为空，且每一项的 routeName 在真实路由表里解析得到', () => {
+    expect(APP_MODULES.length).toBeGreaterThan(0)
+
+    for (const module of APP_MODULES) {
+      expect(router.hasRoute(module.routeName), `${module.key} 指向的路由不存在`).toBe(true)
+    }
+  })
+
+  it('每一项的登录条件与路由记录上的 meta 一致（两份表不许各说各话）', () => {
+    for (const module of APP_MODULES) {
+      const record = router.getRoutes().find((route) => route.name === module.routeName)
+      expect(record, `${module.routeName} 没有路由记录`).toBeDefined()
+      expect(record?.meta.requiresAuth, `${module.routeName} 的 requiresAuth 与表不一致`).toBe(
+        module.requiresAuth,
+      )
+    }
+  })
+})

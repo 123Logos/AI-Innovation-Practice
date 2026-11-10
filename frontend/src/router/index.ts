@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 
 import { armSessionExpiredNotice, setUnauthorizedHandler } from '@/api/client'
+import AppLayout from '@/components/AppLayout.vue'
 import { useAuthStore } from '@/stores/auth'
 import JobBoardView from '@/views/JobBoardView.vue'
 import JobCreateView from '@/views/JobCreateView.vue'
@@ -21,62 +22,80 @@ declare module 'vue-router' {
 }
 
 const routes: RouteRecordRaw[] = [
-  {
-    path: '/',
-    name: 'resume-editor',
-    component: ResumeEditorView,
-    meta: { requiresAuth: true },
-  },
-  {
-    path: '/trash',
-    name: 'recycle-bin',
-    component: RecycleBinView,
-    meta: { requiresAuth: true },
-  },
   /*
-   * 岗位库五条路由（ADR-011 议题 3.B）。
+   * 需要顶栏的页面统一收在 `AppLayout` 之下（守则 L1）。
    *
-   * 声明顺序是硬要求：`/jobs/new`、`/jobs/trash` 这类静态段必须排在 `/jobs/:id`
-   * **之前**。Vue Router 本身按段的静态/动态权重打分排序，写错顺序未必立刻出问题，
-   * 但 `/jobs/trash` 一旦落到 `/:id` 后面，就会被当成「id = trash 的详情页」——
-   * 后端 `app/api/v1/jobs.py:3-5` 记录过同一个坑，这里按同一条规则排布，
-   * 并在 `stores/__tests__/job.spec.ts` 里留一条 `resolve()` 断言钉住它。
+   * 外层这条记录**没有 name**：它是外框不是目的地，给它一个名字只会多出一个
+   * 「谁都能跳、跳过去却什么都没摆」的假入口。`meta.requiresAuth` 逐条写在 children 上，
+   * 不靠外层继承——`router.getRoutes()` 返回的是每条记录**自己**的 meta，
+   * `stores/__tests__/job.spec.ts` 的「五条 jobs 路由全部 requiresAuth」读的就是这一格；
+   * 而 `to.meta` 在守卫里是合并视图，所以守卫与路由表两边读到的是同一个事实。
    *
-   * `job-create` 与 `job-edit` **共用一个组件**（`JobCreateView.vue`），差别由 `props` 传进去。
-   * 两条路由各自给一份 props 工厂而不是让组件去猜 `route.params.id` 的有无：
-   * 「有 id 就是编辑态」是一种会被下一次加路由打破的隐式约定，而显式 `mode` 会。
+   * `views/DashboardView.vue` 至今不在这棵树里：它是守则 §11 登记的规划期资产
+   * （批次 F7 才对齐视觉体系并挂路由），`scripts/check_route_reachability.py` 的豁免名单收着它。
    */
   {
-    path: '/jobs',
-    name: 'job-board',
-    component: JobBoardView,
-    meta: { requiresAuth: true },
-  },
-  {
-    path: '/jobs/new',
-    name: 'job-create',
-    component: JobCreateView,
-    props: () => ({ mode: 'create' as const }),
-    meta: { requiresAuth: true },
-  },
-  {
-    path: '/jobs/trash',
-    name: 'job-trash',
-    component: JobTrashView,
-    meta: { requiresAuth: true },
-  },
-  {
-    path: '/jobs/:id/edit',
-    name: 'job-edit',
-    component: JobCreateView,
-    props: (route) => ({ mode: 'edit' as const, jobId: String(route.params.id ?? '') }),
-    meta: { requiresAuth: true },
-  },
-  {
-    path: '/jobs/:id',
-    name: 'job-detail',
-    component: JobDetailView,
-    meta: { requiresAuth: true },
+    path: '/',
+    component: AppLayout,
+    children: [
+      {
+        path: '',
+        name: 'resume-editor',
+        component: ResumeEditorView,
+        meta: { requiresAuth: true },
+      },
+      {
+        path: 'trash',
+        name: 'recycle-bin',
+        component: RecycleBinView,
+        meta: { requiresAuth: true },
+      },
+      /*
+       * 岗位库五条路由（ADR-011 议题 3.B）。
+       *
+       * 声明顺序是硬要求：`jobs/new`、`jobs/trash` 这类静态段必须排在 `jobs/:id`
+       * **之前**。Vue Router 本身按段的静态/动态权重打分排序，写错顺序未必立刻出问题，
+       * 但 `jobs/trash` 一旦落到 `/:id` 后面，就会被当成「id = trash 的详情页」——
+       * 后端 `app/api/v1/jobs.py:3-5` 记录过同一个坑，这里按同一条规则排布，
+       * 并在 `stores/__tests__/job.spec.ts` 里留一条 `resolve()` 断言钉住它。
+       *
+       * `job-create` 与 `job-edit` **共用一个组件**（`JobCreateView.vue`），差别由 `props` 传进去。
+       * 两条路由各自给一份 props 工厂而不是让组件去猜 `route.params.id` 的有无：
+       * 「有 id 就是编辑态」是一种会被下一次加路由打破的隐式约定，而显式 `mode` 会。
+       */
+      {
+        path: 'jobs',
+        name: 'job-board',
+        component: JobBoardView,
+        meta: { requiresAuth: true },
+      },
+      {
+        path: 'jobs/new',
+        name: 'job-create',
+        component: JobCreateView,
+        props: () => ({ mode: 'create' as const }),
+        meta: { requiresAuth: true },
+      },
+      {
+        path: 'jobs/trash',
+        name: 'job-trash',
+        component: JobTrashView,
+        meta: { requiresAuth: true },
+      },
+      {
+        path: 'jobs/:id/edit',
+        name: 'job-edit',
+        component: JobCreateView,
+        props: (route) => ({ mode: 'edit' as const, jobId: String(route.params.id ?? '') }),
+        meta: { requiresAuth: true },
+      },
+      {
+        path: 'jobs/:id',
+        name: 'job-detail',
+        component: JobDetailView,
+        meta: { requiresAuth: true },
+      },
+    ],
   },
   {
     path: '/login',
