@@ -54,7 +54,7 @@ function onExperienceInput(
     <div class="panel-heading">
       <p class="eyebrow">简历编辑</p>
       <h1>完善你的简历</h1>
-      <p class="panel-intro">改动会实时同步到中央预览，点预览区上方的「保存修改」才落库。</p>
+      <p class="panel-intro">改动会实时同步到中央预览，点预览区上方的「保存修改」才会保存。</p>
     </div>
 
     <section class="form-section">
@@ -89,7 +89,7 @@ function onExperienceInput(
           type="text"
           maxlength="200"
           :value="store.draft.target_role"
-          placeholder="选填，如「大模型算法实习生」；填了才能算这一项匹配"
+          placeholder="选填，如「算法实习生」；填了才能算这一项匹配"
           @input="onProfileInput('target_role', $event)"
         />
       </label>

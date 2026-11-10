@@ -74,7 +74,7 @@ onUnmounted(() => {
       <ResumePreview />
       <StylePanel class="style-panel" />
       <p class="footer-hint">
-        表单与纸面的改动都要点「保存修改」才落库 · 生成结果基于「已保存」的档案版本
+        表单与纸面的改动都要点「保存修改」才会保存 · 生成结果基于「已保存」的档案版本
       </p>
     </main>
   </div>

@@ -338,7 +338,8 @@ function closeAiSettings(): void {
 function submitAiKey(): void {
   const value = aiKeyDraft.value.trim()
   if (!value) {
-    aiSettingsError.value = '请粘贴一个非空的 DeepSeek API Key。'
+    // ui-copy:allow C2 唯一豁免：这句话指向用户自己去 DeepSeek 复制的那串凭据，改名他会找不到
+    aiSettingsError.value = '这里还空着——把你的 DeepSeek API Key 粘进来才行。'
     return
   }
   setDeepSeekKey(value)
@@ -460,7 +461,7 @@ async function handleLogout(): Promise<void> {
               :aria-label="`当前按${sortLabel}${sortDirectionLabel}，点击切换方向`"
               @click="handleSortOrder"
             >
-              {{ resume.sortDesc ? '↓' : '↑' }}
+              {{ sortDirectionLabel }}
             </button>
           </div>
 
@@ -613,17 +614,19 @@ async function handleLogout(): Promise<void> {
         >
           <h2 id="ai-settings-heading" class="modal-title">AI 设置</h2>
           <p class="modal-intro">
-            「✨ AI 智能润色」使用你自己的 DeepSeek API Key（模型 <code>deepseek-flash</code>，非流式）；
-            「生成简历」是纯模板，不需要 Key。润色失败只会提示你重试，不会改动表单。
-            Key 只保存在当前标签页的 <code>sessionStorage</code>：关闭标签页即清除，
-            不写 localStorage、不落数据库；服务端只在本次请求的内存里持有它，不写日志。
+            <!-- ui-copy:allow 老板 2026-11-09 定的 C2 唯一豁免：用户必须亲手去 DeepSeek 拿这把凭据，
+                 界面里的原词（DeepSeek API Key）可以出现；删掉它他反而认不出要粘什么。 -->
+            「AI 润色」用的是你自己申请的 DeepSeek API Key；「生成简历」是纯模板，不需要这把 Key。
+            润色失败只会提示你重试，不会改动表单。
+            Key 只留在这个标签页里：关掉标签页就没了，不会存进你的账号，也不会被记录或转发。
           </p>
 
           <p class="ai-settings-status">
-            {{ aiKeySaved ? '当前标签页已配置 Key' : '当前标签页还没有 Key' }}
+            {{ aiKeySaved ? '这个标签页里已经填好了' : '这个标签页里还没填' }}
           </p>
 
           <label class="modal-field">
+            <!-- ui-copy:allow 输入框标签：与他 DeepSeek 控制台里的叫法一致，是 C2 的唯一豁免 -->
             <span>DeepSeek API Key</span>
             <input
               v-model="aiKeyDraft"
@@ -783,7 +786,7 @@ async function handleLogout(): Promise<void> {
 .sort-chip { border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 3px 8px; color: var(--ui-ink-muted); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 11px; line-height: 1.5; white-space: nowrap; }
 .sort-chip:hover { border-color: var(--theme-rule-soft); color: var(--theme-primary-deep); }
 .sort-chip--active { border-color: var(--theme-primary); color: var(--theme-primary-strong); background: var(--theme-bg-light); font-weight: 600; }
-.sort-direction { margin-left: auto; width: 26px; height: 24px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0; color: var(--theme-primary); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 12px; line-height: 1; }
+.sort-direction { margin-left: auto; width: auto; min-width: 26px; padding: 0 6px; height: 24px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); color: var(--theme-primary); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 12px; line-height: 1; }
 .sort-direction:hover { border-color: var(--theme-rule); background: var(--theme-bg-hover); }
 .sort-chip:focus-visible, .sort-direction:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 1px; }
 

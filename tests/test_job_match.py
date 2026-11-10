@@ -896,3 +896,369 @@ def test_expired_job_reads_agree_across_every_endpoint(client: TestClient) -> No
     )
     assert today_remaining["note"] == "urgent"
     assert today_remaining["value"] is not None
+
+
+# ------------------------------------------------- B1 / ADR-016：别名层的端点级验收
+#
+# 这四条是 `ADR-016` §5 写死的出口标准，逐条对应下面一个测试函数（编号写在各自 docstring）。
+# 层内判据（写入路径的硬约束、索引形状、词表值域在真实 MySQL 上拦不拦得住）在
+# `tests/test_skill_alias_layer.py`，档位顺序在 `tests/test_match_scoring.py`。
+
+
+def _add_alias(canonical_key: str, alias_key: str, scope: str) -> None:
+    """走**唯一写入口** `SkillAliasRepository.add()` 插一行别名。
+
+    为什么这里不用裸 SQL：那会绕过版本尾巴那道硬约束，于是「端点因为别名而变了」与
+    「约束拦不拦得住」两件事混成一件；而且将来那条约束改了，这里会跟着错。
+    """
+    from app.repositories.skill_alias_repository import SkillAliasRepository
+    from app.repositories.user_repository import session_scope
+
+    with session_scope() as session:
+        SkillAliasRepository(session).add(canonical_key, alias_key, scope)
+
+
+def _alias_row_count() -> int:
+    from app.repositories.skill_alias_repository import SkillAliasRepository
+    from app.repositories.user_repository import session_scope
+
+    with session_scope() as session:
+        return SkillAliasRepository(session).count()
+
+
+def _term_of(match: dict, name: str) -> dict:
+    return next(item for item in match["terms"] if item["name"] == name)
+
+
+def _count_alias_queries() -> dict[str, Any]:
+    """开始统计命中 `skill_aliases` 的语句；返回 `{"count": int, "stop": callable}`。
+
+    取证方式是在真实引擎上挂 `before_cursor_execute` 数 SQL（AGENTS.md §4.4 要的是实测，
+    不是「我把循环读了一遍觉得没有」）。
+    """
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    from app.repositories.user_repository import get_engine
+
+    counters: dict[str, Any] = {"count": 0}
+    engine: Engine = get_engine()
+
+    def _record(conn, cursor, statement, parameters, context, executemany) -> None:
+        if "skill_aliases" in statement.lower():
+            counters["count"] += 1
+
+    event.listen(engine, "before_cursor_execute", _record)
+
+    def _stop() -> None:
+        event.remove(engine, "before_cursor_execute", _record)
+
+    counters["stop"] = _stop
+    return counters
+
+
+def test_empty_alias_table_reproduces_the_v1_readings(client: TestClient) -> None:
+    """§5.1：**空表时四条端点读数与 v1 判据逐字相同**，唯一允许的差异是两个版本号。
+
+    「逐字」在这里是整屏字面量：`score`、五项分项的每一格、三档清单的名字、`meta` 的每一个
+    计数。为什么不能只写「断言几个关键值」：§5.1 要防的退化是**接进别名层这件事本身**改变了
+    没有别名时的行为（例如把兜底放到四条规则之前），那种退化在任何一个没被列出来的格子里
+    都可能先出现，列得越全越早红。
+
+    这些数字不是本次改完之后抄的：同一个夹具的 coverage 3/4、`gaps == ["MySQL"]`、
+    `Docker ∈ partial`、确定性 `first["score"] == second["score"]` 早就由
+    `test_match_returns_score_terms_and_three_lists` 与 `test_match_is_deterministic...`
+    钉住了，而那几条本次一个字没改、跑出来仍然绿——那是「空表 = v1」的正面证据。
+    本条把它扩到整个 `meta`。
+    """
+    token = _register_and_login(client, prefix="alias_empty")
+    _put_profile(client, token)
+    job_id = _create_published_job(client, token, deadline="2027-12-22")
+
+    matched = client.post(match_url(job_id), headers=_headers(token)).json()["data"]
+    coverage = client.get(coverage_url(job_id), headers=_headers(token)).json()["data"]
+
+    # 唯一允许的两处差异（§2.5：判据的构成变了，词表内容还没有）。写字面量而不是常量，
+    # 与 `test_match_returns_score_terms_and_three_lists` 对 `weights_version` 的口径同一。
+    assert matched["meta"]["matcher_version"] == "v2"
+    assert matched["meta"]["alias_version"] == "v1"
+    assert coverage["meta"]["matcher_version"] == "v2"
+    assert coverage["meta"]["alias_version"] == "v1"
+    # 「表是空的」这件事本身也要钉住：否则上面的读数相同可能只是别名恰好没影响的巧合。
+    assert _alias_row_count() == 0
+
+    assert matched["score"] == 0.711
+    assert matched["weights_version"] == "v2"
+    assert matched["terms"] == [
+        {"name": "coverage", "weight": 0.45, "value": 0.75, "computed": True, "note": None},
+        {
+            "name": "evidence",
+            "weight": 0.2,
+            "value": 0.333,
+            "computed": True,
+            "note": "keyword_fallback",
+        },
+        {
+            "name": "relevance",
+            "weight": 0.15,
+            "value": None,
+            "computed": False,
+            "note": "not_measurable_v1",
+        },
+        {"name": "preference", "weight": 0.1, "value": 1.0, "computed": True, "note": "contains"},
+        {
+            "name": "remaining_time",
+            "weight": 0.1,
+            "value": 1.0,
+            "computed": True,
+            "note": "open",
+        },
+    ]
+    assert [item["skill"] for item in matched["covered"]] == ["Python", "FastAPI"]
+    assert [item["skill"] for item in matched["partial"]] == ["Docker"]
+    assert [item["skill"] for item in matched["gaps"]] == ["MySQL"]
+    assert matched["meta"] == {
+        "model": None,
+        "prompt_version": None,
+        "evidence_mode": "keyword_fallback",
+        "degrade_reason": "key_missing",
+        "candidate_pairs": 2,
+        "verified_pairs": 2,
+        "dropped_unreferenced": 0,
+        "dropped_unknown_skill": 0,
+        "dropped_unusable_strength": 0,
+        "dropped_missing_output": 0,
+        "clamped_strength": 0,
+        "fragments_truncated": 0,
+        "truncated": False,
+        "finish_reason": None,
+        "weight_sum_used": 0.85,
+        "no_required_skills": False,
+        "matcher_version": "v2",
+        "alias_version": "v1",
+        "note": None,
+    }
+    assert coverage["coverage"] == [
+        {"name": "Python", "status": "covered", "matched_form": "Python"},
+        {"name": "FastAPI", "status": "covered", "matched_form": "FastAPI"},
+        {"name": "MySQL", "status": "missing", "matched_form": None},
+        {"name": "Docker", "status": "partial", "matched_form": "Docker"},
+    ]
+
+
+def test_a_skill_alias_row_lands_in_the_badge_and_keeps_the_union_invariant(
+    client: TestClient, fake_scorer: FakeScorer
+) -> None:
+    """§5.2：加一条 `skill` 域别名行后，badge 与匹配卡的 `covered ∪ partial` 仍然**逐字相同**。
+
+    用的是 `JavaScript` ↔ `js` 这一对：词面四条在「词干不同」那一格直接判否，
+    所以这条命中**只可能**来自别名层——把它放在 weak AI 模式跑，是因为
+    `test_badge_union_still_equals_match_union_in_ai_mode` 已经证明过：两边逐档可以不等、
+    只有并集恒等才算数；换成边界恰好一致的模式，这条断言就是空检。
+
+    **为什么不是 ADR 举的那一对**：§5.2 原文写「加一条 `(python3, python 3.13)` 的别名行后」，
+    而那一对按 §2.2 的硬约束**存不进库**（尾巴 `"3"` vs `"3.13"` 不一致，见
+    `tests/test_skill_alias_layer.py::test_a_pair_with_mismatched_version_tails_is_refused`），
+    而且它本来就被词面规则 4 判成同一个技能（`Python3` 认 `Python 3.13`）——加不加别名行
+    判定都不变，用它测并集不变式等于什么都没测。这一格要老板过目（交付第 6 段）。
+    """
+    fake_scorer.mode = "weak"
+    token = _register_and_login(client, prefix="alias_union")
+    _put_profile(
+        client,
+        token,
+        skills=[{"name": "JS"}, {"name": "Python"}],
+        experiences=[
+            {
+                "title": "两个小工具",
+                "start_date": "2024-03-01",
+                "end_date": "2024-06-30",
+                # 经历里写的是 `JS` 而不是 `JavaScript`：别名让**覆盖**认出了这条要求，
+                # 而 `locate_snippets` 按词干 `javascript` 在原文里找不到出处——
+                # 于是它走「命中却零证据」那一支进 `partial`（`match_scoring.py:752` 那条），
+                # 正是并集不变式最不吃空的一种形状。
+                "description": "用 JS 写过页面，用 Python 写过脚本",
+                "responsibility": "负责两个小工具的联调",
+            }
+        ],
+    )
+    job_id = _create_published_job(
+        client,
+        token,
+        skills=[{"name": "JavaScript", "type": "hard"}, {"name": "Python", "type": "hard"}],
+        deadline="2027-12-22",
+    )
+
+    # 别名行之前的基线：词面四条认不出 `JS` ↔ `JavaScript`，所以它是 missing。
+    before = client.get(coverage_url(job_id), headers=_headers(token)).json()["data"]
+    assert before["coverage"][0] == {
+        "name": "JavaScript",
+        "status": "missing",
+        "matched_form": None,
+    }, "前置条件没成立：词面四条本来就该判否"
+
+    _add_alias("javascript", "js", "skill")
+
+    coverage, matched = _coverage_and_match(
+        client, token, job_id, extra={"X-DeepSeek-Key": "sk-fake"}
+    )
+    assert fake_scorer.sent, "没走 AI 就说明装配分支没被这条用例碰到"
+    assert matched["meta"]["evidence_mode"] == "ai_scored"
+    assert coverage["meta"]["alias_version"] == matched["meta"]["alias_version"] == "v1"
+
+    hit = {row["name"] for row in coverage["coverage"] if row["status"] in ("covered", "partial")}
+    from_match = {item["skill"] for item in matched["covered"]} | {
+        item["skill"] for item in matched["partial"]
+    }
+    # 这一格就是 §5.2 要的「逐字相同」；集合里必须有别名认出的那一条，否则是空检。
+    assert hit == from_match
+    assert hit == {"JavaScript", "Python"}
+    # 边界确实被挪开了（与那条既有用例同一个理由）：并集相等不是因为两边同模式。
+    assert not matched["covered"], "weak 模式下卡上不该有 covered，这条用例的前置条件没成立"
+    assert any(row["status"] == "covered" for row in coverage["coverage"])
+    # 别名命中之后 `gaps` 必须空掉：覆盖归属真的随别名变了（§3 点名的第一处影响面）。
+    assert [item["skill"] for item in matched["gaps"]] == []
+    # 回显契约不受影响（§2.2）：`matched_form` 回的是学生自己的写法 `JS`，不是规范名。
+    assert coverage["coverage"][0] == {
+        "name": "JavaScript",
+        "status": "partial",
+        "matched_form": "JS",
+    }
+
+
+def test_a_role_alias_row_moves_preference_from_conflict_to_alias_match(
+    client: TestClient,
+) -> None:
+    """§5.3：一条 `role` 配对把 `preference` 从 0.0 变成 `alias_match` 0.6，分数随之上升。
+
+    用的正是老板点名的那一对「同方向不同词」（`ADR-013` §7.4）：目标 `React 工程师` ×
+    岗位标题 `前端开发`。两侧都有内容而词面**一个二元组都没共用**（`overlap_ratio == 0`），
+    所以改动前是 `preference_conflict` 0.0——那一格当时写死了「由阶段 2 的别名表修」。
+
+    **`score` 涨的不是 0.06 而是 0.071，这一格必须在测试里说清楚而不是迁就 ADR 的措辞**：
+    `ADR-016` §2.4 那句「权重 0.10 ⇒ 总分最多 +0.06」算的是**加权分子**的增量
+    （0.10 × 0.6 = 0.06，本测试逐字断言这一格）；而 `ADR-013` §5.1 的重归一把总分定义为
+    `分子 / weight_sum_used`，`relevance` 恒不参与（§7.3 实测 0/40，0.15 退出分母）
+    ⇒ 本次 `used = 0.85` ⇒ 对外读数涨 `0.06 / 0.85 = 0.071`。
+    要让对外分数恰好涨 0.06，只有 `weight_sum_used == 1.0` 一种情况，而那在本层今天**到不了**。
+    两个数都钉住：分子增量恰好 0.06，对外分数恰好 0.071 = `0.06 / weight_sum_used`。
+    这一格要老板过目（交付第 6 段列成待拍项）：要么 §5.3 的「+0.06」按加权分子读，
+    要么重归一那一格需要重新裁定——本测试不许我自己挑一个让它变绿。
+    """
+    token = _register_and_login(client, prefix="alias_role")
+    _put_profile(client, token, target_role="React 工程师")
+    job_id = _create_published_job(
+        client,
+        token,
+        title="前端开发",
+        description="负责前端页面开发，需要 JavaScript、React 与 CSS。",
+        deadline="2027-12-22",
+    )
+
+    before = client.post(match_url(job_id), headers=_headers(token)).json()["data"]
+    before_preference = _term_of(before, "preference")
+    assert before_preference["value"] == 0.0
+    assert before_preference["computed"] is True
+    assert before_preference["note"] == "preference_conflict", "前置：词面零重合才是那一格"
+    assert before["meta"]["weight_sum_used"] == 0.85
+
+    _add_alias("react 工程师", "前端开发", "role")
+
+    after = client.post(match_url(job_id), headers=_headers(token)).json()["data"]
+    after_preference = _term_of(after, "preference")
+    assert after_preference["value"] == 0.6
+    assert after_preference["computed"] is True
+    assert after_preference["note"] == "alias_match"
+
+    # 其余四项逐字不动：别名只碰它该碰的那一格（§2.4「本批唯一会改变分数的一格」的对照面）。
+    assert [t for t in after["terms"] if t["name"] != "preference"] == [
+        t for t in before["terms"] if t["name"] != "preference"
+    ]
+    # 加权分子的增量恰好 0.10 × 0.6 = 0.06（§2.4 那句话的准确形式）。
+    numerator_delta = (
+        after["score"] * after["meta"]["weight_sum_used"]
+        - before["score"] * before["meta"]["weight_sum_used"]
+    )
+    assert numerator_delta == pytest.approx(0.06, abs=0.001)
+    # 对外分数：重归一之后是 0.06 / 0.85 ≈ 0.071，不是 0.06。
+    assert after["score"] - before["score"] == pytest.approx(0.071, abs=0.001)
+    assert (after["score"] - before["score"]) * after["meta"]["weight_sum_used"] == pytest.approx(
+        0.06, abs=0.001
+    )
+    # 词表已经有行了，`alias_version` 仍是 `v1`：内容版本由人 bump，不是自动跟着行数走。
+    assert after["meta"]["alias_version"] == "v1"
+
+
+def test_a_match_request_reads_the_alias_table_exactly_once(client: TestClient) -> None:
+    """§3 的「不许 N+1」：一次匹配请求里，词表只许被查**一次**，不管要比多少对。
+
+    判据是 `count == 1`，而这条用例的规模足以让朴素写法暴露出来：
+    2 条岗位要求 × 2 条学生技能的覆盖判定，再加每个命中技能 × 1 段经历 × 3 个字段的片段复核
+    ——兜底若写在判定函数里就是 4 次起跳，写在片段复核里再加 6 次。
+
+    两个端点都要测：它们共用 `_gather`，所以正确写法下都是一次；而角标端点不调 AI、
+    走的是另一条装配路径，漏一次就少一次证据。
+    """
+    token = _register_and_login(client, prefix="alias_n1")
+    _put_profile(
+        client,
+        token,
+        skills=[{"name": "JS"}, {"name": "Python"}],
+        experiences=[
+            {
+                "title": "前端与脚本",
+                "start_date": "2024-03-01",
+                "end_date": "2024-06-30",
+                "description": "用 JavaScript 写页面，用 Python 写脚本",
+                "responsibility": "负责联调",
+            }
+        ],
+    )
+    job_id = _create_published_job(
+        client,
+        token,
+        skills=[{"name": "JavaScript", "type": "hard"}, {"name": "Python", "type": "hard"}],
+        deadline="2027-12-22",
+    )
+    _add_alias("javascript", "js", "skill")
+
+    counters = _count_alias_queries()
+    try:
+        matched = client.post(match_url(job_id), headers=_headers(token)).json()["data"]
+        assert [item["skill"] for item in matched["gaps"]] == []
+        assert counters["count"] == 1, (
+            f"一次 /match 查了 {counters['count']} 次 skill_aliases：词表必须在 _gather 里"
+            "一次载入，逐条查就是 ADR-016 §3 禁止的 N+1"
+        )
+        counters["count"] = 0
+
+        coverage = client.get(coverage_url(job_id), headers=_headers(token)).json()["data"]
+        assert {row["name"] for row in coverage["coverage"] if row["status"] != "missing"} == {
+            "JavaScript",
+            "Python",
+        }
+        assert counters["count"] == 1, (
+            f"一次 requirement-match 查了 {counters['count']} 次 skill_aliases"
+        )
+    finally:
+        counters["stop"]()
+
+
+def test_both_endpoints_report_the_same_alias_version_too(client: TestClient) -> None:
+    """判据 (c) 的推广：两条链路不仅要同一版**判据**，还要同一版**词表**。
+
+    既有那条 `test_both_endpoints_report_the_same_matcher_version` 只锁了 `matcher_version`。
+    B1 之后一致性还依赖第二格：词表是内容而不是代码，同一次屏幕上角标与匹配卡读到的
+    必须是同一版词表，否则「这一行昨天加的」又会变成两边各说一套。
+    """
+    from app.core.skill_names import SKILL_ALIAS_VERSION
+
+    token = _register_and_login(client, prefix="alias_ver")
+    _put_profile(client, token)
+    job_id = _create_published_job(client, token, deadline="2027-12-22")
+    coverage, matched = _coverage_and_match(client, token, job_id)
+    assert coverage["meta"]["alias_version"] == matched["meta"]["alias_version"]
+    assert matched["meta"]["alias_version"] == SKILL_ALIAS_VERSION
+    # 空表也发这一格（§2.5 末句）：不发就等于「哪一版词表」在词表为空时无法回答。
+    assert matched["meta"]["alias_version"] == "v1"
+    assert _alias_row_count() == 0

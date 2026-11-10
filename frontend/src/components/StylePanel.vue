@@ -122,7 +122,7 @@ async function handleGenerate(): Promise<void> {
     const resume = await store.generate('我的简历')
     feedback.value = {
       tone: 'ok',
-      text: `已按模板生成并保存到数据库（#${resume.resume_id.slice(0, 8)}）。`,
+      text: `已按模板生成并保存好了（记录号 #${resume.resume_id.slice(0, 8)}）。`,
     }
   } catch (error) {
     feedback.value = {
@@ -177,17 +177,19 @@ function polishFailureText(error: unknown): string {
   if (!isApiError(error)) return '润色失败，请稍后重试。'
   switch (error.code) {
     case 'AI_KEY_MISSING':
+      // ui-copy:allow C2 唯一豁免：用户必须亲手去 DeepSeek 拿这把凭据，界面里的原词可以出现
       return '请先在右上角「AI 设置」里填好你的 DeepSeek API Key。'
     case 'AI_KEY_INVALID':
+      // ui-copy:allow 同上：这句话指向他自己粘 Key 的那个输入框
       return '你的 DeepSeek API Key 无效或已欠费，请打开「AI 设置」检查后重试。'
     case 'AI_SERVICE_UNAVAILABLE':
       return `${error.message}（生成简历不受影响，可以先直接生成。）`
     case 'RATE_LIMITED':
-      return '润色太频繁了，请等一分钟再试——这一步花的是你自己的额度。'
+      return '润色太频繁了，请等一分钟再试——这一步用的是你自己的 AI 用量。'
     case 'VALIDATION_ERROR':
       return '润色请求没有被接受：技能与项目经历要至少各 1 条，且不能太长。'
     case 'NETWORK_ERROR':
-      return '等 AI 返回超时或连不上服务，请确认后端在跑，然后重试。'
+      return '等 AI 返回超时，或者连不上服务。先重试一次；如果一直不行，是你这边之外的问题，与填的内容无关。'
     default:
       return error.message
   }
@@ -201,7 +203,7 @@ function handleAcceptPolish(): void {
   store.applyPolish(result)
   feedback.value = {
     tone: 'ok',
-    text: '已同步到左侧表单。核对无误后点「保存修改」才会写入数据库，也可以先再生成一次简历。',
+    text: '已同步到左侧表单。核对无误后点「保存修改」才会保存，也可以先再生成一次简历。',
   }
 }
 
@@ -292,7 +294,7 @@ function printResume(): void {
             title="上移"
             @click="store.moveSectionUp(section.id)"
           >
-            ↑
+            上移
           </button>
           <button
             class="layout-arrow"
@@ -302,7 +304,7 @@ function printResume(): void {
             title="下移"
             @click="store.moveSectionDown(section.id)"
           >
-            ↓
+            下移
           </button>
         </div>
       </div>
@@ -317,7 +319,7 @@ function printResume(): void {
       <div class="status-row"><span>简历</span><strong>{{ resumeStatus }}</strong></div>
       <div class="status-row"><span>最近保存</span><strong>{{ store.lastSavedAt ?? '—' }}</strong></div>
       <p v-if="store.dirty" class="warning">
-        有未保存的修改：点预览区上方的「保存修改」落库，或直接生成（会先询问是否保存）。
+        有未保存的修改：点预览区上方的「保存修改」才会保存，或直接生成（会先询问是否保存）。
       </p>
     </div>
 
@@ -342,7 +344,7 @@ function printResume(): void {
         :disabled="store.polishing"
         @click="openPolishSettings"
       >
-        {{ store.polishing ? 'AI 润色中，请稍候…' : '✨ AI 智能润色' }}
+        {{ store.polishing ? 'AI 润色中，请稍候…' : 'AI 润色' }}
       </button>
       <p v-if="feedback" :class="['feedback', `feedback--${feedback.tone}`]">{{ feedback.text }}</p>
     </div>
@@ -350,14 +352,14 @@ function printResume(): void {
     <div class="panel-section">
       <p class="panel-label">编辑提示</p>
       <p class="hint">
-        点击中央纸面上的文字块即可直接编辑，内容会同步到左侧表单；改完点上方「保存修改」落库。
+        点击中央纸面上的文字块即可直接编辑，内容会同步到左侧表单；改完点上方「保存修改」才会保存。
       </p>
       <p class="hint">
-        「✨ AI 智能润色」只改左侧表单里的描述与职责，不会自动保存，也不会自动替换——
+        「AI 润色」只改左侧表单里的描述与职责，不会自动保存，也不会自动替换——
         对照弹窗里点「接受」才填进来，之后仍需点「保存修改」。
       </p>
       <p class="hint print-tip">
-        💡 打印对话框里的纸张要与上方一致（{{ store.paperSpec.label }}），并取消勾选「页眉和页脚」
+        打印对话框里的纸张要与上方一致（{{ store.paperSpec.label }}），并取消勾选「页眉和页脚」
       </p>
     </div>
 
@@ -433,7 +435,10 @@ h2 { font-size: 18px; }
 .layout-title:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
 .layout-actions { display: flex; flex: 0 0 auto; gap: 4px; }
 .layout-arrow {
-  width: 26px;
+  /* 文案清扫（批次 F1a）把箭头符号换成「上移/下移」，宽度必须让给文字，否则两个字会被 26px 挤掉。 */
+  width: auto;
+  min-width: 26px;
+  padding: 0 6px;
   height: 26px;
   border: 1px solid var(--ui-border-strong);
   border-radius: var(--ui-radius);

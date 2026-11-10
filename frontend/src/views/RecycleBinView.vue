@@ -108,10 +108,10 @@ onMounted(load)
           <p class="eyebrow">简历管理</p>
           <h1>回收站</h1>
           <p class="intro">
-            删除的简历会在这里保留 30 天，期间可以随时恢复；超过 30 天由服务端自动清理。
+            删除的简历会在这里保留 30 天，期间可以随时恢复；超过 30 天会自动清理。
           </p>
         </div>
-        <RouterLink class="back-link" :to="{ name: 'resume-editor' }">← 返回编辑器</RouterLink>
+        <RouterLink class="back-link" :to="{ name: 'resume-editor' }">返回编辑器</RouterLink>
       </div>
 
       <p v-if="loadError" class="feedback feedback--error" role="alert">{{ loadError }}</p>

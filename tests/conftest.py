@@ -31,8 +31,8 @@
 （Cannot drop table referenced by a foreign key constraint），而且是「跑到一半炸」，
 表现为「必须手动清库才能再跑」。
 
-现在：建表只 `upgrade head`（幂等），清理只 DELETE **本项目的 9 张表**
-（Phase 4 · B1 起含 `jobs` / `job_skills`），
+现在：建表只 `upgrade head`（幂等），清理只 DELETE **本项目的 10 张表**
+（Phase 4 · B1 起含 `jobs` / `job_skills`，B1 别名层起含 `skill_aliases`），
 多余的表既不碰也不依赖，3730 从根上消失。真正的迁移可逆性由
 `test_migrations.py` 自己验证（那是被测对象，不是清理手段）——它也只被允许
 在**自己用例内部**降级，并在 `finally` 里把库交回 head。
@@ -118,7 +118,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 #: 本项目迁移建出来的业务表，**按子表 → 父表排列**：外键是 RESTRICT，
 #: 顺序错了会 1451（Cannot delete or update a parent row）。
 #: 新增带外键的表时把它插到引用方前面；漏一张就会在下一个用例里撞上残留。
+#: `skill_aliases`（B1 / `ADR-016`）没有外键、不属于任何用户，放在最前面只是排版；
+#: 但它**必须**在这一栏里：别名行会改变判定结果，残留一行就等于「后面所有用例都跑在
+#: 一张非空词表上」，而 §5.1 那条「空表 = 纯词面行为」的验收会静默失去意义。
 APP_TABLES = (
+    "skill_aliases",
     "job_skills",
     "jobs",
     "refresh_tokens",
