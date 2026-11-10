@@ -14,6 +14,10 @@
 `/polish` 反过来：它不参与生成，输出的文案要用户确认后才写进表单，所以采信的是
 请求体里的草稿，但**不把它当事实持久化**——服务端不写任何一行。
 
+`POST /resumes/privacy-check`（批次 B2）是第三条：读库里已保存的那份档案，把「会被
+带出去什么」组装成四类清单返回。它与 `/polish` 一样**不落库、不加列、不建表**，
+与 `/generate` 一样**不调 AI、不需要 Key**。
+
 依赖顺序刻意保持 `service` 在 `current_user` 之前：这样 `get_resume_service`
 的故障（500）不会被鉴权失败（401）掩盖，保持 T6 统一错误模型中 500 用例的语义。
 
@@ -29,7 +33,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from app.core.rate_limit import POLISH_RATE_LIMIT, limiter
 from app.core.responses import success_response
 from app.schemas.auth import UserRead
-from app.schemas.resume import ResumeGenerateRequest, ResumePolishRequest
+from app.schemas.resume import (
+    ResumeGenerateRequest,
+    ResumePolishRequest,
+    ResumePrivacyCheckRequest,
+)
 from app.services.dependencies import get_current_user, get_resume_service
 from app.services.profile_service import ProfileNotFoundError
 from app.services.resume_service import ProfileIncompleteError, ResumeService
@@ -61,6 +69,37 @@ def generate_resume(
             detail="请先完善个人档案（基本信息、技能、经历）后再生成简历。",
         ) from error
     return success_response(request, resume.model_dump(mode="json"))
+
+
+@router.post("/privacy-check")
+def privacy_check(
+    payload: ResumePrivacyCheckRequest,
+    request: Request,
+    service: ResumeServiceDep,
+    current_user: CurrentUserDep,
+) -> dict[str, Any]:
+    """导出前隐私检查（批次 B2 / PRD FR-06）：**纯计算**，读一份已保存的档案，不写任何东西。
+
+    为什么是 POST 而不是 GET：它与 `/generate` 共用同一条定位逻辑（同一个
+    `_resolve_profile`），而「检查哪一份」是调用方给的一个 id——按 GET + 路径参数写会
+    得到第二个读简历的入口，那个入口今天不该存在（`resumes` 表还没有读路径，见批次 B8）。
+
+    错误口径与 `/generate` 逐字对齐：指定的简历不存在/不属于自己/在回收站 → 404，
+    一份档案都没有 → 400。**同一份简历，两边不能各说一套**。
+    """
+    try:
+        check = service.privacy_check(current_user.id, payload)
+    except ProfileNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="简历不存在。",
+        ) from error
+    except ProfileIncompleteError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="还没有可检查的简历：请先完善并保存个人档案。",
+        ) from error
+    return success_response(request, check.model_dump(mode="json"))
 
 
 @router.post("/polish")

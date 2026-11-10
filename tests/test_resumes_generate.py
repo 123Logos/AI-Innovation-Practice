@@ -633,3 +633,100 @@ def test_generate_falls_back_to_default_layout_for_broken_config(client: TestCli
             "技能",
             "项目经历",
         ], raw
+
+
+# --------------------------------------------------------------------------- #
+# 批次 B2（PRD FR-06）：缺信息时在纸面上留「待补充」标记，而不是静默省略或编造。
+#
+# 这四条的分工不是「多写几条更保险」：
+# - 前两条钉**标出来的那两格**（已开了槽的经历没写描述/职责、学历没填专业）；
+# - 第三条是反面对照，钉「填了就不标」——没有它，前两条可能只是无条件印标记；
+# - 第四条钉**边界**：可选项（邮箱）不标，且既有契约 `..._omits_email_span_...` 不被放宽。
+#   这一条是我自己定的口径（不是老板拍的），理由写在 `resume_generator.py` 的调用处：
+#   「待补充：邮箱」会被 HR 看见，而这条信息用户本来就不打算给；「没填」应由
+#   导出前隐私检查告诉他，那里才是能动手补的地方。
+#
+# 全部追加在文件末尾：ADR-018 与本文件上方的用例都按行号引用过这个文件里的位置。
+# --------------------------------------------------------------------------- #
+
+
+def test_generate_marks_missing_experience_description_as_pending(client: TestClient) -> None:
+    token = _register_and_login(client)
+    experience = {
+        "title": "校园二手交易平台",
+        "start_date": "2024-03-01",
+        "end_date": "2024-06-30",
+        "description": "",
+        "responsibility": "负责后端 API 与数据库设计",
+    }
+    client.put(
+        PROFILES_URL,
+        json=_profile_payload(experiences=[experience]),
+        headers=_headers(token),
+    )
+
+    response = client.post(GENERATE_URL, json=_payload("描述空着"), headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    content_html = response.json()["data"]["content_html"]
+    assert "待补充：经历描述" in content_html
+    # 同一篇里填了的那一格不许被一起标掉：用户要知道的是差哪一格，不是「这段有问题」。
+    assert "待补充：个人职责" not in content_html
+    assert "负责后端 API 与数据库设计" in content_html
+
+
+def test_generate_marks_missing_education_major_as_pending(client: TestClient) -> None:
+    token = _register_and_login(client)
+    educations = [
+        {
+            "school": "示例大学",
+            "major": "",
+            "degree": "本科",
+            "edu_start": "2021-09-01",
+            "edu_end": "2025-06-30",
+        }
+    ]
+    client.put(
+        PROFILES_URL,
+        json=_profile_payload(educations=educations),
+        headers=_headers(token),
+    )
+
+    response = client.post(GENERATE_URL, json=_payload("专业空着"), headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    content_html = response.json()["data"]["content_html"]
+    assert "待补充：专业" in content_html
+    assert "示例大学" in content_html
+
+
+def test_generate_leaves_filled_fields_unmarked(client: TestClient) -> None:
+    token = _register_and_login(client)
+    client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token))
+
+    response = client.post(GENERATE_URL, json=_payload("全都填了"), headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    content_html = response.json()["data"]["content_html"]
+    assert "待补充" not in content_html
+    # 反面对照的正面：这三格确实有内容在渲染，否则上一句「没有待补充」是空检。
+    assert "面向校内学生的二手交易 Web 应用" in content_html
+    assert "负责后端 API 与数据库设计" in content_html
+    assert "软件工程" in content_html
+
+
+def test_generate_does_not_mark_optional_email_as_pending(client: TestClient) -> None:
+    """可选项不标（批次 B2 的边界决定，与上面三条成套）。
+
+    与 `test_generate_omits_email_span_when_profile_has_none` 是同一条契约的两半：
+    那一半钉「不出现」，这一半钉「也不标成待补充」。
+    """
+    token = _register_and_login(client)
+    client.put(PROFILES_URL, json=_profile_payload(email=None), headers=_headers(token))
+
+    response = client.post(GENERATE_URL, json=_payload("没填邮箱也不标"), headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    content_html = response.json()["data"]["content_html"]
+    assert "待补充：邮箱" not in content_html
+    assert "contact-email" not in content_html

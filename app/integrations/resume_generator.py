@@ -94,6 +94,12 @@ class TemplateResumeGenerator(ResumeGenerator):
         layout: Sequence[Section] | None = None,
     ) -> str:
         # 联系方式：手机号 + 可选邮箱，结构与预览页的 `.contact` 内部完全一致。
+        #
+        # 邮箱**故意不标「待补充」**（批次 B2 的边界决定，与下面经历/专业不同）：
+        # 它是可选项，纸面上留一个「待补充：邮箱」会被 HR 看见，而这条信息用户本来就不打算给。
+        # 「没填邮箱」这件事由导出前隐私检查如实说给他（`ResumeService.privacy_check`），
+        # 那里才是能动手补的地方。既有契约 `test_generate_omits_email_span_when_profile_has_none`
+        # 钉的就是「没填就不出现，也不留孤立的分隔点」，本批不放宽它。
         contact_items = f'<span class="contact-phone">{escape(profile.contact)}</span>'
         if profile.email:
             contact_items += (
@@ -107,25 +113,31 @@ class TemplateResumeGenerator(ResumeGenerator):
             f'<span class="skill-item">{escape(skill.name)}</span>' for skill in skills
         )
 
-        experience_items = "".join(
-            '<article class="paper-experience">'
-            '<div class="experience-heading">'
-            f'<h3 class="experience-title">{escape(experience.title)}</h3>'
-            f'<span class="date">{_format_day(experience.start_date)} — '
-            f"{_format_day(experience.end_date) if experience.end_date else '至今'}</span>"
-            "</div>"
-            f'<p class="experience-description">{escape(experience.description)}</p>'
-            f'<p class="experience-responsibility">{escape(experience.responsibility)}</p>'
-            "</article>"
-            for experience in experiences
-        )
+        # 描述或职责没填时留「待补充」标记：空的 `<p>` 在纸面上只是一条看不见的缝，
+        # 用户分不清那是「还没写」还是「版式坏了」。FR-06 要的是前者必须说出来。
+        experience_articles: list[str] = []
+        for experience in experiences:
+            experience_articles.append(
+                '<article class="paper-experience">'
+                '<div class="experience-heading">'
+                f'<h3 class="experience-title">{escape(experience.title)}</h3>'
+                f'<span class="date">{_format_day(experience.start_date)} — '
+                f"{_format_day(experience.end_date) if experience.end_date else '至今'}</span>"
+                "</div>"
+                '<p class="experience-description">'
+                f"{_pending_text(experience.description, '经历描述')}</p>"
+                '<p class="experience-responsibility">'
+                f"{_pending_text(experience.responsibility, '个人职责')}</p>"
+                "</article>"
+            )
+        experience_items = "".join(experience_articles)
 
         # 教育经历按入学时间倒序（最高/最近学历在前）；没有教育经历时整块不渲染。
         education_items = "".join(
             '<article class="paper-experience">'
             f'<h3 class="education-school">{escape(education.school)}</h3>'
             '<p class="education-meta">'
-            f'<span class="edu-major">{escape(education.major)}</span>'
+            f'<span class="edu-major">{_pending_text(education.major, "专业")}</span>'
             '<span class="edu-divider"> ｜ </span>'
             f'<span class="edu-degree">{escape(education.degree)}</span>'
             '<span class="edu-divider"> ｜ </span>'
@@ -170,3 +182,43 @@ class TemplateResumeGenerator(ResumeGenerator):
             accent=palette.accent,
             rule=palette.rule,
         )
+
+
+# --------------------------------------------------------------------------- #
+# 「待补充」标记：批次 B2 / PRD FR-06「不得虚构项目、指标、学历、证书或工作经历；
+# 缺少信息时输出待补充标记」。
+#
+# 这两个函数写在文件**末尾**是位置约束：docs 里有带行号的引用落在本文件的靠上位置
+# （ADR-007 引 `:50-61`、ADR-013 §1.2 引渲染调用那一行），在它们上面插行会把指针推到
+# 别的代码上；而 `scripts/check_docs_citations.py` 只验「那一行非空、没越界」，漂了不会报红。
+# 所以本批的插入全部放在被引用行**之下**，并在交付前重跑一次闸门核对。
+#
+# 标的是**字段级**的空缺（一段已开了槽的经历没写描述或职责、一段学历没填专业）。
+# 「整节都没有」不在这里标：那由上面的「空模块自动跳过」规则处理，它钉在
+# `tests/test_resumes_generate.py` 的两条用例上（用户主动删光技能后不该看见空标题），
+# 而这份缺口由导出前隐私检查如实说给你看（`ResumeService.privacy_check`）。
+# --------------------------------------------------------------------------- #
+
+
+def _pending_field(label: str) -> str:
+    """纸面上「这一格还没填」的可见标记。
+
+    固定成 `待补充：{字段名}` 是因为要同时回答两件事——缺不缺、缺的是哪一格。只写
+    「待补充」的用户看不出该回去补哪一格；写「（无）」或留白则等于替用户宣布他没有
+    这项信息，而真实情况常常是他还没填。
+
+    标的都是**用户已经开了这个槽**的字段（有条经历但没写描述、有段学历但没填专业）；
+    可选项（邮箱）不标，理由写在调用处上面那段。
+    """
+    return f'<span class="pending-field">待补充：{escape(label)}</span>'
+
+
+def _pending_text(value: str, label: str) -> str:
+    """有值就转义后原样渲染，没值就换成 `_pending_field` 的标记。
+
+    判空用 `strip()` 而不是 `== ""`：库里存过纯空白的段落渲染出来就是一条真空行，
+    它和「没填」在纸面上是同一件事，不该只有后者被标出来。
+    """
+    if not value.strip():
+        return _pending_field(label)
+    return escape(value)
