@@ -103,7 +103,7 @@
 
 | 闸 | 覆盖条款 | 状态 |
 |---|---|---|
-| **G1 文案扫描** `scripts/check_ui_copy.py`：emoji/伪图标正则 + 黑话词表 + 豁免标记 | C1、C2 | **老板 2026-11-09 第 4 点批准进 CI，本批建立**。与既有 `scripts/check_docs_citations.py` 同形态。 |
+| **G1 文案扫描** `scripts/check_ui_copy.py`：emoji/伪图标正则 + 黑话词表 + 豁免标记 | C1、C2 | **已建成并进 CI**（批次 F1a，2026-11-09）。两条要说清：① 词表刻意**不收**裸的「后端」「数据库」——那是一个简历产品的**岗位词汇**（`placeholder="如：后端开发工程师"`），收了就会逼人给正常文案加豁免；它们只在配上系统动词（`后端在跑`/`写入数据库`/`由服务端`）时才算违例。② **只覆盖前端**；后端上屏字符串属批次 F1c（`docs/ROADMAP.md` §3 X2），在那之前「全站禁黑话」这句话只对前端成立。 |
 | **G2 ESLint 规则**：`no-restricted-globals`（`alert`/`confirm`）、`no-restricted-syntax`（视图内直写 `<textarea>`） | C6、F1 | **同上批准**。注意：`no-restricted-syntax` 一开就红 3 处（`ResumeEditor.vue:262/269`、`JobCreateView.vue:359`），所以它必须与**批次 F5** 的共享组件同批，或先只禁 `alert`/`confirm` 并把现存 6 处一次改完——**不许用注释豁免来换绿**。（两个半边分别落批次 F1b 与 F5，见 `docs/ROADMAP.md` §5。） |
 | **G3 错误文案表**：所有面向用户的 message 收进一处常量表，每条映射「动作」或「无可为」 | C3、C5、S4 | 待建（未批准，建议随**批次 F1c**（后端上屏文案出口）一起问——F1c 就是它的第一个消费者）。 |
 | **G4 令牌检查**：组件 `<style>` 内裸 hex/px 字号即红（纸面/打印豁免） | T1、M1、M2 | 待建（先补 `--motion-*`/`--space-*`/`--text-*` 才有意义，见 T2）。 |

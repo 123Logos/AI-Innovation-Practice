@@ -97,7 +97,8 @@ function submit(): void {
 
     <template #footer>
       <div class="polish-footer">
-        <span class="polish-footer__note">使用你自己的 DeepSeek Key，按量计费</span>
+        <!-- ui-copy:allow C2 唯一豁免：这里说的就是用户自己去 DeepSeek 申请的那把凭据 -->
+        <span class="polish-footer__note">用的是你自己的 DeepSeek API Key，按你的用量计费</span>
         <el-button type="primary" @click="submit">开始润色</el-button>
       </div>
     </template>

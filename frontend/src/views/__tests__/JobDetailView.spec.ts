@@ -373,16 +373,16 @@ describe('详情页如实展示提取产物（C1 之后这两格有真值了）'
     expect(items[1]?.text()).not.toContain('原文依据')
     // 反向护栏：`null` 不能被显示成字面量或 0（那是给用户一份不存在的依据）。
     expect(wrapper.text()).not.toContain('原文依据：null')
-    expect(wrapper.text()).not.toContain('模型把握 0.00')
+    expect(wrapper.text()).not.toContain('AI 把握 0.00')
   })
 
-  it('`confidence` 有值就显示「模型把握」两位小数，`null` 时那一格整个不出现', async () => {
+  it('`confidence` 有值就显示「AI 把握」两位小数，`null` 时那一格整个不出现', async () => {
     const { wrapper } = await mountDetail()
 
     // 后端 `DECIMAL(5,4)` 读回来是字符串 `"0.9000"`，展示裁到两位（理由见 `confidenceLabel`）。
-    expect(wrapper.text()).toContain('模型把握 0.90')
+    expect(wrapper.text()).toContain('AI 把握 0.90')
     expect(wrapper.text()).not.toContain('0.9000')
-    // 第二条没有把握 → 页面上只有一句「模型把握」，不是两句。
+    // 第二条没有把握 → 页面上只有一句「AI 把握」，不是两句。
     expect(wrapper.findAll('.skill-confidence')).toHaveLength(1)
   })
 

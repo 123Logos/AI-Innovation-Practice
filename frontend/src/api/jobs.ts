@@ -293,7 +293,7 @@ export interface ExtractSkillsResult {
 export const EXTRACT_TIMEOUT_MS = 45_000
 
 /** `data.meta.truncated` 为真时补的那句文案（截断必须可见，与「悄悄替换结果」不同类）。 */
-export const EXTRACT_TRUNCATED_HINT = '模型给出的条目超过 15 条，只保留了前 15 条'
+export const EXTRACT_TRUNCATED_HINT = 'AI 给出的技能条目超过 15 条，只保留了前 15 条'
 
 /* -------------------------------- 列表参数 -------------------------------- */
 

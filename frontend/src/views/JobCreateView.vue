@@ -150,7 +150,7 @@ async function runExtract(): Promise<void> {
   openEvidence.value = new Set()
 
   extractNotice.value = plan.added.length
-    ? `已把 ${plan.added.length} 条候选技能放进下面的技能区。逐条核看、删掉不对的，点「保存岗位」才会写入数据库。`
+    ? `已把 ${plan.added.length} 条候选技能放进下面的技能区。逐条核看、删掉不对的，点「保存岗位」才会保存。`
     : '这次没有新技能进入表单（原因见上面的计数说明）。可以调整 JD 原文后重试。'
 }
 
@@ -261,7 +261,7 @@ void loadForEdit()
               离开本页不会自动保存，岗位状态（草稿 / 已发布）也不受本次保存影响。
             </template>
             <template v-else>
-              把招聘信息原文粘进来，可以用「✨ AI 提取技能」从 JD 里取候选，再逐条删改。
+              把招聘信息原文粘进来，可以用「AI 提取技能」从 JD 里取候选，再逐条删改。
               保存后是「草稿」，只有你自己看得到；确认无误后可在详情页发布到广场。
             </template>
           </p>
@@ -270,7 +270,7 @@ void loadForEdit()
           class="text-link"
           :to="isEdit ? { name: 'job-detail', params: { id: props.jobId } } : { name: 'job-board' }"
         >
-          {{ isEdit ? '← 返回详情' : '← 返回列表' }}
+          {{ isEdit ? '返回详情' : '返回列表' }}
         </RouterLink>
       </div>
 
@@ -377,7 +377,7 @@ void loadForEdit()
               :aria-busy="store.extracting"
               @click="runExtract"
             >
-              {{ store.extracting ? '提取中…' : '✨ AI 提取技能' }}
+              {{ store.extracting ? '提取中…' : 'AI 提取技能' }}
             </button>
             <button
               v-if="canDiscard"
@@ -391,8 +391,9 @@ void loadForEdit()
             <span class="extract-hint">
               {{
                 store.extracting
-                  ? 'AI 正在读这份 JD，最长等 45 秒。这一步不会改动数据库里的任何东西。'
-                  : '用的是你自己的 DeepSeek Key；结果只进下面的表单，点保存才落库。'
+                  ? 'AI 正在读这份 JD，最长等 45 秒。这一步只是给建议，不会保存，也不会改动已经存下来的岗位。'
+                  /* ui-copy:allow C2 唯一豁免：这一步花的是他自己的凭据与用量 */
+                  : '用的是你自己的 DeepSeek API Key；结果只填进下面的表单，你点「保存岗位」才会存下来。'
               }}
             </span>
           </div>
@@ -469,9 +470,9 @@ void loadForEdit()
               </div>
               <p v-if="row.evidence_text && openEvidence.has(index)" class="skill-evidence">
                 原文依据：{{ row.evidence_text }}
-                <span v-if="row.confidence !== undefined">· 模型把握 {{ row.confidence }}</span>
+                <span v-if="row.confidence !== undefined">· AI 把握 {{ row.confidence }}</span>
                 <span class="skill-origin">
-                  保存后这条能不能标成「可回溯原文」，由服务端拿本页 JD 原文逐字比对决定
+                  保存后这条能不能标成「可回溯原文」，取决于系统能否在本页原文里逐字找到它
                 </span>
               </p>
             </li>
@@ -481,7 +482,7 @@ void loadForEdit()
             添加技能
           </button>
           <p class="field-hint">
-            一行一个技能；留空的行不会被保存。同名技能（大小写、全半角不同也算同名）会被后端拒掉，
+            一行一个技能；留空的行不会被保存。同名技能（大小写、全半角不同也算同名）保存时会被拒绝，
             所以 AI 候选里与已有技能重名的那些已经跳过、并在上面报了数。
           </p>
         </section>

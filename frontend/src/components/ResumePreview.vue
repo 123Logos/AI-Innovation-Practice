@@ -364,7 +364,6 @@ function updateExpDate(
           type="button"
           @click="store.showLivePreview"
         >
-          <span class="preview-button__icon" aria-hidden="true">↺</span>
           回到实时预览
         </button>
       </div>
@@ -688,7 +687,6 @@ function updateExpDate(
 .preview-button:hover { border-color: var(--theme-primary); background: var(--theme-bg-hover); }
 .preview-button:active { background: var(--theme-bg-strong); }
 .preview-button:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
-.preview-button__icon { font-size: 16px; line-height: 1; }
 .paper-frame { position: relative; }
 /*
  * 缩放容器（D5.1 · P2）：
