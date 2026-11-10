@@ -599,6 +599,22 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 
 请求 `{"version_id":"uuid","format":"pdf"}`；返回异步任务。完成后返回短时下载 URL。
 
+### POST `/resumes/privacy-check` — 导出前隐私检查（批次 B2，已实现）
+
+请求：`{"profile_id":"uuid 可省略"}`。省略时按登录用户取默认简历，与 `/resumes/generate` 用**同一个** `_resolve_profile`。
+响应：`data = {"profile_id": ..., "categories": [四类，顺序固定为 联系方式 / 作品链接 / 个人信息 / 授权范围]}`；每类是
+`{key, label, status, note, items[]}`，每格 item 是 `{key, label, present, included, note}`。
+
+三条口径必须连着读：
+
+1. **纯计算、不落库**：不写任何表、不加列、不建表，与 `/resumes/polish`、`/jobs/extract-skills` 同一条路子（`tests/test_resume_privacy_check.py::test_privacy_check_is_pure_computation` 钉的就是「调用一次 `resumes` 行数不变」）。
+2. **`present` 与 `included` 是两个问题**，不许合并：`目标岗位偏好` 是 `present=true, included=false`（确实存在，但不写进简历）。反过来，没填的邮箱两边都是 `false`，而那一句「HR 无法用邮箱联系你」只能在这里说——纸面上**故意不给可选项打「待补充」标记**（见第 3 条与 `app/integrations/resume_generator.py` 的调用处注释）。
+3. **两类今天核不了就说核不了**：`作品链接` 与 `授权范围` 的 `status` 是 `not_available`（数据模型里没有对应的列或表；`not_available` 时 `note` 必给）。把它们写成「用户没填」是假话，把它们从清单里省掉则是把 FR-06 点名的两格悄悄删了。实现在 B4（作品/证书）与 B5（组织与授权）时才出现。
+
+错误口径与 `/generate` 逐字对齐：`profile_id` 是别人的 / 不存在的 / 在回收站的 → `404 NOT_FOUND`；这个用户一份档案都没有 → `400 CLIENT_ERROR`；`profile_id` 超长 → `422 VALIDATION_ERROR`。
+
+**与上面那张「设计意图」表的关系**：`POST /resumes/{resume_id}/export` 至今**未实现**（`app/` 里 `export`/`pdf` 零命中，也没有任何 PDF 依赖），所以「导出前显示」这一格今天没有挂载点。B2 因此把检查做成一个**读同一份档案的纯计算端点**，等导出真落地时它才有地方挂——这不是把两件事做完了，是把其中可核的两格做完、把不可核的两格如实标出来。
+
 ### POST `/resumes/{resume_id}/share`
 
 请求 `{"version_id":"uuid","target_type":"enterprise","target_id":"uuid","fields":["contact","skills","projects"],"expires_at":"..."}`。
