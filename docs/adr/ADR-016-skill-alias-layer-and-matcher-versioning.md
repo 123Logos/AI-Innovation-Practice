@@ -97,7 +97,7 @@ UNIQUE (canonical_key, alias_key, scope)      -- 单向存一行，判定双向�
 
 | 验收 | 测试 |
 |---|---|
-| §5.1 空表 = v1 逐字相同 | `tests/test_job_match.py::test_empty_alias_table_reproduces_the_v1_readings`（四条端点读数）+ `tests/test_skill_alias_layer.py::test_an_empty_index_is_the_lexical_behaviour_for_every_pair_we_ask` |
+| §5.1 空表 = v1 逐字相同 | `tests/test_job_match.py::test_empty_alias_table_reproduces_the_v1_readings`（四条端点读数）+ `tests/test_skill_alias_layer.py::test_an_empty_index_is_the_lexical_behaviour_for_every_pair_we_could_ask` |
 | §5.2 并集不变式 | `tests/test_job_match.py::test_a_skill_alias_row_lands_in_the_badge_and_keeps_the_union_invariant` + `tests/test_match_scoring.py::test_an_alias_hit_without_any_evidence_stays_in_the_union` |
 | §5.3 role 配对 0.0 → 0.6 且 +0.06 | `tests/test_job_match.py::test_a_role_alias_row_moves_preference_from_conflict_to_alias_match` + `tests/test_match_scoring.py::test_an_alias_row_moves_the_weighted_numerator_by_exactly_0_06` |
 | §5.4 版本尾巴不同被拒 | `tests/test_skill_alias_layer.py::test_a_pair_with_mismatched_version_tails_is_refused`（另一条正向：`::test_a_pair_with_consistent_version_tails_is_stored`） |
