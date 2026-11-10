@@ -4,6 +4,12 @@
 读库与调模型留在 `app/services/match_service.py`；分层由 import-linter 的契约守着，
 不是靠这段注释。
 
+**B1 的别名层同样不进这一层**（`ADR-016` §2.1 选 (c)、§3「不许 N+1」）：这一层收到的
+是 `MatchFacts.aliases`——一个由编排层在 `_gather` 里**一次载入**的 `AliasIndex` 值对象。
+于是「谁查库」与「谁判定」在类型上就分开了：本模块拿不到 session，想 N+1 也做不到。
+别名只在四条词面规则**全部判否之后**才查（`skill_forms_match` 的兜底那一支），
+而 `preference` 的第四档（`alias_match` 0.6）只查 `role` 域，理由与档位取值见 §2.4。
+
 为什么片段由我们自己切、不让模型复述：§3 的反幻觉闸门要求
 `covered[].evidence[].snippet` 是经历原文的连续子串。子串是我们从原文切出来的，
 这条性质由构造保证；模型只负责给已经定位好的片段打分，所以它既发明不出覆盖，
@@ -20,7 +26,10 @@ from datetime import date
 
 from app.core.deadline import is_expired
 from app.core.skill_names import (
+    ALIAS_SCOPE_ROLE,
+    SKILL_ALIAS_VERSION,
     SKILL_MATCHER_VERSION,
+    AliasIndex,
     skill_forms_match,
     skill_name_key,
     skill_stem,
@@ -85,6 +94,10 @@ PREFERENCE_TOKEN_RATIO = 0.5
 #: 标签是「阈值以下」，不许再冒用「冲突」——两者的修法不同（后者等阶段 2 别名表，前者是真不相干）。
 PREFERENCE_NOTE_CONFLICT = "preference_conflict"
 PREFERENCE_NOTE_BELOW_THRESHOLD = "preference_below_threshold"
+#: 第四来路（B1 / `ADR-016` §2.4）：词面判不出方向，但 `role` 域的人工词表里有一对。
+#: 它**不改**上面两格 0.0 的语义与原因码——§2.4 明写「本 ADR 不重开那一格」，
+#: 老板 2026-11-09 的裁定优先于任何实现便利。
+PREFERENCE_NOTE_ALIAS_MATCH = "alias_match"
 
 #: §7.5 的四档剩余投递时间（天）。
 REMAINING_TIME_NEAR_DAYS = 30
@@ -130,7 +143,12 @@ class RequiredSkill:
 
 @dataclass(frozen=True)
 class MatchFacts:
-    """一次匹配需要的全部事实，全是值，不是 ORM 对象。"""
+    """一次匹配需要的全部事实，全是值，不是 ORM 对象。
+
+    `aliases` 是 B1 加的那一格，而且它是**事实**而不是依赖：一份 `AliasIndex` 值对象，
+    由编排层在 `_gather` 里一次载入（`ADR-016` §3）。默认值是空索引 = 纯词面行为，
+    所以「没传词表」与「词表是空的」判定结果逐字相同——§5.1 第一条要的正是这件事。
+    """
 
     job_title: str
     required_skills: Sequence[RequiredSkill]
@@ -139,6 +157,7 @@ class MatchFacts:
     target_role: str | None
     deadline: date | None
     today: date
+    aliases: AliasIndex = AliasIndex()
 
 
 @dataclass(frozen=True)
@@ -259,6 +278,11 @@ class MatchMeta:
     no_required_skills: bool
     #: 「这次用的是哪版写法判据」，与第 3c 条端点同源（`SKILL_MATCHER_VERSION`）。
     matcher_version: str = SKILL_MATCHER_VERSION
+    #: 「这次用的是哪一版**词表内容**」（`ADR-016` §2.5 第三条轴，起始 `v1`）。
+    #: 与 `matcher_version` 是两个东西：一个管判据规则（代码），一个管词表（数据）。
+    #: 空表也发这一格——不发会让「哪一版词表给的这个数」在词表为空时无法回答，
+    #: 而 §2.5 的整条理由就是「分数变了要知道是哪一轴造成的」。
+    alias_version: str = SKILL_ALIAS_VERSION
     #: 为什么不给分。目前本层只会写 `not_evaluated`（岗位没填要求技能 ⇒ 核心 term 不在，
     #: 整个不评估，老板 2026-11-08 裁定）；`nothing_computable` 是 F1:A 给「分母为 0」留的名字，
     #: 在本层已经到不了（岗位有要求技能时 coverage 必然参与），仍由 `normalize_score` 的单测守着。
@@ -305,7 +329,9 @@ _BOUNDARY_BLOCKED = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_+-#")
 _TRAILING_VERSION = re.compile(r"[ \t._/-]*\d+(?:[./]\d+)*")
 
 
-def locate_snippets(text: str, skill: str) -> tuple[tuple[str, bool], ...]:
+def locate_snippets(
+    text: str, skill: str, aliases: AliasIndex | None = None
+) -> tuple[tuple[str, bool], ...]:
     """在 `text` 里定位 `skill`，返回 `(原文连续片段, 是否被窗口切过端)`。
 
     三步，缺一不可（老板 2026-11-08 实测出的两个坑）：
@@ -318,6 +344,13 @@ def locate_snippets(text: str, skill: str) -> tuple[tuple[str, bool], ...]:
        这一步同时取代了旧版那句「片段里还得含技能键」的自检。
     3. **词边界检查**（见 `_BOUNDARY_BLOCKED`）：没有它，`C` 会在 `C++` 里被找到、
        `Java` 会在 `JavaScript` 里被找到，而这两条正是「不同技能」的教科书反例。
+
+    `aliases`（B1 / `ADR-016` §2.3）：第 2 步那次复核**同样认别名**。理由不是「顺手一致」，
+    而是只改覆盖不改定位就会落到实测过的那一格——「已具备但零片段」，
+    它走的是证据 0 分而不是报错，用户看不出少了什么。
+    **搜索词仍然是词干**：别名只放宽「这段原文算不算同一个技能」的复核，
+    不许反过来变成「拿 alias 的写法再去正文里搜一遍」——那会造出第二条命中口径，
+    而覆盖判定与证据定位必须共用同一个 `skill_forms_match`（§2.3 的同修要求）。
 
     方向仍然是保守的：宁可少给一条证据，也不给一条假证据（谚文整串合成那类边角
     在这里表现为「找不到」而不是「找错」）。
@@ -341,7 +374,7 @@ def locate_snippets(text: str, skill: str) -> tuple[tuple[str, bool], ...]:
             start = positions[at]
             stop = positions[end - 1] + 1
             surface = text[start:stop]
-            if skill_forms_match(skill, surface):
+            if skill_forms_match(skill, surface, aliases):
                 window_start = max(0, start - MATCH_SNIPPET_RADIUS)
                 window_end = min(len(text), stop + MATCH_SNIPPET_RADIUS)
                 found.append(
@@ -415,7 +448,9 @@ def unique_required(skills: Sequence[RequiredSkill]) -> tuple[RequiredSkill, ...
 
 
 def matched_with_forms(
-    required: Sequence[RequiredSkill], student: Sequence[str]
+    required: Sequence[RequiredSkill],
+    student: Sequence[str],
+    aliases: AliasIndex | None = None,
 ) -> tuple[tuple[RequiredSkill, str], ...]:
     """**唯一一处**把「岗位要求」与「学生技能」放在一起判的循环。入参应已按 `unique_required` 去重。
 
@@ -424,9 +459,12 @@ def matched_with_forms(
     光说「已具备」用户看不出我们是按哪条判据认的；把对面那个写法回给他，是一条**他能改**
     的信息（写成同一个写法以后，去重键那条路也一起顺了）。
 
-    判据是 `skill_forms_match`（全等 + 受控版本号剥离），不是裸的键全等：
-    学生填 `Python3`、岗位要求 `Python` 今天会被判「还缺」，而这条差距纯粹是写法。
-    为什么不用子串/前缀推断，见 §7.1 与 `skill_forms_match` 的 docstring。
+    判据是 `skill_forms_match`（全等 + 受控版本号剥离，B1 起再加一层别名兜底），
+    不是裸的键全等：学生填 `Python3`、岗位要求 `Python` 今天会被判「还缺」，
+    而这条差距纯粹是写法。为什么不用子串/前缀推断，见 §7.1 与 `skill_forms_match` 的 docstring。
+
+    `aliases` 是**传进来的**而不是在这里查库：这个循环是每条岗位要求 × 每条学生技能，
+    在其中查库就是 `ADR-016` §3 禁止的 N+1。传 `None` = 空词表 = B1 之前的行为。
 
     取**第一个**命中的写法（按学生技能表的录入顺序），不是最好的那个：
     「第一个」是可复现的，「最好的」需要再定一套排序判据，而那一套又会变成第二个口径。
@@ -437,25 +475,32 @@ def matched_with_forms(
         if not skill_name_key(item.name):
             continue
         for candidate in filled:
-            if skill_forms_match(item.name, candidate):
+            if skill_forms_match(item.name, candidate, aliases):
                 rows.append((item, candidate))
                 break
     return tuple(rows)
 
 
 def matched_required_skills(
-    required: Sequence[RequiredSkill], student: Sequence[str]
+    required: Sequence[RequiredSkill],
+    student: Sequence[str],
+    aliases: AliasIndex | None = None,
 ) -> tuple[RequiredSkill, ...]:
     """§7.1 分子集合的**投影**，判等本体在 `matched_with_forms`。
 
     为什么还留着：调用方有七八处只要那批岗位要求（打分、建候选、测覆盖），
     而多一个返回值会把这些地方都变成解包。投影只做一次列表推导，没有第二套判据。
     """
-    return tuple(item for item, _ in matched_with_forms(required, student))
+    return tuple(item for item, _ in matched_with_forms(required, student, aliases))
 
 
 def build_evidence(facts: MatchFacts, matched: Sequence[RequiredSkill]) -> EvidenceBundle:
-    """为每个命中的岗位技能找出它在学生经历里的位置。"""
+    """为每个命中的岗位技能找出它在学生经历里的位置。
+
+    `facts.aliases` 在这里生效（B1 / `ADR-016` §2.3 的「同修」要求）：覆盖判定认了别名而
+    定位不认，就会落到实测过的「已具备但零片段」那一格。索引已经装在 `facts` 里，
+    这一层从头到尾没有一次库查询。
+    """
     candidates: list[Candidate] = []
     truncated = 0
     experience_hits: dict[str, int] = {}
@@ -464,7 +509,7 @@ def build_evidence(facts: MatchFacts, matched: Sequence[RequiredSkill]) -> Evide
         for experience in facts.experiences:
             hit_in_this_experience = False
             for field_name, field_text in experience.fields():
-                snippets = locate_snippets(field_text, item.name)
+                snippets = locate_snippets(field_text, item.name, facts.aliases)
                 if not snippets:
                     continue
                 hit_in_this_experience = True
@@ -623,7 +668,7 @@ def score_match(
     也不把 `meta.evidence_mode` / `degrade_reason` 往外暴露一个字节，留 `None` 是真话而不是漏填。
     """
     required = unique_required(facts.required_skills)
-    matched = matched_required_skills(required, facts.student_skills)
+    matched = matched_required_skills(required, facts.student_skills, facts.aliases)
     if evidence is None:
         evidence = build_evidence(facts, matched)
     matched_names = {item.name for item in matched}
@@ -685,14 +730,25 @@ def score_match(
             value, note = PREFERENCE_EXACT, "contains"
         elif ratio >= PREFERENCE_TOKEN_RATIO:
             value, note = PREFERENCE_PARTIAL, "token_overlap"
+        elif facts.aliases.hit(ALIAS_SCOPE_ROLE, folded_role, folded_title):
+            # 第四来路（`ADR-016` §2.4，顺序是写死的）：词面判不出方向，但 `role` 域里
+            # 人工词表有这一对。给 0.6 而不是 1.0——`contains` 那一档的意思本来就是
+            # 「岗位标题逐字就是用户填的方向」，而这一对是**我们替他认的**，证据更弱；
+            # 同 0.6 与 `token_overlap` 一档，理由一致：都是「方向一致但需要中间层推断」。
+            # 位置也写死：排在两格 0.0 **之前**、`token_overlap` 之后，所以它只把
+            # 「本来要记 0 分的配对」捞起来，从不改动词面已经判得出的任何一格。
+            value, note = PREFERENCE_PARTIAL, PREFERENCE_NOTE_ALIAS_MATCH
         elif ratio > 0.0:
             # 有词面重合但没过阈值线：分数与冲突一模一样，但**不是**「方向相反」，
             # 只是词面信息不够。老板 2026-11-09 裁定单开一个原因码，别让它冒充冲突。
+            # （这一格与下一格的语义一个字都没被 B1 改过：`ADR-016` §2.4 末句
+            # 「本 ADR 不重开那一格」。词表里有配对时它们在上面那一行就被接住了。）
             value, note = PREFERENCE_CONFLICT, PREFERENCE_NOTE_BELOW_THRESHOLD
         else:
             # 词面零重合 ⇒ 判不出方向相关，就是冲突，不是「不知道所以不算」。v1 只有词面
             # 这一把尺子，代价是「同方向不同词」（`React 工程师` vs `前端开发`）会被记 0 分——
-            # 那一格由阶段 2 的 L1 别名表修，不靠免加权躲过去（ADR-013 §7.4）。
+            # 那一格由阶段 2 的 L1 别名表修（B1 落的就是那张表，`ADR-016` §2.4），
+            # 但**表里没有配对时它仍然报 0 分**：有了能收敛的地方 ≠ 这一格不再报 0。
             value, note = PREFERENCE_CONFLICT, PREFERENCE_NOTE_CONFLICT
         preference = Term("preference", MATCH_WEIGHTS["preference"], value, True, note)
 

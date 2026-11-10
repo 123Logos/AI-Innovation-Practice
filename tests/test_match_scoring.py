@@ -11,7 +11,15 @@ from datetime import date
 
 import pytest
 
-from app.core.skill_names import SKILL_MATCHER_VERSION, skill_forms_match
+from app.core.skill_names import (
+    ALIAS_SCOPE_ROLE,
+    ALIAS_SCOPE_SKILL,
+    SKILL_ALIAS_VERSION,
+    SKILL_MATCHER_VERSION,
+    AliasIndex,
+    skill_forms_match,
+    skill_name_key,
+)
 from app.services.match_scoring import (
     EVIDENCE_MODE_AI,
     EVIDENCE_MODE_KEYWORD,
@@ -21,6 +29,9 @@ from app.services.match_scoring import (
     MATCH_WEIGHTS_VERSION,
     MAX_SNIPPETS_PER_SKILL,
     PARTIAL_STRENGTH_THRESHOLD,
+    PREFERENCE_NOTE_ALIAS_MATCH,
+    PREFERENCE_NOTE_BELOW_THRESHOLD,
+    PREFERENCE_NOTE_CONFLICT,
     PREFERENCE_TOKEN_RATIO,
     AiScoring,
     Candidate,
@@ -47,6 +58,11 @@ from app.services.match_scoring import (
 TODAY = date(2026, 11, 7)
 
 
+def alias_index(*pairs: tuple[str, str], scope: str = ALIAS_SCOPE_SKILL) -> AliasIndex:
+    """按 `ADR-016` §2.2 的存储口径造索引：存的是**归一后的键**，不是原始写法。"""
+    return AliasIndex.from_rows([(skill_name_key(a), skill_name_key(b), scope) for a, b in pairs])
+
+
 def experience(experience_id: str, **text: str) -> ExperienceText:
     return ExperienceText(
         id=experience_id,
@@ -64,6 +80,7 @@ def facts(
     experiences: tuple[ExperienceText, ...] = (),
     target_role: str | None = None,
     deadline: date | None = None,
+    aliases: AliasIndex | None = None,
 ) -> MatchFacts:
     return MatchFacts(
         job_title=job_title,
@@ -73,6 +90,10 @@ def facts(
         target_role=target_role,
         deadline=deadline,
         today=TODAY,
+        # 没传就是**空词表**（§5.1 的「空表 = 纯词面行为」）。`MatchFacts.aliases` 的默认值
+        # 也是同一个空索引，所以这里显式传与省略传，读数必须逐字相同——那条由
+        # `TestAliasLayer.test_an_absent_index_and_an_empty_index_read_identically` 钉住。
+        aliases=aliases if aliases is not None else AliasIndex.empty(),
     )
 
 
@@ -828,3 +849,249 @@ class TestScoreMatchDoesNotLeakIdentityFields:
             "description",
             "responsibility",
         }
+
+
+class TestAliasLayer:
+    """B1 / `ADR-016`：别名层在**打分纯函数**里的行为（档位顺序、域边界、覆盖归属）。
+
+    这里只测判据，不测端点（端点那四条在 `tests/test_job_match.py`），也不测词表本身
+    与它的写入约束（在 `tests/test_skill_alias_layer.py`）。分成三层是因为失败必须读得出是谁坏的。
+    """
+
+    def test_the_dataclass_default_and_an_explicit_empty_index_read_identically(self) -> None:
+        """§5.1 的本层形式：**省略 `aliases`（走 `MatchFacts` 的默认值）与显式传空索引，
+        整个 `ScoredMatch` 逐字相同**。
+
+        为什么比的是整个对象而不是抽几格：§5.1 要防的退化是「把兜底接到词面四条之前」
+        这类**结构性**改动，它可能只体现在某一格上（比如 `evidence` 的候选数），
+        抽格子最容易恰好抽不到那一格。
+        """
+        item = experience("e1", description="用 Python 重写订单服务，做了三个月")
+        common = {
+            "job_title": "Python 后端开发工程师",
+            "required_skills": (RequiredSkill("Python"), RequiredSkill("JavaScript")),
+            "student_skills": ("Python", "JS"),
+            "experiences": (item,),
+            "target_role": "前端开发",
+            "deadline": date(2026, 12, 22),
+            "today": TODAY,
+        }
+        by_default = score_match(MatchFacts(**common))
+        by_empty = score_match(MatchFacts(**common, aliases=AliasIndex.empty()))
+        assert by_default == by_empty
+        assert by_default.meta.alias_version == SKILL_ALIAS_VERSION
+        assert by_default.meta.matcher_version == SKILL_MATCHER_VERSION
+
+    def test_the_alias_row_moves_coverage_and_only_coverage(self) -> None:
+        """§2.3 的影响面第一格：`JavaScript` 那条要求因为一行别名而进入分子。
+
+        断言的是 **0.5 → 1.0** 这一跳而不是「等于 1.0」：前一跳才证明别名真的参与了，
+        单看后一跳无法与「词面四条本来就认了」区分。
+        最后一行钉的是回显契约（§2.2）：别名命中之前，`gaps` 里的名字仍是**岗位侧原写法**。
+        """
+        case = {
+            "required": (RequiredSkill("Python"), RequiredSkill("JavaScript")),
+            "student": ("Python", "JS"),
+        }
+        without = score_match(facts(**case))
+        with_alias = score_match(facts(aliases=alias_index(("JavaScript", "JS")), **case))
+        assert term(without, "coverage").value == 0.5
+        assert term(with_alias, "coverage").value == 1.0
+        assert [gap.skill for gap in without.gaps] == ["JavaScript"]
+        assert with_alias.gaps == ()
+
+    def test_a_skill_alias_row_never_touches_the_role_domain(self) -> None:
+        """§2.2 两个域互不相通（本层的这一半）：`skill` 行的配对抬不动 `preference`。
+
+        反面就是「技能同义表」与「方向同义表」混成一张——那时 `React 工程师` ↔ `前端开发`
+        会被一条本来只说「两种技能写法是一回事」的行捞起来，而 §2.4 的 0.6 恰恰要
+        区分「我们替他认的方向」与「技能写法」。
+        """
+        pair = ("React 工程师", "前端开发")
+        lifted = score_match(
+            facts(
+                job_title=pair[1],
+                target_role=pair[0],
+                aliases=alias_index(pair, scope=ALIAS_SCOPE_ROLE),
+            )
+        )
+        untouched = score_match(
+            facts(
+                job_title=pair[1],
+                target_role=pair[0],
+                aliases=alias_index(pair, scope=ALIAS_SCOPE_SKILL),
+            )
+        )
+        assert term(lifted, "preference").note == PREFERENCE_NOTE_ALIAS_MATCH
+        assert term(untouched, "preference").note == PREFERENCE_NOTE_CONFLICT
+        assert term(untouched, "preference").value == 0.0
+
+    def test_a_role_alias_row_never_touches_the_skill_domain(self) -> None:
+        """反方向同样不许通：`role` 行抬不动 coverage，也不许让一条技能命中。"""
+        required = (RequiredSkill("Python"), RequiredSkill("JavaScript"))
+        student = ("Python", "JS")
+        match = score_match(
+            facts(
+                required=required,
+                student=student,
+                aliases=alias_index(("JavaScript", "JS"), scope=ALIAS_SCOPE_ROLE),
+            )
+        )
+        assert term(match, "coverage").value == 0.5
+        assert [gap.skill for gap in match.gaps] == ["JavaScript"]
+
+    @pytest.mark.parametrize(
+        ("job_title", "target_role", "expected_note", "expected_value"),
+        [
+            # `contains` 仍然赢：词面逐字包含时不许被 0.6 的别名档盖掉（§2.4 顺序写死）。
+            ("Python 后端开发工程师", "Python 后端开发", "contains", 1.0),
+            # `token_overlap` 仍然赢：词面重合够线就用不着词表。
+            ("数据分析实习生", "分析 数据 报表", "token_overlap", 0.6),
+            # 别名档排在两格 0.0 之前：词表里有配对，就不许再报「冲突」。
+            ("前端开发", "React 工程师", PREFERENCE_NOTE_ALIAS_MATCH, 0.6),
+            # 词面有一点重合但没过线，且词表**没有**这一对 → 仍然是阈值以下那一格。
+            ("前端开发实习生", "Python 后端开发工程师", PREFERENCE_NOTE_BELOW_THRESHOLD, 0.0),
+            # 词面零重合且词表没有这一对 → 仍然是冲突那一格（§2.4「不重开那一格」）。
+            ("前端开发", "游戏策划", PREFERENCE_NOTE_CONFLICT, 0.0),
+        ],
+    )
+    def test_the_ladder_order_is_contains_token_overlap_alias_then_the_two_zeros(
+        self,
+        job_title: str,
+        target_role: str,
+        expected_note: str,
+        expected_value: float,
+    ) -> None:
+        """§2.4 写死的顺序：`contains` → `token_overlap` → `alias_match` → 两格 0.0。
+
+        词表对**每一行**都备好了 `前端开发 ↔ React 工程师` 这一对：前三行都不该被它碰到
+        （各自的词面判据更先命中），第四、五行则是「词表里没有这一对」的对照——
+        那两格 0.0 的语义与原因码是老板 2026-11-09 拍的，本批一个字不许改（§2.4 末句）。
+        """
+        aliases = alias_index(("前端开发", "React 工程师"), scope=ALIAS_SCOPE_ROLE)
+        item = term(
+            score_match(facts(job_title=job_title, target_role=target_role, aliases=aliases)),
+            "preference",
+        )
+        assert item.note == expected_note
+        assert item.value == expected_value
+
+    def test_the_alias_tier_costs_exactly_the_same_as_the_token_overlap_tier(self) -> None:
+        """0.6 就是 0.6：别名档与 `token_overlap` 档**同分**（§2.4「理由一致」的形式化）。
+
+        这一格为什么要单独钉：档位值如果被写成 1.0，用户自己写准的标题与我们替他认的
+        配对就同分了——那是 §4 列明的「代理指标越权」形状，而且它一旦写成 1.0
+        就再也没人能从分数里看出这一对是词表救回来的。
+        """
+        alias_case = score_match(
+            facts(
+                job_title="前端开发",
+                target_role="React 工程师",
+                aliases=alias_index(("前端开发", "React 工程师"), scope=ALIAS_SCOPE_ROLE),
+            )
+        )
+        overlap_case = score_match(facts(job_title="数据分析实习生", target_role="分析 数据 报表"))
+        assert term(alias_case, "preference").value == 0.6
+        assert term(overlap_case, "preference").value == 0.6
+        # 同分而**不同来路**：这一格要的就是「分数一样、原因码不一样」，
+        # 与那两格 0.0 的处理（§2.4 沿用老板 2026-11-09 的裁定）同一个形状。
+        assert term(alias_case, "preference").note == PREFERENCE_NOTE_ALIAS_MATCH
+        assert term(overlap_case, "preference").note == "token_overlap"
+
+    def test_an_alias_row_moves_the_weighted_numerator_by_exactly_0_06(self) -> None:
+        """§2.4 那句「权重 0.10 ⇒ 最多 +0.06」的准确形式：**加权分子**恰好 +0.06。
+
+        对外的 `score` 走 §5.1 的重归一（`relevance` 恒退出分母 ⇒ `used = 0.85`），
+        所以读数涨幅是 `0.06 / 0.85 ≈ 0.071`。端点级也钉了一份同样的对照，因为这一格
+        正是 `ADR-016` §5.3「恰好 +0.06」与本仓重归一之间的差额所在（待老板过目，
+        见 `tests/test_job_match.py::test_a_role_alias_row_moves_preference_from_conflict_to_alias_match`）。
+        """
+        case = {
+            "job_title": "前端开发",
+            "target_role": "React 工程师",
+            "required": (RequiredSkill("Python"),),
+            "student": ("Python",),
+            "experiences": (experience("e1", description="用 Python 重写了订单服务"),),
+            "deadline": date(2026, 12, 22),
+        }
+        before = score_match(facts(**case))
+        after = score_match(
+            facts(
+                aliases=alias_index(("前端开发", "React 工程师"), scope=ALIAS_SCOPE_ROLE),
+                **case,
+            )
+        )
+        assert before.meta.weight_sum_used == after.meta.weight_sum_used == 0.85
+        assert term(before, "preference").value == 0.0
+        assert term(after, "preference").value == 0.6
+        numerator_delta = after.score * 0.85 - before.score * 0.85
+        assert numerator_delta == pytest.approx(0.06, abs=0.001)
+        assert after.score - before.score == pytest.approx(0.06 / 0.85, abs=0.001)
+
+    def test_locate_snippets_revalidates_an_alias_hit_and_returns_the_original_surface(
+        self,
+    ) -> None:
+        """§2.3 的「同修」要求在本层的形式：片段复核也认别名，而片段仍是**原文连续子串**。
+
+        用的是岗位要求 `JavaScript`、经历里逐字写着 `JavaScript` 的这一对：词面本来就判真，
+        所以这条测的不是「别名让它找到了」，而是「接上别名层之后 §3 的反幻觉闸门仍然成立」——
+        回给模型的必须是切出来的原文，不许因为我们查了词表就回一个规范名。
+        """
+        text = "这学期用 JavaScript 重写了三个页面"
+        snippets = locate_snippets(text, "JavaScript", alias_index(("JavaScript", "JS")))
+        assert snippets
+        for surface, _ in snippets:
+            assert surface in text
+
+    def test_an_alias_hit_without_any_evidence_stays_in_the_union(self) -> None:
+        """§5.2 的纯函数形式：**别名命中的技能零出处时进 `partial`，不许从并集里消失**。
+
+        这是 `match_scoring.py:752` 那一支与别名的交叉点，也是并集不变式在纯函数层最容易破的一格：
+        `strengths_by_skill` 从**候选对**分组，零候选的命中技能天生不在里面；
+        那条补齐如果只对「词面命中」生效，别名命中的那条就会从三档清单里彻底消失。
+        """
+        required = (RequiredSkill("Python"), RequiredSkill("JavaScript"))
+        student = ("Python", "JS")
+        aliases = alias_index(("JavaScript", "JS"))
+        match = score_match(facts(required=required, student=student, aliases=aliases))
+        hit_names = {item.skill for item in match.covered} | {
+            item.skill for item in match.partial
+        }
+        assert hit_names == {
+            item.name for item in matched_required_skills(required, student, aliases)
+        }
+        assert "JavaScript" in hit_names
+        assert match.gaps == ()
+
+    def test_matched_with_forms_returns_the_students_own_spelling_for_an_alias_hit(
+        self,
+    ) -> None:
+        """回显契约（§2.2）：别名命中时 `matched_form` 仍是**学生侧的原写法**。
+
+        别名表存的是 key，所以这一格最容易写错成「回一个 key」或「回岗位侧写法」；
+        两种都让用户看不到他自己打过的字，而那条信息恰恰是他改得动的（`ADR-013` §10 的原话）。
+        """
+        rows = matched_with_forms(
+            [RequiredSkill("JavaScript")], ["JS"], alias_index(("JavaScript", "JS"))
+        )
+        assert [(item.name, form) for item, form in rows] == [("JavaScript", "JS")]
+
+    def test_the_alias_table_is_a_fallback_not_a_loosening_of_the_four_rules(self) -> None:
+        """§2.3 的次序在本层的形式：词面四条**先**判，别名只兜底，而且兜底不许放宽四条。
+
+        故意用一条会被 §2.2 硬约束拒掉的行（`python 2` ↔ `python 3`）当探针：
+        它能翻判据，恰恰说明「词表里每一行都会真实改变判定结果」（§3 原话），
+        所以那条硬约束与它那条测试（`ADR-016` §5.4）不是形式主义。
+        """
+        harmful = alias_index(("python 2", "python 3"))
+        # 规则 1（键全等）先赢，与词表无关。
+        assert skill_forms_match("Python", "python", harmful) is True
+        # 规则 3（一侧带号）也不靠词表就判真。
+        assert skill_forms_match("Python3", "Python", harmful) is True
+        # 词表里那条假配对确实翻得了判据（对照：没有词表时规则 4 判否）。
+        assert skill_forms_match("Python 2", "Python 3") is False
+        assert skill_forms_match("Python 2", "Python 3", harmful) is True
+        # 而词表**没有**的 pair 一律不许被放宽：这是「兜底」与「什么算像」的分界。
+        assert skill_forms_match("Python 2", "Vue 3", harmful) is False
+        assert skill_forms_match("C", "C++", harmful) is False
+        assert skill_forms_match("会计", "审计", harmful) is False
