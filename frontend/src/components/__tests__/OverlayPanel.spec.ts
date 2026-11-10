@@ -116,6 +116,87 @@ describe('OverlayPanel：键盘关闭', () => {
   })
 })
 
+describe('OverlayPanel：焦点进出', () => {
+  it('打开时焦点落到面板里第一个可聚焦项（键盘用户不必从头 Tab 一遍）', () => {
+    const { wrapper } = mountPanel()
+
+    const inside = wrapper.find<HTMLButtonElement>('.inside').element
+    expect(document.activeElement).toBe(inside)
+  })
+
+  it('面板里没有可聚焦项时，焦点落在面板本身（Esc 之后才有地方可还）', async () => {
+    const wrapper = mount(
+      {
+        components: { OverlayPanel },
+        template: `<OverlayPanel v-if="true" label="只有文字的说明"><p>说明文字</p></OverlayPanel>`,
+      },
+      { attachTo: document.body },
+    )
+
+    const panel = wrapper.element as HTMLElement
+    expect(document.activeElement).toBe(panel)
+    expect(panel.getAttribute('tabindex')).toBe('-1')
+  })
+
+  it('关闭（Esc 触发）后焦点还给打开它的那个元素', async () => {
+    const opened = ref(true)
+    const wrapper = mount(
+      {
+        components: { OverlayPanel },
+        setup: () => ({ opened }),
+        template: `
+          <div>
+            <button class="trigger" type="button" @click="opened = !opened">开</button>
+            <OverlayPanel v-if="opened" label="探针面板"><button class="inside" type="button">里</button></OverlayPanel>
+          </div>
+        `,
+      },
+      { attachTo: document.body },
+    )
+
+    const trigger = wrapper.find<HTMLButtonElement>('.trigger').element
+    // 先收起再打开：焦点归还是「卸载那一刻」的行为，必须让面板在触发器持焦之后重新挂载。
+    opened.value = false
+    await nextTick()
+    trigger.focus()
+    trigger.click()
+    await nextTick()
+    expect(document.activeElement).toBe(wrapper.find('.inside').element)
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    opened.value = false
+    await nextTick()
+
+    expect(document.activeElement).toBe(trigger)
+  })
+
+  it('用户已经自己点了别处 → 关闭时不抢焦点', async () => {
+    const opened = ref(true)
+    const wrapper = mount(
+      {
+        components: { OverlayPanel },
+        setup: () => ({ opened }),
+        template: `
+          <div>
+            <button class="elsewhere" type="button">别处</button>
+            <OverlayPanel v-if="opened" label="探针面板"><button class="inside" type="button">里</button></OverlayPanel>
+          </div>
+        `,
+      },
+      { attachTo: document.body },
+    )
+
+    const elsewhere = wrapper.find<HTMLButtonElement>('.elsewhere').element
+    elsewhere.focus()
+    await nextTick()
+
+    opened.value = false
+    await nextTick()
+
+    expect(document.activeElement).toBe(elsewhere)
+  })
+})
+
 describe('OverlayPanel：面板自己长得像它接管的那个壳', () => {
   it('id / role / aria-label 由 props 决定，调用方的 class 与 panelClass 合并到同一个根', () => {
     const { wrapper } = mountPanel()

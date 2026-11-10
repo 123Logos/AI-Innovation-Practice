@@ -14,7 +14,7 @@
  * 3. 监听的生命周期：挂载即注册、卸载即注销——所以调用方用 `v-if` 收起浮层时，
  *    不会在 document 上留下一份空转的监听。
  *
- * 刻意**不做**的四件事，每一条都是决定不是遗漏：
+ * 刻意**不做**的三件事，每一条都是决定不是遗漏：
  *
  * - **不 Teleport**。现有测试与 CSS 都按「弹层就在触发器正下方」写，改成挂到 `body`
  *   会把 `AppTopBar.spec.ts` 的结构断言整片掀掉，那是另一件事的成本，不该混进这一片。
@@ -22,8 +22,13 @@
  * - **不定位置、不定尺寸**。形态由 `panelClass` 交回调用方，因此这次迁移**不改一屏像素**。
  * - **不管互斥**。两个弹层贴在顶栏同一处、必须互斥，那是产品行为，留在调用方两行写完更诚实；
  *   把它做进基座会变成「基座替所有调用方决定彼此关系」。
- * - **不接管焦点归还**。目前调用方的触发按钮是原生 `<button>`，收起后焦点落回原处由浏览器负责；
- *   键盘体验要单独测，不在这条片里顺手宣称。
+ *
+ * 焦点是这一片第二批做的（同一天）：打开时把焦点送进面板第一个可聚焦项，
+ * 关闭时还给当初打开它的那个元素——键盘用户按 Esc 关掉简历列表之后，
+ * 焦点不该掉回页面顶端，那是「按 Tab 从头走一遍」级别的惩罚。
+ *
+ * 仍然**没有**焦点陷阱（Tab 圈在面板里出不去那一层）：它要求拦 `Tab` / `Shift+Tab` 并改写入射顺序，
+ * 是独立一件可测的事，留到清单 4 的抽屉一起做，不在这里半做半宣称。
  */
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
@@ -36,11 +41,35 @@ const props = defineProps<{
   panelId?: string
   /** 面板语义：简历切换器是 `menu`，一组动作按钮是 `group`。默认 `menu`。 */
   role?: 'menu' | 'group'
+  /** 关掉之后焦点给谁。默认给「打开它的那个元素」；调用方也可以显式指定。 */
+  focusFallback?: string
 }>()
 
 const emit = defineEmits<{ close: [] }>()
 
 const root = ref<HTMLElement | null>(null)
+
+/** 打开面板时页面上拿着焦点的那个元素（通常是顶栏的触发按钮），关闭后把焦点还给它。 */
+let opener: HTMLElement | null = null
+
+/** 面板内可聚焦项：菜单项与按钮算，被禁用的不算。 */
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+function focusFirstItem(): void {
+  const el = root.value
+  if (!el) return
+  const first = el.querySelector<HTMLElement>(FOCUSABLE)
+  // 空面板（只有静态文字）也要能收焦点，否则 Esc 之后没地方可还。
+  ;(first ?? el).focus({ preventScroll: true })
+}
+
+function restoreFocus(): void {
+  const target = props.focusFallback
+    ? document.querySelector<HTMLElement>(props.focusFallback)
+    : opener
+  target?.focus({ preventScroll: true })
+}
 
 function onPointerDown(event: PointerEvent): void {
   const el = root.value
@@ -54,13 +83,20 @@ function onKeydown(event: KeyboardEvent): void {
 }
 
 onMounted(() => {
+  opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
   document.addEventListener('pointerdown', onPointerDown)
   document.addEventListener('keydown', onKeydown)
+  focusFirstItem()
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', onPointerDown)
   document.removeEventListener('keydown', onKeydown)
+  // 焦点还在面板里才需要还：用户可能已经自己点了别处，那时抢焦点是打扰。
+  const active = document.activeElement
+  if (root.value && active instanceof HTMLElement && (root.value.contains(active) || active === root.value)) {
+    restoreFocus()
+  }
 })
 </script>
 
@@ -71,7 +107,9 @@ onBeforeUnmount(() => {
     :class="['overlay-panel', props.panelClass]"
     :role="props.role ?? 'menu'"
     :aria-label="props.label"
+    tabindex="-1"
   >
     <slot />
   </div>
 </template>
+
