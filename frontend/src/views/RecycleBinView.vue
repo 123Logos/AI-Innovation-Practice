@@ -15,8 +15,10 @@ import { RouterLink } from 'vue-router'
 import AppTopBar from '@/components/AppTopBar.vue'
 import { isApiError } from '@/api'
 import { useResumeStore } from '@/stores/resume'
+import { useDialogStore } from '@/stores/dialog'
 
 const store = useResumeStore()
+const dialog = useDialogStore()
 
 const loadError = ref('')
 const actionError = ref('')
@@ -73,7 +75,11 @@ async function handleRestore(profileId: string, title: string): Promise<void> {
 async function handlePurge(profileId: string, title: string): Promise<void> {
   if (busyId.value) return
   // 不可逆操作必须二次确认，文案直接把后果说清楚。
-  const confirmed = window.confirm(`彻底删除后无法恢复，是否继续？\n\n简历：${title}`)
+  const confirmed = await dialog.askConfirm(
+    '彻底删除这份简历？',
+    '这一步不可逆：回收站里的这一份会永久消失，恢复不了。',
+    { subject: title, confirmLabel: '确认彻底删除', tone: 'danger' },
+  )
   if (!confirmed) return
 
   busyId.value = profileId
