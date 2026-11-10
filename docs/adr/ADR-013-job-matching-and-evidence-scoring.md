@@ -204,7 +204,7 @@ PRD `:181` 要求「至少展示三条可验证证据或明确缺口」：`cover
 🚩 **决策 3**：**彻底删除**，而不是留着不用。
 
 - 迁移：`skills` 表 drop `self_rating` 列；`downgrade` 重新加回为 `SmallInteger NOT NULL server_default '3'`（能回退，且回退后与今天的数据分布一致）。
-- 代码：`SkillInput` / `SkillRead` / `SkillDraft`（`app/schemas/resume.py:32`、`app/schemas/profile.py:170`、`app/services/profile_service.py:254`、`app/services/resume_service.py:196`）同步去掉字段；仓储两处构造点删除。
+- 代码：`SkillInput` / `SkillRead` / `SkillDraft`（`app/schemas/resume.py:32`、`app/schemas/profile.py:170`、`app/services/profile_service.py:254`、`app/services/resume_service.py:199`）同步去掉字段；仓储两处构造点删除。
 - 前端：`DEFAULT_SKILL_RATING`、草稿抹平逻辑、`api/types.ts:80`、以及 `resume.ts:984` 的字段白名单一并清理。
 - 文档：`docs/API.md` 技能字段表与示例载荷。
 
@@ -722,7 +722,7 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
      那条用例仍留在测试里防复发。判据 (b) 也解释了两档为什么可以合并成一个布尔：角标回答的只有「命中没有」，
      证据够不够是匹配卡那一层的事。
      **并集恒等不是巧合**：`score_match` 装配三档时把「命中却拿不到强度」的技能一律补进 `partial`
-     （`app/services/match_scoring.py:752` 那一段），所以模型漏答、拒答、给出不可用强度都只能把一条
+     （`app/services/match_scoring.py:808` 那一段），所以模型漏答、拒答、给出不可用强度都只能把一条
      命中从 `covered` 挪到 `partial`，挪不出并集。这件事原先只是我读代码推的，现在是一条测试：
      `test_badge_union_still_equals_match_union_in_ai_mode` 把每条 AI 强度都判成 0.1（全低于
      `PARTIAL_STRENGTH_THRESHOLD`），于是卡上 `covered` 必须全空、角标那侧仍有 `covered`——
