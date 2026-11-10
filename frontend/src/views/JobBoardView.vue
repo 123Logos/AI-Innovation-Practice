@@ -117,7 +117,7 @@ onMounted(load)
           <RouterLink class="primary-link" :to="{ name: 'job-create' }">录入岗位</RouterLink>
           <!-- v7 裁定：岗位回收站的入口在这里，不在顶栏。 -->
           <RouterLink class="text-link" :to="{ name: 'job-trash' }">我的删除</RouterLink>
-          <RouterLink class="text-link" :to="{ name: 'resume-editor' }">← 返回简历</RouterLink>
+          <RouterLink class="text-link" :to="{ name: 'resume-editor' }">返回简历</RouterLink>
         </div>
       </div>
 

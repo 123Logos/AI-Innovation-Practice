@@ -330,7 +330,7 @@ function toApiError(error: AxiosError<ApiErrorBody>): ApiError {
 
   return new ApiError(
     payload?.message ??
-      (status === 0 ? '无法连接到服务，请确认后端已启动。' : '请求失败，请稍后重试。'),
+      (status === 0 ? '连不上服务。刷新页面再试一次；如果一直打不开，是服务这边的问题。' : '请求失败，请稍后重试。'),
     status,
     payload?.code ?? (status === 0 ? 'NETWORK_ERROR' : 'UNKNOWN_ERROR'),
     payload?.details ?? null,

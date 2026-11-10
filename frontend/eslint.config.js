@@ -47,6 +47,28 @@ export default tseslint.config(
   },
 
   {
+    // G2 的 globals 半边（批次 F1b，老板 2026-11-09 第 4 点批准进 CI）。
+    // 两条规则一起才有意义：`no-restricted-globals` 只抓裸写的 `confirm(...)`，
+    // 而这个仓库现存 6 处调用**全部写成 `window.confirm(...)`** —— 只加前者
+    // 就是一张对现有代码永远不会响的假闸（member expression 不走 globals 判定）。
+    rules: {
+      'no-restricted-globals': [
+        'error',
+        { name: 'alert', message: '原生 alert 阻塞主线程，自动化验收走不下去。改用 stores/dialog.ts 的 askNotice（守则 C6）。' },
+        { name: 'confirm', message: '原生 confirm 阻塞主线程且不可样式化。改用 stores/dialog.ts 的 askConfirm（守则 C6）。' },
+      ],
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            "CallExpression[callee.object.name='window'][callee.property.name=/^(alert|confirm)$/]",
+          message: '`window.alert` / `window.confirm` 同样禁止（只是加了 window. 前缀，行为没变）。改用 stores/dialog.ts。',
+        },
+      ],
+    },
+  },
+
+  {
     rules: {
       // 只对**参数**放行 `_` 前缀：桩类（如 ResumePreview.spec.ts 的 StubResizeObserver）
       // 必须接住构造签名里的 callback 又不能用它，下划线是这个意思。

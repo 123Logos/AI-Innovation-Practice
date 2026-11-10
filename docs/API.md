@@ -33,7 +33,7 @@
 
 实际由代码发出的错误码（以 `app/` 全量 grep 这些字面量为准，不含测试）：`VALIDATION_ERROR`（`app/main.py:211`）、`RATE_LIMITED`（`app/main.py:231`）、`NOT_FOUND`（`app/main.py:190`）、`CLIENT_ERROR`（`app/main.py:193`）、`INTERNAL_ERROR`（`app/main.py:179`、`:196`）、`AI_KEY_MISSING`（`app/main.py:263`）、`AI_KEY_INVALID`（`app/main.py:272`）、`AI_SERVICE_UNAVAILABLE`（`app/main.py:283`、`app/api/v1/jobs.py:154`）。三个 `AI_*` 码只在 `/resumes/polish` 与 `/jobs/extract-skills` 上可达（`app/main.py:239-240` 的注释写明这一沿革；`POST /jobs/{job_id}/match` **不在这个集合里**——它 AI 失败也返回 `200`，见 §4.10；`GET /jobs/{job_id}/requirement-match` 同样不在——它按定义不调 AI，见 §4.10.1），且处理器文案要求作用域中性——不得出现「润色」或「简历」（`docs/adr/ADR-011-job-board-and-skill-extraction.md` 2.F）。
 
-以下码目前**只是本文件的设计意图**，`app/` 下没有任何一处产生它们：`AUTH_REQUIRED`、`AUTH_INVALID_CREDENTIALS`、`AUTH_FORBIDDEN`、`RESOURCE_NOT_FOUND`、`CONSENT_REQUIRED`、`CONFLICT`。未登录与令牌失效实际走 `HTTPException(401)`（`app/services/dependencies.py:52`、`:132`），被通用 4xx 处理器压成 `CLIENT_ERROR`（`app/main.py:192-194`），message 取 `UNAUTHORIZED_MESSAGE`（`app/services/dependencies.py:34`）。
+以下码目前**只是本文件的设计意图**，`app/` 下没有任何一处产生它们：`AUTH_REQUIRED`、`AUTH_INVALID_CREDENTIALS`、`AUTH_FORBIDDEN`、`RESOURCE_NOT_FOUND`、`CONSENT_REQUIRED`、`CONFLICT`。未登录与令牌失效实际走 `HTTPException(401)`（`app/services/dependencies.py:52`、`:132`），被通用 4xx 处理器压成 `CLIENT_ERROR`（`app/main.py:192-194`），message 取 `UNAUTHORIZED_MESSAGE`（`app/services/dependencies.py:35`）。
 
 `MEDIA_UNAVAILABLE` 属模拟面试，仍在冻结清单（AGENTS.md §3.2），未启用、无代码位置。
 
@@ -185,7 +185,7 @@
 | 8 | `GET /jobs/trash` | 任何登录用户 | 只返回**自己的**软删岗位（过滤在 SQL 里） | 200 | `app/api/v1/jobs.py:164-178`、`app/repositories/job_repository.py:284-295` |
 | 9 | `PUT /jobs/{job_id}/restore` | 仅创建者 | 404；「岗位存在但不在回收站」同样是 404 | 200 / 404 | `app/api/v1/jobs.py:328-346`、`app/services/job_service.py:378-393` |
 | 10 | `POST /jobs/{job_id}/match` | `published`：任何登录用户；`draft`：仅创建者 | 404（他人的草稿**包括**回收站里的） | 200 / 401 / 404 / 422 / 429 | `app/api/v1/jobs.py:196-226`、`app/services/match_service.py:121-138` |
-| 11 | `GET /jobs/{job_id}/requirement-match` | `published`：任何登录用户；`draft`：仅创建者 | 同上，404 而不是 403（**与 #10 同一个 `get_readable` 谓词**） | 200 / 401 / 404 / 422 | `app/api/v1/jobs.py:229-264`、`app/services/match_service.py:140-192` |
+| 11 | `GET /jobs/{job_id}/requirement-match` | `published`：任何登录用户；`draft`：仅创建者 | 同上，404 而不是 403（**与 #10 同一个 `get_readable` 谓词**） | 200 / 401 / 404 / 422 | `app/api/v1/jobs.py:229-264`、`app/services/match_service.py:150-184` |
 
 三条实现约束（都有代码兜住，不是口头承诺）：
 
@@ -475,6 +475,16 @@
 8. **`meta.matcher_version` 是写法判据的版本号**，与 §4.10.1 那个端点同源（同一个常量
    `app/core/skill_names.py::SKILL_MATCHER_VERSION`）。它不是为了展示，是为了让
    「角标与匹配卡各说一套」变成一次可断言的失败（判据 (c)）。什么时候必须 +1 写在那个常量的注释里。
+   **2026-11-10（批次 B1）起它是 `"v2"`**：判据构成里多了「查人工别名词表兜底」这一步。
+9. **`meta.alias_version` 是词表**内容**的版本号**（起始 `"v1"`，`ADR-016` §2.5 第三条轴），与
+   `matcher_version` 分开的理由只有一句：规则是代码、词表是数据，「分数变了」必须能说出是哪一轴造成的。
+   **空表也发这一格**。它对应的表是 `skill_aliases`（`canonical_key`/`alias_key`/`scope`/`source`，
+   唯一键含 `scope`）：判定**双向**、存**单向**，且只在 `app/core/skill_names.py::skill_forms_match`
+   的四条词面规则全部判否之后才查——**判重、存储、回显一律不受影响**（§2.1 选 (c)）。
+   `terms[preference]` 因此多出第四来路 `note = "alias_match"`，值 **0.6**（不是 1.0，理由见 §2.4），
+   档位顺序写死：`contains` 1.0 → `token_overlap` 0.6 → `alias_match` 0.6 → 两格 0.0。
+   词表今天**是空的**（第一批候选还没经老板逐条批准，`ADR-016` §7），所以这一格的值在任何真实响应里
+   都是 `v1`，且没有任何配对走过 `alias_match`——别把「有了这一层」读成「匹配变准了」。
 
 **限流键**：本端点是全仓库第一条**按用户**而不是按 IP 的限流规则
 （`app/core/rate_limit.py::get_user_or_remote_address`，装饰器级 `key_func` 覆盖，
@@ -493,7 +503,7 @@
 ### 4.10.1 GET `/jobs/{job_id}/requirement-match` — 逐条要求状态（确定性、不调 AI、不花钱）
 
 ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` →
-`app/services/match_service.py:140-192` 的 `requirement_match()`。
+`app/services/match_service.py:150-184` 的 `requirement_match()`。
 
 **它为什么存在**：「你已具备」角标原先在浏览器里判——`trim + NFKC + toLowerCase` 之后做集合成员检查。
 那套键够不着版本号写法，于是同一屏上角标说「不具备」、匹配卡说「已具备」（§4.10 第 5 条那个判据
@@ -513,7 +523,8 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 | `coverage[].name` | `str` | 岗位侧原写法，逐字回显 |
 | `coverage[].status` | `"covered" \| "partial" \| "missing"` | 前两档都算「写法命中」；`covered` / `partial` 的分界来自**关键词模式**，与匹配卡上可能被 AI 挪动的那条线无关——角标只回答命中没有。**挪档挪不出并集**：装配三档时「命中却拿不到强度」一律落 `partial`（`app/services/match_scoring.py:752`），所以配了 Key 的那些次点击里，`status ∈ {covered, partial}` 的集合仍与匹配卡 `covered ∪ partial` 逐字相同，这一点由 `test_badge_union_still_equals_match_union_in_ai_mode` 在 AI 模式下单独测过 |
 | `coverage[].matched_form` | `str\|null` | 学生技能表里真正命中的那个写法（岗位 `Python` ↔ 简历 `Python3`）；`missing` 时恒为 `null`，不许拿岗位那侧的字面填进去 |
-| `meta.matcher_version` | `str` | 与 §4.10 的 `data.meta.matcher_version` 同一个常量 |
+| `meta.matcher_version` | `str` | 与 §4.10 的 `data.meta.matcher_version` 同一个常量（B1 起 `"v2"`） |
+| `meta.alias_version` | `str` | 与 §4.10 同源：本次判定用的是哪一版**别名词表内容**（起始 `"v1"`，空表也发） |
 
 **刻意没有的四样东西**（每一个都是决定，不是遗漏）：
 
