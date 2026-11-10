@@ -18,7 +18,6 @@
 import { onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
-import AppTopBar from '@/components/AppTopBar.vue'
 import { isApiError } from '@/api'
 import { EMPLOYMENT_TYPE_LABELS, JOB_STATUS_LABELS, useJobStore } from '@/stores/job'
 import { formatDate, formatDateTime } from '@/utils/datetime'
@@ -70,70 +69,65 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="app-shell">
-    <AppTopBar />
-
-    <main class="trash-page">
-      <div class="trash-heading">
-        <div>
-          <p class="eyebrow">岗位库</p>
-          <h1>岗位回收站</h1>
-          <p class="intro">
-            这里只有你删除的<strong>岗位</strong>。简历的回收站在别处，两者不混在一起。
-            恢复后岗位回到列表，状态（草稿 / 已发布）保持删除前的样子。
-          </p>
-        </div>
-        <RouterLink class="back-link" :to="{ name: 'job-board' }">返回岗位列表</RouterLink>
+  <main class="trash-page">
+    <div class="trash-heading">
+      <div>
+        <p class="eyebrow">岗位库</p>
+        <h1>岗位回收站</h1>
+        <p class="intro">
+          这里只有你删除的<strong>岗位</strong>。简历的回收站在别处，两者不混在一起。
+          恢复后岗位回到列表，状态（草稿 / 已发布）保持删除前的样子。
+        </p>
       </div>
+      <RouterLink class="back-link" :to="{ name: 'job-board' }">返回岗位列表</RouterLink>
+    </div>
 
-      <p v-if="loadError" class="feedback feedback--error" role="alert">{{ loadError }}</p>
-      <p v-else-if="store.trashLoading" class="feedback">正在加载岗位回收站…</p>
+    <p v-if="loadError" class="feedback feedback--error" role="alert">{{ loadError }}</p>
+    <p v-else-if="store.trashLoading" class="feedback">正在加载岗位回收站…</p>
 
-      <p v-if="actionError" class="feedback feedback--error" role="alert">{{ actionError }}</p>
-      <p v-if="actionNotice" class="feedback feedback--ok" role="status">{{ actionNotice }}</p>
+    <p v-if="actionError" class="feedback feedback--error" role="alert">{{ actionError }}</p>
+    <p v-if="actionNotice" class="feedback feedback--ok" role="status">{{ actionNotice }}</p>
 
-      <section v-if="!loadError && !store.trashLoading" class="trash-panel">
-        <p v-if="!store.trash.length" class="empty">这里还没有被删除的岗位。</p>
+    <section v-if="!loadError && !store.trashLoading" class="trash-panel">
+      <p v-if="!store.trash.length" class="empty">这里还没有被删除的岗位。</p>
 
-        <ul v-else class="trash-list">
-          <li v-for="item in store.trash" :key="item.id" class="trash-row">
-            <div class="trash-main">
-              <p class="trash-title">{{ item.title }}</p>
-              <p class="trash-meta">
-                <span>{{ item.company_name }}</span>
+      <ul v-else class="trash-list">
+        <li v-for="item in store.trash" :key="item.id" class="trash-row">
+          <div class="trash-main">
+            <p class="trash-title">{{ item.title }}</p>
+            <p class="trash-meta">
+              <span>{{ item.company_name }}</span>
+              <span class="dot">·</span>
+              <span>{{ JOB_STATUS_LABELS[item.status] }}</span>
+              <span v-if="employmentLabel(item.employment_type)" class="dot">·</span>
+              <span v-if="employmentLabel(item.employment_type)">
+                {{ employmentLabel(item.employment_type) }}
+              </span>
+              <template v-if="item.deadline">
                 <span class="dot">·</span>
-                <span>{{ JOB_STATUS_LABELS[item.status] }}</span>
-                <span v-if="employmentLabel(item.employment_type)" class="dot">·</span>
-                <span v-if="employmentLabel(item.employment_type)">
-                  {{ employmentLabel(item.employment_type) }}
-                </span>
-                <template v-if="item.deadline">
-                  <span class="dot">·</span>
-                  <span>截止 {{ formatDate(item.deadline) }}</span>
-                </template>
-                <span class="dot">·</span>
-                <span>删除于 {{ formatDateTime(item.deleted_at) || '—' }}</span>
-              </p>
-            </div>
-            <div class="trash-actions">
-              <button
-                class="row-button"
-                type="button"
-                :disabled="busyId === item.id"
-                @click="handleRestore(item.id, item.title)"
-              >
-                {{ busyId === item.id ? '恢复中…' : '恢复' }}
-              </button>
-            </div>
-          </li>
-        </ul>
-      </section>
-    </main>
-  </div>
+                <span>截止 {{ formatDate(item.deadline) }}</span>
+              </template>
+              <span class="dot">·</span>
+              <span>删除于 {{ formatDateTime(item.deleted_at) || '—' }}</span>
+            </p>
+          </div>
+          <div class="trash-actions">
+            <button
+              class="row-button"
+              type="button"
+              :disabled="busyId === item.id"
+              @click="handleRestore(item.id, item.title)"
+            >
+              {{ busyId === item.id ? '恢复中…' : '恢复' }}
+            </button>
+          </div>
+        </li>
+      </ul>
+    </section>
+  </main>
 </template>
 
 <style scoped>
-.app-shell { min-height: 100vh; background: var(--ui-canvas); }
 .trash-page { width: min(880px, 100%); margin: 0 auto; padding: 32px 48px 72px; }
 .trash-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
 .eyebrow { margin: 0 0 10px; color: var(--theme-rule); font-size: 12px; letter-spacing: .12em; }

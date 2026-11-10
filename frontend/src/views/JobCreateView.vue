@@ -23,7 +23,6 @@
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 
-import AppTopBar from '@/components/AppTopBar.vue'
 import { isApiError } from '@/api'
 import {
   DESCRIPTION_LIMIT,
@@ -247,274 +246,269 @@ void loadForEdit()
 </script>
 
 <template>
-  <div class="app-shell">
-    <AppTopBar />
-
-    <main class="create-page">
-      <div class="page-heading">
-        <div>
-          <p class="eyebrow">岗位库</p>
-          <h1>{{ isEdit ? '编辑岗位' : '录入岗位' }}</h1>
-          <p class="intro">
-            <template v-if="isEdit">
-              改动一条已保存的岗位。保存是显式动作：点下面的「保存修改」才生效，
-              离开本页不会自动保存，岗位状态（草稿 / 已发布）也不受本次保存影响。
-            </template>
-            <template v-else>
-              把招聘信息原文粘进来，可以用「AI 提取技能」从 JD 里取候选，再逐条删改。
-              保存后是「草稿」，只有你自己看得到；确认无误后可在详情页发布到广场。
-            </template>
-          </p>
-        </div>
-        <RouterLink
-          class="text-link"
-          :to="isEdit ? { name: 'job-detail', params: { id: props.jobId } } : { name: 'job-board' }"
-        >
-          {{ isEdit ? '返回详情' : '返回列表' }}
-        </RouterLink>
+  <main class="create-page">
+    <div class="page-heading">
+      <div>
+        <p class="eyebrow">岗位库</p>
+        <h1>{{ isEdit ? '编辑岗位' : '录入岗位' }}</h1>
+        <p class="intro">
+          <template v-if="isEdit">
+            改动一条已保存的岗位。保存是显式动作：点下面的「保存修改」才生效，
+            离开本页不会自动保存，岗位状态（草稿 / 已发布）也不受本次保存影响。
+          </template>
+          <template v-else>
+            把招聘信息原文粘进来，可以用「AI 提取技能」从 JD 里取候选，再逐条删改。
+            保存后是「草稿」，只有你自己看得到；确认无误后可在详情页发布到广场。
+          </template>
+        </p>
       </div>
+      <RouterLink
+        class="text-link"
+        :to="isEdit ? { name: 'job-detail', params: { id: props.jobId } } : { name: 'job-board' }"
+      >
+        {{ isEdit ? '返回详情' : '返回列表' }}
+      </RouterLink>
+    </div>
 
-      <p v-if="loadingDetail" class="feedback">正在读取岗位…</p>
-      <p v-else-if="loadError" class="feedback feedback--error" role="alert">{{ loadError }}</p>
+    <p v-if="loadingDetail" class="feedback">正在读取岗位…</p>
+    <p v-else-if="loadError" class="feedback feedback--error" role="alert">{{ loadError }}</p>
 
-      <form class="job-form" @submit.prevent="submit">
-        <section class="form-block">
-          <h2 class="block-title">岗位基本信息</h2>
-          <div class="field-grid">
-            <label class="field">
-              <span>企业名称 <em class="required">必填</em></span>
+    <form class="job-form" @submit.prevent="submit">
+      <section class="form-block">
+        <h2 class="block-title">岗位基本信息</h2>
+        <div class="field-grid">
+          <label class="field">
+            <span>企业名称 <em class="required">必填</em></span>
+            <input
+              v-model="form.company_name"
+              type="text"
+              :maxlength="TEXT_LIMIT.company"
+              placeholder="如：示例科技"
+            />
+          </label>
+
+          <label class="field">
+            <span>岗位名称 <em class="required">必填</em></span>
+            <input
+              v-model="form.title"
+              type="text"
+              :maxlength="TEXT_LIMIT.title"
+              placeholder="如：后端开发工程师"
+            />
+          </label>
+
+          <label class="field">
+            <span>工作地点</span>
+            <input
+              v-model="form.location"
+              type="text"
+              :maxlength="TEXT_LIMIT.location"
+              placeholder="如：上海（选填）"
+            />
+          </label>
+
+          <label class="field">
+            <span>工作方式</span>
+            <select v-model="form.employment_type">
+              <option value="">未指定</option>
+              <option v-for="[value, label] in EMPLOYMENT_TYPE_OPTIONS" :key="value" :value="value">
+                {{ label }}
+              </option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>经验要求</span>
+            <input
+              v-model="form.experience_required"
+              type="text"
+              :maxlength="TEXT_LIMIT.experience"
+              placeholder="如：3 年以上后端经验（选填）"
+            />
+          </label>
+
+          <label class="field">
+            <span>截止时间</span>
+            <input v-model="form.deadline" type="date" />
+            <small class="field-hint">留空表示长期有效；填过去的日期也可以（补录用过的岗位）。</small>
+          </label>
+
+          <label class="field">
+            <span>薪资下限（元）</span>
+            <input v-model="form.salary_min" type="text" inputmode="decimal" placeholder="如：3000" />
+          </label>
+
+          <label class="field">
+            <span>薪资上限（元）</span>
+            <input v-model="form.salary_max" type="text" inputmode="decimal" placeholder="如：6000" />
+          </label>
+        </div>
+        <p class="field-hint">
+          地点、薪资、经验都存下来备查，本轮列表不提供按它们筛选。
+        </p>
+      </section>
+
+      <section class="form-block">
+        <h2 class="block-title">岗位描述（JD 原文）</h2>
+        <label class="field">
+          <span>原文 <em class="required">必填</em></span>
+          <textarea
+            v-model="form.description"
+            class="description-input"
+            rows="14"
+            :maxlength="DESCRIPTION_LIMIT"
+            placeholder="把招聘页的职责与要求原样粘进来"
+            data-testid="jd-input"
+          ></textarea>
+          <small class="field-hint">{{ descriptionLength }} / {{ DESCRIPTION_LIMIT }} 字</small>
+        </label>
+
+        <!-- 提取入口紧跟 JD：它读的就是这段原文；放在技能区里会让人以为候选来自已填好的那几行。 -->
+        <div class="extract-row">
+          <button
+            class="row-button row-button--extract"
+            type="button"
+            data-testid="extract-button"
+            :disabled="!canExtract"
+            :aria-busy="store.extracting"
+            @click="runExtract"
+          >
+            {{ store.extracting ? '提取中…' : 'AI 提取技能' }}
+          </button>
+          <button
+            v-if="canDiscard"
+            class="row-button row-button--ghost"
+            type="button"
+            data-testid="extract-discard"
+            @click="discardExtract"
+          >
+            放弃本次提取
+          </button>
+          <span class="extract-hint">
+            {{
+              store.extracting
+                ? 'AI 正在读这份 JD，最长等 45 秒。这一步只是给建议，不会保存，也不会改动已经存下来的岗位。'
+                /* ui-copy:allow C2 唯一豁免：这一步花的是他自己的凭据与用量 */
+                : '用的是你自己的 DeepSeek API Key；结果只填进下面的表单，你点「保存岗位」才会存下来。'
+            }}
+          </span>
+        </div>
+
+        <p
+          v-if="extractError"
+          class="feedback feedback--error"
+          role="alert"
+          data-testid="extract-error"
+        >
+          {{ extractError }}
+        </p>
+        <p v-else-if="extractNotice" class="feedback" role="status" data-testid="extract-notice">
+          {{ extractNotice }}
+        </p>
+      </section>
+
+      <section class="form-block">
+        <div class="block-head">
+          <h2 class="block-title">岗位要求的技能</h2>
+          <span class="counter">{{ filledSkillCount }} / {{ SKILL_LIMIT }}</span>
+        </div>
+
+        <!-- 核验计数三条各占一行、各自成句：并成一个数会把「什么都不用做」混进「该怀疑规则」。 -->
+        <ul
+          v-if="countLines.length || mergeLines.length"
+          class="extract-counts"
+          data-testid="extract-counts"
+        >
+          <li v-for="line in countLines" :key="line" class="extract-count-line" data-testid="count-line">
+            {{ line }}
+          </li>
+          <li v-for="line in mergeLines" :key="line" class="extract-count-line extract-count-line--merge">
+            {{ line }}
+          </li>
+        </ul>
+
+        <ul class="skill-list" data-testid="skill-list">
+          <li v-for="(row, index) in form.skills" :key="index" class="skill-item">
+            <div class="skill-row">
               <input
-                v-model="form.company_name"
+                v-model="row.name"
+                class="skill-name"
                 type="text"
-                :maxlength="TEXT_LIMIT.company"
-                placeholder="如：示例科技"
+                :maxlength="TEXT_LIMIT.skillName"
+                placeholder="如：Python / 沟通能力强"
+                :title="row.evidence_text ? `原文依据：${row.evidence_text}` : undefined"
               />
-            </label>
-
-            <label class="field">
-              <span>岗位名称 <em class="required">必填</em></span>
-              <input
-                v-model="form.title"
-                type="text"
-                :maxlength="TEXT_LIMIT.title"
-                placeholder="如：后端开发工程师"
-              />
-            </label>
-
-            <label class="field">
-              <span>工作地点</span>
-              <input
-                v-model="form.location"
-                type="text"
-                :maxlength="TEXT_LIMIT.location"
-                placeholder="如：上海（选填）"
-              />
-            </label>
-
-            <label class="field">
-              <span>工作方式</span>
-              <select v-model="form.employment_type">
-                <option value="">未指定</option>
-                <option v-for="[value, label] in EMPLOYMENT_TYPE_OPTIONS" :key="value" :value="value">
+              <select v-model="row.type" class="skill-type">
+                <option v-for="[value, label] in JOB_SKILL_TYPE_OPTIONS" :key="value" :value="value">
                   {{ label }}
                 </option>
               </select>
-            </label>
+              <!-- evidence 收在展开里：主视觉留给技能名与分类，要核对的人多点一下就能看到。 -->
+              <button
+                v-if="row.evidence_text"
+                class="row-button row-button--tiny"
+                type="button"
+                data-testid="evidence-toggle"
+                :aria-expanded="openEvidence.has(index)"
+                @click="toggleEvidence(index)"
+              >
+                原文依据
+              </button>
+              <button
+                class="row-button row-button--ghost"
+                type="button"
+                data-testid="skill-remove"
+                :disabled="form.skills.length <= 1"
+                @click="removeSkillRow(index)"
+              >
+                删除
+              </button>
+            </div>
+            <p v-if="row.evidence_text && openEvidence.has(index)" class="skill-evidence">
+              原文依据：{{ row.evidence_text }}
+              <span v-if="row.confidence !== undefined">· AI 把握 {{ row.confidence }}</span>
+              <span class="skill-origin">
+                保存后这条能不能标成「可回溯原文」，取决于系统能否在本页原文里逐字找到它
+              </span>
+            </p>
+          </li>
+        </ul>
 
-            <label class="field">
-              <span>经验要求</span>
-              <input
-                v-model="form.experience_required"
-                type="text"
-                :maxlength="TEXT_LIMIT.experience"
-                placeholder="如：3 年以上后端经验（选填）"
-              />
-            </label>
+        <button class="row-button add-skill" type="button" :disabled="!canAddSkill" @click="addSkillRow">
+          添加技能
+        </button>
+        <p class="field-hint">
+          一行一个技能；留空的行不会被保存。同名技能（大小写、全半角不同也算同名）保存时会被拒绝，
+          所以 AI 候选里与已有技能重名的那些已经跳过、并在上面报了数。
+        </p>
+      </section>
 
-            <label class="field">
-              <span>截止时间</span>
-              <input v-model="form.deadline" type="date" />
-              <small class="field-hint">留空表示长期有效；填过去的日期也可以（补录用过的岗位）。</small>
-            </label>
+      <p v-if="formError" class="feedback feedback--error" role="alert">{{ formError }}</p>
 
-            <label class="field">
-              <span>薪资下限（元）</span>
-              <input v-model="form.salary_min" type="text" inputmode="decimal" placeholder="如：3000" />
-            </label>
-
-            <label class="field">
-              <span>薪资上限（元）</span>
-              <input v-model="form.salary_max" type="text" inputmode="decimal" placeholder="如：6000" />
-            </label>
-          </div>
-          <p class="field-hint">
-            地点、薪资、经验都存下来备查，本轮列表不提供按它们筛选。
-          </p>
-        </section>
-
-        <section class="form-block">
-          <h2 class="block-title">岗位描述（JD 原文）</h2>
-          <label class="field">
-            <span>原文 <em class="required">必填</em></span>
-            <textarea
-              v-model="form.description"
-              class="description-input"
-              rows="14"
-              :maxlength="DESCRIPTION_LIMIT"
-              placeholder="把招聘页的职责与要求原样粘进来"
-              data-testid="jd-input"
-            ></textarea>
-            <small class="field-hint">{{ descriptionLength }} / {{ DESCRIPTION_LIMIT }} 字</small>
-          </label>
-
-          <!-- 提取入口紧跟 JD：它读的就是这段原文；放在技能区里会让人以为候选来自已填好的那几行。 -->
-          <div class="extract-row">
-            <button
-              class="row-button row-button--extract"
-              type="button"
-              data-testid="extract-button"
-              :disabled="!canExtract"
-              :aria-busy="store.extracting"
-              @click="runExtract"
-            >
-              {{ store.extracting ? '提取中…' : 'AI 提取技能' }}
-            </button>
-            <button
-              v-if="canDiscard"
-              class="row-button row-button--ghost"
-              type="button"
-              data-testid="extract-discard"
-              @click="discardExtract"
-            >
-              放弃本次提取
-            </button>
-            <span class="extract-hint">
-              {{
-                store.extracting
-                  ? 'AI 正在读这份 JD，最长等 45 秒。这一步只是给建议，不会保存，也不会改动已经存下来的岗位。'
-                  /* ui-copy:allow C2 唯一豁免：这一步花的是他自己的凭据与用量 */
-                  : '用的是你自己的 DeepSeek API Key；结果只填进下面的表单，你点「保存岗位」才会存下来。'
-              }}
-            </span>
-          </div>
-
-          <p
-            v-if="extractError"
-            class="feedback feedback--error"
-            role="alert"
-            data-testid="extract-error"
-          >
-            {{ extractError }}
-          </p>
-          <p v-else-if="extractNotice" class="feedback" role="status" data-testid="extract-notice">
-            {{ extractNotice }}
-          </p>
-        </section>
-
-        <section class="form-block">
-          <div class="block-head">
-            <h2 class="block-title">岗位要求的技能</h2>
-            <span class="counter">{{ filledSkillCount }} / {{ SKILL_LIMIT }}</span>
-          </div>
-
-          <!-- 核验计数三条各占一行、各自成句：并成一个数会把「什么都不用做」混进「该怀疑规则」。 -->
-          <ul
-            v-if="countLines.length || mergeLines.length"
-            class="extract-counts"
-            data-testid="extract-counts"
-          >
-            <li v-for="line in countLines" :key="line" class="extract-count-line" data-testid="count-line">
-              {{ line }}
-            </li>
-            <li v-for="line in mergeLines" :key="line" class="extract-count-line extract-count-line--merge">
-              {{ line }}
-            </li>
-          </ul>
-
-          <ul class="skill-list" data-testid="skill-list">
-            <li v-for="(row, index) in form.skills" :key="index" class="skill-item">
-              <div class="skill-row">
-                <input
-                  v-model="row.name"
-                  class="skill-name"
-                  type="text"
-                  :maxlength="TEXT_LIMIT.skillName"
-                  placeholder="如：Python / 沟通能力强"
-                  :title="row.evidence_text ? `原文依据：${row.evidence_text}` : undefined"
-                />
-                <select v-model="row.type" class="skill-type">
-                  <option v-for="[value, label] in JOB_SKILL_TYPE_OPTIONS" :key="value" :value="value">
-                    {{ label }}
-                  </option>
-                </select>
-                <!-- evidence 收在展开里：主视觉留给技能名与分类，要核对的人多点一下就能看到。 -->
-                <button
-                  v-if="row.evidence_text"
-                  class="row-button row-button--tiny"
-                  type="button"
-                  data-testid="evidence-toggle"
-                  :aria-expanded="openEvidence.has(index)"
-                  @click="toggleEvidence(index)"
-                >
-                  原文依据
-                </button>
-                <button
-                  class="row-button row-button--ghost"
-                  type="button"
-                  data-testid="skill-remove"
-                  :disabled="form.skills.length <= 1"
-                  @click="removeSkillRow(index)"
-                >
-                  删除
-                </button>
-              </div>
-              <p v-if="row.evidence_text && openEvidence.has(index)" class="skill-evidence">
-                原文依据：{{ row.evidence_text }}
-                <span v-if="row.confidence !== undefined">· AI 把握 {{ row.confidence }}</span>
-                <span class="skill-origin">
-                  保存后这条能不能标成「可回溯原文」，取决于系统能否在本页原文里逐字找到它
-                </span>
-              </p>
-            </li>
-          </ul>
-
-          <button class="row-button add-skill" type="button" :disabled="!canAddSkill" @click="addSkillRow">
-            添加技能
-          </button>
-          <p class="field-hint">
-            一行一个技能；留空的行不会被保存。同名技能（大小写、全半角不同也算同名）保存时会被拒绝，
-            所以 AI 候选里与已有技能重名的那些已经跳过、并在上面报了数。
-          </p>
-        </section>
-
-        <p v-if="formError" class="feedback feedback--error" role="alert">{{ formError }}</p>
-
-        <div class="form-actions">
-          <button
-            class="row-button row-button--ghost"
-            type="button"
-            data-testid="cancel-button"
-            :disabled="store.submitting"
-            @click="cancel"
-          >
-            {{ isEdit ? '不保存返回' : '取消' }}
-          </button>
-          <button
-            class="row-button row-button--primary"
-            type="submit"
-            data-testid="save-job"
-            :disabled="store.submitting || store.extracting || Boolean(loadError) || loadingDetail"
-          >
-            {{ store.submitting ? '保存中…' : isEdit ? '保存修改' : '保存岗位' }}
-          </button>
-        </div>
-      </form>
-    </main>
-  </div>
+      <div class="form-actions">
+        <button
+          class="row-button row-button--ghost"
+          type="button"
+          data-testid="cancel-button"
+          :disabled="store.submitting"
+          @click="cancel"
+        >
+          {{ isEdit ? '不保存返回' : '取消' }}
+        </button>
+        <button
+          class="row-button row-button--primary"
+          type="submit"
+          data-testid="save-job"
+          :disabled="store.submitting || store.extracting || Boolean(loadError) || loadingDetail"
+        >
+          {{ store.submitting ? '保存中…' : isEdit ? '保存修改' : '保存岗位' }}
+        </button>
+      </div>
+    </form>
+  </main>
 </template>
 
 <style scoped>
-.app-shell { min-height: 100vh; background: var(--ui-canvas); }
 .create-page { width: min(880px, 100%); margin: 0 auto; padding: 32px 48px 72px; }
 .page-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
 .eyebrow { margin: 0 0 10px; color: var(--theme-rule); font-size: 12px; letter-spacing: .12em; }
