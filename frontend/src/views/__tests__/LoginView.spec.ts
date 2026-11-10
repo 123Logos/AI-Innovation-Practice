@@ -265,8 +265,9 @@ describe('登出 vs 过期（这条区分是提示不撒谎的前提）', () => 
 
     const topBar = mountAttached(AppTopBar)
     // 批次 F3 第二片起，「退出登录」在右侧账户抽屉里：先开抽屉，再点那一行。
+    // 抽屉 `Teleport` 到 body，所以第二下必须从 `document` 上找（`topBar.find` 恒空）。
     await topBar.find('.account-trigger').trigger('click')
-    await topBar.find('.drawer-item--danger').trigger('click')
+    ;(document.body.querySelector('.drawer-item--danger') as HTMLElement).click()
     await flushPromises()
 
     expect(router.currentRoute.value.name).toBe('login')

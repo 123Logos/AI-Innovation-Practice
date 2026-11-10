@@ -11,9 +11,13 @@
  * 1. **浮层的三件底层事（点外面 / Esc / 焦点归还）仍然由 `OverlayPanel` 一处实现**（L3）。
  *    本组件只写抽屉该有的形态：贴右边、满高、遮罩、窄屏不越过 86vw。
  *    换句话说，清单 4 是基座的第二个消费者，不是第三份手写监听。
- * 2. **不 Teleport**：与基座同一个理由，而且顶栏本身是 `z-index: 10` 的 sticky 盒子，
- *    抽屉取阶梯里的 30 档已经压在页面内容之上，不需要跳出 DOM 才能盖住。
- *    `z-index` 用 L3 那把现成的阶梯值，不新造一个数。
+ * 2. **Teleport 到 `body`**——这一条与基座相反，而且是被实测逼出来的：`.app-topbar` 上有
+ *    `backdrop-filter`，而 `filter` / `backdrop-filter` 按规范给**所有后代**生成 fixed 定位的
+ *    包含块。抽屉留在顶栏里时，`inset: 0` 量到的是顶栏那个 58px 高的盒子（375 与 1280 两档
+ *    都一样，数值在本片 PR 描述里），抽屉和遮罩都只盖住顶栏那一条。挂到 `body` 后包含块
+ *    回到视口。基座自己仍然不 Teleport，「位置与挂载点归调用方」这条没变。
+ *    `z-index: 30`（L3 现阶梯里菜单那一档）在根层仍压在顶栏这个 `z-index: 10` 的
+ *    stacking context 之上，AI 设置弹窗走 `.ui-overlay` 的 100 档，照样盖住抽屉。
  * 3. **不自带业务决定**：AI 设置怎么开、退出怎么调接口，全在调用方（`AppTopBar.vue`）
  *    原来的 handler 里，本组件只发两个意图事件。所以这一片没有第二套退出逻辑，也没有
  *    「抽屉里再确认一次」那种分叉。
@@ -35,7 +39,8 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <div class="drawer-root">
+  <Teleport to="body">
+    <div class="drawer-root">
     <!--
       遮罩不写 `@click`：它在面板**之外**，基座的 pointerdown 判定天然把它算成「点外面」，
       于是关闭只有一条路径。这里再挂一个 click 就是同一件事写两处——L3 判据针对的正是这种重复。
@@ -65,7 +70,8 @@ const emit = defineEmits<{
         {{ props.signingOut ? '退出中…' : '退出登录' }}
       </button>
     </OverlayPanel>
-  </div>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>

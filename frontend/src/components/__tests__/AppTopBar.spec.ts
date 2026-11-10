@@ -88,8 +88,17 @@ function seedJobStore(): void {
  */
 async function openDrawerAndLogout(wrapper: TopBarWrapper): Promise<void> {
   await wrapper.find('.account-trigger').trigger('click')
-  await wrapper.find('.drawer-item--danger').trigger('click')
+  ;(document.body.querySelector('.drawer-item--danger') as HTMLElement).click()
 }
+
+/*
+ * 抽屉 `Teleport` 到 `document.body`（顶栏的 `backdrop-filter` 会成为 fixed 后代的包含块，
+ * 留在顶栏里抽屉只有顶栏那一条高，两档实测量到过），所以查它必须走 `document`：
+ * `wrapper.find()` 对 Teleport 出去的节点**永远返回空**，用它断言「关掉之后查不到」是恒绿假用例。
+ */
+const drawerEl = (): Element | null => document.body.querySelector('#user-drawer')
+const drawerRootEl = (): Element | null => document.body.querySelector('.drawer-root')
+const drawerText = (): string => drawerEl()?.textContent?.replace(/\s+/g, ' ') ?? ''
 
 beforeEach(() => {
   pinia = createPinia()
@@ -123,7 +132,7 @@ describe('右侧用户抽屉的开关（清单 4，批次 F3 第二片）', () =
     // 原来是恒挂载 + 靠 CSS 类收起，`aria-controls` 因此可以写死。
     // 抽屉改成 `v-if` 后，收起态指向一个不存在的 id 属于假声明，所以这里断言它**没有**。
     expect(trigger.attributes('aria-controls')).toBeUndefined()
-    expect(wrapper.find('.drawer-root').exists()).toBe(false)
+    expect(drawerRootEl()).toBeNull()
   })
 
   it('点「账户」展开 → `aria-expanded=true`、`aria-controls` 指到真实抽屉、箭头翻转；再点一次收起', async () => {
@@ -134,53 +143,55 @@ describe('右侧用户抽屉的开关（清单 4，批次 F3 第二片）', () =
     expect(trigger.attributes('aria-expanded')).toBe('true')
     expect(trigger.attributes('aria-controls')).toBe('user-drawer')
     // `aria-controls` 指过去必须真有其人，否则这个属性只是好看。
-    const drawer = wrapper.find('#user-drawer')
-    expect(drawer.exists()).toBe(true)
-    expect(drawer.text()).toContain('AI 设置')
-    expect(drawer.text()).toContain('退出登录')
+    const drawer = drawerEl()
+    expect(drawer).not.toBeNull()
+    expect(drawerText()).toContain('AI 设置')
+    expect(drawerText()).toContain('退出登录')
     expect(wrapper.find('.account-caret').classes()).toContain('account-caret--open')
 
     await trigger.trigger('click')
     expect(trigger.attributes('aria-expanded')).toBe('false')
-    expect(wrapper.find('#user-drawer').exists()).toBe(false)
+    expect(drawerEl()).toBeNull()
     expect(wrapper.find('.account-caret').classes()).not.toContain('account-caret--open')
   })
 
   it('Esc 关闭抽屉：这条由 `OverlayPanel` 基座负责，顶栏没有为它再加一个 keydown 分支', async () => {
     const { wrapper } = await mountTopBar()
     await wrapper.find('.account-trigger').trigger('click')
-    expect(wrapper.find('#user-drawer').exists()).toBe(true)
+    expect(drawerEl()).not.toBeNull()
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await flushPromises()
 
-    expect(wrapper.find('#user-drawer').exists()).toBe(false)
+    expect(drawerEl()).toBeNull()
     expect(wrapper.find('.account-trigger').attributes('aria-expanded')).toBe('false')
   })
 
   it('点遮罩与点抽屉外都关闭；点抽屉内的两行不关闭', async () => {
     const { wrapper } = await mountTopBar()
     await wrapper.find('.account-trigger').trigger('click')
-    const drawer = wrapper.find('#user-drawer')
-    expect(drawer.exists()).toBe(true)
+    const drawer = drawerEl()
+    expect(drawer).not.toBeNull()
 
     // 抽屉里：pointerdown 命中面板自身 → 基座判为「里面」，不该关。
-    drawer.element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    drawer?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
     await flushPromises()
-    expect(wrapper.find('#user-drawer').exists()).toBe(true)
+    expect(drawerEl()).not.toBeNull()
 
     // 页面别处：顶栏之外算「外面」→ 该关。
     document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
     await flushPromises()
-    expect(wrapper.find('#user-drawer').exists()).toBe(false)
+    expect(drawerEl()).toBeNull()
 
     // 遮罩：重开一次点遮罩，这是手机用户最常用的关闭手势。
     // 遮罩是面板的**兄弟**而不是子节点，所以基座把它算成「外面」——抽屉自己没写 click。
     await wrapper.find('.account-trigger').trigger('click')
-    expect(wrapper.find('#user-drawer').exists()).toBe(true)
-    wrapper.find('.drawer-mask').element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    expect(drawerEl()).not.toBeNull()
+    ;(document.body.querySelector('.drawer-mask') as Element).dispatchEvent(
+      new MouseEvent('pointerdown', { bubbles: true }),
+    )
     await flushPromises()
-    expect(wrapper.find('#user-drawer').exists()).toBe(false)
+    expect(drawerEl()).toBeNull()
   })
 
   it('点触发按钮自己算「开合」：pointerdown 不冒泡到基座，所以不会先关再开', async () => {
@@ -188,7 +199,7 @@ describe('右侧用户抽屉的开关（清单 4，批次 F3 第二片）', () =
     const trigger = wrapper.find('.account-trigger')
 
     await trigger.trigger('click')
-    expect(wrapper.find('#user-drawer').exists()).toBe(true)
+    expect(drawerEl()).not.toBeNull()
 
     // 少了按钮上那句 `@pointerdown.stop`，这一步会让基座判为「点外面」先关，
     // 下一步 click 再被 toggle 打开——「再点一次收起」在真机上永远失效。
@@ -196,10 +207,10 @@ describe('右侧用户抽屉的开关（清单 4，批次 F3 第二片）', () =
     // 这正是这个 bug 从旧的手写监听到现在一直没被测出来的原因。
     trigger.element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
     await flushPromises()
-    expect(wrapper.find('#user-drawer').exists()).toBe(true)
+    expect(drawerEl()).not.toBeNull()
 
     await trigger.trigger('click')
-    expect(wrapper.find('#user-drawer').exists()).toBe(false)
+    expect(drawerEl()).toBeNull()
   })
 
   it('两个浮层互斥：开抽屉会关简历切换器，反之亦然', async () => {
@@ -251,26 +262,20 @@ describe('窄屏的入口组织（结构判据，不测像素）', () => {
     expect(entry.attributes('href')).toBe('/jobs')
     // 关键判据：展开抽屉后它也不在里面。收进抽屉的入口在手机上等于没有入口。
     await wrapper.find('.account-trigger').trigger('click')
-    const drawer = wrapper.find('#user-drawer')
-    expect(drawer.exists()).toBe(true)
-    expect(drawer.element.contains(entry.element)).toBe(false)
+    const drawer = drawerEl()
+    expect(drawer).not.toBeNull()
+    expect(drawer?.contains(entry.element)).toBe(false)
     expect(entry.element.closest('.drawer-root')).toBeNull()
-    expect(drawer.text()).toContain('AI 设置')
-    expect(drawer.text()).toContain('退出登录')
-    expect(drawer.text()).not.toContain('岗位库')
+    expect(drawerText()).toContain('AI 设置')
+    expect(drawerText()).toContain('退出登录')
+    expect(drawerText()).not.toContain('岗位库')
   })
 
   it('.user-area 的直接子项是三个一级项，两个动作按钮让位给抽屉', async () => {
     const { wrapper } = await mountTopBar()
     // RouterLink 会自带 `router-link-active` / `aria-current`，所以按「已知入口类名」取值，
     // 而不是照抄整个 class 列表。
-    const KNOWN = [
-      'jobs-entry',
-      'profile-switcher',
-      'dirty-dot',
-      'account-trigger',
-      'drawer-root',
-    ]
+    const KNOWN = ['jobs-entry', 'profile-switcher', 'dirty-dot', 'account-trigger']
     const topLevel = wrapper
       .findAll('.user-area > *')
       .map((node) => KNOWN.find((cls) => node.classes().includes(cls)) ?? '(未知)')
@@ -285,20 +290,24 @@ describe('窄屏的入口组织（结构判据，不测像素）', () => {
     // 收起态抽屉整个不在 DOM 里（那两层 `display: contents` 的宽窄屏分叉随这一片删掉了）。
     // 这里不再对 `.ai-settings-button` / `.logout-button` 断言「不是直接子项」——那两个类
     // 已不存在，对不存在的类名断言 false 是一条恒绿的空检。
-    expect(wrapper.find('.drawer-root').exists()).toBe(false)
+    expect(drawerRootEl()).toBeNull()
 
     await wrapper.find('.account-trigger').trigger('click')
-    // 展开后抽屉是 `.user-area` 的第 4 个子项，两个动作都在它内部。
+    // 展开后 `.user-area` 仍然只有那 3 个一级项：抽屉 Teleport 到 body，不占顶栏的一格。
     expect(
       wrapper
         .findAll('.user-area > *')
         .map((node) => KNOWN.find((cls) => node.classes().includes(cls)) ?? '(未知)'),
-    ).toEqual(['jobs-entry', 'profile-switcher', 'account-trigger', 'drawer-root'])
-    expect(wrapper.findAll('#user-drawer > button')).toHaveLength(2)
+    ).toEqual(['jobs-entry', 'profile-switcher', 'account-trigger'])
+    expect(drawerRootEl()?.parentElement).toBe(document.body)
+    expect(document.querySelectorAll('#user-drawer > button')).toHaveLength(2)
 
-    // 两个动作在整条顶栏里**只有一处**：抽屉里那两行。这一条防的是半迁移——
+    // 两个动作在整页里**只有一处**：抽屉里那两行。这一条防的是半迁移——
     // 新抽屉建好却忘了删掉旧的一级按钮，用户就会看到两个「退出登录」。
-    const labels = wrapper.findAll('button').map((node) => node.text())
+    // 查询走 document：抽屉 Teleport 出去了，`wrapper.findAll('button')` 看不见它（会恒 0）。
+    const labels = [...document.querySelectorAll('button')].map(
+      (node) => node.textContent?.trim() ?? '',
+    )
     expect(labels.filter((text) => text === 'AI 设置')).toHaveLength(1)
     expect(labels.filter((text) => text === '退出登录')).toHaveLength(1)
   })
@@ -377,13 +386,13 @@ describe('登出清空岗位 store（handleLogout 的不变量）', () => {
 
     expect(revoke).toHaveBeenCalledTimes(1)
     expect(revoke).toHaveBeenCalledWith('refresh-token-under-test')
-    const busy = wrapper.find('.drawer-item--danger')
-    expect(busy.attributes('disabled')).toBeDefined()
-    expect(busy.text()).toContain('退出中')
+    const busy = document.body.querySelector('.drawer-item--danger')
+    expect(busy?.hasAttribute('disabled')).toBe(true)
+    expect(busy?.textContent).toContain('退出中')
 
     settle()
     await flushPromises()
-    expect(wrapper.find('.drawer-item--danger').text()).toContain('退出登录')
+    expect(document.body.querySelector('.drawer-item--danger')?.textContent).toContain('退出登录')
   })
 })
 

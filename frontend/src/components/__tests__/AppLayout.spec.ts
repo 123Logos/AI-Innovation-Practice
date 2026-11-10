@@ -222,9 +222,10 @@ describe('顶栏的一级导航来自模块表（守则 L4）', () => {
     expect(entries[0]?.element.tagName).toBe('A')
     expect(entries[0]?.text()).toBe('岗位库')
     expect(entries[0]?.attributes('href')).toBe('/jobs')
-    // 判据要真的把抽屉打开再看：收起态它根本不在 DOM 里，`closest` 必然为 null，那是空检。
+    // 判据要真的把抽屉打开再看：它 Teleport 到 body 且收起态根本不存在，
+    // 不收时 `closest` 必然为 null，那是空检。
     await wrapper.find('.account-trigger').trigger('click')
+    expect(document.body.querySelector('.drawer-root')).not.toBeNull()
     expect(entries[0]?.element.closest('.drawer-root')).toBeNull()
-    expect(wrapper.find('.drawer-root').exists()).toBe(true)
   })
 })
