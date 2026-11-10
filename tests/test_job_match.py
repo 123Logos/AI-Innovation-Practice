@@ -1017,7 +1017,12 @@ def test_empty_alias_table_reproduces_the_v1_readings(client: TestClient) -> Non
     assert [item["skill"] for item in matched["covered"]] == ["Python", "FastAPI"]
     assert [item["skill"] for item in matched["partial"]] == ["Docker"]
     assert [item["skill"] for item in matched["gaps"]] == ["MySQL"]
-    assert matched["meta"] == {
+    # 两格时间戳由应用时钟给（B3 / `ADR-020`），写进字面量就是一条「今天过、明天红」的断言，
+    # 所以摘出来单独验形状；剩下 19 格仍然逐字钉住——§5.1 要的「逐字」指的是判据读数，不是钟点。
+    meta = dict(matched["meta"])
+    generated_at = meta.pop("generated_at")
+    data_updated_at = meta.pop("data_updated_at")
+    assert meta == {
         "model": None,
         "prompt_version": None,
         "evidence_mode": "keyword_fallback",
@@ -1038,6 +1043,8 @@ def test_empty_alias_table_reproduces_the_v1_readings(client: TestClient) -> Non
         "alias_version": "v1",
         "note": None,
     }
+    assert _iso_with_offset(generated_at), generated_at
+    assert _iso_with_offset(data_updated_at), data_updated_at
     assert coverage["coverage"] == [
         {"name": "Python", "status": "covered", "matched_form": "Python"},
         {"name": "FastAPI", "status": "covered", "matched_form": "FastAPI"},
