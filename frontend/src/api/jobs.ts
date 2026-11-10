@@ -293,7 +293,7 @@ export interface ExtractSkillsResult {
 export const EXTRACT_TIMEOUT_MS = 45_000
 
 /** `data.meta.truncated` 为真时补的那句文案（截断必须可见，与「悄悄替换结果」不同类）。 */
-export const EXTRACT_TRUNCATED_HINT = '模型给出的条目超过 15 条，只保留了前 15 条'
+export const EXTRACT_TRUNCATED_HINT = 'AI 给出的技能条目超过 15 条，只保留了前 15 条'
 
 /* -------------------------------- 列表参数 -------------------------------- */
 
@@ -520,6 +520,23 @@ export interface MatchMeta {
    */
   matcher_version: string
   /**
+   * 本次用的是**哪一版别名词表内容**（`ADR-016` §2.5 第三条轴，起始 `v1`，空表也发）。
+   * 与 `matcher_version` 分开是刻意的：规则是代码、词表是数据，「分数为什么变了」要能分得清是哪一轴。
+   * 界面不显示它（守则 C5），但类型必须带着——少一格，契约变化就没有东西让它红。
+   */
+  alias_version: string
+  /**
+   * 本次读数的**组装时刻**（东八区 ISO 串）。FR-05 要的「更新时间」就是这一格。
+   * 界面不许显示成「分数是几点算的」这种技术说法，也不许与 `data_updated_at` 混用一行。
+   */
+  generated_at: string
+  /**
+   * 这次读数背后的**岗位行与档案行**最后一次被改动的时刻（两者取较晚者）。
+   * 与 `generated_at` 各答一个问题：「报告几点打的」/「它底下的数据旧不旧」。
+   * 口径与取证见 `ADR-020`。
+   */
+  data_updated_at: string
+  /**
    * 不给分的原因。界面能看到的只有一种：`not_evaluated` = 岗位没填要求技能，核心 term 不在，
    * 整个不评估（ADR-013 §5.1 末，老板 2026-11-08 裁定）。`nothing_computable`（分母为 0）
    * 是 F1:A 留下的另一个值，后端现在发不出来。有分数时恒为 `null`。
@@ -609,6 +626,12 @@ export interface RequirementCoverageRow {
 export interface RequirementMatchMeta {
   /** 与 `MatchMeta.matcher_version` 同一个常量：两条链路用的是同一版写法判据。 */
   matcher_version: string
+  /** 与 `MatchMeta.alias_version` 同一个常量：两条链路读的是同一版别名词表（`ADR-016` §5.1 的对账格）。 */
+  alias_version: string
+  /** 与 `MatchMeta.generated_at` 同一语义；两次请求之间允许不同。 */
+  generated_at: string
+  /** 与 `MatchMeta.data_updated_at` **必须逐字相同**（同一份岗位 × 同一份档案，测试钉在 `ADR-020` 的判据表）。 */
+  data_updated_at: string
 }
 
 export interface RequirementMatchResponse {

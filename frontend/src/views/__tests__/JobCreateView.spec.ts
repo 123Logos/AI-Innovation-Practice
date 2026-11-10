@@ -178,9 +178,10 @@ async function mountView(props: Record<string, unknown> = {}) {
   const wrapper = mount(JobCreateView, {
     props,
     global: {
+      // 批次 F2 起这里不再需要 `stubs: { AppTopBar: true }`：顶栏已经由 `AppLayout` 摆，
+      // 视图本身不含顶栏，直接 mount 拿到的就是纯内容区（外框与顶栏的在场由
+      // `components/__tests__/AppLayout.spec.ts` 钉，不靠这里的桩间接保证）。
       plugins: [createPinia(), router],
-      // 顶栏自带两个 document 监听与一堆简历 store 依赖，与本页要验的东西无关。
-      stubs: { AppTopBar: true },
     },
   })
   await flushPromises()
@@ -210,7 +211,7 @@ afterEach(() => {
   http.defaults.adapter = savedAdapter
 })
 
-describe('录入页的「✨ AI 提取技能」', () => {
+describe('录入页的「AI 提取技能」', () => {
   it('JD 为空时按钮禁用；粘进 JD 之后才可点', async () => {
     const { wrapper } = await mountView()
     const button = () => wrapper.find('[data-testid="extract-button"]')
@@ -241,7 +242,7 @@ describe('录入页的「✨ AI 提取技能」', () => {
     expect(names).toEqual(['Python', 'FastAPI', 'Docker'])
     expect(wrapper.find('[data-testid="extract-notice"]').text()).toContain('已把 2 条候选技能')
     // 而且那句必须说清「还没保存」——否则用户会以为点提取就已经存好了。
-    expect(wrapper.find('[data-testid="extract-notice"]').text()).toContain('点「保存岗位」才会写入数据库')
+    expect(wrapper.find('[data-testid="extract-notice"]').text()).toContain('点「保存岗位」才会保存')
   })
 
   it('三句核验计数各占一行；0 的那几句整块不出现', async () => {
@@ -256,7 +257,7 @@ describe('录入页的「✨ AI 提取技能」', () => {
     expect(lines).toEqual([
       'AI 给出 20 条，其中 14 条无法在 JD 原文中找到依据，已剔除',
       '另有 1 条重名已合并',
-      '模型给出的条目超过 15 条，只保留了前 15 条',
+      'AI 给出的技能条目超过 15 条，只保留了前 15 条',
     ])
     // 三句是三个独立的 DOM 节点：并成一个数在这里会当场对不上。
     expect(lines).toHaveLength(3)
@@ -347,7 +348,7 @@ describe('录入页的「✨ AI 提取技能」', () => {
       ['key-missing', 'AI 设置', '填好'],
       ['key-invalid', 'AI 设置', '无效'],
       ['unavailable', '稍后重试', '没有被保存'],
-      ['truncated', '把 JD 里真正想要的技能写清楚', '切断了'],
+      ['truncated', '把真正想要的技能写清楚', '长度上限'],
     ]
 
     for (const [kind, mustInclude, mustIncludeToo] of cases) {
@@ -388,9 +389,9 @@ describe('录入页的「✨ AI 提取技能」', () => {
     second.wrapper.unmount()
 
     expect(ordinaryText).not.toBe(lengthText)
-    expect(lengthText).toContain('切断了')
+    expect(lengthText).toContain('长度上限')
     // 普通 502 绝不该教用户「换一种 JD 写法」——那会让人以为是自己粘错了内容。
-    expect(ordinaryText).not.toContain('把 JD 里真正想要的技能写清楚')
+    expect(ordinaryText).not.toContain('把真正想要的技能写清楚')
   })
 
   it('候选的原文依据默认收起，点一下才展开；技能名上留了 hover 提示', async () => {
@@ -408,9 +409,9 @@ describe('录入页的「✨ AI 提取技能」', () => {
 
     await toggle[1]?.trigger('click')
     expect(wrapper.text()).toContain('原文依据：熟悉 FastAPI')
-    expect(wrapper.text()).toContain('模型把握 0.85')
-    // `confidence: null` 的那条（Docker）不该显示「模型把握」，也不该显示 0。
-    expect(wrapper.text()).not.toContain('模型把握 null')
+    expect(wrapper.text()).toContain('AI 把握 0.85')
+    // `confidence: null` 的那条（Docker）不该显示「AI 把握」，也不该显示 0。
+    expect(wrapper.text()).not.toContain('AI 把握 null')
     expect(toggle[1]?.attributes('aria-expanded')).toBe('true')
 
     // 名字上的 hover 提示（`title`）是同一份依据的另一种呈现，不额外占版面。
@@ -515,7 +516,7 @@ describe('编辑态（`/jobs/:id/edit`，同一个组件的另一种模式）', 
     expect(toggle.exists()).toBe(true)
     await toggle.trigger('click')
     expect(wrapper.text()).toContain('原文依据：熟练掌握 Python')
-    expect(wrapper.text()).toContain('模型把握 0.9000')
+    expect(wrapper.text()).toContain('AI 把握 0.9000')
   })
 
   it('点「保存修改」打 PUT /jobs/{id}，不打 POST /jobs（打错等于把岗位复制一份）', async () => {

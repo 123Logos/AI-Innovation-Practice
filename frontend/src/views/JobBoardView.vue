@@ -17,7 +17,6 @@
 import { onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
-import AppTopBar from '@/components/AppTopBar.vue'
 import { isApiError } from '@/api'
 import type { jobsApi as JobsContract } from '@/api'
 import { EMPLOYMENT_TYPE_LABELS, JOB_STATUS_LABELS, useJobStore } from '@/stores/job'
@@ -101,142 +100,137 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="app-shell">
-    <AppTopBar />
+  <main class="board-page">
+    <div class="board-heading">
+      <div>
+        <p class="eyebrow">岗位库</p>
+        <h1>岗位列表</h1>
+        <p class="intro">
+          由使用者手工录入的岗位与岗位要求。看到合适的岗位，可以在「录入岗位」里补充新的。
+        </p>
+      </div>
+      <div class="heading-actions">
+        <RouterLink class="primary-link" :to="{ name: 'job-create' }">录入岗位</RouterLink>
+        <!-- v7 裁定：岗位回收站的入口在这里，不在顶栏。 -->
+        <RouterLink class="text-link" :to="{ name: 'job-trash' }">我的删除</RouterLink>
+        <RouterLink class="text-link" :to="{ name: 'resume-editor' }">返回简历</RouterLink>
+      </div>
+    </div>
 
-    <main class="board-page">
-      <div class="board-heading">
-        <div>
-          <p class="eyebrow">岗位库</p>
-          <h1>岗位列表</h1>
-          <p class="intro">
-            由使用者手工录入的岗位与岗位要求。看到合适的岗位，可以在「录入岗位」里补充新的。
-          </p>
+    <section class="filter-bar" aria-label="岗位筛选">
+      <form class="keyword-form" @submit.prevent="submitKeyword">
+        <label class="field-label" for="job-keyword">关键词</label>
+        <div class="keyword-row">
+          <input
+            id="job-keyword"
+            v-model="keywordDraft"
+            class="keyword-input"
+            type="search"
+            maxlength="200"
+            placeholder="企业名或岗位名"
+          />
+          <button class="row-button" type="submit">搜索</button>
+          <button
+            v-if="store.filter.keyword"
+            class="row-button row-button--ghost"
+            type="button"
+            @click="clearKeyword"
+          >
+            清除
+          </button>
         </div>
-        <div class="heading-actions">
-          <RouterLink class="primary-link" :to="{ name: 'job-create' }">录入岗位</RouterLink>
-          <!-- v7 裁定：岗位回收站的入口在这里，不在顶栏。 -->
-          <RouterLink class="text-link" :to="{ name: 'job-trash' }">我的删除</RouterLink>
-          <RouterLink class="text-link" :to="{ name: 'resume-editor' }">← 返回简历</RouterLink>
+      </form>
+
+      <div class="filter-group">
+        <span class="field-label">范围</span>
+        <div class="chip-row" role="group" aria-label="岗位状态">
+          <button
+            v-for="status in STATUS_FILTERS"
+            :key="status"
+            class="filter-chip"
+            :class="{ 'filter-chip--active': store.filter.status === status }"
+            type="button"
+            @click="pickStatus(status)"
+          >
+            {{ JOB_STATUS_LABELS[status] }}
+          </button>
         </div>
+        <label class="expired-toggle">
+          <input
+            type="checkbox"
+            :checked="store.filter.includeExpired"
+            @change="toggleExpired"
+          />
+          <span>含已过期</span>
+        </label>
       </div>
 
-      <section class="filter-bar" aria-label="岗位筛选">
-        <form class="keyword-form" @submit.prevent="submitKeyword">
-          <label class="field-label" for="job-keyword">关键词</label>
-          <div class="keyword-row">
-            <input
-              id="job-keyword"
-              v-model="keywordDraft"
-              class="keyword-input"
-              type="search"
-              maxlength="200"
-              placeholder="企业名或岗位名"
-            />
-            <button class="row-button" type="submit">搜索</button>
-            <button
-              v-if="store.filter.keyword"
-              class="row-button row-button--ghost"
-              type="button"
-              @click="clearKeyword"
-            >
-              清除
-            </button>
-          </div>
-        </form>
-
-        <div class="filter-group">
-          <span class="field-label">范围</span>
-          <div class="chip-row" role="group" aria-label="岗位状态">
-            <button
-              v-for="status in STATUS_FILTERS"
-              :key="status"
-              class="filter-chip"
-              :class="{ 'filter-chip--active': store.filter.status === status }"
-              type="button"
-              @click="pickStatus(status)"
-            >
-              {{ JOB_STATUS_LABELS[status] }}
-            </button>
-          </div>
-          <label class="expired-toggle">
-            <input
-              type="checkbox"
-              :checked="store.filter.includeExpired"
-              @change="toggleExpired"
-            />
-            <span>含已过期</span>
-          </label>
-        </div>
-
-        <p v-if="store.filter.status === 'draft'" class="filter-hint">
-          草稿只有创建者自己看得到；发布后才会出现在「已发布」里。
-        </p>
-      </section>
-
-      <p v-if="loadError" class="feedback feedback--error" role="alert">{{ loadError }}</p>
-      <p v-else-if="store.loading" class="feedback">正在加载岗位…</p>
-      <p v-else-if="!store.jobs.length" class="feedback">
-        {{ store.filter.keyword ? '没有匹配的岗位，换个关键词试试。' : '这里还没有岗位。' }}
+      <p v-if="store.filter.status === 'draft'" class="filter-hint">
+        草稿只有创建者自己看得到；发布后才会出现在「已发布」里。
       </p>
+    </section>
 
-      <template v-else>
-        <ul class="job-grid">
-          <li v-for="job in store.jobs" :key="job.id">
-            <RouterLink class="job-card" :to="{ name: 'job-detail', params: { id: job.id } }">
-              <div class="card-head">
-                <p class="card-company">{{ job.company_name }}</p>
-                <h2 class="card-title">{{ job.title }}</h2>
-                <div class="card-tags">
-                  <span v-if="employmentLabel(job.employment_type)" class="tag">
-                    {{ employmentLabel(job.employment_type) }}
-                  </span>
-                  <span v-if="job.status === 'draft'" class="tag tag--draft">草稿</span>
-                  <span v-if="job.is_expired" class="tag tag--expired">已过期</span>
-                </div>
+    <p v-if="loadError" class="feedback feedback--error" role="alert">{{ loadError }}</p>
+    <p v-else-if="store.loading" class="feedback">正在加载岗位…</p>
+    <p v-else-if="!store.jobs.length" class="feedback">
+      {{ store.filter.keyword ? '没有匹配的岗位，换个关键词试试。' : '这里还没有岗位。' }}
+    </p>
+
+    <template v-else>
+      <ul class="job-grid">
+        <li v-for="job in store.jobs" :key="job.id">
+          <RouterLink class="job-card" :to="{ name: 'job-detail', params: { id: job.id } }">
+            <div class="card-head">
+              <p class="card-company">{{ job.company_name }}</p>
+              <h2 class="card-title">{{ job.title }}</h2>
+              <div class="card-tags">
+                <span v-if="employmentLabel(job.employment_type)" class="tag">
+                  {{ employmentLabel(job.employment_type) }}
+                </span>
+                <span v-if="job.status === 'draft'" class="tag tag--draft">草稿</span>
+                <span v-if="job.is_expired" class="tag tag--expired">已过期</span>
               </div>
+            </div>
 
-              <p class="card-deadline">
-                {{ job.deadline ? `截止 ${formatDate(job.deadline) || job.deadline}` : '长期有效' }}
-              </p>
+            <p class="card-deadline">
+              {{ job.deadline ? `截止 ${formatDate(job.deadline) || job.deadline}` : '长期有效' }}
+            </p>
 
-              <ul v-if="job.skills.length" class="card-skills">
-                <li v-for="skill in job.skills" :key="skill.id" class="skill-chip">
-                  {{ skill.name }}
-                </li>
-              </ul>
-              <p v-else class="card-empty-skills">还没填写技能要求</p>
-            </RouterLink>
-          </li>
-        </ul>
+            <ul v-if="job.skills.length" class="card-skills">
+              <li v-for="skill in job.skills" :key="skill.id" class="skill-chip">
+                {{ skill.name }}
+              </li>
+            </ul>
+            <p v-else class="card-empty-skills">还没填写技能要求</p>
+          </RouterLink>
+        </li>
+      </ul>
 
-        <nav class="pager" aria-label="分页">
-          <button
-            class="row-button row-button--ghost"
-            type="button"
-            :disabled="!store.hasPrevPage || store.loading"
-            @click="goPage(store.page - 1)"
-          >
-            上一页
-          </button>
-          <span class="pager-info">第 {{ store.page }} / {{ store.totalPages }} 页 · 共 {{ store.total }} 条</span>
-          <button
-            class="row-button row-button--ghost"
-            type="button"
-            :disabled="!store.hasNextPage || store.loading"
-            @click="goPage(store.page + 1)"
-          >
-            下一页
-          </button>
-        </nav>
-      </template>
-    </main>
-  </div>
+      <nav class="pager" aria-label="分页">
+        <button
+          class="row-button row-button--ghost"
+          type="button"
+          :disabled="!store.hasPrevPage || store.loading"
+          @click="goPage(store.page - 1)"
+        >
+          上一页
+        </button>
+        <span class="pager-info">第 {{ store.page }} / {{ store.totalPages }} 页 · 共 {{ store.total }} 条</span>
+        <button
+          class="row-button row-button--ghost"
+          type="button"
+          :disabled="!store.hasNextPage || store.loading"
+          @click="goPage(store.page + 1)"
+        >
+          下一页
+        </button>
+      </nav>
+    </template>
+  </main>
 </template>
 
 <style scoped>
 /* 页面外壳与内缩沿用 `RecycleBinView` 那一套（同一个产品不该有两套页边距）。 */
-.app-shell { min-height: 100vh; background: var(--ui-canvas); }
 .board-page { width: min(1180px, 100%); margin: 0 auto; padding: 32px 48px 72px; }
 .board-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
 .eyebrow { margin: 0 0 10px; color: var(--theme-rule); font-size: 12px; letter-spacing: .12em; }

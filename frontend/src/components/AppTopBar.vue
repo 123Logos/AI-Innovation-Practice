@@ -21,11 +21,14 @@ import { RouterLink, useRouter } from 'vue-router'
 
 import { clearDeepSeekKey, hasDeepSeekKey, isApiError, setDeepSeekKey } from '@/api'
 import type { ProfileSortField, ProfileSummary } from '@/api/types'
+import { TOP_BAR_MODULES } from '@/config/modules'
 import { useAuthStore } from '@/stores/auth'
+import { useDialogStore } from '@/stores/dialog'
 import { useJobStore } from '@/stores/job'
 import { useResumeStore } from '@/stores/resume'
 
 const auth = useAuthStore()
+const dialog = useDialogStore()
 const resume = useResumeStore()
 const job = useJobStore()
 const router = useRouter()
@@ -133,7 +136,11 @@ async function handleSetDefault(): Promise<void> {
 /* --------------------------------- 删除 ---------------------------------- */
 
 async function handleDelete(item: ProfileSummary): Promise<void> {
-  const confirmed = window.confirm('删除后可在回收站找回，确认删除？')
+  const confirmed = await dialog.askConfirm(
+    '删除这份简历？',
+    '删除后它进回收站，30 天内可以恢复，技能条目一行都不会丢。',
+    { subject: item.title, confirmLabel: '确认删除', tone: 'danger' },
+  )
   if (!confirmed) return
   menuError.value = ''
   cancelRename()
@@ -248,12 +255,18 @@ async function goTrash(): Promise<void> {
   // 离开编辑器前先处理未保存的修改：否则回收站走一圈回来，
   // 编辑器会用服务端数据覆盖内存里的 draft，用户以为丢了。
   if (resume.dirty) {
-    const shouldSave = window.confirm('当前简历有未保存的修改。去回收站前先保存？')
+    const shouldSave = await dialog.askConfirm(
+      '去回收站前先保存修改？',
+      '不保存就离开编辑器，回来时看到的是上一次保存的那一版，你刚才改的会丢。',
+      { confirmLabel: '保存并前往', cancelLabel: '先不去' },
+    )
     if (!shouldSave) return
     try {
       await resume.save()
     } catch (error) {
-      window.alert(describeError(error, '保存失败，请稍后重试。'))
+      // 原来这里是 window.alert：它会阻塞主线程，自动化验收停在那一步走不下去。
+      // 失败仍然要**当面**告诉用户（守则 C3），只是换成同一个弹窗组件。
+      await dialog.askNotice('没保存成功，所以停在这一页', describeError(error, '保存失败，请稍后重试。'))
       return
     }
   }
@@ -326,7 +339,8 @@ function closeAiSettings(): void {
 function submitAiKey(): void {
   const value = aiKeyDraft.value.trim()
   if (!value) {
-    aiSettingsError.value = '请粘贴一个非空的 DeepSeek API Key。'
+    // ui-copy:allow C2 唯一豁免：这句话指向用户自己去 DeepSeek 复制的那串凭据，改名他会找不到
+    aiSettingsError.value = '这里还空着——把你的 DeepSeek API Key 粘进来才行。'
     return
   }
   setDeepSeekKey(value)
@@ -400,14 +414,29 @@ async function handleLogout(): Promise<void> {
 
     <div class="user-area">
       <!--
-        岗位库入口（ADR-011 议题 3.A）：顶栏一条文字入口，不加侧边栏。
-        与「AI 设置 / 退出登录」同一套 32px 控件规格与 `--ui-*` 令牌。
+        一级导航入口（ADR-011 议题 3.A + 守则 L4）。
+
+        模块名与路由一律来自模块表 `@/config/modules`，这里不写死任何模块名：
+        「一张表」的判据是**新增加一个模块时只改那张表**，而不是「这张表旁边另有一份也能用」。
+
+        其余取舍不变（议题 3.A / 3.D 裁定）：顶栏一条文字入口、不加侧边栏；
+        「岗位库」不进「更多」菜单、也不降级成图标——手机是学生的主力设备，
+        这条功能的入口藏起来等于没有。窄屏省下的宽度预算从「AI 设置 / 退出登录」出。
         岗位自己的回收站不在这里（顶栏的「回收站」属于简历，两个混在一层会让人
         分不清删掉的是什么），入口在 `/jobs` 列表页顶部的「我的删除」。
-        议题 3.D 明确它「不进更多菜单、也不降级成图标」：手机是学生的主力设备，
-        这条功能的入口藏起来等于没有；窄屏省下的宽度预算从「AI 设置 / 退出登录」出。
+
+        `class="jobs-entry"` 这个类名本批沿用不改：`AppTopBar.spec.ts` 的一级项顺序断言
+        按它取值（守则 R1 的结构锁，改写需要老板点头），而通用化命名属于批次 F3 的导航重排。
+        模块表的 `iconPaths` 本批也不渲染——加图标是视觉改动，同样归批次 F3。
       -->
-      <RouterLink class="jobs-entry" :to="{ name: 'job-board' }">岗位库</RouterLink>
+      <RouterLink
+        v-for="item in TOP_BAR_MODULES"
+        :key="item.key"
+        class="jobs-entry"
+        :to="{ name: item.routeName }"
+      >
+        {{ item.name }}
+      </RouterLink>
 
       <!-- 简历切换器 -->
       <div ref="menuRoot" class="profile-switcher">
@@ -448,7 +477,7 @@ async function handleLogout(): Promise<void> {
               :aria-label="`当前按${sortLabel}${sortDirectionLabel}，点击切换方向`"
               @click="handleSortOrder"
             >
-              {{ resume.sortDesc ? '↓' : '↑' }}
+              {{ sortDirectionLabel }}
             </button>
           </div>
 
@@ -601,17 +630,19 @@ async function handleLogout(): Promise<void> {
         >
           <h2 id="ai-settings-heading" class="modal-title">AI 设置</h2>
           <p class="modal-intro">
-            「✨ AI 智能润色」使用你自己的 DeepSeek API Key（模型 <code>deepseek-flash</code>，非流式）；
-            「生成简历」是纯模板，不需要 Key。润色失败只会提示你重试，不会改动表单。
-            Key 只保存在当前标签页的 <code>sessionStorage</code>：关闭标签页即清除，
-            不写 localStorage、不落数据库；服务端只在本次请求的内存里持有它，不写日志。
+            <!-- ui-copy:allow 老板 2026-11-09 定的 C2 唯一豁免：用户必须亲手去 DeepSeek 拿这把凭据，
+                 界面里的原词（DeepSeek API Key）可以出现；删掉它他反而认不出要粘什么。 -->
+            「AI 润色」用的是你自己申请的 DeepSeek API Key；「生成简历」是纯模板，不需要这把 Key。
+            润色失败只会提示你重试，不会改动表单。
+            Key 只留在这个标签页里：关掉标签页就没了，不会存进你的账号，也不会被记录或转发。
           </p>
 
           <p class="ai-settings-status">
-            {{ aiKeySaved ? '当前标签页已配置 Key' : '当前标签页还没有 Key' }}
+            {{ aiKeySaved ? '这个标签页里已经填好了' : '这个标签页里还没填' }}
           </p>
 
           <label class="modal-field">
+            <!-- ui-copy:allow 输入框标签：与他 DeepSeek 控制台里的叫法一致，是 C2 的唯一豁免 -->
             <span>DeepSeek API Key</span>
             <input
               v-model="aiKeyDraft"
@@ -771,7 +802,7 @@ async function handleLogout(): Promise<void> {
 .sort-chip { border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 3px 8px; color: var(--ui-ink-muted); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 11px; line-height: 1.5; white-space: nowrap; }
 .sort-chip:hover { border-color: var(--theme-rule-soft); color: var(--theme-primary-deep); }
 .sort-chip--active { border-color: var(--theme-primary); color: var(--theme-primary-strong); background: var(--theme-bg-light); font-weight: 600; }
-.sort-direction { margin-left: auto; width: 26px; height: 24px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0; color: var(--theme-primary); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 12px; line-height: 1; }
+.sort-direction { margin-left: auto; width: auto; min-width: 26px; padding: 0 6px; height: 24px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); color: var(--theme-primary); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 12px; line-height: 1; }
 .sort-direction:hover { border-color: var(--theme-rule); background: var(--theme-bg-hover); }
 .sort-chip:focus-visible, .sort-direction:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 1px; }
 

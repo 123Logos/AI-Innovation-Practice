@@ -224,6 +224,13 @@ function matchMetaFixture(
     weight_sum_used: 0.65,
     no_required_skills: false,
     matcher_version: 'v1',
+    // 批次 B1 的第三条版本轴（ADR-016 §2.5）：词表是数据、判据是代码，两格分开报。
+    alias_version: 'v1',
+    // 批次 B3 的两格（ADR-020）：组装时刻 vs 背后数据行的时刻，是两个不同的问题。
+    // 这里给的是**形状固定的假值**，因为本文件验的是 store 的编排，不验时间；
+    // 真值与跨端点一致性钉在后端 `tests/test_job_match.py` 的四条用例上。
+    generated_at: '2026-11-10T12:00:00+08:00',
+    data_updated_at: '2026-11-09T18:30:00+08:00',
     note: null,
     ...overrides,
   }
@@ -991,7 +998,7 @@ describe('核验计数的三句文案（2.D「计数必须可见」）', () => {
     expect(lines).toEqual([
       'AI 给出 20 条，其中 14 条无法在 JD 原文中找到依据，已剔除',
       '另有 3 条重名已合并',
-      '模型给出的条目超过 15 条，只保留了前 15 条',
+      'AI 给出的技能条目超过 15 条，只保留了前 15 条',
     ])
     // 三句彼此独立：合并掉的数量不许混进那句「无法回溯原文」里。
     expect(lines[0]).not.toContain('重名')
@@ -1053,7 +1060,7 @@ describe('提取失败的分支文案（禁止静默降级）', () => {
     const ordinary = new ApiError('AI 暂时不可用。', 502, 'AI_SERVICE_UNAVAILABLE')
 
     const truncatedText = extractFailureText(truncated)
-    expect(truncatedText).toContain('请把 JD 里真正想要的技能写清楚')
+    expect(truncatedText).toContain('把真正想要的技能写清楚')
     // 与「稍后重试」那条区分开：按第 4 情形的动作去处理第 7 情形，用户会反复点出同一个 502。
     expect(truncatedText).not.toBe(extractFailureText(ordinary))
     expect(extractFailureText(ordinary)).toContain('稍后重试')
@@ -1062,13 +1069,13 @@ describe('提取失败的分支文案（禁止静默降级）', () => {
     // 它必须仍走「稍后重试」——证明判据是字段而不是文案（服务端措辞随时会改）。
     const lookalike = new ApiError('模型输出被切断了。', 502, 'AI_SERVICE_UNAVAILABLE')
     expect(extractFailureText(lookalike)).toContain('稍后重试')
-    expect(extractFailureText(lookalike)).not.toContain('把 JD 里真正想要的技能写清楚')
+    expect(extractFailureText(lookalike)).not.toContain('把真正想要的技能写清楚')
   })
 
   it('限流 / 校验 / 断网三种非 AI 失败也各有下一步，且都没有「什么都不显示」的分支', () => {
     expect(extractFailureText(new ApiError('请求太多。', 429, 'RATE_LIMITED'))).toContain('等一分钟')
     expect(extractFailureText(new ApiError('校验失败。', 422, 'VALIDATION_ERROR'))).toContain('8000')
-    expect(extractFailureText(new ApiError('连不上。', 0, 'NETWORK_ERROR'))).toContain('后端')
+    expect(extractFailureText(new ApiError('连不上。', 0, 'NETWORK_ERROR'))).toContain('重试')
 
     // 兜底：非 ApiError（代码 bug、取消请求之类）也必须出一句人话，不能返回空串。
     const fallback = extractFailureText(new Error('boom'))
@@ -1315,7 +1322,7 @@ describe('人岗匹配（显式点击、纯计算、退化可归因）', () => {
     expect(
       matchFailureText(new ApiError('无效或已过期的访问令牌。', 401, 'CLIENT_ERROR')),
     ).toContain('重新登录')
-    expect(matchFailureText(new ApiError('连不上。', 0, 'NETWORK_ERROR'))).toContain('后端')
+    expect(matchFailureText(new ApiError('连不上。', 0, 'NETWORK_ERROR'))).toContain('重试')
     // 兜底也必须是一句人话，而且要说清「资料没被动过」。
     expect(matchFailureText(new Error('boom'))).toContain('没有被改动')
     expect(matchFailureText(new ApiError('没见过的错。', 500, 'WEIRD'))).toContain('没见过的错。')

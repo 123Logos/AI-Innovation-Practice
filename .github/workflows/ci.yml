@@ -82,6 +82,13 @@ jobs:
       - name: Docs citation check
         run: uv run python scripts/check_docs_citations.py
 
+      # G1 文案闸（守则 C1/C2 + §9 G1，老板 2026-11-09 第 4 点批准进 CI）：emoji、被当图标用的
+      # 符号、开发者黑话不许上屏，豁免必须带理由。与上一条同形态——stdlib-only 的纯文本检查，
+      # 所以放在这里跑，不进 pytest（`tests/conftest.py` 会连真实 MySQL，见脚本 docstring）。
+      # 覆盖范围**只有前端**：后端上屏字符串属批次 F1c（`docs/ROADMAP.md` §3 X2）。
+      - name: UI copy check (G1)
+        run: uv run python scripts/check_ui_copy.py
+
       # test_migrations covers upgrade/downgrade against the MySQL service.
       - name: Test and migration check
         run: uv run pytest -q

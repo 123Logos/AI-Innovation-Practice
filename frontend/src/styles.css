@@ -11,6 +11,12 @@
  *    外加它自己的 `dark/css-vars.css`，本项目没走那条链路，所以暗色下的中性色
  *    必须在这里自己声明——否则 `el-dialog` 在暗色下仍是一块 `#fff` 白底，
  *    而组件里的浅色文字压上去只有 1.2:1 的对比度。
+ *
+ * **断点不在这三层里**：全站允许的 `@media (max|min-width: Npx)` 数值只有四个，
+ * 那张表在 `src/composables/useViewport.ts` 的 `BREAKPOINTS`（守则 L2）。
+ * 媒体查询读不了 `var(--bp-*)`（查询在样式计算之前求值），所以这一格「只写一次」
+ * 不是靠引用兑现的，是靠 `src/__tests__/layoutGuards.spec.ts` 扫描 `src/**` 里每个
+ * 宽度数值、发现表外值即红来兑现的。别在这里发明第五个断点。
  */
 :root {
   /*

@@ -188,3 +188,65 @@ class ResumeRead(BaseModel):
     def serialize_shanghai(self, value: datetime) -> str:
         """与档案接口同口径：naive UTC → 东八区 ISO 串。"""
         return format_shanghai_datetime(value)
+
+
+# --------------------------------------------------------------------------- #
+# 导出前隐私检查（批次 B2 / PRD FR-06「导出前显示隐私检查：联系方式、作品链接、
+# 个人信息和授权范围」）。四个类全是**响应模型**：这一格是纯计算，不落库、不加列、
+# 不建表——形态与 `POST /jobs/extract-skills`（ADR-011 议题 2.A）同一条路子。
+#
+# `key` 是给界面与测试用的稳定标识，`label` 才是上屏的那句人话；两者分开写，
+# 是为了让「改措辞」不牵动断言，也让界面不必拿英文键去猜中文说法。
+# --------------------------------------------------------------------------- #
+
+#: FR-06 点名的四类，顺序即界面顺序（联系方式 / 作品链接 / 个人信息 / 授权范围）。
+PrivacyCategoryKey = Literal["contact", "portfolio", "personal", "authorization"]
+
+#: 一格的三种样子：`present` 有内容可核、`missing` 档案里没填、
+#: `not_available` 数据模型里根本没有这一栏（今天无数据可查）。
+#: 第三种必须存在，否则「还没做这一栏」会被读成「用户什么都没填」——那是假话。
+PrivacyCategoryStatus = Literal["present", "missing", "not_available"]
+
+
+class ResumePrivacyCheckRequest(BaseModel):
+    """`POST /resumes/privacy-check` 的请求体：只有可选的 `profile_id`。
+
+    与 `ResumeGenerateRequest` 同一条信任边界（T7.2）：检查读的是**库里已保存的档案**，
+    客户端塞进来的任何档案字段都不采信。这里比生成更进一步——连 `title` 都不收，
+    因为「会不会被带出去」不取决于简历叫什么名字。
+    """
+
+    profile_id: str | None = Field(default=None, max_length=36)
+
+
+class PrivacyItem(BaseModel):
+    """一类里的一格：档案里有没有它、它会不会进到这页简历上。
+
+    `present` 与 `included` 是两个问题，不许合并成一格：邮箱没填时两个都是假，
+    而「目标岗位偏好」是 `present=True, included=False`——它确实存在，只是不上简历。
+    """
+
+    key: str
+    label: str
+    present: bool
+    included: bool
+    #: 只有布尔说不清时才填这一句（例如整节缺失时该怎么补）。界面按「有就说、没有就不说」处理。
+    note: str | None = None
+
+
+class PrivacyCategory(BaseModel):
+    """FR-06 四类中的一类。"""
+
+    key: PrivacyCategoryKey
+    label: str
+    status: PrivacyCategoryStatus
+    #: `status="not_available"` 时这一句是**必给**的：不给，用户看见的就是一个没有来由的空壳。
+    note: str | None = None
+    items: list[PrivacyItem] = Field(default_factory=list)
+
+
+class ResumePrivacyCheck(BaseModel):
+    """`POST /resumes/privacy-check` 的响应体（四类清单）。"""
+
+    profile_id: str
+    categories: list[PrivacyCategory]

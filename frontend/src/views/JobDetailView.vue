@@ -31,7 +31,6 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 
-import AppTopBar from '@/components/AppTopBar.vue'
 import { isApiError } from '@/api'
 import {
   EMPLOYMENT_TYPE_LABELS,
@@ -300,313 +299,308 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="app-shell">
-    <AppTopBar />
-
-    <main class="detail-page">
-      <div class="page-heading">
-        <div class="heading-main">
-          <p class="eyebrow">岗位详情</p>
-        </div>
-        <div class="heading-actions">
-          <RouterLink class="text-link" :to="{ name: 'job-board' }">← 返回列表</RouterLink>
-          <!-- 编辑入口只对创建者显示：后端对非创建者的 PUT 一律 404（1.F #4），
-               摆一个必然失败的链接比不摆更糟。`/jobs/:id/edit` 是 ADR-011 议题 3.B v9 补的那一条。 -->
-          <RouterLink
-            v-if="isCreator"
-            class="text-link"
-            data-testid="edit-link"
-            :to="{ name: 'job-edit', params: { id: String(route.params.id ?? '') } }"
-          >
-            编辑
-          </RouterLink>
-          <RouterLink class="text-link" :to="{ name: 'job-trash' }">我的删除</RouterLink>
-        </div>
+  <main class="detail-page">
+    <div class="page-heading">
+      <div class="heading-main">
+        <p class="eyebrow">岗位详情</p>
       </div>
+      <div class="heading-actions">
+        <RouterLink class="text-link" :to="{ name: 'job-board' }">返回列表</RouterLink>
+        <!-- 编辑入口只对创建者显示：后端对非创建者的 PUT 一律 404（1.F #4），
+             摆一个必然失败的链接比不摆更糟。`/jobs/:id/edit` 是 ADR-011 议题 3.B v9 补的那一条。 -->
+        <RouterLink
+          v-if="isCreator"
+          class="text-link"
+          data-testid="edit-link"
+          :to="{ name: 'job-edit', params: { id: String(route.params.id ?? '') } }"
+        >
+          编辑
+        </RouterLink>
+        <RouterLink class="text-link" :to="{ name: 'job-trash' }">我的删除</RouterLink>
+      </div>
+    </div>
 
-      <p v-if="loadError" class="feedback feedback--error" role="alert">{{ loadError }}</p>
-      <p v-else-if="store.detailLoading" class="feedback">正在加载岗位…</p>
-      <p v-else-if="!job" class="feedback">没有可显示的内容。</p>
+    <p v-if="loadError" class="feedback feedback--error" role="alert">{{ loadError }}</p>
+    <p v-else-if="store.detailLoading" class="feedback">正在加载岗位…</p>
+    <p v-else-if="!job" class="feedback">没有可显示的内容。</p>
 
-      <template v-else>
-        <section class="detail-card">
-          <h1 class="detail-title">{{ job.title }}</h1>
-          <p class="detail-company">{{ job.company_name }}</p>
+    <template v-else>
+      <section class="detail-card">
+        <h1 class="detail-title">{{ job.title }}</h1>
+        <p class="detail-company">{{ job.company_name }}</p>
 
-          <div class="badge-row">
-            <span class="badge">{{ JOB_STATUS_LABELS[job.status] }}</span>
-            <span v-if="employmentLabel(job.employment_type)" class="badge">
-              {{ employmentLabel(job.employment_type) }}
-            </span>
-            <span v-if="job.is_expired" class="badge badge--expired">已过期</span>
+        <div class="badge-row">
+          <span class="badge">{{ JOB_STATUS_LABELS[job.status] }}</span>
+          <span v-if="employmentLabel(job.employment_type)" class="badge">
+            {{ employmentLabel(job.employment_type) }}
+          </span>
+          <span v-if="job.is_expired" class="badge badge--expired">已过期</span>
+        </div>
+
+        <dl class="meta-grid">
+          <div class="meta-item">
+            <dt>工作地点</dt>
+            <dd>{{ job.location || '未填写' }}</dd>
           </div>
-
-          <dl class="meta-grid">
-            <div class="meta-item">
-              <dt>工作地点</dt>
-              <dd>{{ job.location || '未填写' }}</dd>
-            </div>
-            <div class="meta-item">
-              <dt>截止时间</dt>
-              <dd>
-                {{ job.deadline ? formatDate(job.deadline) || job.deadline : '长期有效' }}
-                <span v-if="job.is_expired" class="meta-flag">已过期</span>
-              </dd>
-            </div>
-            <div class="meta-item">
-              <dt>薪资区间</dt>
-              <dd>{{ salaryLabel || '未填写' }}</dd>
-            </div>
-            <div class="meta-item">
-              <dt>经验要求</dt>
-              <dd>{{ job.experience_required || '未填写' }}</dd>
-            </div>
-            <div class="meta-item">
-              <dt>录入时间</dt>
-              <dd>{{ formatDateTime(job.created_at) || job.created_at }}</dd>
-            </div>
-          </dl>
-
-          <div v-if="isCreator" class="owner-actions">
-            <button
-              v-if="job.status === 'draft'"
-              class="row-button row-button--primary"
-              type="button"
-              :disabled="actionBusy !== null || store.submitting"
-              @click="handlePublish"
-            >
-              {{ actionBusy === 'publish' ? '发布中…' : '发布到广场' }}
-            </button>
-            <button
-              v-else
-              class="row-button"
-              type="button"
-              :disabled="actionBusy !== null || store.submitting"
-              @click="handleUnpublish"
-            >
-              {{ actionBusy === 'unpublish' ? '下架中…' : '下架回草稿' }}
-            </button>
-            <button
-              class="row-button row-button--danger"
-              type="button"
-              data-testid="delete-button"
-              :disabled="actionBusy !== null || store.submitting"
-              @click="askDelete"
-            >
-              {{ actionBusy === 'delete' ? '删除中…' : '删除' }}
-            </button>
+          <div class="meta-item">
+            <dt>截止时间</dt>
+            <dd>
+              {{ job.deadline ? formatDate(job.deadline) || job.deadline : '长期有效' }}
+              <span v-if="job.is_expired" class="meta-flag">已过期</span>
+            </dd>
           </div>
+          <div class="meta-item">
+            <dt>薪资区间</dt>
+            <dd>{{ salaryLabel || '未填写' }}</dd>
+          </div>
+          <div class="meta-item">
+            <dt>经验要求</dt>
+            <dd>{{ job.experience_required || '未填写' }}</dd>
+          </div>
+          <div class="meta-item">
+            <dt>录入时间</dt>
+            <dd>{{ formatDateTime(job.created_at) || job.created_at }}</dd>
+          </div>
+        </dl>
 
-          <p v-if="actionError" class="feedback feedback--error" role="alert">{{ actionError }}</p>
-          <p v-if="actionNotice" class="feedback feedback--ok" role="status">{{ actionNotice }}</p>
-        </section>
-
-        <!--
-          匹配卡排在 JD **前面**（第一条内容块）。理由不是排版偏好，是量出来的：
-          放在技能表后面时，实测这条种子岗位的按钮在 1280px 下距视口顶 1776px、375px 下 2218px，
-          也就是要翻完整份 JD 加整张技能表才看得见——一个必须点击才会发真实请求的功能被埋在那儿，
-          等于没有。改到最前面之后同一岗位、同一账号复测：按钮距顶 497px（1280×900）与
-          694px（375×780），两个视口都还在首屏内。
-        -->
-        <section class="detail-block match-block" data-testid="match-block">
-          <h2 class="block-title">我和这个岗位的匹配度</h2>
-          <p class="block-hint">
-            匹配度是参考，不是录用概率：它只按你的简历与这个岗位的技能要求算重合，
-            不看经验年限、薪资与面试表现。
-            这一步会向 DeepSeek 发一次真实请求、用的是你自己的额度，所以只在你点下面这个按钮时才发生。
-          </p>
+        <div v-if="isCreator" class="owner-actions">
           <button
+            v-if="job.status === 'draft'"
             class="row-button row-button--primary"
             type="button"
-            data-testid="match-run"
-            :aria-busy="store.matching"
-            :disabled="store.matching"
-            @click="handleMatch"
+            :disabled="actionBusy !== null || store.submitting"
+            @click="handlePublish"
           >
-            {{ store.matching ? '正在匹配…' : match ? '再算一次' : '算一次匹配' }}
+            {{ actionBusy === 'publish' ? '发布中…' : '发布到广场' }}
           </button>
-          <p v-if="matchError" class="feedback feedback--error" role="alert">{{ matchError }}</p>
-
-          <div v-if="match" class="match-result">
-            <p class="match-score">
-              <span class="match-score__value" data-testid="match-score">{{ matchScoreLabel }}</span>
-              <span class="match-score__caption">匹配度</span>
-            </p>
-            <!-- 用的是哪一份档案由响应回显（ADR-013 §13 第 7 条）：请求体是空的，
-                 不写这一行，编辑器里开着 B 档案的人会把 A 档案的分数读成自己的。 -->
-            <p class="match-source">
-              <template v-if="match.profile_id">按《{{ match.profile_title || '未命名简历' }}》打分</template>
-              <template v-else>
-                你还没有保存的简历，这次是按<b>空简历</b>打的分——先去「我的简历」填一份，分数才有意义。
-              </template>
-            </p>
-
-            <ul v-if="matchHintLines.length" class="match-degrade" role="status">
-              <li v-for="line in matchHintLines" :key="line">{{ line }}</li>
-            </ul>
-
-            <!--
-              `score === null` 不配独立文案（2026-11-08 老板裁定 + 同日真浏览器实测）：
-              `score is null` 与 `no_required_skills` 是**同一件事**——核心 term 不在就整个不给分
-              （`app/services/match_scoring.py` 的短路，枚举 81 组合由
-              `tests/test_match_scoring.py::test_score_is_null_exactly_when_the_job_has_no_required_skills`
-              钉住），所以下面那行 `.empty` 就是这一屏唯一的说明。
-              这里曾经有三行同义反复（新文案 + `.empty` + 档案为空时的 `.match-source`），
-              计数断言 `occurrences()` 是它的回归锁。
-              权重、分母、`weight_sum_used` 都不出现在这里——那是响应里给对账用的，不是给用户读的。
-            -->
-            <p v-if="match.meta.no_required_skills" class="empty">
-              这个岗位还没有填写技能要求，所以没有可比对的条目。
-            </p>
-            <div v-else class="match-tiers">
-              <section v-if="match.covered.length" class="match-tier match-tier--covered">
-                <h3 class="tier-title">已具备 {{ match.covered.length }} 项</h3>
-                <ul class="tier-list">
-                  <li v-for="item in match.covered" :key="item.skill" class="tier-item">
-                    <span class="tier-skill">{{ item.skill }}</span>
-                    <!-- 片段是经历原文的连续子串（服务端切的），这里原样显示、不改写不截断：
-                         用户能一眼认出那是自己写过的话，这才叫可核对。 -->
-                    <ul class="tier-evidence">
-                      <li
-                        v-for="entry in item.evidence"
-                        :key="`${entry.experience_id}:${entry.field}`"
-                        class="evidence-line"
-                      >
-                        <span class="evidence-from">{{ evidenceFieldLabel(entry.field) }}</span>
-                        <span class="evidence-text">{{ entry.snippet }}</span>
-                      </li>
-                    </ul>
-                  </li>
-                </ul>
-              </section>
-
-              <section v-if="match.partial.length" class="match-tier match-tier--partial">
-                <h3 class="tier-title">部分具备 {{ match.partial.length }} 项</h3>
-                <ul class="tier-list">
-                  <li v-for="item in match.partial" :key="item.skill" class="tier-item">
-                    <span class="tier-skill">{{ item.skill }}</span>
-                    <span class="tier-reason">{{ item.reason }}</span>
-                  </li>
-                </ul>
-              </section>
-
-              <section v-if="match.gaps.length" class="match-tier match-tier--gap">
-                <h3 class="tier-title">还缺 {{ match.gaps.length }} 项</h3>
-                <ul class="tier-list">
-                  <li v-for="gap in match.gaps" :key="gap.skill" class="tier-item">
-                    <span class="tier-skill">{{ gap.skill }}</span>
-                    <p class="tier-action">{{ gap.action }}</p>
-                    <p class="tier-verify">{{ gap.verify }}</p>
-                  </li>
-                </ul>
-              </section>
-            </div>
-          </div>
-        </section>
-
-        <section class="detail-block">
-          <h2 class="block-title">岗位描述（JD 原文）</h2>
-          <p class="description">{{ descriptionText }}</p>
           <button
-            v-if="isLongDescription"
-            class="expand-button"
+            v-else
+            class="row-button"
             type="button"
-            :aria-expanded="expanded"
-            @click="expanded = !expanded"
+            :disabled="actionBusy !== null || store.submitting"
+            @click="handleUnpublish"
           >
-            {{ expanded ? '收起全文' : '展开全文' }}
+            {{ actionBusy === 'unpublish' ? '下架中…' : '下架回草稿' }}
           </button>
-        </section>
+          <button
+            class="row-button row-button--danger"
+            type="button"
+            data-testid="delete-button"
+            :disabled="actionBusy !== null || store.submitting"
+            @click="askDelete"
+          >
+            {{ actionBusy === 'delete' ? '删除中…' : '删除' }}
+          </button>
+        </div>
 
-        <section class="detail-block">
-          <h2 class="block-title">岗位要求的技能</h2>
-          <p class="block-hint">
-            「可回溯原文」表示这条技能能在这份 JD 原文里逐字找到；
-            「未标注出处」表示当前没有可回溯的依据。
-          </p>
+        <p v-if="actionError" class="feedback feedback--error" role="alert">{{ actionError }}</p>
+        <p v-if="actionNotice" class="feedback feedback--ok" role="status">{{ actionNotice }}</p>
+      </section>
 
-          <p v-if="!job.skills.length" class="empty">这个岗位还没有填写技能要求。</p>
-
-          <ul v-else class="skill-list">
-            <li v-for="skill in job.skills" :key="skill.id" class="skill-item">
-              <div class="skill-head">
-                <span class="skill-name">{{ skill.name }}</span>
-                <span v-if="skillTypeLabel(skill.type)" class="badge badge--soft">
-                  {{ skillTypeLabel(skill.type) }}
-                </span>
-                <span class="badge badge--origin">{{ originBadge(skill.origin) }}</span>
-                <span
-                  v-if="store.isRequirementHit(skill.name)"
-                  class="badge badge--mine"
-                  :title="badgeTitle(skill.name)"
-                  >你已具备</span
-                >
-              </div>
-              <!--
-                `evidence_text` 为 NULL 时整块不渲染：不留下空的展开区、也不写「无依据」占位。
-                这里**保持 B2 的直出显示**（议题 3.B「evidence 展开可见」），不改成交互展开：
-                详情页是核对场所，依据默认看得见比少一次点击更重要；录入页才需要收起。
-                `confidence` 是本轮补上的一格——C1 之后它有真值了，而这一页原先根本不显示它。
-              -->
-              <p v-if="skill.evidence_text" class="skill-evidence">
-                原文依据：{{ skill.evidence_text }}
-                <!-- `confidence` 为 null 时这一格整个不出现：留「—」会被读成一个真实数值。 -->
-                <span v-if="confidenceLabel(skill.confidence)" class="skill-confidence">
-                  · 模型把握 {{ confidenceLabel(skill.confidence) }}
-                </span>
-              </p>
-            </li>
-          </ul>
-        </section>
-      </template>
-    </main>
-
-    <!--
-      删除确认弹层：`Teleport` 到 body（与 `AppTopBar.vue` 的两个自建弹窗同一做法），
-      遮罩用全局 `.ui-overlay`（flex + `margin:auto`）——它刻意不用
-      `grid + place-items:center`：内容比视口高时居中会把面板顶出滚动范围、按钮够不着。
-    -->
-    <Teleport to="body">
-      <div v-if="deleteConfirmOpen" class="ui-overlay" data-testid="delete-dialog" @click.self="closeDeleteConfirm">
-        <section
-          class="ui-panel"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="job-delete-heading"
+      <!--
+        匹配卡排在 JD **前面**（第一条内容块）。理由不是排版偏好，是量出来的：
+        放在技能表后面时，实测这条种子岗位的按钮在 1280px 下距视口顶 1776px、375px 下 2218px，
+        也就是要翻完整份 JD 加整张技能表才看得见——一个必须点击才会发真实请求的功能被埋在那儿，
+        等于没有。改到最前面之后同一岗位、同一账号复测：按钮距顶 497px（1280×900）与
+        694px（375×780），两个视口都还在首屏内。
+      -->
+      <section class="detail-block match-block" data-testid="match-block">
+        <h2 class="block-title">我和这个岗位的匹配度</h2>
+        <p class="block-hint">
+          匹配度是参考，不是录用概率：它只按你的简历与这个岗位的技能要求算重合，
+          不看经验年限、薪资与面试表现。
+          这一步会用到你自己的 AI 用量，所以只在你点下面这个按钮时才发生。
+        </p>
+        <button
+          class="row-button row-button--primary"
+          type="button"
+          data-testid="match-run"
+          :aria-busy="store.matching"
+          :disabled="store.matching"
+          @click="handleMatch"
         >
-          <h2 id="job-delete-heading" class="dialog-title">删除这条岗位？</h2>
-          <p class="dialog-body">
-            删除后这条岗位进「我的删除」，技能条目一行都不会丢，随时可以恢复。
-            <b>{{ job?.title }}</b>（{{ job?.company_name }}）
+          {{ store.matching ? '正在匹配…' : match ? '再算一次' : '算一次匹配' }}
+        </button>
+        <p v-if="matchError" class="feedback feedback--error" role="alert">{{ matchError }}</p>
+
+        <div v-if="match" class="match-result">
+          <p class="match-score">
+            <span class="match-score__value" data-testid="match-score">{{ matchScoreLabel }}</span>
+            <span class="match-score__caption">匹配度</span>
           </p>
-          <div class="dialog-actions">
-            <button
-              class="row-button row-button--ghost"
-              type="button"
-              data-testid="delete-cancel"
-              :disabled="actionBusy === 'delete'"
-              @click="closeDeleteConfirm"
-            >
-              取消
-            </button>
-            <button
-              class="row-button row-button--danger"
-              type="button"
-              data-testid="delete-confirm"
-              :disabled="actionBusy !== null || store.submitting"
-              @click="handleDelete"
-            >
-              {{ actionBusy === 'delete' ? '删除中…' : '确认删除' }}
-            </button>
+          <!-- 用的是哪一份档案由响应回显（ADR-013 §13 第 7 条）：请求体是空的，
+               不写这一行，编辑器里开着 B 档案的人会把 A 档案的分数读成自己的。 -->
+          <p class="match-source">
+            <template v-if="match.profile_id">按《{{ match.profile_title || '未命名简历' }}》打分</template>
+            <template v-else>
+              你还没有保存的简历，这次是按<b>空简历</b>打的分——先去「我的简历」填一份，分数才有意义。
+            </template>
+          </p>
+
+          <ul v-if="matchHintLines.length" class="match-degrade" role="status">
+            <li v-for="line in matchHintLines" :key="line">{{ line }}</li>
+          </ul>
+
+          <!--
+            `score === null` 不配独立文案（2026-11-08 老板裁定 + 同日真浏览器实测）：
+            `score is null` 与 `no_required_skills` 是**同一件事**——核心 term 不在就整个不给分
+            （`app/services/match_scoring.py` 的短路，枚举 81 组合由
+            `tests/test_match_scoring.py::test_score_is_null_exactly_when_the_job_has_no_required_skills`
+            钉住），所以下面那行 `.empty` 就是这一屏唯一的说明。
+            这里曾经有三行同义反复（新文案 + `.empty` + 档案为空时的 `.match-source`），
+            计数断言 `occurrences()` 是它的回归锁。
+            权重、分母、`weight_sum_used` 都不出现在这里——那是响应里给对账用的，不是给用户读的。
+          -->
+          <p v-if="match.meta.no_required_skills" class="empty">
+            这个岗位还没有填写技能要求，所以没有可比对的条目。
+          </p>
+          <div v-else class="match-tiers">
+            <section v-if="match.covered.length" class="match-tier match-tier--covered">
+              <h3 class="tier-title">已具备 {{ match.covered.length }} 项</h3>
+              <ul class="tier-list">
+                <li v-for="item in match.covered" :key="item.skill" class="tier-item">
+                  <span class="tier-skill">{{ item.skill }}</span>
+                  <!-- 片段是经历原文的连续子串（服务端切的），这里原样显示、不改写不截断：
+                       用户能一眼认出那是自己写过的话，这才叫可核对。 -->
+                  <ul class="tier-evidence">
+                    <li
+                      v-for="entry in item.evidence"
+                      :key="`${entry.experience_id}:${entry.field}`"
+                      class="evidence-line"
+                    >
+                      <span class="evidence-from">{{ evidenceFieldLabel(entry.field) }}</span>
+                      <span class="evidence-text">{{ entry.snippet }}</span>
+                    </li>
+                  </ul>
+                </li>
+              </ul>
+            </section>
+
+            <section v-if="match.partial.length" class="match-tier match-tier--partial">
+              <h3 class="tier-title">部分具备 {{ match.partial.length }} 项</h3>
+              <ul class="tier-list">
+                <li v-for="item in match.partial" :key="item.skill" class="tier-item">
+                  <span class="tier-skill">{{ item.skill }}</span>
+                  <span class="tier-reason">{{ item.reason }}</span>
+                </li>
+              </ul>
+            </section>
+
+            <section v-if="match.gaps.length" class="match-tier match-tier--gap">
+              <h3 class="tier-title">还缺 {{ match.gaps.length }} 项</h3>
+              <ul class="tier-list">
+                <li v-for="gap in match.gaps" :key="gap.skill" class="tier-item">
+                  <span class="tier-skill">{{ gap.skill }}</span>
+                  <p class="tier-action">{{ gap.action }}</p>
+                  <p class="tier-verify">{{ gap.verify }}</p>
+                </li>
+              </ul>
+            </section>
           </div>
-        </section>
-      </div>
-    </Teleport>
-  </div>
+        </div>
+      </section>
+
+      <section class="detail-block">
+        <h2 class="block-title">岗位描述（JD 原文）</h2>
+        <p class="description">{{ descriptionText }}</p>
+        <button
+          v-if="isLongDescription"
+          class="expand-button"
+          type="button"
+          :aria-expanded="expanded"
+          @click="expanded = !expanded"
+        >
+          {{ expanded ? '收起全文' : '展开全文' }}
+        </button>
+      </section>
+
+      <section class="detail-block">
+        <h2 class="block-title">岗位要求的技能</h2>
+        <p class="block-hint">
+          「可回溯原文」表示这条技能能在这份 JD 原文里逐字找到；
+          「未标注出处」表示当前没有可回溯的依据。
+        </p>
+
+        <p v-if="!job.skills.length" class="empty">这个岗位还没有填写技能要求。</p>
+
+        <ul v-else class="skill-list">
+          <li v-for="skill in job.skills" :key="skill.id" class="skill-item">
+            <div class="skill-head">
+              <span class="skill-name">{{ skill.name }}</span>
+              <span v-if="skillTypeLabel(skill.type)" class="badge badge--soft">
+                {{ skillTypeLabel(skill.type) }}
+              </span>
+              <span class="badge badge--origin">{{ originBadge(skill.origin) }}</span>
+              <span
+                v-if="store.isRequirementHit(skill.name)"
+                class="badge badge--mine"
+                :title="badgeTitle(skill.name)"
+                >你已具备</span
+              >
+            </div>
+            <!--
+              `evidence_text` 为 NULL 时整块不渲染：不留下空的展开区、也不写「无依据」占位。
+              这里**保持 B2 的直出显示**（议题 3.B「evidence 展开可见」），不改成交互展开：
+              详情页是核对场所，依据默认看得见比少一次点击更重要；录入页才需要收起。
+              `confidence` 是本轮补上的一格——C1 之后它有真值了，而这一页原先根本不显示它。
+            -->
+            <p v-if="skill.evidence_text" class="skill-evidence">
+              原文依据：{{ skill.evidence_text }}
+              <!-- `confidence` 为 null 时这一格整个不出现：留「—」会被读成一个真实数值。 -->
+              <span v-if="confidenceLabel(skill.confidence)" class="skill-confidence">
+                · AI 把握 {{ confidenceLabel(skill.confidence) }}
+              </span>
+            </p>
+          </li>
+        </ul>
+      </section>
+    </template>
+  </main>
+
+  <!--
+    删除确认弹层：`Teleport` 到 body（与 `AppTopBar.vue` 的两个自建弹窗同一做法），
+    遮罩用全局 `.ui-overlay`（flex + `margin:auto`）——它刻意不用
+    `grid + place-items:center`：内容比视口高时居中会把面板顶出滚动范围、按钮够不着。
+  -->
+  <Teleport to="body">
+    <div v-if="deleteConfirmOpen" class="ui-overlay" data-testid="delete-dialog" @click.self="closeDeleteConfirm">
+      <section
+        class="ui-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="job-delete-heading"
+      >
+        <h2 id="job-delete-heading" class="dialog-title">删除这条岗位？</h2>
+        <p class="dialog-body">
+          删除后这条岗位进「我的删除」，技能条目一行都不会丢，随时可以恢复。
+          <b>{{ job?.title }}</b>（{{ job?.company_name }}）
+        </p>
+        <div class="dialog-actions">
+          <button
+            class="row-button row-button--ghost"
+            type="button"
+            data-testid="delete-cancel"
+            :disabled="actionBusy === 'delete'"
+            @click="closeDeleteConfirm"
+          >
+            取消
+          </button>
+          <button
+            class="row-button row-button--danger"
+            type="button"
+            data-testid="delete-confirm"
+            :disabled="actionBusy !== null || store.submitting"
+            @click="handleDelete"
+          >
+            {{ actionBusy === 'delete' ? '删除中…' : '确认删除' }}
+          </button>
+        </div>
+      </section>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
-.app-shell { min-height: 100vh; background: var(--ui-canvas); }
 .detail-page { width: min(880px, 100%); margin: 0 auto; padding: 32px 48px 72px; }
 .page-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .heading-main { min-width: 0; }

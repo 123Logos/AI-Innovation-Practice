@@ -80,7 +80,7 @@ function discard(): void {
   >
     <p class="review-note">
       左边是<b>你原来的文字</b>，右边是 AI 的建议。点「接受并同步到表单」只会填进左侧表单，
-      <b>仍需你自己点「保存修改」才会落库</b>；关掉这个窗口就等于放弃。
+      <b>仍需你自己点「保存修改」才会保存</b>；关掉这个窗口就等于放弃。
     </p>
 
     <div v-if="skillsChanged && result" class="review-skills">

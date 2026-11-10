@@ -12,11 +12,12 @@
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
-import AppTopBar from '@/components/AppTopBar.vue'
 import { isApiError } from '@/api'
 import { useResumeStore } from '@/stores/resume'
+import { useDialogStore } from '@/stores/dialog'
 
 const store = useResumeStore()
+const dialog = useDialogStore()
 
 const loadError = ref('')
 const actionError = ref('')
@@ -73,7 +74,11 @@ async function handleRestore(profileId: string, title: string): Promise<void> {
 async function handlePurge(profileId: string, title: string): Promise<void> {
   if (busyId.value) return
   // 不可逆操作必须二次确认，文案直接把后果说清楚。
-  const confirmed = window.confirm(`彻底删除后无法恢复，是否继续？\n\n简历：${title}`)
+  const confirmed = await dialog.askConfirm(
+    '彻底删除这份简历？',
+    '这一步不可逆：回收站里的这一份会永久消失，恢复不了。',
+    { subject: title, confirmLabel: '确认彻底删除', tone: 'danger' },
+  )
   if (!confirmed) return
 
   busyId.value = profileId
@@ -93,69 +98,64 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="app-shell">
-    <AppTopBar />
-
-    <main class="trash-page">
-      <div class="trash-heading">
-        <div>
-          <p class="eyebrow">简历管理</p>
-          <h1>回收站</h1>
-          <p class="intro">
-            删除的简历会在这里保留 30 天，期间可以随时恢复；超过 30 天由服务端自动清理。
-          </p>
-        </div>
-        <RouterLink class="back-link" :to="{ name: 'resume-editor' }">← 返回编辑器</RouterLink>
-      </div>
-
-      <p v-if="loadError" class="feedback feedback--error" role="alert">{{ loadError }}</p>
-      <p v-else-if="store.trashLoading" class="feedback">正在加载回收站…</p>
-
-      <p v-if="actionError" class="feedback feedback--error" role="alert">{{ actionError }}</p>
-      <p v-if="actionNotice" class="feedback feedback--ok" role="status">{{ actionNotice }}</p>
-
-      <section v-if="!loadError && !store.trashLoading" class="trash-panel">
-        <p v-if="!items.length" class="empty">
-          回收站是空的。被删除的简历会出现在这里。
+  <main class="trash-page">
+    <div class="trash-heading">
+      <div>
+        <p class="eyebrow">简历管理</p>
+        <h1>回收站</h1>
+        <p class="intro">
+          删除的简历会在这里保留 30 天，期间可以随时恢复；超过 30 天会自动清理。
         </p>
+      </div>
+      <RouterLink class="back-link" :to="{ name: 'resume-editor' }">返回编辑器</RouterLink>
+    </div>
 
-        <ul v-else class="trash-list">
-          <li v-for="item in items" :key="item.id" class="trash-row">
-            <div class="trash-main">
-              <p class="trash-title">{{ item.title }}</p>
-              <p class="trash-meta">
-                <span>{{ item.full_name || '未填写姓名' }}</span>
-                <span class="dot">·</span>
-                <span>删除于 {{ formatDeletedAt(item.deleted_at) }}</span>
-              </p>
-            </div>
-            <div class="trash-actions">
-              <button
-                class="row-button"
-                type="button"
-                :disabled="busyId === item.id"
-                @click="handleRestore(item.id, item.title)"
-              >
-                {{ busyId === item.id ? '处理中…' : '恢复' }}
-              </button>
-              <button
-                class="row-button row-button--danger"
-                type="button"
-                :disabled="busyId === item.id"
-                @click="handlePurge(item.id, item.title)"
-              >
-                彻底删除
-              </button>
-            </div>
-          </li>
-        </ul>
-      </section>
-    </main>
-  </div>
+    <p v-if="loadError" class="feedback feedback--error" role="alert">{{ loadError }}</p>
+    <p v-else-if="store.trashLoading" class="feedback">正在加载回收站…</p>
+
+    <p v-if="actionError" class="feedback feedback--error" role="alert">{{ actionError }}</p>
+    <p v-if="actionNotice" class="feedback feedback--ok" role="status">{{ actionNotice }}</p>
+
+    <section v-if="!loadError && !store.trashLoading" class="trash-panel">
+      <p v-if="!items.length" class="empty">
+        回收站是空的。被删除的简历会出现在这里。
+      </p>
+
+      <ul v-else class="trash-list">
+        <li v-for="item in items" :key="item.id" class="trash-row">
+          <div class="trash-main">
+            <p class="trash-title">{{ item.title }}</p>
+            <p class="trash-meta">
+              <span>{{ item.full_name || '未填写姓名' }}</span>
+              <span class="dot">·</span>
+              <span>删除于 {{ formatDeletedAt(item.deleted_at) }}</span>
+            </p>
+          </div>
+          <div class="trash-actions">
+            <button
+              class="row-button"
+              type="button"
+              :disabled="busyId === item.id"
+              @click="handleRestore(item.id, item.title)"
+            >
+              {{ busyId === item.id ? '处理中…' : '恢复' }}
+            </button>
+            <button
+              class="row-button row-button--danger"
+              type="button"
+              :disabled="busyId === item.id"
+              @click="handlePurge(item.id, item.title)"
+            >
+              彻底删除
+            </button>
+          </div>
+        </li>
+      </ul>
+    </section>
+  </main>
 </template>
 
 <style scoped>
-.app-shell { min-height: 100vh; background: var(--ui-canvas); }
 .trash-page { width: min(880px, 100%); margin: 0 auto; padding: 32px 48px 72px; }
 .trash-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
 .eyebrow { margin: 0 0 10px; color: var(--theme-rule); font-size: 12px; letter-spacing: .12em; }

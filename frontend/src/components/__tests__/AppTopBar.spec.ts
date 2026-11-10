@@ -297,3 +297,172 @@ describe('登出清空岗位 store（handleLogout 的不变量）', () => {
     expect(wrapper.find('.logout-button').text()).toContain('退出登录')
   })
 })
+
+/* ------------------------------------------------------------------ */
+/*  批次 F1b：六处原生弹层里的顶栏两处，走的是同一个页面内弹窗           */
+/* ------------------------------------------------------------------ */
+
+describe('删除与去回收站走页面内弹层（批次 F1b，守则 C6）', () => {
+  // 以下三个 helper 刻意写在 describe 里面而不是文件头部：
+  // `docs/ROADMAP.md` §1 F3 行按行号引用了本文件里那段结构判据（`AppTopBar.spec.ts:177-214`），
+  // 顶层多插十几行就会把那条引用推到空行上。写在这块作用域里，头部一格不动。
+  /**
+   * `resume.save()` 的返回类型是 `ProfileRead`，但这几处调用点**只看它有没有被调用**、
+   * 不看返回内容（`goTrash` 成功就跳转、失败就提示）。所以给一个空对象而不是编造一份
+   * 完整档案：编出来的字段会诱使后来的用例去断言它们，而它们并不存在。
+   */
+  const SAVE_RESULT = {} as never
+
+  /** 弹窗 `Teleport` 到 body，所以查询走 document，而不是 wrapper（与 JobDetailView.spec 同法）。 */
+  function bodyText(selector: string): string {
+    return document.body.querySelector(selector)?.textContent ?? ''
+  }
+
+  async function bodyClick(selector: string): Promise<void> {
+    const el = document.body.querySelector(selector)
+    if (!el) throw new Error(`找不到弹窗按钮：${selector}`)
+    ;(el as HTMLElement).click()
+    await flushPromises()
+  }
+
+  /**
+   * `ConfirmDialog` 在生产里挂在 `App.vue`，测试这里按同一个 pinia 单独挂一份。
+   * 不这么做的话，本文件其实只在验 store 里那一格状态，屏幕上有没有真弹窗没人管。
+   */
+  async function mountDialogHost() {
+    const { default: ConfirmDialog } = await import('@/components/ConfirmDialog.vue')
+    const host = mount(ConfirmDialog, { global: { plugins: [pinia] } })
+    mounted.push(host)
+    return host
+  }
+
+  function seedProfiles() {
+    const resume = useResumeStore()
+    resume.profiles = [
+      {
+        id: 'profile-under-test',
+        title: '投后端的那一版',
+        is_default: true,
+        full_name: '张三',
+        created_at: '2026-11-10T10:00:00+08:00',
+        updated_at: '2026-11-10T10:00:00+08:00',
+        deleted_at: null,
+      },
+    ] as typeof resume.profiles
+    resume.currentProfileId = 'profile-under-test'
+    return resume
+  }
+
+  it('点「删除」只打开弹层，此刻一次删除请求都没发；点「确认删除」才删', async () => {
+    const resume = seedProfiles()
+    const deleteSpy = vi.spyOn(resume, 'deleteProfile').mockResolvedValue(undefined)
+    const { wrapper } = await mountTopBar()
+    await mountDialogHost()
+
+    await wrapper.find('.switcher-trigger').trigger('click')
+    await wrapper.find('.icon-button--danger').trigger('click')
+    await flushPromises()
+
+    expect(bodyText('[data-testid="app-dialog"]')).toContain('删除后它进回收站')
+    expect(bodyText('[data-testid="app-dialog"]')).toContain('投后端的那一版')
+    expect(deleteSpy).toHaveBeenCalledTimes(0)
+
+    await bodyClick('[data-testid="app-dialog-cancel"]')
+    expect(deleteSpy).toHaveBeenCalledTimes(0)
+
+    // 反面对照：确认这条路真的删得掉，否则上面那句「没删」只是因为按钮根本没接上。
+    await wrapper.find('.icon-button--danger').trigger('click')
+    await flushPromises()
+    await bodyClick('[data-testid="app-dialog-confirm"]')
+    expect(deleteSpy).toHaveBeenCalledTimes(1)
+    expect(deleteSpy).toHaveBeenCalledWith('profile-under-test')
+  })
+
+  it('有未保存修改时点「回收站」：先问，确认才保存并跳转', async () => {
+    const resume = seedProfiles()
+    const saveSpy = vi.spyOn(resume, 'save').mockResolvedValue(SAVE_RESULT)
+    const { wrapper, router } = await mountTopBar()
+    await mountDialogHost()
+    resume.dirty = true
+
+    await wrapper.find('.switcher-trigger').trigger('click')
+    await wrapper.find('.menu-action--ghost').trigger('click')
+    await flushPromises()
+
+    // 弹层出现的那一瞬间：既没保存也没跳转。
+    expect(bodyText('[data-testid="app-dialog"]')).toContain('上一次保存的那一版')
+    expect(saveSpy).toHaveBeenCalledTimes(0)
+    expect(router.currentRoute.value.name).toBe('job-board')
+
+    await bodyClick('[data-testid="app-dialog-confirm"]')
+    expect(saveSpy).toHaveBeenCalledTimes(1)
+    expect(router.currentRoute.value.name).toBe('recycle-bin')
+  })
+
+  it('这条路取消就不跳转；干净状态（没有未保存修改）直接跳转，不打扰用户', async () => {
+    const resume = seedProfiles()
+    const saveSpy = vi.spyOn(resume, 'save').mockResolvedValue(SAVE_RESULT)
+    const { wrapper, router } = await mountTopBar()
+    await mountDialogHost()
+    resume.dirty = true
+
+    await wrapper.find('.switcher-trigger').trigger('click')
+    await wrapper.find('.menu-action--ghost').trigger('click')
+    await flushPromises()
+    await bodyClick('[data-testid="app-dialog-cancel"]')
+
+    expect(saveSpy).toHaveBeenCalledTimes(0)
+    expect(router.currentRoute.value.name).toBe('job-board')
+
+    // 对照组：dirty 为 false 时这整个问答都不该发生。
+    // （`goTrash` 一进来就收菜单，所以这里要重新打开——不是测试的仪式，是它的行为。）
+    resume.dirty = false
+    await wrapper.find('.switcher-trigger').trigger('click')
+    await wrapper.find('.menu-action--ghost').trigger('click')
+    await flushPromises()
+    expect(bodyText('[data-testid="app-dialog"]')).toBe('')
+    expect(router.currentRoute.value.name).toBe('recycle-bin')
+  })
+
+  it('保存失败时不再弹原生 alert，而是当面说明并停在原页', async () => {
+    const resume = seedProfiles()
+    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => undefined)
+    const { ApiError } = await import('@/api/client')
+    vi.spyOn(resume, 'save').mockRejectedValue(
+      new ApiError('保存被拒绝了。', 422, 'VALIDATION_ERROR'),
+    )
+    const { wrapper, router } = await mountTopBar()
+    await mountDialogHost()
+    resume.dirty = true
+
+    await wrapper.find('.switcher-trigger').trigger('click')
+    await wrapper.find('.menu-action--ghost').trigger('click')
+    await flushPromises()
+    await bodyClick('[data-testid="app-dialog-confirm"]')
+
+    expect(alertSpy).toHaveBeenCalledTimes(0)
+    expect(bodyText('[data-testid="app-dialog"]')).toContain('没保存成功，所以停在这一页')
+    expect(bodyText('[data-testid="app-dialog"]')).toContain('保存被拒绝了。')
+    expect(router.currentRoute.value.name).toBe('job-board')
+
+    await bodyClick('[data-testid="app-dialog-confirm"]')
+    alertSpy.mockRestore()
+  })
+
+  it('`window.confirm` 一次都没被调用（防的是「将来有人觉得原生省事又改回去」）', async () => {
+    const resume = seedProfiles()
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    vi.spyOn(resume, 'deleteProfile').mockResolvedValue(undefined)
+    vi.spyOn(resume, 'save').mockResolvedValue(SAVE_RESULT)
+    const { wrapper } = await mountTopBar()
+    await mountDialogHost()
+
+    await wrapper.find('.switcher-trigger').trigger('click')
+    await wrapper.find('.icon-button--danger').trigger('click')
+    await flushPromises()
+    await bodyClick('[data-testid="app-dialog-confirm"]')
+
+    expect(confirmSpy).toHaveBeenCalledTimes(0)
+    confirmSpy.mockRestore()
+  })
+})
