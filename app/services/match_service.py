@@ -5,9 +5,10 @@
 
 两条结构约束，都是复核时定下的，不是风格偏好：
 
-1. **一个 session、两个仓储**（§13 第 8 条）。不复用 `get_job_service()` + `get_profile_service()`
-   拼两个 session：那等于同一次请求占两条连接、读到的还是两个不同快照，
-   而「岗位与档案是同一时刻的状态」是分数能被复现的前提。
+1. **一个 session、三个仓储**（§13 第 8 条 + B1 的别名词表）。不复用 `get_job_service()` +
+   `get_profile_service()` 拼两个 session：那等于同一次请求占两条连接、读到的还是两个不同快照，
+   而「岗位与档案是同一时刻的状态」是分数能被复现的前提。别名行同理——
+   它必须在同一个快照里被读到，而且**只读一次**（`ADR-016` §3 不许 N+1）。
 2. **AI 失败在这层就地吞掉**，翻译成 `degrade_reason` 后继续给分（§6.5）。
    因此本端点不会因为 AI 失败返回 400/401/502，`app/main.py` 的三个 AI 处理器在这里
    一次都不该被命中——这条由 `tests/test_job_match.py` 反向钉住。
@@ -35,6 +36,7 @@ from app.integrations.evidence_scorer import (
     ScoringFragment,
 )
 from app.repositories.job_repository import Job, JobRepository
+from app.repositories.skill_alias_repository import SkillAliasRepository
 from app.repositories.student_profile_repository import StudentProfileRepository
 from app.schemas.match import (
     MatchCovered,
@@ -109,11 +111,17 @@ class MatchService:
         *,
         job_repository: JobRepository,
         profile_repository: StudentProfileRepository,
+        alias_repository: SkillAliasRepository,
         scorer: EvidenceScorer | None = None,
         today: date | None = None,
     ) -> None:
         self._jobs = job_repository
         self._profiles = profile_repository
+        #: B1 起必填而不是可选（`ADR-016` §3「`_gather` 侧一次性把别名集合载入内存」）。
+        #: 为什么不留 `None` 的口子：留了就等于允许「装配时忘了传 → 静默退回纯词面判定」，
+        #: 那种退化在响应里只体现为 `alias_version` 那一格不变，而分数已经少了一层判据——
+        #: 正是本仓一直在防的「看起来对、其实口径不同」。必填让漏装配在**导入期**就红。
+        self._aliases = alias_repository
         self._scorer = scorer
         #: 测试注入「今天」。生产路径恒为 `None` → 用应用时钟，与 `JobService` 同一口径。
         self._today_override = today
@@ -124,7 +132,9 @@ class MatchService:
         facts = inputs.facts
         evidence = build_evidence(
             facts,
-            matched_required_skills(unique_required(facts.required_skills), facts.student_skills),
+            matched_required_skills(
+                unique_required(facts.required_skills), facts.student_skills, facts.aliases
+            ),
         )
         attempt = self._score_with_ai(evidence.candidates)
         scored = score_match(facts, evidence, attempt.scores, attempt.degrade_reason)
@@ -142,7 +152,10 @@ class MatchService:
 
         与 `match()` 三处同源，一处都不另起炉灶——这正是老板 2026-11-08「禁止两套判定」那条：
 
-        1. **取数**同一个 `_gather`：同一 session、同一默认档案语义、同一 `get_readable` 可见性；
+        1. **取数**同一个 `_gather`：同一 session、同一默认档案语义、同一 `get_readable` 可见性，
+           以及同一份**别名词表**（B1 起 `_gather` 载入的那一个 `AliasIndex` 也走这条链路，
+           所以角标与匹配卡用的是同一版词表；两格版本号 `matcher_version` / `alias_version`
+           因此必须同时相等，见 `tests/test_job_match.py`）；
         2. **分区**同一个 `score_match`：三档（`covered` / `partial` / `gaps`）由它装配，
            本方法只是把它们压回「一条要求 → 一个状态」，不重新判一遍；
         3. **写法命中**同一个 `matched_with_forms`：`matched_form` 就是打分用的那次循环的产物。
@@ -166,7 +179,7 @@ class MatchService:
         forms = {
             skill_name_key(required.name): matched_form
             for required, matched_form in matched_with_forms(
-                unique_required(facts.required_skills), facts.student_skills
+                unique_required(facts.required_skills), facts.student_skills, facts.aliases
             )
         }
 
@@ -191,17 +204,25 @@ class MatchService:
                 )
                 for item in facts.required_skills
             ],
-            meta=RequirementMatchMeta(matcher_version=scored.meta.matcher_version),
+            meta=RequirementMatchMeta(
+                matcher_version=scored.meta.matcher_version,
+                alias_version=scored.meta.alias_version,
+            ),
         )
 
     # ------------------------------------------------------------------ 取数
 
     def _gather(self, user_id: str, job_id: str) -> _MatchInputs:
-        """读「这条岗位 + 当前用户的默认档案」，装配成一份事实。两个公开方法共用。
+        """读「这条岗位 + 当前用户的默认档案 + 整张别名词表」，装配成一份事实。两个公开方法共用。
 
         为什么必须是同一个方法而不是各读各的：分数与角标要能在同一屏上对账，
         前提是两侧读的是**同一时刻的同一份数据**。分两遍读，中间用户改了简历，
         屏幕上就是半个新半个旧——那种不一致没人能复现，也没法测。
+
+        别名词表也在这里载入，而且是**一次**（B1 / `ADR-016` §3）：取数层是这条链路上
+        唯一允许碰仓储的地方，而词表是「这一版判据用的哪一版数据」的一部分——
+        载入两次就可能读到两个版本，那与「岗位与档案读两个快照」是同一种病。
+        载入结果作为值对象挂进 `MatchFacts.aliases`，判定层拿着它查，一次都不回头查库。
         """
         job = self._jobs.get_readable(job_id, user_id)
         if job is None:
@@ -212,6 +233,7 @@ class MatchService:
             RequiredSkill(name=skill.name, type=skill.type)
             for skill in self._jobs.list_skills(job.id)
         ]
+        aliases = self._aliases.load_index()
         student_skills: list[str] = []
         experiences: list[ExperienceText] = []
         target_role: str | None = None
@@ -240,6 +262,7 @@ class MatchService:
                 target_role=target_role,
                 deadline=job.deadline,
                 today=self._today(),
+                aliases=aliases,
             ),
         )
 
@@ -389,6 +412,7 @@ class MatchService:
                 weight_sum_used=meta.weight_sum_used,
                 no_required_skills=meta.no_required_skills,
                 matcher_version=meta.matcher_version,
+                alias_version=meta.alias_version,
                 note=meta.note,
             ),
         )

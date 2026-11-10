@@ -24,6 +24,7 @@ EXPECTED_TABLES = {
     "jobs",
     "refresh_tokens",
     "resumes",
+    "skill_aliases",
     "skills",
     "student_profiles",
     "users",
@@ -274,6 +275,86 @@ def _assert_schema_after_upgrade(engine: Engine) -> None:
         assert int(refresh_token_indexes["uq_refresh_tokens_token_hash"]) == 0
         assert "ix_refresh_tokens_user_id" in refresh_token_indexes
 
+        # B1 / ADR-016 §2.2：`skill_aliases` 的列名即契约，所以逐列钉死。
+        # 「列名即契约」不是修辞——别名对存在 `skill_name_key` 的输出空间里这件事，
+        # 只有靠列名才能在下一次读代码时仍然看得出来（叫 `name` 就会有人往里写原始写法）。
+        alias_columns = set(
+            connection.execute(
+                text(
+                    "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'skill_aliases'"
+                )
+            ).scalars()
+        )
+        assert alias_columns == {
+            "id",
+            "canonical_key",
+            "alias_key",
+            "scope",
+            "source",
+            "note",
+            "created_at",
+            "updated_at",
+        }
+
+        # 唯一键必须是 **(canonical_key, alias_key, scope) 三列、且真的唯一**：
+        # 少了 `scope` 就会让「技能域的同义」与「角色域的同义」互相顶掉——
+        # 同一对 key 在两个域里各有含义，这是 §2.2 那一格写 `scope` 的全部理由。
+        # 不唯一则「单向存一行、判定双向查」失去依据，重复行会静默改变词表语义。
+        alias_unique_columns = connection.execute(
+            text(
+                """
+                SELECT s.SEQ_IN_INDEX, s.COLUMN_NAME, s.NON_UNIQUE
+                FROM information_schema.STATISTICS AS s
+                WHERE s.TABLE_SCHEMA = DATABASE()
+                  AND s.TABLE_NAME = 'skill_aliases'
+                  AND s.INDEX_NAME = 'uq_skill_aliases_pair'
+                ORDER BY s.SEQ_IN_INDEX
+                """
+            )
+        ).all()
+        assert [(int(row.SEQ_IN_INDEX), row.COLUMN_NAME) for row in alias_unique_columns] == [
+            (1, "canonical_key"),
+            (2, "alias_key"),
+            (3, "scope"),
+        ]
+        assert all(int(row.NON_UNIQUE) == 0 for row in alias_unique_columns), (
+            "uq_skill_aliases_pair 不是唯一索引：双向查的语义就没有依据了"
+        )
+
+        # `scope` / `source` 两个值域由数据库挡（与 `jobs.status`、`job_skills.origin` 同一做法：
+        # VARCHAR + CHECK 而不是 ENUM，加一个值不必改表类型）。
+        alias_checks = set(
+            connection.execute(
+                text(
+                    "SELECT cc.CONSTRAINT_NAME "
+                    "FROM information_schema.CHECK_CONSTRAINTS AS cc "
+                    "JOIN information_schema.TABLE_CONSTRAINTS AS tc "
+                    "  ON tc.CONSTRAINT_SCHEMA = cc.CONSTRAINT_SCHEMA "
+                    " AND tc.CONSTRAINT_NAME = cc.CONSTRAINT_NAME "
+                    "WHERE cc.CONSTRAINT_SCHEMA = DATABASE() "
+                    "  AND tc.TABLE_NAME = 'skill_aliases' "
+                    "  AND tc.CONSTRAINT_TYPE = 'CHECK'"
+                )
+            ).scalars()
+        )
+        assert alias_checks == {"ck_skill_aliases_scope", "ck_skill_aliases_source"}
+
+        # 这张表**没有外键**，而且是决定而不是遗漏（迁移 docstring 第「没有外键」那段）：
+        # `canonical_key` 指向的是归一后的键，不是某张表的某一行。有了外键就等于把全库共享的
+        # 词表错绑成「某个岗位的技能条目」，那是 §2.1 否掉 (a) 时同一种病的另一个形状。
+        alias_foreign_keys = connection.execute(
+            text(
+                """
+                SELECT CONSTRAINT_NAME
+                FROM information_schema.REFERENTIAL_CONSTRAINTS
+                WHERE CONSTRAINT_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'skill_aliases'
+                """
+            )
+        ).all()
+        assert alias_foreign_keys == []
+
         triggers = connection.execute(
             text(
                 """
@@ -318,6 +399,10 @@ def _assert_schema_removed(engine: Engine) -> None:
     assert remaining_tables == {"alembic_version"}
     # T7.5 的 downgrade 必须真的把 educations 删掉，而不是留在库里。
     assert "educations" not in remaining_tables
+    # B1 的别名表同样必须真的被 `20261109_0015` 的 downgrade 删掉：
+    # 残留一张「有结构但没有词表」的表会让下一次 upgrade 之前的任何写入口撞 1146，
+    # 而 `alias_version` 那一格仍然照发 v1——屏幕上一切正常，库里已经不对。
+    assert "skill_aliases" not in remaining_tables
 
 
 def test_upgrade_schema_constraints_and_downgrade() -> None:
