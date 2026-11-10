@@ -19,8 +19,9 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
+from app.core.datetime_display import format_shanghai_datetime, utc_now
 from app.core.skill_names import skill_name_key
 from app.integrations.copy_writer import DEEPSEEK_MODEL
 from app.integrations.evidence_scorer import (
@@ -100,6 +101,9 @@ class _MatchInputs:
     job: Job
     profile_id: str | None
     profile_title: str | None
+    #: 档案行的 `updated_at`。只带这一格而不是带整个 `profile`：上面那两个字段已经摊平，
+    #: 再塞一个可空对象回来，调用方就得各自判一次空（这个类原来的注释说的就是这件事）。
+    profile_updated_at: datetime | None
     facts: MatchFacts
 
 
@@ -139,12 +143,15 @@ class MatchService:
         attempt = self._score_with_ai(evidence.candidates)
         scored = score_match(facts, evidence, attempt.scores, attempt.degrade_reason)
         self._log(user_id, inputs.job.id, scored, attempt)
+        generated_at, data_updated_at = _freshness(inputs.job, inputs.profile_updated_at)
         return self._to_result(
             profile_id=inputs.profile_id,
             profile_title=inputs.profile_title,
             job_id=inputs.job.id,
             scored=scored,
             finish_reason=attempt.finish_reason,
+            generated_at=generated_at,
+            data_updated_at=data_updated_at,
         )
 
     def requirement_match(self, user_id: str, job_id: str) -> RequirementMatchResponse:
@@ -173,6 +180,7 @@ class MatchService:
         """
         inputs = self._gather(user_id, job_id)
         facts = inputs.facts
+        generated_at, data_updated_at = _freshness(inputs.job, inputs.profile_updated_at)
         scored = score_match(facts)
         covered_keys = {skill_name_key(item.skill) for item in scored.covered}
         partial_keys = {skill_name_key(item.skill) for item in scored.partial}
@@ -207,6 +215,8 @@ class MatchService:
             meta=RequirementMatchMeta(
                 matcher_version=scored.meta.matcher_version,
                 alias_version=scored.meta.alias_version,
+                generated_at=generated_at,
+                data_updated_at=data_updated_at,
             ),
         )
 
@@ -251,6 +261,7 @@ class MatchService:
             ]
 
         return _MatchInputs(
+            profile_updated_at=profile.updated_at if profile is not None else None,
             job=job,
             profile_id=profile.id if profile is not None else None,
             profile_title=profile.title if profile is not None else None,
@@ -356,6 +367,8 @@ class MatchService:
         job_id: str,
         scored: ScoredMatch,
         finish_reason: str | None,
+        generated_at: str,
+        data_updated_at: str,
     ) -> MatchResult:
         meta = scored.meta
         return MatchResult(
@@ -413,6 +426,29 @@ class MatchService:
                 no_required_skills=meta.no_required_skills,
                 matcher_version=meta.matcher_version,
                 alias_version=meta.alias_version,
+                generated_at=generated_at,
+                data_updated_at=data_updated_at,
                 note=meta.note,
             ),
         )
+
+
+def _freshness(job: Job, profile_updated_at: datetime | None) -> tuple[str, str]:
+    """把 FR-05 要的「更新时间 / 数据新鲜度」算成两个东八区 ISO 串。
+
+    为什么只取**主体行**的时间戳（`jobs.updated_at` 与 `student_profiles.updated_at`），
+    而不是把 `job_skills` / `skills` / `experiences` 的子行也扫一遍取最大值：
+    两条写路径都会在改内容时同时 bump 主体行：岗位整体覆盖把 `job.updated_at = now`
+    写在 `app/repositories/job_repository.py` 的 update 里（子行是删后重建，同一批 `now`），
+    档案 upsert 在 `app/repositories/student_profile_repository.py` 里同样写 `profile.updated_at = now`。
+    所以子行的时间戳在这里是**冗余证据**，扫它们只会多几次读、不会多一个真相。
+    若将来出现「只动子行不动主体」的写路径，这一格就是它的断点，届时应当改这里
+    并在 `ADR-020` 记账，而不是让界面继续显示一个永远不变的「新鲜」时间。
+
+    `generated_at` 取应用时钟（与落库同一套 `utc_now()`，再转东八区），刻意**不**叫
+    「分数计算时刻」：我们现在没有缓存，两者是同一个瞬间，写成两个名字会制造假的区分。
+    """
+    sources: list[datetime] = [job.updated_at]
+    if profile_updated_at is not None:
+        sources.append(profile_updated_at)
+    return format_shanghai_datetime(utc_now()), format_shanghai_datetime(max(sources))

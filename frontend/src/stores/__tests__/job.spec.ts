@@ -226,6 +226,11 @@ function matchMetaFixture(
     matcher_version: 'v1',
     // 批次 B1 的第三条版本轴（ADR-016 §2.5）：词表是数据、判据是代码，两格分开报。
     alias_version: 'v1',
+    // 批次 B3 的两格（ADR-020）：组装时刻 vs 背后数据行的时刻，是两个不同的问题。
+    // 这里给的是**形状固定的假值**，因为本文件验的是 store 的编排，不验时间；
+    // 真值与跨端点一致性钉在后端 `tests/test_job_match.py` 的四条用例上。
+    generated_at: '2026-11-10T12:00:00+08:00',
+    data_updated_at: '2026-11-09T18:30:00+08:00',
     note: null,
     ...overrides,
   }
