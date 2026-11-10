@@ -32,8 +32,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from app.core.datetime_display import utc_now
 from app.core.skill_names import (
     ALIAS_SCOPES,
-    ALIAS_SOURCES,
     ALIAS_SOURCE_SEED,
+    ALIAS_SOURCES,
     AliasIndex,
     alias_version_tail_conflict,
 )

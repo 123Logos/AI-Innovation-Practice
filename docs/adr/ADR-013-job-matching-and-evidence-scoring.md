@@ -767,7 +767,7 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
      才能让 `upstream` 与 `timeout` 分得开，见 §6.5 那条实现偏离说明。
    - **7c 编排层** `app/services/match_service.py` + **一个** `get_match_service(request)`：同一个 `session_scope()` 里装
      `JobRepository` + `StudentProfileRepository` + scorer。🚩 复核定的结构约束：**不许**复用 `get_job_service()` + `get_profile_service()`
-     拼两个 session（`app/services/dependencies.py:64-83` 的先例是一 service 一 session；两个 session 等于同一次请求占两条连接，
+     拼两个 session（`app/services/dependencies.py:65-84` 的先例是一 service 一 session；两个 session 等于同一次请求占两条连接，
      且两侧读到的是两个快照）。
      → **已实现**。这条约束的测试第一版用 `inspect.getsource` 数字符串，被自己的 docstring 骗过（docstring 里就写着那两个函数名），
      已改成行为断言：`service._jobs._session is service._profiles._session`。
@@ -871,7 +871,7 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
 - 限流第一次出现**两种键**（IP 与用户）共存。`app/core/rate_limit.py` 的模块注释现在通篇按「键 = IP」写，
   加第二条端点时必须把「为什么这一条例外」写进同一个文件，否则下一次「统一成一种键」的重构会把它悄悄改回按 IP，
   而这个退化在测试里是不可见的（测试只测端点自己那条规则能不能触发）。
-- 破坏性变更到今天为止是**八类**：`SkillInput` 少字段（§4.1）、`POST /jobs/{id}/match` 新端点（§3）、
+- 破坏性变更到今天为止是**九类**：`SkillInput` 少字段（§4.1）、`POST /jobs/{id}/match` 新端点（§3）、
   **`data.score` 由 `float` 变 `float | null`**（§5.1 F1:A，2026-11-08）、
   `GET /jobs/{job_id}/requirement-match` 新端点（§10 第 3c 步）、
   **`data.weights_version` 由 `"v1"` 变 `"v2"`**（同一份数据在新旧版本下给出不同的数——
@@ -883,7 +883,15 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
   两格的值、`computed`、对 `score` 与 `weight_sum_used` 的影响逐位相同，见 §7.4 的更正段。
   任何按旧字面量 `"conflict"` 分支的消费方会同时丢掉这两格——目前没有这种消费方，前端明确不按 note 分句）、
   **`meta.note` 新增 `"not_evaluated"`**（§5.1 末：岗位没填要求技能 ⇒ 整个不给分；
-  原来那个 `"nothing_computable"` 在本层已发不出来，但仍是 `normalize_score` 的契约值）。
+  原来那个 `"nothing_computable"` 在本层已发不出来，但仍是 `normalize_score` 的契约值）、
+  **第九类：`meta.matcher_version` 由 `"v1"` 变 `"v2"` 并新增 `meta.alias_version`**（2026-11-10 批次 B1，
+  `ADR-016` §2.5）。升 `matcher_version` 的理由是**判据的构成**多了一步「四条词面规则全判否之后查人工词表」，
+  哪怕词表是空的、一次都没命中——按 `app/core/skill_names.py` 自己写的上升规则，这就是必须升的情形。
+  `alias_version`（起始 `v1`）管的是另一件事：词表**内容**是数据不是代码，同一份代码配不同词表会给出不同判定，
+  只有这一格能回答「分数为什么变了」。**分数只有在词表里真有成对行时才会变**：空表时四条端点读数与 v1 逐字相同，
+  这一条钉在 `tests/test_job_match.py::test_empty_alias_table_reproduces_the_v1_readings`（`ADR-016` §5.1）。
+  `terms[preference].note` 的值域同时多一个 `"alias_match"`（§7.4 的第四来路，值 0.6）——
+  **纯值域新增**，两格 0.0 的语义与原因码一个字没动，前端仍不按 note 分句。
   无外部客户端，前端同 PR 改完即可；`docs/API.md` 的示例与八条口径已同步。
   `meta` 侧是**新增字段**（`matcher_version` / `note`）而不是改语义，所以对已写好的消费方是兼容的。
 - **判据版本号（2026-11-08）**：写法判据一改，同一个人同一岗位的判定结果就会变，而响应里原本没有任何东西
@@ -922,7 +930,7 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
 | 5 | §6 的白名单自证不成立：正则也命中**不存在**的路径，那些请求不转发 DeepSeek | `client.ts:224` 现在是 `BYOK_KEY_PATHS.includes(path)` 整段相等，模式机制今天不存在；`:229` 只做查询串与尾斜杠归一化 | §6.1 换成路由表论证 + 三条断言（正向 / 不扩张 / 已注册路由闭合），并进 `byok.spec.ts` 现有注入矩阵 |
 | 6 | §8 故意不做计数闭合，等于把一条漏计写进设计 | 少一个「模型没回这条」的通道，等式必然不闭合 | 新增 `dropped_missing_output` + 四桶互斥次序 + **要求写成断言**；同时更正我引用的 ADR-011 「先例」其实是已知缺陷 |
 | 7 | 「请求体为空 ⇒ 用哪份档案」是隐式选择，用户会以为分数算错 | `student_profiles.is_default`（`app/repositories/student_profile_repository.py:76`）；岗位页与编辑页无共享档案上下文 | §3 响应新增 `profile_id` / `profile_title` / `job_id` 回显 |
-| 8 | 编排层若复用两个既有 DI 会开两个 session、两个快照 | `app/services/dependencies.py:64-83`：每个 `get_*_service` 各自 `session_scope()` | §10 第 7c 条：一个新 DI、一个 session、两个仓储 |
+| 8 | 编排层若复用两个既有 DI 会开两个 session、两个快照 | `app/services/dependencies.py:65-84`：每个 `get_*_service` 各自 `session_scope()` | §10 第 7c 条：一个新 DI、一个 session、两个仓储 |
 
 **复核没有改的东西**（写下来是为了让「改了什么」有边界）：五项权重数值与 PRD 出处、`score` 只做解释不做排序、
 分数不落库、v1 只支持默认档案、404-not-403、`deepseek-flash` + BYOK + 非流式 + `max_retries=0`、模型不被问「匹不匹配」。

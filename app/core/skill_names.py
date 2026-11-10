@@ -281,4 +281,3 @@ def skill_forms_match(a: str, b: str, aliases: AliasIndex | None = None) -> bool
         return True
     index = alias_index_or_empty(aliases)
     return index.hit(ALIAS_SCOPE_SKILL, skill_name_key(a), skill_name_key(b))
-

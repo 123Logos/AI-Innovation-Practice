@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 from app.core.deadline import is_expired
@@ -157,7 +157,7 @@ class MatchFacts:
     target_role: str | None
     deadline: date | None
     today: date
-    aliases: AliasIndex = AliasIndex()
+    aliases: AliasIndex = field(default_factory=AliasIndex)
 
 
 @dataclass(frozen=True)
