@@ -533,20 +533,22 @@ export function extractFailureText(error: unknown): string {
   if (!isApiError(error)) return '提取失败，请稍后重试。岗位不会被改动。'
   switch (error.code) {
     case 'AI_KEY_MISSING':
+      // ui-copy:allow C2 唯一豁免：这句话指向用户自己去 DeepSeek 复制的那串凭据
       return '请先在右上角「AI 设置」里填好你的 DeepSeek API Key，再点一次「AI 提取技能」。'
     case 'AI_KEY_INVALID':
+      // ui-copy:allow 同上：他能修的只有「去 AI 设置里换一把」这一件事
       return '你的 DeepSeek API Key 无效或已欠费，请打开「AI 设置」检查后再试。（与登录状态无关，不需要重新登录。）'
     case 'AI_SERVICE_UNAVAILABLE':
       if (error.finishReason === 'length') {
-        return '这条 JD 太长或技能太多，模型的输出被服务端上限切断了。请把 JD 里真正想要的技能写清楚（或只粘核心段落）后再试一次。'
+        return '这份 JD 太长或要提取的技能太多，AI 写满了长度上限还是装不下。把真正想要的技能写清楚（或者只粘核心那几段）再试一次。'
       }
       return `${error.message}（稍后重试即可；本次结果没有被保存，岗位也没有被改动。）`
     case 'RATE_LIMITED':
-      return '提取太频繁了，请等一分钟再试——这一步花的是你自己的额度。'
+      return '提取太频繁了，请等一分钟再试——这一步用的是你自己的 AI 用量。'
     case 'VALIDATION_ERROR':
       return '提取请求没有被接受：JD 原文不能为空，且最长 8000 字。'
     case 'NETWORK_ERROR':
-      return '等 AI 返回超时或连不上服务，请确认后端在跑，然后重试。'
+      return '等 AI 返回超时，或者连不上服务。先重试一次；如果一直不行，是你这边之外的问题，与填的内容无关。'
     default:
       return `${error.message}（岗位没有被改动。）`
   }
@@ -588,17 +590,19 @@ export function matchDegradeLines(result: MatchResult): string[] {
   const evidenceNote = result.terms.find((item) => item.name === 'evidence')?.note
   if (evidenceNote === 'matched_without_evidence') {
     return [
-      '你命中的技能在经历里找不到出处，所以这次没有向 AI 提问，也没花你的额度。',
-      '把那段经历写进简历（做了什么 → 怎么做的 → 结果如何），再算一次才会有证据强度。',
+      '你命中的技能在经历里找不到出处，所以这次没有向 AI 提问，也没用到你的 AI 用量。',
+      '把那段经历写进简历（做了什么、怎么做的、结果如何），再算一次才会有证据强度。',
     ]
   }
   if (meta.degrade_reason === null) return []
-  const lines = ['本次的「证据强度」按关键词算法给分，没有让 AI 读你的经历。']
+  const lines = ['这次的「证据强度」只按关键词比对给分，AI 没有真的读你的经历。']
   switch (meta.degrade_reason) {
     case 'key_missing':
-      lines.push('还没配置你的 DeepSeek API Key：点右上角「AI 设置」填好，再算一次会更准。')
+      // ui-copy:allow C2 唯一豁免：用户必须亲手去 DeepSeek 拿这把凭据，界面里的原词可以出现
+      lines.push('还没有填你的 DeepSeek API Key：点右上角「AI 设置」填好，再算一次会更准。')
       break
     case 'key_invalid':
+      // ui-copy:allow 同上：这句话指向的就是他自己粘 Key 的那个输入框
       lines.push(
         '你的 DeepSeek API Key 无效或已欠费：打开「AI 设置」检查后再算一次。（与登录状态无关，不需要重新登录。）',
       )
@@ -607,10 +611,10 @@ export function matchDegradeLines(result: MatchResult): string[] {
       lines.push('AI 这次响应超时，所以没拿到证据强度。稍后再算一次即可。')
       break
     case 'bad_output':
-      lines.push('AI 这次没有按约定格式返回，所以没拿到证据强度。稍后再算一次即可。')
+      lines.push('AI 这次的回答没法解析，所以没拿到证据强度。稍后再算一次即可。')
       break
     case 'upstream':
-      lines.push('DeepSeek 当前不可用（上游报错），所以没拿到证据强度。稍后再算一次即可。')
+      lines.push('AI 服务现在连不上，所以没拿到证据强度。稍后再算一次即可。')
       break
   }
   return lines
@@ -628,13 +632,13 @@ export function matchFailureText(error: unknown): string {
   if (!isApiError(error)) return '匹配失败，请稍后重试。你的资料与这条岗位都没有被改动。'
   switch (error.code) {
     case 'RATE_LIMITED':
-      return '一分钟内算得太多次了，请等一分钟再试——每一次都可能向 DeepSeek 发一次真实请求。'
+      return '一分钟内算得太多次了，请等一分钟再试——每一次都会用到你自己的 AI 用量。'
     case 'NOT_FOUND':
       return '这个岗位不存在、是别人的草稿，或已经在回收站里，所以没法匹配。'
     case 'CLIENT_ERROR':
       return '登录状态已失效，请重新登录后再算一次。'
     case 'NETWORK_ERROR':
-      return '等后端响应超时或连不上服务，请确认后端在跑，然后重试。'
+      return '等 AI 返回超时，或者连不上服务。先重试一次；如果一直不行，是你这边之外的问题。'
     case 'VALIDATION_ERROR':
       return '匹配请求没有被接受：这个岗位 id 的格式不对，请回到列表重新点进来。'
     default:

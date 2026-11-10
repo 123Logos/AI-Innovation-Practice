@@ -1558,6 +1558,7 @@ export const useResumeStore = defineStore('resume', () => {
    */
   async function polish(options: { mode: PolishMode; maxWords?: number | null }): Promise<PolishResult> {
     if (!hasDeepSeekKey()) {
+      // ui-copy:allow C2 唯一豁免：用户必须亲手去 DeepSeek 拿这把凭据，界面里的原词可以出现
       throw new ApiError('请先在右上角「AI 设置」中填写你的 DeepSeek API Key。', 400, 'AI_KEY_MISSING')
     }
 

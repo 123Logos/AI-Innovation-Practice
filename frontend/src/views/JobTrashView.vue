@@ -83,7 +83,7 @@ onMounted(load)
             恢复后岗位回到列表，状态（草稿 / 已发布）保持删除前的样子。
           </p>
         </div>
-        <RouterLink class="back-link" :to="{ name: 'job-board' }">← 返回岗位列表</RouterLink>
+        <RouterLink class="back-link" :to="{ name: 'job-board' }">返回岗位列表</RouterLink>
       </div>
 
       <p v-if="loadError" class="feedback feedback--error" role="alert">{{ loadError }}</p>

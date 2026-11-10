@@ -309,7 +309,7 @@ onBeforeUnmount(() => {
           <p class="eyebrow">岗位详情</p>
         </div>
         <div class="heading-actions">
-          <RouterLink class="text-link" :to="{ name: 'job-board' }">← 返回列表</RouterLink>
+          <RouterLink class="text-link" :to="{ name: 'job-board' }">返回列表</RouterLink>
           <!-- 编辑入口只对创建者显示：后端对非创建者的 PUT 一律 404（1.F #4），
                摆一个必然失败的链接比不摆更糟。`/jobs/:id/edit` 是 ADR-011 议题 3.B v9 补的那一条。 -->
           <RouterLink
@@ -413,7 +413,7 @@ onBeforeUnmount(() => {
           <p class="block-hint">
             匹配度是参考，不是录用概率：它只按你的简历与这个岗位的技能要求算重合，
             不看经验年限、薪资与面试表现。
-            这一步会向 DeepSeek 发一次真实请求、用的是你自己的额度，所以只在你点下面这个按钮时才发生。
+            这一步会用到你自己的 AI 用量，所以只在你点下面这个按钮时才发生。
           </p>
           <button
             class="row-button row-button--primary"
@@ -552,7 +552,7 @@ onBeforeUnmount(() => {
                 原文依据：{{ skill.evidence_text }}
                 <!-- `confidence` 为 null 时这一格整个不出现：留「—」会被读成一个真实数值。 -->
                 <span v-if="confidenceLabel(skill.confidence)" class="skill-confidence">
-                  · 模型把握 {{ confidenceLabel(skill.confidence) }}
+                  · AI 把握 {{ confidenceLabel(skill.confidence) }}
                 </span>
               </p>
             </li>
