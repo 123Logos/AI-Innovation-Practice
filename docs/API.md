@@ -485,6 +485,14 @@
    档位顺序写死：`contains` 1.0 → `token_overlap` 0.6 → `alias_match` 0.6 → 两格 0.0。
    词表今天**是空的**（第一批候选还没经老板逐条批准，`ADR-016` §7），所以这一格的值在任何真实响应里
    都是 `v1`，且没有任何配对走过 `alias_match`——别把「有了这一层」读成「匹配变准了」。
+10. **`meta.generated_at` 与 `meta.data_updated_at` 是两格，不是一格**（批次 B3 / FR-05「更新时间和数据新鲜度」，决策见 `ADR-020`）：
+   前者是**本次读数的组装时刻**（应用时钟，东八区 ISO），后者是**这次读数背后的岗位行与档案行最后一次被改动的时刻**
+   （`max(jobs.updated_at, student_profiles.updated_at)`，落库值）。只给前者，「刚刚生成」会被读成「岗位是新的」。
+   两个端点上 `data_updated_at` **必须逐字相同**（`tests/test_job_match.py::test_both_endpoints_report_the_same_data_updated_at`），
+   `generated_at` 允许不同（两次请求的两个瞬间）。没有档案时 `data_updated_at` 退化成岗位行自己那一格，
+   不炸也不谎报（`::test_data_updated_at_falls_back_to_the_job_row_without_a_profile`）。
+   **刻意没有的**：子行（`job_skills` / `skills` / `experiences`）的时间戳不进来——两条写路径都会同时 bump 主体行，
+   扫子行只是多几次读、不多一个真相；若将来出现「只动子行」的写路径，`_freshness()` 就是它的断点。
 
 **限流键**：本端点是全仓库第一条**按用户**而不是按 IP 的限流规则
 （`app/core/rate_limit.py::get_user_or_remote_address`，装饰器级 `key_func` 覆盖，
@@ -525,6 +533,8 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 | `coverage[].matched_form` | `str\|null` | 学生技能表里真正命中的那个写法（岗位 `Python` ↔ 简历 `Python3`）；`missing` 时恒为 `null`，不许拿岗位那侧的字面填进去 |
 | `meta.matcher_version` | `str` | 与 §4.10 的 `data.meta.matcher_version` 同一个常量（B1 起 `"v2"`） |
 | `meta.alias_version` | `str` | 与 §4.10 同源：本次判定用的是哪一版**别名词表内容**（起始 `"v1"`，空表也发） |
+| `meta.generated_at` | `str`（东八区 ISO） | 与 §4.10 同一语义；两次请求之间允许不同 |
+| `meta.data_updated_at` | `str`（东八区 ISO） | 与 §4.10 的 `data.meta.data_updated_at` **必须逐字相同**：同一份岗位 × 同一份档案只有一个新鲜度 |
 
 **刻意没有的四样东西**（每一个都是决定，不是遗漏）：
 

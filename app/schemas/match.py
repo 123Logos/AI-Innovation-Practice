@@ -82,6 +82,15 @@ class MatchMeta(BaseModel):
     #: 词表会随真实用户反馈频繁增删而规则不变，分数变了要靠这两格才分得清是哪一轴造成的。
     #: 空表也发这一格——§2.5 末句写死了「不因为还没有数据而不发这一格」。
     alias_version: str
+    #: 本次读数的**组装时刻**（东八区 ISO 串，应用时钟）。FR-05 要求结果展示「更新时间」，
+    #: 这一格就是那个「更新」。它刻意**不是**「分数被算出来的时刻」——我们现在没有缓存，
+    #: 那个时刻与这一格是同一个瞬间，写成两格只会让人以为它们会分叉（`ADR-020` §2.1）。
+    generated_at: str
+    #: 这一格回答的是 FR-05 的「数据新鲜度」：**这次读数背后的岗位行与档案行，最后一次被
+    #: 改动是什么时候**（两者取较晚者，落库值，不是应用时钟）。
+    #: 与 `generated_at` 分开是因为它们回答两个不同问题：「这份报告几点打的」与
+    #: 「它底下的数据旧不旧」。只有前者时，用户看到「刚刚生成」会以为岗位是新的。
+    data_updated_at: str
     #: 不给分的原因。`not_evaluated` = 岗位没填要求技能，核心 term 不在，整个不评估
     #: （老板 2026-11-08 裁定，ADR-013 §5.1 末）；`nothing_computable` 保留给「分母为 0」这一格，
     #: 本层已走不到。有分数时恒为 `null`。前端**不按它分句**，它是给我们对账与排障用的。
@@ -149,6 +158,12 @@ class RequirementMatchMeta(BaseModel):
 
     matcher_version: str
     alias_version: str
+    #: 与 `MatchMeta.generated_at` / `data_updated_at` 同一对语义、同一批来源行。
+    #: `data_updated_at` 在两个端点上必须逐字相同（同一份岗位 × 同一份档案），
+    #: 钉它的测试是 `tests/test_job_match.py::test_both_endpoints_report_the_same_data_updated_at`；
+    #: `generated_at` 允许不同，因为那是两次请求的两个瞬间。
+    generated_at: str
+    data_updated_at: str
 
 
 class RequirementMatchResponse(BaseModel):

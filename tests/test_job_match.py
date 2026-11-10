@@ -1262,3 +1262,117 @@ def test_both_endpoints_report_the_same_alias_version_too(client: TestClient) ->
     # 空表也发这一格（§2.5 末句）：不发就等于「哪一版词表」在词表为空时无法回答。
     assert matched["meta"]["alias_version"] == "v1"
     assert _alias_row_count() == 0
+
+
+# --------------------------------------------------------------------------- #
+# 批次 B3 剩余那一格：FR-06 之外的 FR-05 半句——「结果必须展示：分数版本、更新时间和数据新鲜度」。
+#
+# 全部**追加在文件末尾**：`docs/` 里有按行号引用本文件的判据（ADR-017 §3 引的
+# `test_expired_job_reads_agree_across_every_endpoint`），在中间插行会把指针推走，
+# 而 `scripts/check_docs_citations.py` 只验「那一行非空」，漂了不报红。
+#
+# 这两格的分工是这一组用例的全部理由：
+# - `generated_at` = 这次读数的组装时刻（应用时钟）；
+# - `data_updated_at` = 这次读数背后的**岗位行与档案行**最后一次被改动的时刻（落库值）。
+# 只给前者的话，用户看到「刚刚生成」会以为岗位本身是新的——那正是 FR-05 要「数据新鲜度」
+# 而不是只要「时间戳」的原因。口径与取证写在 `ADR-020`。
+# --------------------------------------------------------------------------- #
+
+
+def _iso_with_offset(value: str) -> bool:
+    """够粗但够用的形状判据：`2026-11-10T12:00:00+08:00`。"""
+    return len(value) == 25 and value.endswith("+08:00")
+
+
+def test_match_response_reports_generated_at_and_data_updated_at(client: TestClient) -> None:
+    token = _register_and_login(client, prefix="fresh_a")
+    _put_profile(client, token)
+    job_id = _create_published_job(client, token)
+
+    matched = client.post(match_url(job_id), headers=_headers(token)).json()["data"]
+    job_row = client.get(f"{JOBS_URL}/{job_id}", headers=_headers(token)).json()["data"]["job"]
+    profile_row = client.get(PROFILES_URL, headers=_headers(token)).json()["data"]["profile"]
+
+    meta = matched["meta"]
+    assert _iso_with_offset(meta["generated_at"]), meta["generated_at"]
+    assert _iso_with_offset(meta["data_updated_at"]), meta["data_updated_at"]
+    # 判据的核心：**不是**「等于现在」，而是「等于两侧数据里较晚的那一次改动」。
+    assert meta["data_updated_at"] == max(job_row["updated_at"], profile_row["updated_at"])
+    # 组装时刻不可能早于它背后的数据，否则这一格在说「报告比数据更老」这种废话。
+    assert meta["generated_at"] >= meta["data_updated_at"]
+
+
+def test_both_endpoints_report_the_same_data_updated_at(client: TestClient) -> None:
+    """跨端点一致性（与 ADR-017 §2 同一手法）：同一份岗位 × 同一份档案，新鲜度只能有一个数。
+
+    `generated_at` 允许不同（那是两次请求的两个瞬间），`data_updated_at` 不允许——
+    它由行上的时间戳决定。两边读的是同一个 `_gather`，所以这条断言钉的是
+    「将来有人把其中一个端点换成另一套取数路径」这件事。
+    """
+    token = _register_and_login(client, prefix="fresh_b")
+    _put_profile(client, token)
+    job_id = _create_published_job(client, token)
+
+    coverage, matched = _coverage_and_match(client, token, job_id)
+
+    assert coverage["meta"]["data_updated_at"] == matched["meta"]["data_updated_at"]
+    assert _iso_with_offset(coverage["meta"]["generated_at"])
+    assert _iso_with_offset(matched["meta"]["generated_at"])
+
+
+def test_data_updated_at_follows_the_profile_edit(client: TestClient) -> None:
+    """改了档案之后这一格必须跟着走，并且**等于档案行的新时间戳**。
+
+    刻意不比「变大了多少」：库里是秒精度，两次写落在同一秒时字符串相同，
+    比大小会造出一条今天过、明天红的脆弱断言。等值于来源行才是稳的判据。
+    """
+    token = _register_and_login(client, prefix="fresh_c")
+    _put_profile(client, token)
+    job_id = _create_published_job(client, token)
+
+    before = client.post(match_url(job_id), headers=_headers(token)).json()["data"]["meta"]
+
+    edited = client.put(
+        PROFILES_URL,
+        json={
+            "full_name": "张小明",
+            "email": "zhang-new@example.com",
+            "contact": "13800138000",
+            "target_role": "后端开发工程师",
+            "skills": STUDENT_SKILLS,
+            "experiences": [EXPERIENCE],
+            "educations": [
+                {
+                    "school": "示例大学",
+                    "major": "计算机科学与技术",
+                    "degree": "本科",
+                    "edu_start": "2021-09-01",
+                    "edu_end": "2025-06-30",
+                }
+            ],
+        },
+        headers=_headers(token),
+    )
+    assert edited.status_code == 200, edited.text
+    profile_row = edited.json()["data"]["profile"]
+
+    after = client.post(match_url(job_id), headers=_headers(token)).json()["data"]["meta"]
+
+    assert after["data_updated_at"] == max(profile_row["updated_at"], before["data_updated_at"])
+    assert after["data_updated_at"] >= before["data_updated_at"]
+
+
+def test_data_updated_at_falls_back_to_the_job_row_without_a_profile(client: TestClient) -> None:
+    """没有档案时不炸、也不谎报：新鲜度就是岗位行自己的时间戳。
+
+    与 `test_missing_profile_still_scores` 是成套的：那一半钉「还能出分」，
+    这一半钉「出的那个新鲜度说得清它只看了一侧」。
+    """
+    token = _register_and_login(client, prefix="fresh_d")
+    job_id = _create_published_job(client, token)
+
+    matched = client.post(match_url(job_id), headers=_headers(token)).json()["data"]
+    job_row = client.get(f"{JOBS_URL}/{job_id}", headers=_headers(token)).json()["data"]["job"]
+
+    assert matched["meta"]["data_updated_at"] == job_row["updated_at"]
+    assert matched["meta"]["generated_at"] >= matched["meta"]["data_updated_at"]
