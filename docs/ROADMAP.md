@@ -38,7 +38,7 @@
 | **F1b** | 统一弹层：现存 6 处 `window.confirm`/`alert` 一次换成自绘弹层（照抄 `JobDetailView` 的先例）+ 建 **G2** 的 `no-restricted-globals` 半边 | C6 L3 | 无 | 小-中 | G2（globals 半边）进 CI；不许用注释豁免换绿。**✅ 已交付 = PR #21**：6 处清零 + `no-restricted-globals` 与 `no-restricted-syntax`（`window.` 前缀）两条同时进 CI。**一条口径补充要留档**：批准时只写了 globals 那条，而 6 处全是 `window.confirm(...)` 写法——只加前者会得到一张永远不会响的假闸，所以同批补了前缀选择器并用探针验证两种写法都当场红 |
 | **F1c** | **后端上屏文案出口**：422/500/502 的 message 收进一处、不再透传异常文本（清单 9 的另一半，很多人漏掉的那半） | C3 C2 | 与 F1a **共用 G1 这道闸** | 小-中 | `app/main.py:190-194` 的 `message = str(exc.detail)` 改为固定文案表；G1 扫描范围扩到后端字符串常量 |
 | **F2** | 布局收敛：一个共享 layout（路由嵌套）+ 一张模块表 + 一个弹层基础件 + 建 **G5**（必须带守则 §11 豁免名单） | L1 L2 L3 L4 L6 | 无 | 中-大 | **✅ 已交付 = PR #24**：两条出口判据都由源码级闸门机械钉住（`layoutGuards.spec.ts`），+24 条测试（前端 14 文件 / 204 条）。**两处偏差照原计划登记**：① **G5 脚本 `scripts/check_route_reachability.py` 交付但没接 CI**——那是 §6 第 2 条挂在老板名下的待拍，我也没借已批准的 vitest 步骤偷偷开闸；② 「弹层基础件」那一半不在本批，它已由批次 F1b（PR #21）以 `stores/dialog.ts` + `ConfirmDialog.vue` 交付，本批按分工不重造。**代价要说清**：本批把 6 个视图的模板整体降了一级缩进，与 #19 / #21 会在同批文件上大量相遇，所以合并顺序把它放最后，且由我在前面几个合完后 rebase 一次解干净。 |
-| **F3** | 导航重排（清单 4/5/6）：右侧用户抽屉（注销 + AI 设置）、左侧简历常驻 Sidebar / 移动端 Drawer、Logo 旁工作区切换器横向卡片 | V1 V2 L3 L4 R1 R2 | **F2** | 中-大 | `frontend/src/components/__tests__/AppTopBar.spec.ts:177-214` 三段断言按裁定**显式改写**（不许红着过去）；375 / 1280 两档实测数值附在 PR；**开工第一句先问 §6b 第 1 条**（`measure_viewport` 能否进 E2E——能就进 E2E 不放 `scripts/`，不能就丢掉） |
+| **F3** | 导航重排（清单 4/5/6）：右侧用户抽屉（注销 + AI 设置）、左侧简历常驻 Sidebar / 移动端 Drawer、Logo 旁工作区切换器横向卡片 | V1 V2 L3 L4 R1 R2 | **F2** | 中-大 | `frontend/src/components/__tests__/AppTopBar.spec.ts:177-214` 三段断言按裁定**显式改写**（不许红着过去）；375 / 1280 两档实测数值附在 PR；**开工第一句先问 §6b 第 1 条**（`measure_viewport` 能否进 E2E——能就进 E2E 不放 `scripts/`，不能就丢掉） | → **第一片已交（2026-11-10，同分支）**：L3 的共享基座 `components/OverlayPanel.vue` 建成，顶栏两处弹层迁入，`handleDocumentPointerDown` 与两个 `*Root` 删掉；机械判据三条进 `src/__tests__/layoutGuards.spec.ts` 并用探针验过会红；基座自身 9 条行为用例。**清单 4/5/6 与那三段断言改写没做**——那三段（`AppTopBar.spec.ts` 的 15 条里）这一片一字未改仍然全绿，因为形态没动；它们要在右侧用户抽屉落地时才按裁定改写。375 / 1280 两档实测同样归那一片。
 | **F4** | 令牌补齐 `--motion-*`/`--space-*`/`--text-*` → 淡入淡出 + 微位移、骨架屏、最小高度托底、`prefers-reduced-motion`（清单 2、3） | M1 M2 M3 T1 T2 | **F2**（令牌先行） | 中 | 模板内裸 `transition:`/`animation:` 归零；骨架尺寸来自实测而非感觉 |
 | **F5** | 共享 textarea 自适应组件，替换三处各写各的 + **G2** 的 `no-restricted-syntax` 半边（清单 7） | 守则 F1 F2 | **F2**；`no-restricted-syntax` 必须**与本批同批**，否则第一天就红 3 处 | 小-中 | 视图内直写 `<textarea>` 归零；纸面 13 处 `contenteditable` 不许另起一套测量 |
 | **F6** | 润色与保存的三处机制性缺陷（清单 5 后半 + 6）：`applyPolish` 补失效、失效即点亮主行动 + 一行轻量提示、save 走内容差异、后端删砍尾 + `target_words`/`over_limit_by`、响应契约放宽、超契约改段级标注、PUT no-op | C4 S1 S2 S3 S5 | **后端那半与批次 B4/B8 同批或更早**（硬约束 §3 X1） | 中-大 | 判据与决策已定：`ADR-018`。两条被钉成契约的测试按 ADR-018 **改写方向**（不是删除），新断言必须验 `over_limit_by` 的数值 |
@@ -133,7 +133,7 @@
 
 ## 6b. 不必现在拍，但已挂触发条件
 
-1. **`scripts/measure_viewport.mjs`**：**批次 F3 开工第一句**问「它能被写进 E2E 测试吗？」——**不能就丢掉；能就写进 E2E，别放 `scripts/`**（老板第 6 轮原话）。这条挂在 §1 F3 的出口判据里。
+1. ~~**`scripts/measure_viewport.mjs`**~~ → **已按裁定丢掉（F3 开工第一句，2026-11-10）**。取证三条：`git log --all -- "*measure_viewport*"` 空——这个文件从来没有进过仓库；`frontend/package.json` 的 devDependencies 里没有 playwright / cypress / puppeteer，即**没有 E2E 底座**，「写进 E2E」在今天是一句无法执行的话；而引入任一 E2E 框架本身是 §4.6 的 ADR 事件，不该塞进一个导航批次。裁定「不能就丢掉」成立：不建该脚本、不放 `scripts/`。宽度实测改用既有约定（headless Edge + CDP 手工量两档，数值贴 PR），自动化那一层由 `useViewport` 的 vitest 用例与 L2/L3 的源码级判据承担。
 2. **批次 F7 的登录态要不要带简历**：我按「不带」定了（§1 F7 行末，理由 = B8 之前 `resumes` 没有读端点）。若他要带，F7 整体挪到 B8 之后。
 
 ## 6c. 文档代码引用机制（第 11 轮拍定：(b) + (c)，不选 (a)）
@@ -155,7 +155,9 @@
 
 本批已按 (b) 改写完 25 处（`ADR-007` 3、`ADR-013` 8、`ADR-015` 3、`ADR-016` 1、`ADR-017` 2、`API.md` 7、`FRONTEND_DESIGN.md` 1）：能定位到所属符号的写成 `path::symbol`，行号指向纯注释块的退成文件级引用（不硬造符号）。闸顺带抓出两条**本来就写错的符号名**：`auth.ts::applyToken` 实为 `applySession`、`student_profile_repository.py::replace_profile` 实为 `replace_profile_content`。
 
-现状计数：行号式 269 条 + 符号式 74 条，问题 0 处。剩下 269 条指向非易变文件，按名单增量收，不搞一次性大扫除（那正是 (a) 被否掉的理由）。
+现状计数：显式路径行号式 270 条 + 符号式 76 条 + **裸文件名式 38 条**（这一层 v1 完全看不见，而守则的证据列恰恰这么写），问题 0 处。
+
+补裸文件名是必须的，否则「少写一个目录」就是绕过 (b)+(c) 的旁路。这一层顺带抓出一条 v1 永远看不见的真错：`ResumeEditorView.vue` 的一个行号指向 127，而那个文件只有 123 行。易变名单对裸文件名同样生效，本轮按 (b) 去掉 69 处行号（9 个文档）。**我没有自动补符号**——试过，答案是错的：自动定位把 `AppTopBar.vue` 那对旧行号（265-284）判给了 `goTrash`，因为那几行现在住着 `goTrash`，而文档说的是那份手写监听。行号上「最近的定义」不等于文档在说的那件事，这正是脚本 docstring 一开始就写明的「机械平移保证不了语义」。所以语义不明的只剩文件级引用，它只是不再宣称精确，不会把文档改成假事实。
 
 ---
 

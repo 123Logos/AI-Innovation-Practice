@@ -21,6 +21,7 @@ import { RouterLink, useRouter } from 'vue-router'
 
 import { clearDeepSeekKey, hasDeepSeekKey, isApiError, setDeepSeekKey } from '@/api'
 import type { ProfileSortField, ProfileSummary } from '@/api/types'
+import OverlayPanel from '@/components/OverlayPanel.vue'
 import { TOP_BAR_MODULES } from '@/config/modules'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
@@ -36,7 +37,6 @@ const router = useRouter()
 /* -------------------------------- 下拉菜单 -------------------------------- */
 
 const menuOpen = ref(false)
-const menuRoot = ref<HTMLElement | null>(null)
 /** 正在切换的目标 id：用于给被点的那一行单独显示「切换中…」。 */
 const switchingId = ref<string | null>(null)
 const menuError = ref('')
@@ -273,19 +273,6 @@ async function goTrash(): Promise<void> {
   await router.push({ name: 'recycle-bin' })
 }
 
-/* -------------------------------- 全局交互 -------------------------------- */
-
-function handleDocumentPointerDown(event: PointerEvent): void {
-  if (menuOpen.value) {
-    const root = menuRoot.value
-    if (root && !root.contains(event.target as Node)) closeMenu()
-  }
-  if (moreOpen.value) {
-    const root = moreRoot.value
-    if (root && !root.contains(event.target as Node)) closeMoreMenu()
-  }
-}
-
 function handleKeydown(event: KeyboardEvent): void {
   if (event.key !== 'Escape') return
   if (createVisible.value) {
@@ -293,16 +280,13 @@ function handleKeydown(event: KeyboardEvent): void {
     return
   }
   if (moreOpen.value) closeMoreMenu()
-  if (menuOpen.value) closeMenu()
 }
 
 onMounted(() => {
-  document.addEventListener('pointerdown', handleDocumentPointerDown)
   document.addEventListener('keydown', handleKeydown)
 })
 
 onBeforeUnmount(() => {
-  document.removeEventListener('pointerdown', handleDocumentPointerDown)
   document.removeEventListener('keydown', handleKeydown)
 })
 
@@ -374,7 +358,6 @@ function forgetAiKey(): void {
  * 打开后不移交焦点，Tab 顺序即 DOM 顺序；差异只在弹层挂谁身上（见 CSS 段的注释）。
  */
 const moreOpen = ref(false)
-const moreRoot = ref<HTMLElement | null>(null)
 
 function closeMoreMenu(): void {
   moreOpen.value = false
@@ -439,7 +422,7 @@ async function handleLogout(): Promise<void> {
       </RouterLink>
 
       <!-- 简历切换器 -->
-      <div ref="menuRoot" class="profile-switcher">
+      <div class="profile-switcher">
         <button
           class="switcher-trigger"
           type="button"
@@ -456,7 +439,12 @@ async function handleLogout(): Promise<void> {
           </span>
         </button>
 
-        <div v-if="menuOpen" class="switcher-menu" role="menu" aria-label="简历列表">
+        <OverlayPanel
+          v-if="menuOpen"
+          panel-class="switcher-menu"
+          label="简历列表"
+          @close="closeMenu"
+        >
           <!-- 排序：字段二选一 + 方向切换 -->
           <div class="menu-sort">
             <span class="menu-sort__label">排序</span>
@@ -578,7 +566,7 @@ async function handleLogout(): Promise<void> {
               回收站
             </button>
           </div>
-        </div>
+        </OverlayPanel>
       </div>
 
       <span v-if="resume.dirty" class="dirty-dot" title="有未保存的修改">未保存</span>
@@ -590,7 +578,7 @@ async function handleLogout(): Promise<void> {
         没有给面板加 `role="menu"` / 行加 `role="menuitem"`：同一批 `<button>` 在宽屏
         仍是一级工具栏项，声明成菜单项会在宽屏留下「没有菜单的 menuitem」。
       -->
-      <div ref="moreRoot" class="user-more">
+      <div class="user-more">
         <button
           class="more-trigger"
           type="button"
@@ -604,18 +592,21 @@ async function handleLogout(): Promise<void> {
           </span>
         </button>
 
-        <div
-          id="user-more-menu"
+        <!-- 刻意不套 v-if：宽屏 `.user-actions` 是 `display: contents`，这两个按钮必须恒在一级项里；
+             收起态只属于窄屏，由 `--open` 这一类控制。基座因此只管「点外面 / Esc」两件事。 -->
+        <OverlayPanel
+          panel-id="user-more-menu"
+          role="group"
+          label="更多操作"
           class="user-actions"
           :class="{ 'user-actions--open': moreOpen }"
-          role="group"
-          aria-label="更多操作"
+          @close="closeMoreMenu"
         >
           <button class="ai-settings-button" type="button" @click="openAiSettings">AI 设置</button>
           <button class="logout-button" type="button" :disabled="auth.signingOut" @click="handleLogout">
             {{ auth.signingOut ? '退出中…' : '退出登录' }}
           </button>
-        </div>
+          </OverlayPanel>
       </div>
     </div>
 

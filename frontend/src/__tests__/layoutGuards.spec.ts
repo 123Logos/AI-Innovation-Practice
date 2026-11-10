@@ -168,6 +168,36 @@ describe('守则 L2：断点只用同一组值', () => {
   })
 })
 
+describe('守则 L3：浮层的「点外面关闭 / Esc 关闭」只有一处实现', () => {
+  const BASE = 'components/OverlayPanel.vue'
+
+  it('正向护栏：基座自己确实实现了这两件事（否则下面两条会因为全仓没人做而假绿）', () => {
+    const base = file(BASE).text
+    expect(base).toContain("document.addEventListener('pointerdown'")
+    expect(base).toContain('el.contains(event.target as Node)')
+    expect(base).toContain("event.key === 'Escape'")
+  })
+
+  it('除基座外，任何组件都不许再自己写「点外面关闭」', () => {
+    const offenders = sources
+      .filter((source) => source.rel !== BASE)
+      .filter((source) => /contains\(\s*(?:event|e)\.target/.test(source.text))
+      .map((source) => source.rel)
+
+    expect(offenders).toEqual([])
+  })
+
+  it('除基座外，谁都不许再挂 document 级 pointerdown 监听', () => {
+    const offenders = sources
+      .filter((source) => source.rel !== BASE)
+      .filter((source) => /addEventListener\(\s*["']pointerdown["']/.test(source.text))
+      .map((source) => source.rel)
+
+    expect(offenders).toEqual([])
+  })
+})
+
+
 describe('守则 L4：导航条目只有一张表', () => {
   it('模块描述符的形状只存在于 config/modules.ts', () => {
     const declarers = sources
