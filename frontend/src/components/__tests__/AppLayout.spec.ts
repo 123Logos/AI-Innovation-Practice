@@ -213,7 +213,7 @@ describe('外框只有一处定义（守则 L1）', () => {
 })
 
 describe('顶栏的一级导航来自模块表（守则 L4）', () => {
-  it('顶栏渲染出「岗位库」文字入口，href 指向 /jobs，且不在「更多」弹层里', async () => {
+  it('顶栏渲染出「岗位库」文字入口，href 指向 /jobs，且不在账户抽屉里', async () => {
     const wrapper = await visit('/jobs')
     const entries = wrapper.findAll('.app-shell > .app-topbar .jobs-entry')
 
@@ -222,6 +222,9 @@ describe('顶栏的一级导航来自模块表（守则 L4）', () => {
     expect(entries[0]?.element.tagName).toBe('A')
     expect(entries[0]?.text()).toBe('岗位库')
     expect(entries[0]?.attributes('href')).toBe('/jobs')
-    expect(entries[0]?.element.closest('.user-actions')).toBeNull()
+    // 判据要真的把抽屉打开再看：收起态它根本不在 DOM 里，`closest` 必然为 null，那是空检。
+    await wrapper.find('.account-trigger').trigger('click')
+    expect(entries[0]?.element.closest('.drawer-root')).toBeNull()
+    expect(wrapper.find('.drawer-root').exists()).toBe(true)
   })
 })

@@ -264,7 +264,9 @@ describe('登出 vs 过期（这条区分是提示不撒谎的前提）', () => 
     await router.push('/jobs')
 
     const topBar = mountAttached(AppTopBar)
-    await topBar.find('.logout-button').trigger('click')
+    // 批次 F3 第二片起，「退出登录」在右侧账户抽屉里：先开抽屉，再点那一行。
+    await topBar.find('.account-trigger').trigger('click')
+    await topBar.find('.drawer-item--danger').trigger('click')
     await flushPromises()
 
     expect(router.currentRoute.value.name).toBe('login')

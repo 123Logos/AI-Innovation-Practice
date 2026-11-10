@@ -12,7 +12,9 @@
  * 未保存拦截与并发保护都在 `stores/resume.ts` 里（见 `activateProfile`）。
  *
  * B3 依据 ADR-011 议题 3.D 重排了窄屏的入口组织：`≤760px` 时「AI 设置 / 退出登录」
- * 收进一个「更多」菜单（一级项 5 → 3），「岗位库」保持文字入口不收；宽屏布局不变。
+ * 收进一个「更多」菜单（一级项 5 → 3），「岗位库」保持文字入口不收。
+ * 批次 F3 第二片把它换成**右侧用户抽屉**（老板前端清单第 2 条），宽窄屏同一个入口，
+ * 于是那两层 `display: contents` 的分叉一并删掉；「岗位库」仍不收进来（理由没变）。
  * 登出时除 `resume.reset()` 外还要 `job.reset()`——先清业务数据再清登录态这条不变量
  * 涵盖岗位数据（`stores/job.ts` 里每个 `load*()` 前的清空只是缓解，不替代它）。
  */
@@ -22,6 +24,7 @@ import { RouterLink, useRouter } from 'vue-router'
 import { clearDeepSeekKey, hasDeepSeekKey, isApiError, setDeepSeekKey } from '@/api'
 import type { ProfileSortField, ProfileSummary } from '@/api/types'
 import OverlayPanel from '@/components/OverlayPanel.vue'
+import UserDrawer from '@/components/UserDrawer.vue'
 import { TOP_BAR_MODULES } from '@/config/modules'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
@@ -59,8 +62,8 @@ function toggleMenu(): void {
     closeMenu()
     return
   }
-  // 与「更多」菜单互斥：两个弹层都贴在顶栏下沿同一位置（见 `toggleMoreMenu`）。
-  closeMoreMenu()
+  // 与右侧用户抽屉互斥：两个浮层都贴在顶栏下沿（见 `toggleDrawer`）。
+  closeDrawer()
   menuError.value = ''
   menuOpen.value = true
 }
@@ -275,11 +278,9 @@ async function goTrash(): Promise<void> {
 
 function handleKeydown(event: KeyboardEvent): void {
   if (event.key !== 'Escape') return
-  if (createVisible.value) {
-    closeCreate()
-    return
-  }
-  if (moreOpen.value) closeMoreMenu()
+  // 只留「新建简历」这一条：它是顶栏自己管的内联表单，不是浮层。
+  // 切换器菜单与用户抽屉的 Esc 都由 `OverlayPanel` 基座负责（守则 L3 说的「一个基础件」）。
+  if (createVisible.value) closeCreate()
 }
 
 onMounted(() => {
@@ -341,36 +342,37 @@ function forgetAiKey(): void {
   aiSettingsError.value = ''
 }
 
-/* ------------------------- 「更多」菜单（ADR-011 议题 3.D） ---------------------- */
+/* ---------------------------- 右侧用户抽屉 ------------------------------- */
 
 /**
- * 窄屏（`≤760px`）才出现的入口：把「AI 设置」「退出登录」收进一个「更多」菜单，
- * 顶栏一级项从 5 个降到 3 个（岗位库 / 简历切换器 / 更多）。
+ * 账户级动作（AI 设置 / 退出登录）的入口：顶栏放一个「账户」触发按钮，点开右侧抽屉
+ * （`UserDrawer.vue`）。老板前端清单第 2 条，批次 F3 第二片。
  *
- * 「岗位库」**不进来**：学生主力在手机上，藏进菜单等于没有入口（3.D 裁定的核心）。
+ * **宽屏也收进抽屉**——这一点改了 ADR-011 议题 3.D 的原排版。3.D 只管「窄屏一级项从 5 个降到 3 个」，
+ * 当时两个动作在宽屏仍是一级项；清单第 2 条要的是「账户的事在右边」，那是归属问题不是宽度问题，
+ * 所以宽屏不再有这两个按钮。换来的第二个好处：原来靠 `.user-more` / `.user-actions`
+ * 两层 `display: contents` 拼出来的「窄屏是弹层、宽屏是一级项」分叉整块消失，
+ * 窄屏不再需要为一个弹层单独写挂载点（那正是守则 L2 说的行为分支散在 CSS 里）。
  *
- * 宽屏为什么不用 JS 判断视口：这两个按钮所在的 `.user-actions` 与它的父级
- * `.user-more` 在 `≥761px` 都是 `display: contents`（不生成盒子），
- * 于是两个按钮仍然是 `.user-area` 的直接 flex 项，位置 / gap / 换行行为与本次改动前
- * 逐像素一致，触发按钮则 `display: none` 根本不出现。菜单状态只在窄屏被点到。
+ * 「岗位库」**不进来**：3.D 那句理由仍然成立——它是主力导航，藏进抽屉等于没有入口。
  *
- * 焦点管理照 `profile-switcher` 的既有做法：原生 `<button>` 本身可聚焦，
- * 打开后不移交焦点，Tab 顺序即 DOM 顺序；差异只在弹层挂谁身上（见 CSS 段的注释）。
+ * 抽屉里的三件底层事（点外面 / Esc / 焦点归还）由 `OverlayPanel` 基座承担，
+ * 所以这里没有 pointerdown 监听，也不再有第二个 document keydown 分支。
  */
-const moreOpen = ref(false)
+const drawerOpen = ref(false)
 
-function closeMoreMenu(): void {
-  moreOpen.value = false
+function closeDrawer(): void {
+  drawerOpen.value = false
 }
 
-function toggleMoreMenu(): void {
-  if (moreOpen.value) {
-    closeMoreMenu()
+function toggleDrawer(): void {
+  if (drawerOpen.value) {
+    closeDrawer()
     return
   }
-  // 两个弹层都挂在顶栏下沿同一位置，同时开着会叠在一起：开一个就关另一个。
+  // 两个浮层都贴在顶栏下沿同一位置（简历切换器向左下、抽屉向右），同时开着会打架：开一个就关另一个。
   closeMenu()
-  moreOpen.value = true
+  drawerOpen.value = true
 }
 
 async function handleLogout(): Promise<void> {
@@ -403,13 +405,13 @@ async function handleLogout(): Promise<void> {
         「一张表」的判据是**新增加一个模块时只改那张表**，而不是「这张表旁边另有一份也能用」。
 
         其余取舍不变（议题 3.A / 3.D 裁定）：顶栏一条文字入口、不加侧边栏；
-        「岗位库」不进「更多」菜单、也不降级成图标——手机是学生的主力设备，
+        「岗位库」不进账户抽屉、也不降级成图标——手机是学生的主力设备，
         这条功能的入口藏起来等于没有。窄屏省下的宽度预算从「AI 设置 / 退出登录」出。
         岗位自己的回收站不在这里（顶栏的「回收站」属于简历，两个混在一层会让人
         分不清删掉的是什么），入口在 `/jobs` 列表页顶部的「我的删除」。
 
-        `class="jobs-entry"` 这个类名本批沿用不改：`AppTopBar.spec.ts` 的一级项顺序断言
-        按它取值（守则 R1 的结构锁，改写需要老板点头），而通用化命名属于批次 F3 的导航重排。
+        `class="jobs-entry"` 这个类名沿用不改：`AppTopBar.spec.ts` 的一级项顺序断言按它取值，
+        而那条断言在批次 F3 第二片已按裁定改写（一级项 4 → 3：岗位库 / 切换器 / 账户）。
         模块表的 `iconPaths` 本批也不渲染——加图标是视觉改动，同样归批次 F3。
       -->
       <RouterLink
@@ -429,6 +431,7 @@ async function handleLogout(): Promise<void> {
           :aria-expanded="menuOpen"
           aria-haspopup="menu"
           :title="`当前简历：${currentTitle}`"
+          @pointerdown.stop
           @click="toggleMenu"
         >
           <span class="switcher-label">当前简历</span>
@@ -570,44 +573,38 @@ async function handleLogout(): Promise<void> {
       </div>
 
       <span v-if="resume.dirty" class="dirty-dot" title="有未保存的修改">未保存</span>
-      <span class="user-name">{{ auth.displayName || '已登录用户' }}</span>
 
       <!--
-        「更多」菜单（ADR-011 议题 3.D）：窄屏把下面两个动作收进一级项「更多」，
-        宽屏两个包装成 `display: contents`，两个按钮回到改动前的一级项位置。
-        没有给面板加 `role="menu"` / 行加 `role="menuitem"`：同一批 `<button>` 在宽屏
-        仍是一级工具栏项，声明成菜单项会在宽屏留下「没有菜单的 menuitem」。
+        账户入口（老板前端清单第 2 条）：一个触发按钮 + 右侧抽屉，「AI 设置」「退出登录」都在抽屉里。
+        不写 `role="menu"` / `role="menuitem"`：抽屉是账户面板（`role="group"`），
+        里面两项各自带对话框与不可逆语义，声明成菜单项反而读起来像一个可以方向键走的列表。
+        `aria-controls` 只在展开时给：收起态抽屉根本不在 DOM 里，指一个不存在的 id 是假声明。
       -->
-      <div class="user-more">
-        <button
-          class="more-trigger"
-          type="button"
-          :aria-expanded="moreOpen"
-          aria-controls="user-more-menu"
-          @click="toggleMoreMenu"
-        >
-          <span>更多</span>
-          <span class="more-caret" :class="{ 'more-caret--open': moreOpen }" aria-hidden="true">
-            ▾
-          </span>
-        </button>
+      <button
+        class="account-trigger"
+        type="button"
+        :aria-expanded="drawerOpen"
+        aria-haspopup="dialog"
+        :aria-controls="drawerOpen ? 'user-drawer' : undefined"
+        @pointerdown.stop
+        @click="toggleDrawer"
+      >
+        <span class="account-name">{{ auth.displayName || '已登录用户' }}</span>
+        <span class="account-word">账户</span>
+        <span class="account-caret" :class="{ 'account-caret--open': drawerOpen }" aria-hidden="true">
+          ▾
+        </span>
+      </button>
 
-        <!-- 刻意不套 v-if：宽屏 `.user-actions` 是 `display: contents`，这两个按钮必须恒在一级项里；
-             收起态只属于窄屏，由 `--open` 这一类控制。基座因此只管「点外面 / Esc」两件事。 -->
-        <OverlayPanel
-          panel-id="user-more-menu"
-          role="group"
-          label="更多操作"
-          class="user-actions"
-          :class="{ 'user-actions--open': moreOpen }"
-          @close="closeMoreMenu"
-        >
-          <button class="ai-settings-button" type="button" @click="openAiSettings">AI 设置</button>
-          <button class="logout-button" type="button" :disabled="auth.signingOut" @click="handleLogout">
-            {{ auth.signingOut ? '退出中…' : '退出登录' }}
-          </button>
-          </OverlayPanel>
-      </div>
+      <!-- 收起态整个不渲染（原来是恒在 + 靠 CSS 类收起，那是为了宽屏把两个按钮当一级项用）。 -->
+      <UserDrawer
+        v-if="drawerOpen"
+        :username="auth.displayName || '已登录用户'"
+        :signing-out="auth.signingOut"
+        @close="closeDrawer"
+        @open-ai-settings="openAiSettings"
+        @logout="handleLogout"
+      />
     </div>
 
     <!-- AI 设置弹窗：BYOK（ADR-009），Key 只进 sessionStorage。 -->
@@ -737,42 +734,33 @@ async function handleLogout(): Promise<void> {
 .brand-title { margin: 0; overflow: hidden; color: var(--ui-ink); font-size: 14px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .brand-sub { margin: 0; color: var(--ui-ink-faint); font-size: 11px; letter-spacing: .08em; }
 .user-area { display: flex; flex: 1 1 auto; flex-wrap: wrap; min-width: 0; align-items: center; justify-content: flex-end; gap: 10px 12px; }
-.user-name { overflow: hidden; max-width: 16ch; color: var(--ui-ink-muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .dirty-dot { flex: 0 0 auto; border: 1px solid var(--ui-warning-border); border-radius: var(--ui-radius); padding: 2px 7px; color: var(--ui-warning); font-size: 11px; white-space: nowrap; }
 /*
- * 顶栏上的三个控件（切换器 / AI 设置 / 退出登录）统一 32px 高：
- * 与 `el-button`（润色弹窗里）同一档高度，跨弹层看上去才是同一套控件。
- * 用 `height` 而不是靠 padding 堆，字号变了也不会互相错开。
+ * 顶栏上的控件统一 32px 高（切换器 / 账户 / 岗位库）：与 `el-button`（润色弹窗里）
+ * 同一档高度，跨弹层看上去才是同一套控件。用 `height` 而不是靠 padding 堆，
+ * 字号变了也不会互相错开。
  */
-.ai-settings-button,
-.logout-button { display: inline-flex; flex: 0 0 auto; align-items: center; height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 14px; color: var(--ui-ink-muted); background: transparent; cursor: pointer; font: inherit; font-size: 12px; white-space: nowrap; }
-.ai-settings-button:hover:not(:disabled),
-.logout-button:hover:not(:disabled) { border-color: var(--theme-rule); color: var(--theme-primary); }
-.ai-settings-button:disabled,
-.logout-button:disabled { opacity: .6; cursor: progress; }
 /*
- * 岗位库入口：与上面两个控件同规格（32px 高、`--ui-radius`、`--ui-*` 令牌），
+ * 账户入口。名字（`.account-name`）与「账户」二字（`.account-word`）恒在 DOM 里，
+ * 宽屏显名字、窄屏显那两个字——纯显示差异，不进 JS 判断视口（守则 L2：宽度驱动的结构差异归 CSS）。
+ * 名字原来是一个不说话的 `<span class="user-name">`，现在它是按钮的一部分：
+ * 点名字本来就该想到「这是我账号的地方」。
+ */
+.account-trigger { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 12px; color: var(--ui-ink); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 12px; white-space: nowrap; }
+.account-trigger:hover { border-color: var(--theme-rule); color: var(--theme-primary); }
+.account-trigger:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
+.account-name { overflow: hidden; max-width: 16ch; color: var(--ui-ink-muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.account-word { display: none; color: var(--ui-ink-muted); font-size: 13px; }
+.account-caret { flex: 0 0 auto; color: var(--ui-ink-faint); font-size: 11px; line-height: 1; transition: transform .15s ease; }
+.account-caret--open { transform: rotate(180deg); }
+/*
+ * 岗位库入口：与上面控件同规格（32px 高、`--ui-radius`、`--ui-*` 令牌），
  * 但它是导航而不是动作，所以底色留空、hover 只加下划线级别的提示。
  */
 .jobs-entry { display: inline-flex; flex: 0 0 auto; align-items: center; height: 32px; border: 1px solid transparent; border-radius: var(--ui-radius); padding: 0 10px; color: var(--ui-ink-muted); font-size: 12px; text-decoration: none; white-space: nowrap; }
 .jobs-entry:hover { border-color: var(--theme-rule); color: var(--theme-primary); }
 .jobs-entry[aria-current='page'] { border-color: var(--ui-border-strong); color: var(--theme-primary-deep); background: var(--theme-bg-light); font-weight: 600; }
 .ai-settings-status { margin: 0; color: var(--ui-ink-faint); font-size: 12px; }
-/*
- * 「更多」菜单的两个包装层在宽屏**不生成盒子**（`display: contents`）：
- * `.ai-settings-button` / `.logout-button` 因此仍然是 `.user-area` 的直接 flex 项，
- * 顺序、gap（12px）、`flex-wrap` 断行行为都与本次改动前完全一致 ——
- * 「≥761px 的现有布局不得变化」这条只能这么满足，写成嵌套 flex 容器会改变
- * 中等宽度下哪一项先换行。触发按钮 `display: none`，宽屏看不到、Tab 也跳不到。
- * 窄屏（下面 `@media`）把 `.user-actions` 变成挂在顶栏下沿的弹层。
- */
-.user-more { display: contents; }
-.user-actions { display: contents; }
-.more-trigger { display: none; flex: 0 0 auto; align-items: center; gap: 6px; height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 12px; color: var(--ui-ink); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 12px; white-space: nowrap; }
-.more-trigger:hover { border-color: var(--theme-rule); color: var(--theme-primary); }
-.more-trigger:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
-.more-caret { flex: 0 0 auto; color: var(--ui-ink-faint); font-size: 11px; line-height: 1; transition: transform .15s ease; }
-.more-caret--open { transform: rotate(180deg); }
 
 /* ---- 简历切换器 ---- */
 .profile-switcher { position: relative; flex: 0 1 auto; min-width: 0; }
@@ -875,7 +863,9 @@ async function handleLogout(): Promise<void> {
    * 顶栏回到 57px；产品名在正文标题里还在，不会因此丢失上下文。
    */
   .brand-text { display: none; }
-  .user-name { display: none; }
+  /* 手机上名字让位给「账户」二字：这一排只有 343px，名字最长 16ch 会把切换器挤到换行。 */
+  .account-name { display: none; }
+  .account-word { display: inline; }
   .switcher-label, .switcher-default { display: none; }
   /* 窄屏先压缩简历标题的显示宽度，整条切换器再跟着容器收缩，保证省略号生效而不是撑破顶栏。 */
   .switcher-trigger { max-width: min(240px, 100%); }
@@ -889,17 +879,10 @@ async function handleLogout(): Promise<void> {
   .profile-switcher { position: static; }
   .switcher-menu { top: 100%; left: 0; right: 0; width: auto; }
   /*
-   * 「更多」在这里才出现（宽屏由上面的 `display: none` / `display: contents` 保证一级项不变）。
-   * 弹层与 `.switcher-menu` 同一个理由、同一个解法：挂在**顶栏**而不是挂在触发按钮上——
-   * 挂按钮上时右对齐的锚点会把弹层推到视口左边缘之外，而负向滚动不存在，行就够不着了。
-   * `left:0 / right:0 / top:100%` 不写死任何像素值（`display: contents` 的父级不生成盒子，
-   * 包含块因此仍是 `position: sticky` 的 `.app-topbar`）。
+   * 账户抽屉不需要在这里改挂载点：它是 `position: fixed` 的满屏盒子（贴在视口右边），
+   * 从来就不挂在触发按钮上——原来那段「窄屏要把弹层从按钮上挪到顶栏」的理由随
+   * `.user-actions` 一起删掉了。窄屏这一排因此是 3 个一级项：岗位库、简历切换器、账户。
    */
-  .more-trigger { display: inline-flex; }
-  .user-actions { display: none; position: absolute; top: 100%; left: 0; right: 0; z-index: 30; flex-direction: column; gap: 8px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 10px; background: var(--ui-surface); box-shadow: var(--ui-shadow-menu); }
-  .user-actions--open { display: flex; }
-  /* 菜单里的两行保持 32px 控件规格（议题 3.A），只撑满一行、文字居中，手机上更好点。 */
-  .user-actions .ai-settings-button, .user-actions .logout-button { width: 100%; justify-content: center; }
 }
 @media print {
   .app-topbar { display: none; }
