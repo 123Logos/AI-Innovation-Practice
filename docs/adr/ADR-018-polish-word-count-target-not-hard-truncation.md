@@ -14,7 +14,7 @@
 | 输入 | 每段 `description`/`responsibility` ≤ 2000 | `app/schemas/resume.py:123-124` |
 | 用户设定的目标 | `max_words`，`ge=40, le=800`，缺省补 **200**，且**只对 `expand` 档有意义** | `app/schemas/resume.py:139/142-152`、`:98 DEFAULT_MAX_WORDS` |
 | 发给模型的话术 | expand：「严格不超过 {max_words} 个汉字」；heavy：description ≤120 汉字、responsibility ≤60 | `app/integrations/copy_writer.py:76/80/85/90` |
-| **模型调用的 token 预算** | **没有**：请求体只有 `model/stream/messages/thinking`，**不含 `max_tokens`**，本路径也没有 `finish_reason == "length"` 处理 | `copy_writer.py:178-189`（对比 `evidence_scorer.py:265`、`skill_extractor.py:108`、`match_service.py:87/387` 才有） |
+| **模型调用的 token 预算** | **没有**：请求体只有 `model/stream/messages/thinking`，**不含 `max_tokens`**，本路径也没有 `finish_reason == "length"` 处理 | `copy_writer.py:178-189`（对比 `evidence_scorer.py:265`、`skill_extractor.py:108`、`match_service.py:90/423` 才有） |
 | 响应契约 | `PolishedExperience.description ≤ 600`、`responsibility ≤ 300`；不合格 → **整单 502** | `resume.py:165-166`、`copy_writer.py:217` |
 | **服务端砍尾** | `_cap_pair`/`_cap_text`：把 description+responsibility **合计**压到 `max_words` 以内，按句末 `rfind` 断句后 **`window.rstrip()` 直接丢尾** | `app/services/resume_service.py:112-113/125/129-138/141-159` |
 
