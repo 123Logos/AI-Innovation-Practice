@@ -47,7 +47,7 @@
 
 ### 2.1 纸张：从来没有 `@page`，所谓 A4 只是一条 `aspect-ratio`
 
-`frontend/src/components/ResumePreview.vue:523`：
+`frontend/src/components/ResumePreview.vue`：
 
 ```css
 .paper { aspect-ratio: 210 / 297; min-height: 720px; overflow: auto; padding: 56px 52px;
@@ -119,7 +119,7 @@
 
 ### 2.4 生成物不自包含：后端只产 `body`，不带任何 `<style>`
 
-`app/integrations/resume_generator.py:50-61`：
+`app/integrations/resume_generator.py::TemplateResumeGenerator`：
 
 ```python
 self._template = template or (
@@ -239,7 +239,7 @@ DOM 结构、CSS 类名一一对应」），没有任何测试或类型系统在
 
 这条极易漏，且漏了就是「改了颜色不生效/会丢」：
 
-- `frontend/src/stores/resume.ts:140-148` `ProfileDraft` 是草稿的形状；
+- `frontend/src/stores/resume.ts::DEFAULT_LAYOUT_SECTIONS` `ProfileDraft` 是草稿的形状；
 - `resume.ts:436` `comparableOf()` 决定「本地草稿是否值得提示恢复」——
   它把 draft 投影成一串可比较的字符串，**不包含的字段等于不存在**；
 - `resume.ts:1150-1157` 自动存草稿的 `watch(draft, …, { deep: true })`

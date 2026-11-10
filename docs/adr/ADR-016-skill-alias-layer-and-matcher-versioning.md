@@ -16,7 +16,7 @@
 | coverage 的分子分母域 | `app/services/match_scoring.py:404/437/625` | 同一岗位同一批技能的分母口径变 |
 | 真正的命中判定 | **不是键**，是 `skill_forms_match`（`skill_names.py:78-110`，被 `match_scoring.py:440` 用） | — |
 | 偏好档位 | `app/services/match_scoring.py` 的 `preference` 折叠那一格（行号已搬家，不再引）：`skill_name_key(target_role)` vs `skill_name_key(job.title)` 互相包含 + `overlap_ratio` | **完全不查技能表、不进 `skill_forms_match`** |
-| 回显 | `app/schemas/match.py:138`（`name` = 岗位侧原始写法逐字回显）、`:143`（`matched_form` = 学生侧原始写法） | 回显语义变 |
+| 回显 | `app/schemas/match.py::RequirementCoverageRow`（`name` = 岗位侧原始写法逐字回显、`matched_form` = 学生侧原始写法） | 回显语义变 |
 
 还有一组**裸字符串等值**的点，任何别名表都修不到、也不许顺手改：`match_scoring.py:629`（`matched_names` 用 `item.name` 原值组集合）、:477/485/501-517（AI 必须逐字复述技能名才能对上候选对）、:554/558/562（按原值分组）、:752（命中却无强度那条并集不变式）。
 

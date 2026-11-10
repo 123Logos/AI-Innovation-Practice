@@ -83,7 +83,7 @@ SELECT 'ZhangSan' = 'zhangsan' COLLATE utf8mb4_0900_as_cs;   -- 0
 | `app/core/config.py` | `jwt_expire_minutes` 默认 15；`jwt_expire_seconds` 派生 |
 | `app/schemas/auth.py::TokenResponse` | `access_token` / `token_type="bearer"` / `expires_in` |
 | `app/api/v1/auth.py` | 只有 `POST /register`、`POST /login`、`GET /me`。**没有 `/refresh`** |
-| `frontend/src/stores/auth.ts::applyToken` | 只把 `access_token` 写进 store + `localStorage`，**`expires_in` 被丢弃** |
+| `frontend/src/stores/auth.ts::applySession` | 只把 `access_token` 写进 store + `localStorage`，**`expires_in` 被丢弃** |
 | `frontend/src/api/client.ts` | 401 响应拦截器直接 `clearStoredToken()` + 跳登录页，**没有重放机制** |
 | `pyproject.toml` | 依赖里**没有 Redis**（ADR-004 已把 Redis 列入 Phase 1 冻结清单） |
 | `app/core/rate_limit.py` | 限流是 slowapi 默认的**进程内内存计数**，多 worker 各算一份 |
@@ -106,7 +106,7 @@ SELECT 'ZhangSan' = 'zhangsan' COLLATE utf8mb4_0900_as_cs;   -- 0
 | `frontend/src/stores/resume.ts::markDirty` | 每个 `updateXxx` 都置 `dirty = true` |
 | `frontend/src/stores/resume.ts::startDraftAutosave` | `watch(draft, {deep:true})` → **400ms 防抖写 `localStorage`** |
 | `frontend/src/views/ResumeEditorView.vue` | 进页面 `detectLocalDraft()`，有差异就弹「检测到上次未保存的草稿，是否恢复？」 |
-| `app/repositories/student_profile_repository.py::replace_profile` | **全量替换**：父表 update + 三张子表 `DELETE` 后整批重新 `INSERT`，**每次都是新 UUID** |
+| `app/repositories/student_profile_repository.py::replace_profile_content` | **全量替换**：父表 update + 三张子表 `DELETE` 后整批重新 `INSERT`，**每次都是新 UUID** |
 | `app/schemas/profile.py::ProfileRead` | 已暴露 `updated_at`，但经 `format_shanghai_datetime` 后是**秒级**（`timespec="seconds"`），库里是 `DATETIME(6)` |
 
 两处需要修正需求描述：
