@@ -80,6 +80,7 @@ import type {
   ThemeId,
 } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
+import { useDialogStore } from '@/stores/dialog'
 import { applyTheme } from '@/stores/theme'
 import { currentMonthValue, todayIsoDate } from '@/utils/datetime'
 
@@ -1296,7 +1297,11 @@ export const useResumeStore = defineStore('resume', () => {
    */
   async function ensureSavedBeforeSwitch(): Promise<boolean> {
     if (!dirty.value) return true
-    const shouldSave = window.confirm('当前简历有未保存的修改。切换前需要先保存，是否现在保存？')
+    const shouldSave = await useDialogStore().askConfirm(
+      '切换前先处理未保存的修改',
+      '现在切换会用服务端的数据覆盖这份简历，你刚才改的会丢。也可以先保存再切。',
+      { confirmLabel: '保存并切换', cancelLabel: '先不切换' },
+    )
     if (!shouldSave) return false
     await save()
     return true

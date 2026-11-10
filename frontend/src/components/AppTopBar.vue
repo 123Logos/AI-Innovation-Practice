@@ -22,10 +22,12 @@ import { RouterLink, useRouter } from 'vue-router'
 import { clearDeepSeekKey, hasDeepSeekKey, isApiError, setDeepSeekKey } from '@/api'
 import type { ProfileSortField, ProfileSummary } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
+import { useDialogStore } from '@/stores/dialog'
 import { useJobStore } from '@/stores/job'
 import { useResumeStore } from '@/stores/resume'
 
 const auth = useAuthStore()
+const dialog = useDialogStore()
 const resume = useResumeStore()
 const job = useJobStore()
 const router = useRouter()
@@ -133,7 +135,11 @@ async function handleSetDefault(): Promise<void> {
 /* --------------------------------- 删除 ---------------------------------- */
 
 async function handleDelete(item: ProfileSummary): Promise<void> {
-  const confirmed = window.confirm('删除后可在回收站找回，确认删除？')
+  const confirmed = await dialog.askConfirm(
+    '删除这份简历？',
+    '删除后它进回收站，30 天内可以恢复，技能条目一行都不会丢。',
+    { subject: item.title, confirmLabel: '确认删除', tone: 'danger' },
+  )
   if (!confirmed) return
   menuError.value = ''
   cancelRename()
@@ -248,12 +254,18 @@ async function goTrash(): Promise<void> {
   // 离开编辑器前先处理未保存的修改：否则回收站走一圈回来，
   // 编辑器会用服务端数据覆盖内存里的 draft，用户以为丢了。
   if (resume.dirty) {
-    const shouldSave = window.confirm('当前简历有未保存的修改。去回收站前先保存？')
+    const shouldSave = await dialog.askConfirm(
+      '去回收站前先保存修改？',
+      '不保存就离开编辑器，回来时看到的是上一次保存的那一版，你刚才改的会丢。',
+      { confirmLabel: '保存并前往', cancelLabel: '先不去' },
+    )
     if (!shouldSave) return
     try {
       await resume.save()
     } catch (error) {
-      window.alert(describeError(error, '保存失败，请稍后重试。'))
+      // 原来这里是 window.alert：它会阻塞主线程，自动化验收停在那一步走不下去。
+      // 失败仍然要**当面**告诉用户（守则 C3），只是换成同一个弹窗组件。
+      await dialog.askNotice('没保存成功，所以停在这一页', describeError(error, '保存失败，请稍后重试。'))
       return
     }
   }

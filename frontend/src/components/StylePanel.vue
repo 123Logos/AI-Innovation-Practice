@@ -4,11 +4,13 @@ import { computed, ref } from 'vue'
 import { isApiError } from '@/api'
 import type { PaperSize, PolishMode, SectionId, ThemeId } from '@/api/types'
 import { LAYOUT_TITLE_MAX_LENGTH, THEME_OPTIONS, useResumeStore } from '@/stores/resume'
+import { useDialogStore } from '@/stores/dialog'
 
 import PolishReviewDialog from './PolishReviewDialog.vue'
 import PolishSettingsDialog from './PolishSettingsDialog.vue'
 
 const store = useResumeStore()
+const dialog = useDialogStore()
 
 const feedback = ref<{ tone: 'ok' | 'error'; text: string } | null>(null)
 
@@ -93,7 +95,11 @@ async function handleGenerate(): Promise<void> {
 
   // 未保存的修改不能悄悄丢掉：先确认，再保存，最后生成。
   if (store.dirty) {
-    const shouldSave = window.confirm('你有未保存的修改，是否先保存再生成？')
+    const shouldSave = await dialog.askConfirm(
+      '生成前先保存修改？',
+      '生成读的是已经保存的那一版。不保存就生成，你刚才改的内容不会出现在新简历里。',
+      { confirmLabel: '保存并生成', cancelLabel: '先不生成' },
+    )
     if (!shouldSave) {
       feedback.value = {
         tone: 'error',
