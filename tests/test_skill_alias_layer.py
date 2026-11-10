@@ -125,9 +125,8 @@ def test_the_only_write_entry_checks_domain_source_and_self_pair() -> None:
     """
     with pytest.raises(AliasPairRejectedError, match="别名域"):
         _insert(("js", "javascript", "tool"))
-    with pytest.raises(AliasPairRejectedError, match="别名来源"):
-        with session_scope() as session:
-            SkillAliasRepository(session).add("js", "javascript", ALIAS_SCOPE_SKILL, source="ai")
+    with pytest.raises(AliasPairRejectedError, match="别名来源"), session_scope() as session:
+        SkillAliasRepository(session).add("js", "javascript", ALIAS_SCOPE_SKILL, source="ai")
     with pytest.raises(AliasPairRejectedError, match="同一个键"):
         _insert(("js", "js", ALIAS_SCOPE_SKILL))
     assert _row_count() == 0
@@ -315,9 +314,8 @@ def test_the_collation_folds_case_in_the_check_but_the_value_domain_stays_lowerc
     assert index.hit(ALIAS_SCOPE_ROLE, "js", "javascript") is False
     assert index.is_empty is True
     # 写侧逐字比较，所以 `add()` 拒绝 `SKILL`：库里那种行只能来自绕过仓储的 SQL。
-    with pytest.raises(AliasPairRejectedError, match="别名域"):
-        with session_scope() as another_session:
-            SkillAliasRepository(another_session).add("py", "python", "SKILL")
+    with pytest.raises(AliasPairRejectedError, match="别名域"), session_scope() as another_session:
+        SkillAliasRepository(another_session).add("py", "python", "SKILL")
 
 
 @pytest.mark.parametrize("bad_value", ["human", "", "runtime_ai"])
@@ -368,7 +366,7 @@ def test_load_index_issues_exactly_one_statement_regardless_of_row_count() -> No
     statements: list[str] = []
     engine: Engine = get_engine()
 
-    def _record(conn, cursor, statement, parameters, context, executemany) -> None:  # noqa: ANN001
+    def _record(conn, cursor, statement, parameters, context, executemany) -> None:
         if "skill_aliases" in statement.lower():
             statements.append(statement)
 

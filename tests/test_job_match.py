@@ -944,7 +944,7 @@ def _count_alias_queries() -> dict[str, Any]:
     counters: dict[str, Any] = {"count": 0}
     engine: Engine = get_engine()
 
-    def _record(conn, cursor, statement, parameters, context, executemany) -> None:  # noqa: ANN001
+    def _record(conn, cursor, statement, parameters, context, executemany) -> None:
         if "skill_aliases" in statement.lower():
             counters["count"] += 1
 
@@ -1175,9 +1175,10 @@ def test_a_role_alias_row_moves_preference_from_conflict_to_alias_match(
         t for t in before["terms"] if t["name"] != "preference"
     ]
     # 加权分子的增量恰好 0.10 × 0.6 = 0.06（§2.4 那句话的准确形式）。
-    numerator_delta = after["score"] * after["meta"]["weight_sum_used"] - before[
-        "score"
-    ] * before["meta"]["weight_sum_used"]
+    numerator_delta = (
+        after["score"] * after["meta"]["weight_sum_used"]
+        - before["score"] * before["meta"]["weight_sum_used"]
+    )
     assert numerator_delta == pytest.approx(0.06, abs=0.001)
     # 对外分数：重归一之后是 0.06 / 0.85 ≈ 0.071，不是 0.06。
     assert after["score"] - before["score"] == pytest.approx(0.071, abs=0.001)
@@ -1261,5 +1262,3 @@ def test_both_endpoints_report_the_same_alias_version_too(client: TestClient) ->
     # 空表也发这一格（§2.5 末句）：不发就等于「哪一版词表」在词表为空时无法回答。
     assert matched["meta"]["alias_version"] == "v1"
     assert _alias_row_count() == 0
-
-

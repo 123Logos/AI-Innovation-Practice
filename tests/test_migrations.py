@@ -313,9 +313,11 @@ def _assert_schema_after_upgrade(engine: Engine) -> None:
                 """
             )
         ).all()
-        assert [
-            (int(row.SEQ_IN_INDEX), row.COLUMN_NAME) for row in alias_unique_columns
-        ] == [(1, "canonical_key"), (2, "alias_key"), (3, "scope")]
+        assert [(int(row.SEQ_IN_INDEX), row.COLUMN_NAME) for row in alias_unique_columns] == [
+            (1, "canonical_key"),
+            (2, "alias_key"),
+            (3, "scope"),
+        ]
         assert all(int(row.NON_UNIQUE) == 0 for row in alias_unique_columns), (
             "uq_skill_aliases_pair 不是唯一索引：双向查的语义就没有依据了"
         )

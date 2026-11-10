@@ -1054,9 +1054,7 @@ class TestAliasLayer:
         student = ("Python", "JS")
         aliases = alias_index(("JavaScript", "JS"))
         match = score_match(facts(required=required, student=student, aliases=aliases))
-        hit_names = {item.skill for item in match.covered} | {
-            item.skill for item in match.partial
-        }
+        hit_names = {item.skill for item in match.covered} | {item.skill for item in match.partial}
         assert hit_names == {
             item.name for item in matched_required_skills(required, student, aliases)
         }
