@@ -64,6 +64,8 @@ import { defineStore } from 'pinia'
 import { ApiError, hasDeepSeekKey, profilesApi, resumesApi } from '@/api'
 import { DEFAULT_POLISH_MAX_WORDS } from '@/api/types'
 import type {
+  CityPreferenceInput,
+  PortfolioLinkInput,
   Degree,
   LayoutConfig,
   LayoutSection,
@@ -146,10 +148,12 @@ export const DEFAULT_LAYOUT_SECTIONS: readonly LayoutSection[] = [
   { id: 'educations', title: '教育经历' },
   { id: 'skills', title: '技能' },
   { id: 'experiences', title: '项目经历' },
+  { id: 'certificates', title: '证书' },
+  { id: 'portfolio', title: '作品链接' },
 ]
 
 /** 后端 `LAYOUT_VERSION` 的同源常量；版本不匹配时后端会整份回退默认顺序。 */
-export const LAYOUT_VERSION = 1
+export const LAYOUT_VERSION = 2
 
 /**
  * 标题长度上限（ADR-007 §6.8(4)）：`h2` 在 360px 视口最多 15 字不折行，取 12 留余量。
@@ -165,6 +169,8 @@ const DEFAULT_SECTION_TITLES: Record<SectionId, string> = {
   educations: '教育经历',
   skills: '技能',
   experiences: '项目经历',
+  certificates: '证书',
+  portfolio: '作品链接',
 }
 
 /**
@@ -254,6 +260,7 @@ export const SKILL_LIMIT = { min: 0, max: 8 } as const
 export const EXPERIENCE_LIMIT = { min: 0, max: 3 } as const
 /** 后端 `educations` 最多 5 段；UI 至少保留 1 行空的，避免区段消失。 */
 export const EDUCATION_LIMIT = { min: 1, max: 5 } as const
+export const MULTIVALUE_LIMIT = { min: 0, max: 5 } as const
 
 /** 生成简历时的最低要求（后端 `ResumeService` 对技能/经历为空会返回 400）。 */
 export const GENERATE_MIN = { skills: 1, experiences: 1, educations: 1 } as const
@@ -315,6 +322,15 @@ export interface EducationDraft {
   edu_end: string
 }
 
+export interface CertificateDraft {
+  name: string
+  issuer: string
+  issued_on: string
+}
+
+export type PortfolioLinkDraft = PortfolioLinkInput
+export type CityPreferenceDraft = CityPreferenceInput
+
 export interface ProfileDraft {
   full_name: string
   /** 简历上展示的邮箱（可空），与登录邮箱无关。 */
@@ -347,6 +363,12 @@ export interface ProfileDraft {
   skills: SkillDraft[]
   experiences: ExperienceDraft[]
   educations: EducationDraft[]
+  /** 证书：ADR-015 §5 ②，进简历区块，上限 5（MULTIVALUE_LIMIT）。 */
+  certificates: CertificateDraft[]
+  /** 作品链接：ADR-015 §5 ②，进简历区块，上限 5（MULTIVALUE_LIMIT）。 */
+  portfolio_links: PortfolioLinkDraft[]
+  /** 期望城市：ADR-015 §5 ③，投递元数据，不进简历区块，上限 5（MULTIVALUE_LIMIT）。 */
+  city_preferences: CityPreferenceDraft[]
 }
 
 /**
@@ -459,6 +481,11 @@ function createEmptyDraft(): ProfileDraft {
       },
     ],
     educations: [createEmptyEducation()],
+    // 证书 / 作品 / 期望城市不是必填，且后端要求 `name`/`label`/`url`/`city` 至少 1 字，
+    // 预填空行既逼用户删、又会在提交时因空串 422。所以给空数组，由「+ 添加」按需新增。
+    certificates: [],
+    portfolio_links: [],
+    city_preferences: [],
   }
 }
 
@@ -487,6 +514,20 @@ function draftFromProfile(profile: ProfileRead): ProfileDraft {
       degree: education.degree,
       edu_start: toMonth(education.edu_start),
       edu_end: toMonth(education.edu_end),
+    })),
+    // ADR-015 §5：后端返回的子表。后端 `issuer` / `issued_on` 可能为 null（没填），
+    // 草稿里统一用空串表示「没填」——`<input type="date">` / 文本框不接受 null。
+    certificates: (profile.certificates ?? []).map((certificate) => ({
+      name: certificate.name,
+      issuer: certificate.issuer ?? '',
+      issued_on: certificate.issued_on ?? '',
+    })),
+    portfolio_links: (profile.portfolio_links ?? []).map((link) => ({
+      label: link.label,
+      url: link.url,
+    })),
+    city_preferences: (profile.city_preferences ?? []).map((city) => ({
+      city: city.city,
     })),
   }
 }
@@ -685,6 +726,21 @@ function normalizeDraft(raw: ProfileDraft): ProfileDraft {
         edu_start: toMonth(education.edu_start),
         edu_end: toMonth(education.edu_end),
       })),
+    // ADR-015 §5（B4 之后才加的字段）：老草稿缺这三个键必须补成空数组，
+    // 否则会让整份旧草稿被判废、用户正在编辑的内容悄悄丢掉。有则过滤掉脏元素。
+    certificates: (raw.certificates ?? [])
+      .filter((certificate) => certificate && typeof certificate.name === 'string')
+      .map((certificate) => ({
+        name: certificate.name,
+        issuer: certificate.issuer ?? '',
+        issued_on: certificate.issued_on ?? '',
+      })),
+    portfolio_links: (raw.portfolio_links ?? [])
+      .filter((link) => link && typeof link.label === 'string' && typeof link.url === 'string')
+      .map((link) => ({ label: link.label, url: link.url })),
+    city_preferences: (raw.city_preferences ?? [])
+      .filter((city) => city && typeof city.city === 'string')
+      .map((city) => ({ city: city.city })),
   }
 }
 
@@ -705,6 +761,29 @@ function meaningfulExperiences(source: ProfileDraft): ExperienceDraft[] {
 
 function meaningfulEducations(source: ProfileDraft): EducationDraft[] {
   return (source.educations ?? []).filter((education) => education.school.trim() !== '')
+}
+
+/**
+ * 证书的有效行：锚点是 `name`（后端必填 min_length=1）。
+ * 颁发机构 / 颁发日期是选填，空着不影响这一行算「有内容」。
+ */
+function meaningfulCertificates(source: ProfileDraft): CertificateDraft[] {
+  return (source.certificates ?? []).filter((certificate) => certificate.name.trim() !== '')
+}
+
+/**
+ * 作品链接的有效行：锚点是 `label` 与 `url` 都必填（后端 min_length=1），
+ * 任何一个没填都视为 UI 占位行，提交与比较时都跳过。
+ */
+function meaningfulPortfolioLinks(source: ProfileDraft): PortfolioLinkDraft[] {
+  return (source.portfolio_links ?? []).filter(
+    (link) => link.label.trim() !== '' && link.url.trim() !== '',
+  )
+}
+
+/** 期望城市的有效行：锚点是 `city`（后端必填 min_length=1）。 */
+function meaningfulCityPreferences(source: ProfileDraft): CityPreferenceDraft[] {
+  return (source.city_preferences ?? []).filter((city) => city.city.trim() !== '')
 }
 
 /**
@@ -747,6 +826,18 @@ function comparableOf(source: ProfileDraft): string {
       education.edu_start,
       education.edu_end,
     ]),
+    // ADR-015 §5：三格都进比较投影，否则「只加了一条证书」会被判成没有未保存修改。
+    // 与技能等一致——只投影有效行，空行不算内容，否则空白骨架会跟服务端 0 条判成有差异。
+    certificates: meaningfulCertificates(source).map((certificate) => [
+      certificate.name.trim(),
+      certificate.issuer.trim(),
+      certificate.issued_on || '',
+    ]),
+    portfolio_links: meaningfulPortfolioLinks(source).map((link) => [
+      link.label.trim(),
+      link.url.trim(),
+    ]),
+    city_preferences: meaningfulCityPreferences(source).map((city) => city.city.trim()),
   })
 }
 
@@ -884,6 +975,13 @@ export const useResumeStore = defineStore('resume', () => {
   /** 教育经历：至少保留 1 段，最多与后端 `max_length=5` 对齐。 */
   const canAddEducation = computed(() => draft.educations.length < EDUCATION_LIMIT.max)
   const canRemoveEducation = computed(() => draft.educations.length > EDUCATION_LIMIT.min)
+  /** 证书 / 作品 / 期望城市：可选，下限 0（不预填空行），上限与后端 max_length=5 对齐。 */
+  const canAddCertificate = computed(() => draft.certificates.length < MULTIVALUE_LIMIT.max)
+  const canRemoveCertificate = computed(() => draft.certificates.length > MULTIVALUE_LIMIT.min)
+  const canAddPortfolioLink = computed(() => draft.portfolio_links.length < MULTIVALUE_LIMIT.max)
+  const canRemovePortfolioLink = computed(() => draft.portfolio_links.length > MULTIVALUE_LIMIT.min)
+  const canAddCityPreference = computed(() => draft.city_preferences.length < MULTIVALUE_LIMIT.max)
+  const canRemoveCityPreference = computed(() => draft.city_preferences.length > MULTIVALUE_LIMIT.min)
 
   /**
    * 内容改动的**唯一**出口（S1 / S5）。
@@ -922,6 +1020,9 @@ export const useResumeStore = defineStore('resume', () => {
     draft.skills = next.skills
     draft.experiences = next.experiences
     draft.educations = next.educations
+    draft.certificates = next.certificates
+    draft.portfolio_links = next.portfolio_links
+    draft.city_preferences = next.city_preferences
     savedProfile.value = profile
     // 基线取**服务端那一份**而不是 `next`：恢复本地草稿时 `next` 是草稿、profile 是服务器，
     // 两者不同才正是「有未保存的修改」要表达的事（S2）。
@@ -1083,6 +1184,69 @@ export const useResumeStore = defineStore('resume', () => {
     markContentChanged()
   }
 
+  /* ------------------------------ 证书（ADR-015 §5 ②） ------------------------------ */
+
+  function updateCertificate(index: number, field: keyof CertificateDraft, value: string): void {
+    const certificate = draft.certificates[index]
+    if (!certificate) return
+    certificate[field] = value
+    markContentChanged()
+  }
+
+  function addCertificate(): void {
+    if (!canAddCertificate.value) return
+    draft.certificates.push({ name: '', issuer: '', issued_on: '' })
+    markContentChanged()
+  }
+
+  function removeCertificate(index: number): void {
+    if (!canRemoveCertificate.value) return
+    draft.certificates.splice(index, 1)
+    markContentChanged()
+  }
+
+  /* ------------------------------ 作品链接（ADR-015 §5 ②） ------------------------------ */
+
+  function updatePortfolioLink(index: number, field: keyof PortfolioLinkDraft, value: string): void {
+    const link = draft.portfolio_links[index]
+    if (!link) return
+    link[field] = value
+    markContentChanged()
+  }
+
+  function addPortfolioLink(): void {
+    if (!canAddPortfolioLink.value) return
+    draft.portfolio_links.push({ label: '', url: '' })
+    markContentChanged()
+  }
+
+  function removePortfolioLink(index: number): void {
+    if (!canRemovePortfolioLink.value) return
+    draft.portfolio_links.splice(index, 1)
+    markContentChanged()
+  }
+
+  /* ------------------------------ 期望城市（ADR-015 §5 ③） ------------------------------ */
+
+  function updateCityPreference(index: number, value: string): void {
+    const city = draft.city_preferences[index]
+    if (!city) return
+    city.city = value
+    markContentChanged()
+  }
+
+  function addCityPreference(): void {
+    if (!canAddCityPreference.value) return
+    draft.city_preferences.push({ city: '' })
+    markContentChanged()
+  }
+
+  function removeCityPreference(index: number): void {
+    if (!canRemoveCityPreference.value) return
+    draft.city_preferences.splice(index, 1)
+    markContentChanged()
+  }
+
   /**
    * 组装请求体：去首尾空格，日期空串转 null，熟练度固定 3，年级/专业不再提交。
    *
@@ -1137,6 +1301,20 @@ export const useResumeStore = defineStore('resume', () => {
         // 后端是 DATE：`YYYY-MM` 补成当月 1 号；空值由生成前校验拦住。
         edu_start: toIsoDate(education.edu_start) ?? '',
         edu_end: toIsoDate(education.edu_end),
+      })),
+      // ADR-015 §5：三格按后端契约发出，空行必须剔除——后端 `name`/`label`/`url`/`city`
+      // 都要求 min_length=1，发空串会 422。`issued_on` 空串转 null（至今 / 没填）。
+      certificates: meaningfulCertificates(draft).map((certificate) => ({
+        name: certificate.name.trim(),
+        issuer: certificate.issuer.trim() || null,
+        issued_on: certificate.issued_on ? certificate.issued_on : null,
+      })),
+      portfolio_links: meaningfulPortfolioLinks(draft).map((link) => ({
+        label: link.label.trim(),
+        url: link.url.trim(),
+      })),
+      city_preferences: meaningfulCityPreferences(draft).map((city) => ({
+        city: city.city.trim(),
       })),
     }
   }
@@ -1702,7 +1880,7 @@ export const useResumeStore = defineStore('resume', () => {
     if (!experience) return null
     const parts: string[] = []
     if (target.truncated) {
-      parts.push('模型写得比上限还长，这段已被截断，请自己补完整。')
+      parts.push('这段内容超长，末尾已被截断，请自己补完整。')
     }
     if (target.targetWords !== null) {
       const over = experience.description.length + experience.responsibility.length - target.targetWords
@@ -1952,6 +2130,12 @@ export const useResumeStore = defineStore('resume', () => {
     canRemoveExperience,
     canAddEducation,
     canRemoveEducation,
+    canAddCertificate,
+    canRemoveCertificate,
+    canAddPortfolioLink,
+    canRemovePortfolioLink,
+    canAddCityPreference,
+    canRemoveCityPreference,
     updateProfileField,
     updateSkill,
     addSkill,
@@ -1962,6 +2146,15 @@ export const useResumeStore = defineStore('resume', () => {
     updateEducation,
     addEducation,
     removeEducation,
+    updateCertificate,
+    addCertificate,
+    removeCertificate,
+    updatePortfolioLink,
+    addPortfolioLink,
+    removePortfolioLink,
+    updateCityPreference,
+    addCityPreference,
+    removeCityPreference,
     validateForGenerate,
     validateForSave,
     validateForPolish,

@@ -113,10 +113,10 @@ export type ThemeId = 'forest' | 'ink' | 'navy' | 'wine' | 'plum' | 'cocoa' | 's
 /**
  * 可调顺序的模块 id（D5.3）。与后端 `document_style.SectionId` 同源。
  *
- * 只有这三个：`visible`（隐藏模块）本轮不做（ADR-007 §6.8(6)），
+ * ADR-015 扩为五段；`visible`（隐藏模块）不做（ADR-007 §6.8(6)），
  * 它与「生成简历要求技能/经历非空」的完整性校验会直接打架。
  */
-export type SectionId = 'educations' | 'skills' | 'experiences'
+export type SectionId = 'educations' | 'skills' | 'experiences' | 'certificates' | 'portfolio'
 
 /** 一个模块的排版元信息：id + 标题。**不含内容**（内容在各自子表 / 草稿数组里）。 */
 export interface LayoutSection {
@@ -127,8 +127,8 @@ export interface LayoutSection {
 /**
  * 后端 `layout_config` 列的 JSON 形状（D5.3）。
  *
- * `version` 目前恒为 1；读接口返回的永远是**解析后的完整配置**
- * （3 段、合法 id、标题非空），前端不需要再实现一遍降级矩阵。
+ * `version` 目前为 2；读接口返回的是**解析后的完整配置**
+ * （5 段、合法 id、标题非空）。
  */
 export interface LayoutConfig {
   version: number
@@ -142,6 +142,33 @@ export interface EducationInput {
   degree: Degree
   edu_start: string
   edu_end: string | null
+}
+
+export interface CertificateInput {
+  name: string
+  issuer: string | null
+  issued_on: string | null
+}
+
+export interface PortfolioLinkInput {
+  label: string
+  url: string
+}
+
+export interface CityPreferenceInput {
+  city: string
+}
+
+export interface CertificateRead extends CertificateInput {
+  id: string
+}
+
+export interface PortfolioLinkRead extends PortfolioLinkInput {
+  id: string
+}
+
+export interface CityPreferenceRead extends CityPreferenceInput {
+  id: string
 }
 
 export interface SkillRead extends SkillInput {
@@ -235,6 +262,10 @@ export interface ProfileUpsertRequest {
   skills: SkillInput[]
   experiences: ExperienceInput[]
   educations: EducationInput[]
+  /** ADR-015：各 0–5 条；PUT 全量替换，省略也会清空。 */
+  certificates: CertificateInput[]
+  portfolio_links: PortfolioLinkInput[]
+  city_preferences: CityPreferenceInput[]
 }
 
 export interface ProfileRead {
@@ -263,6 +294,9 @@ export interface ProfileRead {
   skills: SkillRead[]
   experiences: ExperienceRead[]
   educations: EducationRead[]
+  certificates: CertificateRead[]
+  portfolio_links: PortfolioLinkRead[]
+  city_preferences: CityPreferenceRead[]
 }
 
 /** `GET /api/v1/profiles/me` 未填写档案时返回 `{ profile: null }`。 */

@@ -4,7 +4,7 @@ from datetime import date
 from html import escape
 
 from app.core.document_style import DEFAULT_SECTIONS, DEFAULT_THEME, Section, ThemeId, get_theme
-from app.schemas.profile import EducationInput
+from app.schemas.profile import CertificateInput, EducationInput, PortfolioLinkInput
 from app.schemas.resume import ExperienceInput, ProfileInput, SkillInput
 
 
@@ -29,6 +29,8 @@ class ResumeGenerator(ABC):
         educations: Sequence[EducationInput] = (),
         theme: ThemeId = DEFAULT_THEME,
         layout: Sequence[Section] | None = None,
+        certificates: Sequence[CertificateInput] = (),
+        portfolio: Sequence[PortfolioLinkInput] = (),
     ) -> str:
         """Generate HTML from structured student information."""
 
@@ -46,6 +48,8 @@ class TemplateResumeGenerator(ResumeGenerator):
         h3.education-school / p.education-meta > span.edu-*  （教育）
         div.skill-list > span.skill-item                      （技能）
         div.experience-heading > h3.experience-title + span.date（经历）
+        h3.certificate-name / p.certificate-meta > span.certificate-*（证书，B4）
+        h3.portfolio-label / p.portfolio-meta > a.portfolio-url（作品链接，B4）
 
     文档标题仍放在 `<head><title>`，不进正文——正文第一行是姓名。
 
@@ -57,9 +61,9 @@ class TemplateResumeGenerator(ResumeGenerator):
     于是「改主题 → 预览立刻变」和「生成物自带主题」是同一套机制。
 
     **顺序与标题（D5.3）**：模板里不再有 `{education_section}` 这类「位置即顺序」的
-    占位符，只剩一个 `{sections}`。三个模块先各自渲染成片段放进 `blocks`，再按
-    `layout` 给出的顺序拼接（ADR-007 §7.3）。这样「改顺序」只是换一个列表，
-    不需要同时改三处硬编码（模板 / 生成器 / 预览）。
+    占位符，只剩一个 `{sections}`。五个模块（B4 / ADR-015 §2.2 起含证书与作品链接）
+    先各自渲染成片段放进 `blocks`，再按 `layout` 给出的顺序拼接（ADR-007 §7.3）。
+    这样「改顺序」只是换一个列表，不需要同时改多处硬编码（模板 / 生成器 / 预览）。
 
     三个必须守住的细节：
     1. **「有没有内容」在生成片段时判断**，不在拼接时判断——否则用户删光技能后，
@@ -92,6 +96,8 @@ class TemplateResumeGenerator(ResumeGenerator):
         educations: Sequence[EducationInput] = (),
         theme: ThemeId = DEFAULT_THEME,
         layout: Sequence[Section] | None = None,
+        certificates: Sequence[CertificateInput] = (),
+        portfolio: Sequence[PortfolioLinkInput] = (),
     ) -> str:
         # 联系方式：手机号 + 可选邮箱，结构与预览页的 `.contact` 内部完全一致。
         #
@@ -151,10 +157,53 @@ class TemplateResumeGenerator(ResumeGenerator):
             for education in sorted(educations, key=lambda item: item.edu_start, reverse=True)
         )
 
+        # 证书（B4 / ADR-015 §2.1）：name 是锚点必有；issuer / issued_on 选填，
+        # 与邮箱同一口径——可选项缺了**不标「待补充」**，只渲染填了的那几格，
+        # 两格都空时连 meta 行都不留（纸面上不留一条看不见的缝）。
+        certificate_articles: list[str] = []
+        for certificate in certificates:
+            meta_parts: list[str] = []
+            if certificate.issuer:
+                meta_parts.append(
+                    f'<span class="certificate-issuer">{escape(certificate.issuer)}</span>'
+                )
+            if certificate.issued_on:
+                meta_parts.append(
+                    f'<span class="certificate-date">{_format_month(certificate.issued_on)}</span>'
+                )
+            meta_html = (
+                '<p class="certificate-meta">'
+                + '<span class="certificate-divider"> ｜ </span>'.join(meta_parts)
+                + "</p>"
+                if meta_parts
+                else ""
+            )
+            certificate_articles.append(
+                '<article class="paper-experience">'
+                f'<h3 class="certificate-name">{escape(certificate.name)}</h3>'
+                f"{meta_html}"
+                "</article>"
+            )
+        certificate_items = "".join(certificate_articles)
+
+        # 作品链接（B4 / ADR-015 §2.1）：label + 可点击 URL。
+        # `href` 也过 `escape()`（防属性 breakout）；scheme 白名单（http/https）在
+        # 写侧 `PortfolioLinkInput` 已拦，`javascript:` 进不到这里。
+        portfolio_items = "".join(
+            '<article class="paper-experience">'
+            f'<h3 class="portfolio-label">{escape(link.label)}</h3>'
+            '<p class="portfolio-meta">'
+            f'<a class="portfolio-url" href="{escape(link.url)}" target="_blank" '
+            f'rel="noopener noreferrer">{escape(link.url)}</a>'
+            "</p>"
+            "</article>"
+            for link in portfolio
+        )
+
         # 片段缓存：key 是模块 id，value 是**已经渲染好**的「栏目标题以下的正文」。
         # 有内容才进 dict —— 空模块从这里就消失了，拼接阶段不必再判一次。
         # 技能要多包一层 `.skill-list`（`ResumePreview.vue` 的 flex 换行靠它），
-        # 教育 / 项目的主体直接是 `<article>`，由外层 `<section>` 承载。
+        # 教育 / 项目 / 证书 / 作品的主体直接是 `<article>`，由外层 `<section>` 承载。
         blocks: dict[str, str] = {}
         if education_items:
             blocks["educations"] = education_items
@@ -162,6 +211,10 @@ class TemplateResumeGenerator(ResumeGenerator):
             blocks["skills"] = f'<div class="skill-list">{skill_items}</div>'
         if experience_items:
             blocks["experiences"] = experience_items
+        if certificate_items:
+            blocks["certificates"] = certificate_items
+        if portfolio_items:
+            blocks["portfolio"] = portfolio_items
 
         # 按 layout 的顺序拼接。`layout=None` 时用默认顺序，
         # 所以老调用点（不传 layout）的行为与 D5.2 完全一致。

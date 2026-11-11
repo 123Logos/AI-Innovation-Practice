@@ -146,6 +146,11 @@ function profileFixture(id: string): ProfileRead {
     skills: [],
     experiences: [],
     educations: [],
+    // 批次 B4（ADR-015 §2.1）新增的三组子表读数：形状完整的档案必须带上它们，
+    // 否则 `draftFromProfile()` 一类「按契约读」的路径在测试里会与真实响应不同形。
+    certificates: [],
+    portfolio_links: [],
+    city_preferences: [],
   }
 }
 

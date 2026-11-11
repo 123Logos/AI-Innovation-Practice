@@ -133,11 +133,12 @@ def test_frontend_custom_layout_payload_is_accepted() -> None:
 
     这条与上一条一起覆盖了 `layout_config` 的两种真实请求形状：
     默认 → `null`，自定义 → `{version, sections[]}`。
+    ADR-015 升版后前端发 `version: 2`（前端 `LAYOUT_VERSION` 同源常量同步升）。
     """
     payload = {
         **_frontend_payload(),
         "layout_config": {
-            "version": 1,
+            "version": 2,
             "sections": [
                 {"id": "skills", "title": "技术栈"},
                 {"id": "educations", "title": "教育背景"},
