@@ -9,6 +9,8 @@ import {
 import type { EducationDraft } from '@/stores/resume'
 import { currentMonthValue, todayIsoDate } from '@/utils/datetime'
 
+import AutoTextarea from './AutoTextarea.vue'
+
 const store = useResumeStore()
 
 /**
@@ -42,10 +44,15 @@ function onEducationInput(index: number, field: keyof EducationDraft, event: Eve
 
 function onExperienceInput(
   index: number,
-  field: 'title' | 'start_date' | 'end_date' | 'description' | 'responsibility',
+  field: 'title' | 'start_date' | 'end_date',
   event: Event,
 ): void {
-  store.updateExperience(index, field, (event.target as HTMLInputElement | HTMLTextAreaElement).value)
+  store.updateExperience(index, field, (event.target as HTMLInputElement).value)
+}
+
+/** 两个多行字段走共享组件，拿到的已经是字符串，不再从 `event.target` 上抠值。 */
+function onExperienceText(index: number, field: 'description' | 'responsibility', value: string): void {
+  store.updateExperience(index, field, value)
 }
 </script>
 
@@ -259,16 +266,18 @@ function onExperienceInput(
         </div>
         <label class="field">
           <span>项目描述</span>
-          <textarea
-            :value="experience.description"
-            @input="onExperienceInput(index, 'description', $event)"
+          <AutoTextarea
+            :model-value="experience.description"
+            :min-height="58"
+            @update:model-value="onExperienceText(index, 'description', $event)"
           />
         </label>
         <label class="field">
           <span>个人职责</span>
-          <textarea
-            :value="experience.responsibility"
-            @input="onExperienceInput(index, 'responsibility', $event)"
+          <AutoTextarea
+            :model-value="experience.responsibility"
+            :min-height="58"
+            @update:model-value="onExperienceText(index, 'responsibility', $event)"
           />
         </label>
       </article>
@@ -301,7 +310,8 @@ h1 { font-size: 24px; font-weight: 650; }
 /* 圆角与 Element Plus 侧（纸张下拉、润色弹窗里的输入框）统一到 `--ui-radius`。 */
 input, textarea, select { width: 100%; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 9px 10px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: 13px; outline: 0; }
 input:focus, textarea:focus, select:focus { border-color: var(--theme-rule); box-shadow: 0 0 0 2px var(--theme-fade); }
-textarea { min-height: 58px; resize: vertical; line-height: 1.45; }
+/* 高度归 AutoTextarea（守则 F1）：这里只留行高，下限 58px 由调用点的 `min-height` 传进去。 */
+textarea { line-height: 1.45; }
 .field-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .text-button { justify-self: start; border: 0; padding: 0; color: var(--theme-primary); background: transparent; cursor: pointer; font-size: 12px; }
 .text-button:disabled { color: var(--el-text-color-disabled); cursor: not-allowed; }

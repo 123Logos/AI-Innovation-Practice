@@ -69,6 +69,29 @@ export default tseslint.config(
   },
 
   {
+    // G2 的 textarea 半边（批次 F5，守则 F1）。老板的硬约束是「与共享组件同批交付，
+    // 不要留任何注释豁免」——所以豁免写在**配置的 files/ignores 这一层**，全站只放一个文件，
+    // 而不是在源码里挂 `<!-- eslint-disable -->`。名单只有一项这件事由
+    // `src/__tests__/formGuards.spec.ts` 钉住：名单一长，这条闸就退回成建议。
+    //
+    // 为什么是 `vue/no-restricted-syntax` 而不是核心那条：核心规则只走 `<script>` 的 AST，
+    // 模板体不在它的遍历范围里。plugin-vue 这条是核心规则的 wrapCoreRule(applyDocument)
+    // 版本，选择器落在模板 AST 上，`VElement` 才抓得到标签本身。
+    files: ['src/**/*.{ts,vue}'],
+    ignores: ['src/components/AutoTextarea.vue'],
+    rules: {
+      'vue/no-restricted-syntax': [
+        'error',
+        {
+          selector: "VElement[name='textarea']",
+          message:
+            '多行输入只许用 components/AutoTextarea.vue（守则 F1）：直写 <textarea> 得到的是与内容无关的固定高度盒子，长文会被关进框内滚动条。',
+        },
+      ],
+    },
+  },
+
+  {
     rules: {
       // 只对**参数**放行 `_` 前缀：桩类（如 ResumePreview.spec.ts 的 StubResizeObserver）
       // 必须接住构造签名里的 callback 又不能用它，下划线是这个意思。
