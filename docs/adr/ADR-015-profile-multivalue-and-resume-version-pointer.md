@@ -76,6 +76,7 @@ portfolio_links(id PK, student_profile_id FK→… ON DELETE RESTRICT,
 - 老客户端**能读能看，不能存不能生成**（读回落默认 / 写与生成 422），这是刻意的：宁可给一句修得动的报错，也不静默改人家的排版顺序。
 - 软删除让子表行数随保存次数增长，**「永久删除档案」的路径必须物理清干净**：现有实现按 `_CHILD_TABLES` 列表清子行（`app/repositories/student_profile_repository.py::_CHILD_TABLES` = `("resumes", "educations", "experiences", "skills")`，`::purge_expired` 是执行处），**新表三张必须一起加进这个元组**（`profile_certificates` / `portfolio_links` / `profile_city_preferences`，见 §5 第 ③ 格），漏一张就是「档案删了、证书还活着」。好在该删除是物理 `DELETE ... WHERE student_profile_id IN`，不区分 `deleted_at`，所以软删除积累的历史行会一并清掉，不需要额外条件。
 - 一页 A4 的约束现在要兜 5 个区块，证书/作品很容易把版面撑爆；B4 实现时必须实测 375px 与 1280px 两档，并把「超长时截断还是缩字号」当一条**可见文案**决定，不是 CSS 巧合。
+  **这一格已拍（2026-11-12 第 15 轮）：既不是截断，也不是缩字号**——纸面允许自然长高到第二页，但在「一页高度」处画一条虚线并写「建议单页，此处后内容可能被 HR 忽略」；导出时按 CSS 分页，用 `page-break-inside: avoid` 保证段落不被腰斩。判据与落地拆解见 `ROADMAP.md` §6 第 5 条。
 - 匹配（ADR-013）**暂时读不到**新表：`MatchFacts` 只装 `student_skills / experiences / target_role / deadline`（`app/services/match_service.py::_gather`），教育都从来不进。证书/作品要不要进匹配是**另一个 ADR**，不在本 ADR 里顺手定。
 
 ## 4. 替代方案（都否了，理由留档）
