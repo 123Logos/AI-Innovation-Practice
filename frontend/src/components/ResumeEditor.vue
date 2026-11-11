@@ -280,6 +280,13 @@ function onExperienceText(index: number, field: 'description' | 'responsibility'
             @update:model-value="onExperienceText(index, 'responsibility', $event)"
           />
         </label>
+        <!--
+          接受润色之后这一段的目标与截断标记（ADR-018 §2.5 / §6）。
+          超出字数跟着当前文字实时算，删到目标以内这行自己消失。
+        -->
+        <p v-if="store.polishNoteFor(index)" class="polish-note" role="status">
+          {{ store.polishNoteFor(index) }}
+        </p>
       </article>
       <button
         class="text-button"
@@ -313,6 +320,8 @@ input:focus, textarea:focus, select:focus { border-color: var(--theme-rule); box
 /* 高度归 AutoTextarea（守则 F1）：这里只留行高，下限 58px 由调用点的 `min-height` 传进去。 */
 textarea { line-height: 1.45; }
 .field-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+/* 润色超限 / 截断：琥珀色细条，与「未保存」同色系——它要用户动手，不是报错。 */
+.polish-note { margin: 0; border-left: 3px solid var(--ui-warning-border); padding-left: 8px; color: var(--ui-ink-muted); font-size: 12px; line-height: 1.6; }
 .text-button { justify-self: start; border: 0; padding: 0; color: var(--theme-primary); background: transparent; cursor: pointer; font-size: 12px; }
 .text-button:disabled { color: var(--el-text-color-disabled); cursor: not-allowed; }
 .skill-row { display: grid; grid-template-columns: minmax(0, 1fr) 20px; align-items: center; gap: 8px; }

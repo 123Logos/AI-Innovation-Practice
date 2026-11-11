@@ -27,7 +27,7 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { AxiosError, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import App from '@/App.vue'
 import { http } from '@/api/client'
@@ -241,17 +241,29 @@ describe('外框只有一处定义（守则 L1）', () => {
   })
 
   it('简历工作台：外框、三列工作区与纸面列同屏，高度依赖没有被搬走', async () => {
+    // 这一页的淡入必须真的生效：`<Transition>` 认不了多根，多根时它**静默不动画**
+    // 并每次报一条警告。判据取那个真实症状，而不是数模板里有几个标签。
+    const warnings: string[] = []
+    vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '))
+    })
     const wrapper = await visit('/')
 
     expect(wrapper.findAll('.app-topbar')).toHaveLength(1)
+    // 批次 F6 显式改写（R1）：这一页原来是四个并列根，`<Transition>` 认不了多根，
+    // 淡入静默失效还每次报一条 Vue 警告。收进单根 `<main class="editor-page">` 之后
+    // 嵌套多了一层——验的还是同一件事：外框换层没漏层、工作区没退化成空壳。
     expect(
-      wrapper.find('.app-shell > .app-body > .app-content > .resume-workspace').exists(),
+      wrapper
+        .find('.app-shell > .app-body > .app-content > main.editor-page > .resume-workspace')
+        .exists(),
     ).toBe(true)
     // `.editor` / `.style-panel` 是 `ResumeEditorView` 打给子组件的类：
     // 它们在，就说明外框换层之后工作区还是三列那一棵，没有退化成空 `<main>`。
     expect(wrapper.find('.resume-workspace > .editor').exists()).toBe(true)
     expect(wrapper.find('.resume-workspace > .style-panel').exists()).toBe(true)
     expect(requested).toContain('get /profiles')
+    expect(warnings.filter((line) => line.includes('non-element root node'))).toEqual([])
   })
 
   it('访客页不带外框：布局是路由嵌套出来的，不是全局糊上去的', async () => {

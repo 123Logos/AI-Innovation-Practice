@@ -72,7 +72,9 @@ describe('生成前的未保存拦截走页面内弹窗（批次 F1b）', () => 
     const generateSpy = vi
       .spyOn(store, 'generate')
       .mockResolvedValue({ resume_id: 'resume-under-test' } as never)
-    store.dirty = true
+    // 走真实动作而不是直接置 `dirty`：批次 F6 起「脏」由内容差异算出来，
+    // 直接赋值绕过了那条计算，测的就不是产品行为了。
+    store.updateProfileField('full_name', '未保存的名字')
     return { store, saveSpy, generateSpy }
   }
 
@@ -107,7 +109,7 @@ describe('生成前的未保存拦截走页面内弹窗（批次 F1b）', () => 
 
   it('没有未保存修改时直接生成，不打扰用户', async () => {
     const { saveSpy, generateSpy, store } = stubGeneratePath()
-    store.dirty = false
+    store.updateProfileField('full_name', '')
     const wrapper = await mountPanel()
 
     await wrapper.find('.generate-button').trigger('click')
@@ -116,5 +118,20 @@ describe('生成前的未保存拦截走页面内弹窗（批次 F1b）', () => 
     expect(bodyText('[data-testid="app-dialog"]')).toBe('')
     expect(saveSpy).toHaveBeenCalledTimes(0)
     expect(generateSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('失效态：主行动带高亮环，紧挨着它一行说清为什么要点（S5）', async () => {
+    stubGeneratePath()
+    // 返回值里的 spy 本条用不上：这里验的是「点亮但不自动发请求」，不是调用次数。
+    const wrapper = await mountPanel()
+
+    const button = wrapper.find('.generate-button')
+    expect(button.classes()).toContain('generate-button--urgent')
+    const notice = wrapper.find('.notice')
+    expect(notice.text()).toBe('内容已更新，点击生成最新简历。')
+    // 「在旁边」是判据的一部分：提示不是藏在面板另一头，而是主行动的下一个兄弟。
+    expect(notice.element.previousElementSibling).toBe(button.element)
+    // 不自动重生成：点亮只是点亮，请求一次都没发。
+    expect(wrapper.find('.generate-button__dot').exists()).toBe(true)
   })
 })

@@ -46,41 +46,50 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <p v-if="loadError" class="load-error">{{ loadError }}</p>
-  <!-- 稳定态实测：表单前三段 1280 档 311/84/68px、375 档 311/68/68px，段间距 20px（`.form-section`）。 -->
-  <SkeletonList
-    v-else-if="store.loading"
-    class="load-skeleton"
-    label="正在加载档案…"
-    :heights="[311, 84, 68]"
-    :heights-compact="[311, 68, 68]"
-    :gap="20"
-  />
+  <!--
+    单根（批次 F6，守则 R1）：外框给 `<RouterView>` 套了 `<Transition>`（批次 F4），
+    而 `<Transition>` 只认**单根**——原来这里是四个并列根（错误 / 骨架 / 草稿横幅 / 工作区），
+    于是这一页的淡入静默失效，每次进页面还报一条
+    「Component inside <Transition> renders non-element root node」。
+    收进一个 `<main>` 之后过渡真的生效，页面地标也仍是恰好一个 main。
+  -->
+  <main class="editor-page">
+    <p v-if="loadError" class="load-error">{{ loadError }}</p>
+    <!-- 稳定态实测：表单前三段 1280 档 311/84/68px、375 档 311/68/68px，段间距 20px（`.form-section`）。 -->
+    <SkeletonList
+      v-else-if="store.loading"
+      class="load-skeleton"
+      label="正在加载档案…"
+      :heights="[311, 84, 68]"
+      :heights-compact="[311, 68, 68]"
+      :gap="20"
+    />
 
-  <div v-if="store.pendingDraft" class="draft-banner-shell">
-    <section class="draft-banner">
-      <p class="draft-banner__text">
-        检测到上次未保存的草稿<template v-if="draftSavedAt">（{{ draftSavedAt }}）</template>，
-        是否恢复？
+    <div v-if="store.pendingDraft" class="draft-banner-shell">
+      <section class="draft-banner">
+        <p class="draft-banner__text">
+          检测到上次未保存的草稿<template v-if="draftSavedAt">（{{ draftSavedAt }}）</template>，
+          是否恢复？
+        </p>
+        <div class="draft-banner__actions">
+          <button class="draft-banner__restore" type="button" @click="store.restoreDraft()">
+            恢复草稿
+          </button>
+          <button class="draft-banner__discard" type="button" @click="store.discardDraft()">
+            丢弃
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <div class="resume-workspace">
+      <ResumeEditor class="editor" />
+      <ResumePreview />
+      <StylePanel class="style-panel" />
+      <p class="footer-hint">
+        表单与纸面的改动都要点「保存修改」才会保存 · 生成结果基于「已保存」的档案版本
       </p>
-      <div class="draft-banner__actions">
-        <button class="draft-banner__restore" type="button" @click="store.restoreDraft()">
-          恢复草稿
-        </button>
-        <button class="draft-banner__discard" type="button" @click="store.discardDraft()">
-          丢弃
-        </button>
-      </div>
-    </section>
-  </div>
-
-  <main class="resume-workspace">
-    <ResumeEditor class="editor" />
-    <ResumePreview />
-    <StylePanel class="style-panel" />
-    <p class="footer-hint">
-      表单与纸面的改动都要点「保存修改」才会保存 · 生成结果基于「已保存」的档案版本
-    </p>
+    </div>
   </main>
 </template>
 

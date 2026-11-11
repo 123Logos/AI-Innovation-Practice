@@ -37,8 +37,22 @@ function copyFixture(): ResumeCopy {
   return {
     skills: ['SQL', 'Python'],
     experiences: [
-      { index: 0, description: FIRST_POLISHED, responsibility: '负责后端架构与检索' },
-      { index: 1, description: SECOND_POLISHED, responsibility: '负责图谱构建' },
+      {
+        index: 0,
+        description: FIRST_POLISHED,
+        responsibility: '负责后端架构与检索',
+        target_words: null,
+        over_limit_by: 0,
+        truncated: false,
+      },
+      {
+        index: 1,
+        description: SECOND_POLISHED,
+        responsibility: '负责图谱构建',
+        target_words: null,
+        over_limit_by: 0,
+        truncated: false,
+      },
     ],
   }
 }
@@ -56,7 +70,7 @@ beforeEach(() => {
 
 /**
  * 直接铺草稿，而不是走 `addSkill` / `updateExperience`：
- * 那些方法会顺手 `markDirty()`，而本文件要用「dirty 是否为 true」证明
+ * 那些方法会顺手走 `markContentChanged()`，而本文件要用「dirty 是否为 true」证明
  * 润色流程自己有没有偷偷改表单——起始状态必须是干净的。
  */
 function seedDraft() {

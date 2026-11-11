@@ -15,6 +15,7 @@
 import { computed } from 'vue'
 
 import { POLISH_MODE_LABELS } from '@/api/types'
+import type { PolishedExperience } from '@/api/types'
 import type { PolishResult } from '@/stores/resume'
 
 const props = defineProps<{ modelValue: boolean; result: PolishResult | null }>()
@@ -49,9 +50,31 @@ const segments = computed(() => {
         !!polished &&
         (polished.description !== original.description ||
           polished.responsibility !== original.responsibility),
+      limitNote: limitNoteOf(polished),
     }
   })
 })
+
+/**
+ * 两道边各自的说法（ADR-018 §6 那张表，措辞守 C3：给动作，不只说「超出」）。
+ *
+ * - 超**目标**：必须有数，用户据此自己减字；
+ * - 超**契约**：只要求「出现 + 标注」，**不报少了多少字**（老板 2026-11-09 第 6 轮明确否掉过）。
+ * 两道都吞掉不显示等于违反 ADR——「可见」的定义是在用户正看着的这块区域里可见。
+ */
+function limitNoteOf(polished: PolishedExperience | undefined): string {
+  if (!polished) return ''
+  const parts: string[] = []
+  if (polished.truncated) {
+    parts.push('模型写得比上限还长，这段已被截断，接受后请自己补完整。')
+  }
+  if (polished.target_words !== null && polished.over_limit_by > 0) {
+    parts.push(
+      `比目标（${polished.target_words} 字）多 ${polished.over_limit_by} 字，接受后删掉 ${polished.over_limit_by} 字再保存。`,
+    )
+  }
+  return parts.join('')
+}
 
 /** 技能顺序：只有真的变了才显示这一栏，否则等于提醒用户「这里有个你可能没动的东西」。 */
 const skillsChanged = computed(() => {
@@ -118,6 +141,7 @@ function discard(): void {
           <p class="review-column__text">{{ segment.after.responsibility || '（空）' }}</p>
         </div>
       </div>
+      <p v-if="segment.limitNote" class="review-block__limit">{{ segment.limitNote }}</p>
     </section>
 
     <template #footer>
@@ -146,6 +170,15 @@ function discard(): void {
 .review-block {
   border-top: 1px solid var(--ui-border);
   padding: 16px 0;
+}
+/* 超限 / 截断提示：琥珀色，与「未保存」同色系——它要的是用户动手，不是报错。 */
+.review-block__limit {
+  margin: 10px 0 0;
+  border-left: 3px solid var(--ui-warning-border);
+  padding-left: 8px;
+  color: var(--ui-ink-muted);
+  font-size: 12px;
+  line-height: 1.6;
 }
 .review-block__title {
   margin: 0 0 12px;

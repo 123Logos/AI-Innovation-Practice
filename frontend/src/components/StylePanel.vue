@@ -259,12 +259,6 @@ function printResume(): void {
           @click="handleThemeChange(option.id)"
         />
       </div>
-      <p v-if="store.styleNotice" class="notice">
-        {{ store.styleNotice }}
-        <button class="notice__close" type="button" @click="store.dismissStyleNotice()">
-          知道了
-        </button>
-      </p>
     </div>
 
     <!--
@@ -332,12 +326,20 @@ function printResume(): void {
     <div class="panel-section">
       <button
         class="generate-button"
+        :class="{ 'generate-button--urgent': store.needsRegenerate }"
         type="button"
         :disabled="store.generating"
         @click="handleGenerate"
       >
+        <span v-if="store.needsRegenerate && !store.generating" class="generate-button__dot" aria-hidden="true"></span>
         {{ store.generating ? '正在生成，请稍候…' : '生成简历' }}
       </button>
+      <!--
+        S5 / ADR-018 §2.5：失效即点亮主行动，并在它旁边说清为什么要点。
+        这一行**不可关闭**——只要还没重新生成，理由就仍然成立；生成成功后自然消失。
+        刻意不自动重生成：那会替用户花他自己的额度。
+      -->
+      <p v-if="store.regenerateHint" class="notice" role="status">{{ store.regenerateHint }}</p>
       <button
         class="polish-button"
         type="button"
@@ -462,12 +464,8 @@ h2 { font-size: 18px; }
 .layout-arrow:disabled { color: var(--el-text-color-disabled); cursor: not-allowed; }
 .layout-arrow:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 1px; }
 .layout-hint { color: var(--ui-ink-faint); font-size: 11px; line-height: 1.5; }
-/* 样式改动把「已生成简历」顶掉后的提示：琥珀色，与「未保存」同色系但不抢眼。 */
+/* 「为什么要点生成」那一行：琥珀色，与「未保存」同色系但不抢眼。不可关闭，故没有关闭按钮。 */
 .notice {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
   margin: 0;
   border-left: 3px solid var(--ui-warning-border);
   padding: 6px 0 6px 8px;
@@ -476,27 +474,21 @@ h2 { font-size: 18px; }
   font-size: 11px;
   line-height: 1.5;
 }
-.notice__close {
-  flex: 0 0 auto;
-  border: 0;
-  border-radius: var(--ui-radius);
-  padding: 2px 4px;
-  color: var(--ui-warning);
-  background: transparent;
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-  text-decoration: underline;
-}
-.notice__close:focus-visible { outline: 2px solid var(--ui-warning-border); outline-offset: 1px; }
 .panel-label { color: var(--theme-primary); font-size: 12px; }
 .hint { color: var(--ui-ink-muted); font-size: 13px; line-height: 1.6; }
 /* 浏览器打印页眉/页脚（日期、URL）无法用代码关掉，只能提示用户自己取消勾选。 */
 .print-tip { color: var(--ui-warning); font-size: 12px; line-height: 1.5; }
 .warning { color: var(--ui-warning); font-size: 11px; line-height: 1.5; }
-.generate-button { width: 100%; border: 0; border-radius: var(--ui-radius); padding: 11px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: 13px; line-height: 1.4; }
+.generate-button { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; border: 0; border-radius: var(--ui-radius); padding: 11px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: 13px; line-height: 1.4; }
 .generate-button:hover:not(:disabled) { background: var(--theme-primary-hover); }
 .generate-button:disabled { opacity: .6; cursor: progress; }
+/*
+ * 失效态（S5）：外圈一道琥珀环 + 一颗小圆点，把「这个按钮现在有事要做」说出来。
+ * 刻意**不做呼吸动画**：骨架那条 pulse 是把 opacity 压到 .55，用在主行动上会让
+ * 按钮文字跟着变淡，等于用可读性换注意力。环与点是不动的，对比度始终不变。
+ */
+.generate-button--urgent { box-shadow: 0 0 0 2px var(--ui-warning-border); }
+.generate-button__dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--ui-warning-border); }
 /* 润色是「可选的第二步」，所以描边而不是实心：与「生成简历」同宽但明显轻一级。 */
 .polish-button { width: 100%; border: 1px solid var(--theme-rule); border-radius: var(--ui-radius); padding: 10px; color: var(--theme-primary); background: transparent; cursor: pointer; font: inherit; font-size: 13px; line-height: 1.4; }
 .polish-button:hover:not(:disabled) { color: var(--theme-on-primary); background: var(--theme-primary); }

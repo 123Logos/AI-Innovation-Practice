@@ -357,6 +357,19 @@ export interface PolishedExperience {
   index: number
   description: string
   responsibility: string
+  /**
+   * 本次请求对它生效的目标字数（ADR-018 §2.2）：只有 `expand` 档有，其它档 `null`。
+   * 它是**目标**不是命令——服务端不再按它砍尾。
+   */
+  target_words: number | null
+  /** 实际字数超出目标多少，不超为 0。超目标必须报数，用户据此自己减字。 */
+  over_limit_by: number
+  /**
+   * 撞的是**响应契约**那道硬边（1200/600）而不是目标：该段被截到契约上限，
+   * 其余段照常返回（ADR-018 §2.4）。按老板 2026-11-09 第 6 轮裁定，
+   * 这一道只要求「出现 + 标注」，**不报少了多少字**。
+   */
+  truncated: boolean
 }
 
 /**
