@@ -185,6 +185,36 @@ describe('守则 L2：断点只用同一组值', () => {
     expect(BREAKPOINTS.paperThreeColumn).toBe(794 + 280 + 200 + 64 + 96)
   })
 
+  it('单列堆叠换并排的那一档同样不许缩纸面（§6b 第 3 条量出来的第三处）', () => {
+    const view = file('views/ResumeEditorView.vue').text
+
+    // 基线是单列居中封顶 A4：760 档纸面独占整行 713px，若 761 就换并排，
+    // 1024 档反而只剩 629px——比更窄的屏幕还小。
+    expect(view).toContain(
+      'grid-template-columns: minmax(0, var(--paper-a4-width)); justify-content: center',
+    )
+    expect(view).toContain(`@container app-content (min-width: ${BREAKPOINTS.paperTwoColumn}px)`)
+    // 阈值 = 纸面 794 + 表单下限 300 + 间距 24 + 内缩 56：分完刚好还剩一张原大 A4。
+    expect(BREAKPOINTS.paperTwoColumn).toBe(794 + 300 + 24 + 56)
+    // 三档的方向必须递增，写反任何一档都会让宽屏退回窄形态。
+    expect(BREAKPOINTS.paperTwoColumn).toBeLessThan(BREAKPOINTS.paperThreeColumn)
+  })
+
+  it('常驻左栏只在纸面已封顶的那一档登场（同一条裁定的第二次落地，§6b 第 3 条）', () => {
+    const layout = file('components/AppLayout.vue').text
+
+    // 开关必须问 `sidebar` 那一格而不是 `wide`：后者是 CSS 的宽屏形状档（岗位卡片两列），
+    // 跟着它登场就是 1024→1120 纸面 629→485 那次缩水。
+    expect(layout).toContain('const { isSidebar } = useViewport()')
+    expect(layout).toContain('v-if="isSidebar"')
+    expect(layout).toContain('v-if="!isSidebar && resumesOpen"')
+    expect(layout).not.toContain('isWide')
+    // 阈值不低于算术下限：794 纸面 + 240 左栏 + 24 间距 + 56 内缩 + 15 滚动条 = 1429。
+    expect(BREAKPOINTS.sidebar).toBeGreaterThanOrEqual(794 + 240 + 24 + 56 + 15)
+    // 左栏宽度就是算式里那个 240：改宽它必须一起抬阈值，否则纸面又开始缩水。
+    expect(layout).toContain('flex: 0 0 240px')
+  })
+
   it('宽度相关的 matchMedia 只出现在 composables/useViewport.ts 一处', () => {
     // 正向护栏：收口点自己得真的在用 `matchMedia`，否则「别处都没有」这条会因为
     // 全仓一处都不存在而假绿（`useViewport.ts` 被删空也会绿，那是要拦的）。

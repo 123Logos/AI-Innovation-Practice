@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from app.core.document_style import DEFAULT_THEME, THEME_IDS, THEMES
+from app.core.error_messages import ErrorMessage
 from app.repositories.user_repository import get_engine
 
 PROFILES_URL = "/api/v1/profiles/me"
@@ -95,6 +96,16 @@ def _profile_payload(**overrides: object) -> dict[str, object]:
 def _count(table: str) -> int:
     with get_engine().connect() as connection:
         return int(connection.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar_one())
+
+
+def _count_active(table: str) -> int:
+    """只数活跃行（ADR-015 §2.1：条数上限只数活跃行，历史行不算）。"""
+    with get_engine().connect() as connection:
+        return int(
+            connection.execute(
+                text(f"SELECT COUNT(*) FROM {table} WHERE deleted_at IS NULL")
+            ).scalar_one()
+        )
 
 
 def test_profiles_require_authentication(client: TestClient) -> None:
@@ -206,7 +217,11 @@ def test_put_profile_persists_profile_skills_experiences_and_educations(
 
 
 def test_put_profile_keeps_multiple_educations_then_replaces_them(client: TestClient) -> None:
-    """T7.5：教育经历是一对多子表，PUT 语义为全量替换（先删后插）。"""
+    """T7.5：教育经历是一对多子表，PUT 语义为全量替换。
+
+    ADR-015 §2.1 起替换是**软删除**：旧行盖 `deleted_at` 留在库里，
+    读侧与上限只认活跃行——「旧行必须消失」指的是读侧消失，不是物理消失。
+    """
     token = _register_and_login(client)
     two = _profile_payload(
         educations=[
@@ -230,7 +245,8 @@ def test_put_profile_keeps_multiple_educations_then_replaces_them(client: TestCl
     with get_engine().connect() as connection:
         rows = connection.execute(
             text(
-                "SELECT school, major, degree, edu_start, edu_end FROM educations ORDER BY edu_start"
+                "SELECT school, major, degree, edu_start, edu_end FROM educations "
+                "WHERE deleted_at IS NULL ORDER BY edu_start"
             )
         ).all()
     assert [row.school for row in rows] == ["示例大学", "清华大学"]
@@ -248,11 +264,18 @@ def test_put_profile_keeps_multiple_educations_then_replaces_them(client: TestCl
     replaced = second.json()["data"]["profile"]["educations"]
     assert len(replaced) == 1
     assert replaced[0]["degree"] == "专科"
-    # 旧的两行必须被物理删除，不能残留
-    assert _count("educations") == 1
+    # 活跃行只剩本次提交的一条；旧的两行盖戳留库（软删除），读侧一条都看不见。
+    assert _count_active("educations") == 1
+    assert _count("educations") == 3
     with get_engine().connect() as connection:
-        remaining = connection.execute(text("SELECT school, degree FROM educations")).all()
+        remaining = connection.execute(
+            text("SELECT school, degree FROM educations WHERE deleted_at IS NULL")
+        ).all()
+        history = connection.execute(
+            text("SELECT COUNT(*) FROM educations WHERE deleted_at IS NOT NULL")
+        ).scalar_one()
     assert [(row.school, row.degree) for row in remaining] == [("示例大学", "专科")]
+    assert history == 2
 
 
 def test_put_profile_rejects_unknown_degree(client: TestClient) -> None:
@@ -292,12 +315,45 @@ def test_put_profile_allows_empty_educations(client: TestClient) -> None:
 
 
 def test_put_profile_replaces_children_on_second_call(client: TestClient) -> None:
+    """ADR-018 §5 / X1：**同体 PUT 两次是 no-op**——不 bump `updated_at`、不重建子表。
+
+    这条用例在「全量替换 + 软删除」（ADR-015 §2.1）落地时按裁定改了方向：
+    原先钉的是「每次 PUT 都重建子表」，现在钉的是「内容没变就不发副作用」——
+    没有 no-op 检测，每次无变更保存都会给活跃行盖 `deleted_at` 再复制一份历史行，
+    子表随保存次数爆炸。先例是 `rename_profile` 的「改成原名不写库」。
+    """
     token = _register_and_login(client)
     first = client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token))
     assert first.status_code == 200
-    first_profile_id = first.json()["data"]["profile"]["id"]
+    first_profile = first.json()["data"]["profile"]
+    first_ids = {
+        "skills": {item["id"] for item in first_profile["skills"]},
+        "experiences": {item["id"] for item in first_profile["experiences"]},
+        "educations": {item["id"] for item in first_profile["educations"]},
+    }
 
-    second = client.put(
+    second = client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token))
+
+    assert second.status_code == 200, second.text
+    profile = second.json()["data"]["profile"]
+    assert profile["id"] == first_profile["id"]
+    # updated_at 不 bump（列表顺序不该因为一次无变更保存而跳动）。
+    assert profile["updated_at"] == first_profile["updated_at"]
+    # 子表 id 集合不变：没有重建，也没有盖 deleted_at。
+    assert {item["id"] for item in profile["skills"]} == first_ids["skills"]
+    assert {item["id"] for item in profile["experiences"]} == first_ids["experiences"]
+    assert {item["id"] for item in profile["educations"]} == first_ids["educations"]
+    assert _count("skills") == 3
+    assert _count("experiences") == 1
+    assert _count("educations") == 1
+    with get_engine().connect() as connection:
+        stamped = connection.execute(
+            text("SELECT COUNT(*) FROM skills WHERE deleted_at IS NOT NULL")
+        ).scalar_one()
+    assert stamped == 0, "no-op 保存不许给任何行盖 deleted_at"
+
+    # 反面仍然成立：**内容变了**就全量替换（软删除旧行 + 插新行）。
+    changed = client.put(
         PROFILES_URL,
         json=_profile_payload(
             full_name="李四",
@@ -306,23 +362,35 @@ def test_put_profile_replaces_children_on_second_call(client: TestClient) -> Non
         ),
         headers=_headers(token),
     )
-
-    assert second.status_code == 200, second.text
-    profile = second.json()["data"]["profile"]
-    assert profile["id"] == first_profile_id
-    assert profile["full_name"] == "李四"
-    assert {skill["name"] for skill in profile["skills"]} == {
+    assert changed.status_code == 200, changed.text
+    changed_profile = changed.json()["data"]["profile"]
+    assert changed_profile["full_name"] == "李四"
+    assert {skill["name"] for skill in changed_profile["skills"]} == {
         "Go",
         "Kubernetes",
         "Linux",
         "MySQL",
     }
-    assert len(profile["experiences"]) == 2
-    # 全量替换：子表没有残留，父表只有一行
+    assert len(changed_profile["experiences"]) == 2
+    # `updated_at` 这一格只证明「不倒退」：列是 `DATETIME(0)`（秒级），两次保存在同一秒内
+    # 完成时字符串会逐字相同——no-op 检出上线后这条路径快了很多，靠等跨秒只会变成幽灵红。
+    # 「内容变了就真的重写」由下面两条硬证据承担：子表 id 全换、旧行被盖 deleted_at。
+    assert changed_profile["updated_at"] >= first_profile["updated_at"]
+    assert {item["id"] for item in changed_profile["skills"]}.isdisjoint(first_ids["skills"]), (
+        "内容变了必须全量替换：新行换全新 id，绝不原地改"
+    )
+    with get_engine().connect() as connection:
+        stamped_after_change = connection.execute(
+            text("SELECT COUNT(*) FROM skills WHERE deleted_at IS NOT NULL")
+        ).scalar_one()
+    assert stamped_after_change == 3, "四条旧技能都应被盖戳（历史行留着，不物理删）"
+    # 活跃行只有本次提交的那些；旧行还在库里但盖了戳（软删除，不是物理 DELETE）。
+    assert _count_active("skills") == 4
+    assert _count_active("experiences") == 2
+    assert _count_active("educations") == 1
+    assert _count("skills") == 7, "3 条历史 + 4 条活跃"
+    assert _count("experiences") == 3, "1 条历史 + 2 条活跃"
     assert _count("student_profiles") == 1
-    assert _count("skills") == 4
-    assert _count("experiences") == 2
-    assert _count("educations") == 1
 
 
 def test_profiles_are_isolated_per_user(client: TestClient) -> None:
@@ -1141,7 +1209,8 @@ def test_rename_profile_rejects_duplicate_title(client: TestClient) -> None:
     )
 
     assert response.status_code == 400, response.text
-    assert response.json()["error"]["message"] == "该简历名称已存在"
+    # 文案唯一来源是 G3 那张表（批次 F1c），断言枚举而不是抄中文。
+    assert response.json()["error"]["message"] == ErrorMessage.PROFILE_TITLE_CONFLICT
     detail = client.get(f"{PROFILES_BASE}/{target['id']}", headers=_headers(token))
     assert detail.json()["data"]["profile"]["title"] == "投算法"
 
@@ -1207,7 +1276,8 @@ def test_create_profile_rejects_duplicate_title(client: TestClient) -> None:
     response = client.post(PROFILES_BASE, json={"title": "投后端"}, headers=_headers(token))
 
     assert response.status_code == 400, response.text
-    assert response.json()["error"]["message"] == "该简历名称已存在"
+    # 文案唯一来源是 G3 那张表（批次 F1c），断言枚举而不是抄中文。
+    assert response.json()["error"]["message"] == ErrorMessage.PROFILE_TITLE_CONFLICT
     assert _count("student_profiles") == 1
 
 
@@ -1532,23 +1602,27 @@ def test_unknown_theme_in_db_falls_back_to_forest(client: TestClient) -> None:
 # D5.3：排版（layout_config）
 # --------------------------------------------------------------------------- #
 
-#: 一组合法的自定义排版：顺序打乱、标题全改。
+#: 一组合法的自定义排版：顺序打乱、标题全改（ADR-015 起 version=2、白名单 5 段）。
 CUSTOM_LAYOUT: dict[str, object] = {
-    "version": 1,
+    "version": 2,
     "sections": [
         {"id": "skills", "title": "技术栈"},
         {"id": "experiences", "title": "项目经验"},
         {"id": "educations", "title": "教育背景"},
+        {"id": "certificates", "title": "荣誉证书"},
+        {"id": "portfolio", "title": "我的作品"},
     ],
 }
 
-#: 读侧在 `layout_config IS NULL` 时给出的解析结果（= 默认顺序）。
+#: 读侧在 `layout_config IS NULL` 时给出的解析结果（= 默认顺序，5 段）。
 DEFAULT_LAYOUT: dict[str, object] = {
-    "version": 1,
+    "version": 2,
     "sections": [
         {"id": "educations", "title": "教育经历"},
         {"id": "skills", "title": "技能"},
         {"id": "experiences", "title": "项目经历"},
+        {"id": "certificates", "title": "证书"},
+        {"id": "portfolio", "title": "作品链接"},
     ],
 }
 
@@ -1606,6 +1680,8 @@ def test_layout_config_can_be_saved_and_reread(client: TestClient) -> None:
         "skills",
         "experiences",
         "educations",
+        "certificates",
+        "portfolio",
     ]
 
 
@@ -1649,7 +1725,7 @@ def test_layout_config_rejects_duplicate_ids(client: TestClient) -> None:
         f"{PROFILES_BASE}/{created['id']}",
         json=_profile_payload(
             layout_config={
-                "version": 1,
+                "version": 2,
                 "sections": [
                     {"id": "skills", "title": "技能"},
                     {"id": "skills", "title": "技能 2"},
@@ -1672,7 +1748,7 @@ def test_layout_config_rejects_unknown_section_id(client: TestClient) -> None:
     response = client.put(
         f"{PROFILES_BASE}/{created['id']}",
         json=_profile_payload(
-            layout_config={"version": 1, "sections": [{"id": "awards", "title": "获奖"}]}
+            layout_config={"version": 2, "sections": [{"id": "awards", "title": "获奖"}]}
         ),
         headers=_headers(token),
     )
@@ -1689,7 +1765,7 @@ def test_layout_config_rejects_blank_or_overlong_title(client: TestClient) -> No
         response = client.put(
             f"{PROFILES_BASE}/{created['id']}",
             json=_profile_payload(
-                layout_config={"version": 1, "sections": [{"id": "skills", "title": title}]}
+                layout_config={"version": 2, "sections": [{"id": "skills", "title": title}]}
             ),
             headers=_headers(token),
         )
@@ -1697,14 +1773,14 @@ def test_layout_config_rejects_blank_or_overlong_title(client: TestClient) -> No
 
 
 def test_layout_config_rejects_unknown_version_and_content_fields(client: TestClient) -> None:
-    """`version` 只认 1；顺手在元信息里塞内容字段也 422（`extra="forbid"`）。"""
+    """`version` 只认 2（ADR-015 升版）；顺手在元信息里塞内容字段也 422（`extra="forbid"`）。"""
     token = _register_and_login(client)
     created = _create(client, token)
 
     bad_version = client.put(
         f"{PROFILES_BASE}/{created['id']}",
         json=_profile_payload(
-            layout_config={"version": 2, "sections": [{"id": "skills", "title": "技能"}]}
+            layout_config={"version": 1, "sections": [{"id": "skills", "title": "技能"}]}
         ),
         headers=_headers(token),
     )
@@ -1714,7 +1790,7 @@ def test_layout_config_rejects_unknown_version_and_content_fields(client: TestCl
         f"{PROFILES_BASE}/{created['id']}",
         json=_profile_payload(
             layout_config={
-                "version": 1,
+                "version": 2,
                 "sections": [{"id": "skills", "title": "技能", "items": ["Python"]}],
             }
         ),
@@ -1739,11 +1815,13 @@ def test_copy_from_copies_layout_config(client: TestClient) -> None:
         token,
         source["id"],
         layout_config={
-            "version": 1,
+            "version": 2,
             "sections": [
                 {"id": "educations", "title": "学历"},
                 {"id": "skills", "title": "技术"},
                 {"id": "experiences", "title": "项目"},
+                {"id": "certificates", "title": "证书"},
+                {"id": "portfolio", "title": "作品"},
             ],
         },
     )

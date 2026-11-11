@@ -14,6 +14,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
+from app.core.error_messages import ErrorMessage
 from app.core.responses import success_response
 from app.schemas.auth import UserRead
 from app.schemas.profile import ProfileCreateRequest, ProfileTitleUpdate, ProfileUpsertRequest
@@ -84,9 +85,11 @@ def create_my_profile(
     except ProfileTitleConflictError as error:
         raise _title_conflict() from error
     except ProfileLimitExceededError as error:
+        # 不再 `detail=str(error)`（批次 F1c / G3）：异常文本不是文案来源，
+        # 上屏的话由表里那一句负责。原始信息留在日志/链路里（`raise ... from error`）。
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(error),
+            detail=ErrorMessage.PROFILE_LIMIT,
         ) from error
     return success_response(request, {"profile": profile.model_dump(mode="json")})
 
@@ -246,8 +249,9 @@ def purge_profile(
     except ProfileNotFoundError as error:
         raise _not_found() from error
     except ProfileStateError as error:
+        # 同上：异常族只用来选分支，句子一律取自 G3 那张表。
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(error),
+            detail=ErrorMessage.PROFILE_NOT_TRASHED,
         ) from error
     return success_response(request, {"profile_id": profile_id, "purged": True})

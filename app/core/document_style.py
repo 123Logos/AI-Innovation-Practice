@@ -128,7 +128,7 @@ def get_theme(value: object) -> DocumentTheme:
 # 如果两边各写一套「脏数据怎么办」，同一个库里的坏配置会渲染出两种版式——
 # 而前端没有测试框架，这种漂移在 CI 里发现不了（ADR-007 §7.4）。
 # 所以降级矩阵**只在后端写一份**：读接口直接返回解析后的结果
-# （`GET /profiles/{id}` 的 `layout_config` 恒为「3 段、合法 id、标题非空」），
+# （`GET /profiles/{id}` 的 `layout_config` 恒为「5 段、合法 id、标题非空」），
 # 前端拿到的永远是可以直接 `v-for` 的数据，不需要再判一次。
 #
 # 这与 `paper_size` / `theme` 的「读侧恒为具体值、三态只存在于写侧」是同一条口径。
@@ -151,11 +151,15 @@ def get_theme(value: object) -> DocumentTheme:
 # 这与写路径的严格（未知 id / 重复 id / 超长标题 → 422）刻意不对称：
 # 前者是数据状态（用户无从修复），后者是用户输入（可以报错让他改）。
 
-#: 三个可排序模块的 id。前端 `SectionId`（`frontend/src/api/types.ts`）与此同源。
-SectionId = Literal["educations", "skills", "experiences"]
+#: 五个可排序模块的 id（ADR-015 §2.2：证书与作品链接进简历，各算一节）。
+#: 前端 `SectionId`（`frontend/src/api/types.ts`）与此同源。
+SectionId = Literal["educations", "skills", "experiences", "certificates", "portfolio"]
 
 #: 配置版本。**只有等于这个值才认**，其余一律默认（ADR-007 §6.8(1)）。
-LAYOUT_VERSION = 1
+#: ADR-015 §2.2 起是 2：3 段白名单扩成 5 段。三侧行为刻意不对称——
+#: 读静默回落默认、写 422、**生成也 422**（`ResumeService.generate`），
+#: 已存在简历的 `content_html` 是不可变快照，永不受升版影响。
+LAYOUT_VERSION = 2
 
 #: 标题长度上限（ADR-007 §6.8(4)）：`h2` 在 360px 视口下最多 15 字不折行，取 12 留余量。
 LAYOUT_TITLE_MAX_LEN = 12
@@ -169,13 +173,16 @@ class Section:
     title: str
 
 
-#: 默认顺序，与 D5.3 之前模板里的占位符顺序逐字一致（教育 → 技能 → 项目）。
+#: 默认顺序（ADR-015 §2.2）：教育 → 技能 → 项目 → 证书 → 作品链接。
+#: 前三段与 D5.3 之前模板里的占位符顺序逐字一致，新两段追加在末尾。
 #: 前端 `DEFAULT_LAYOUT_SECTIONS`（`frontend/src/stores/resume.ts`）另有一份，
 #: 由 `tests/test_profile_contract.py::test_default_layout_matches_frontend` 比对。
 DEFAULT_SECTIONS: tuple[Section, ...] = (
     Section("educations", "教育经历"),
     Section("skills", "技能"),
     Section("experiences", "项目经历"),
+    Section("certificates", "证书"),
+    Section("portfolio", "作品链接"),
 )
 
 #: 合法 id 的白名单，顺序同默认顺序。
@@ -264,8 +271,10 @@ def resolve_layout(layout_config: object) -> list[Section]:
         typed_id = cast(SectionId, section_id)
         resolved.append(Section(typed_id, _resolve_title(entry.get("title"), typed_id)))
 
-    # 缺失的模块按默认顺序追加到末尾：用户升级前只见过 3 个模块，
-    # 将来加第 4 个时，老配置靠这一步自动带上它（ADR-007 §6.8(3)）。
+    # 缺失的模块按默认顺序追加到末尾：老配置只见过旧白名单里的模块，
+    # 加新模块时（ADR-015 把 3 段扩成 5 段就是这么发生的），老配置靠这一步自动带上它
+    # （ADR-007 §6.8(3)）。注意这条只管「version 相符但 sections 缺项」；
+    # version 不符的整份回落在上面已经返回默认顺序。
     for section in defaults:
         if section.id not in seen:
             resolved.append(section)

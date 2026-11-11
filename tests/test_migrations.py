@@ -22,6 +22,9 @@ EXPECTED_TABLES = {
     "experiences",
     "job_skills",
     "jobs",
+    "portfolio_links",
+    "profile_certificates",
+    "profile_city_preferences",
     "refresh_tokens",
     "resumes",
     "skill_aliases",
@@ -75,6 +78,9 @@ def _assert_schema_after_upgrade(engine: Engine) -> None:
             "id",
             "student_profile_id",
             "name",
+            # B4（ADR-015 §2.1）：全量替换 + 软删除的两列。
+            "deleted_at",
+            "active_marker",
             "created_at",
             "updated_at",
         }
@@ -104,10 +110,19 @@ def _assert_schema_after_upgrade(engine: Engine) -> None:
             # 技能条目是岗位的组成部分，不独立存在 → CASCADE。
             "fk_jobs_created_by_user_id",
             "fk_job_skills_job_id",
+            # B4（ADR-015 §2.1）：三张多值子表，一律 RESTRICT。
+            "fk_profile_certificates_student_profile_id",
+            "fk_portfolio_links_student_profile_id",
+            "fk_profile_city_preferences_student_profile_id",
+            # B8（ADR-015 §2.3）：全仓唯一非 RESTRICT 的外键——链头行本身可能被删，
+            # RESTRICT 会变成「有指针就删不掉行」的死锁；SET NULL 让指针落空，
+            # 读侧必须显式报错而不是回落猜一条。
+            "fk_resumes_current_version_id",
         }
         # 「附属数据跟着删」的两张表；其余外键一律 RESTRICT（挡住删除）。
         for cascade_fk in ("fk_refresh_tokens_user_id", "fk_job_skills_job_id"):
             assert foreign_keys.pop(cascade_fk) == "CASCADE"
+        assert foreign_keys.pop("fk_resumes_current_version_id") == "SET NULL"
         assert set(foreign_keys.values()) == {"RESTRICT"}
         assert foreign_keys["fk_jobs_created_by_user_id"] == "RESTRICT"
 
@@ -355,6 +370,137 @@ def _assert_schema_after_upgrade(engine: Engine) -> None:
         ).all()
         assert alias_foreign_keys == []
 
+        # ------------------------------------------------------------------ #
+        # B4 + B8（ADR-015 §2.1 / §2.3 / §5）：软删除两列、active_marker 唯一键、
+        # 三张新子表的列名即契约、resumes 版本指针与链头唯一。
+        # ------------------------------------------------------------------ #
+        for table in ("skills", "experiences", "educations"):
+            columns = {
+                row.COLUMN_NAME: row
+                for row in connection.execute(
+                    text(
+                        "SELECT COLUMN_NAME, EXTRA, GENERATION_EXPRESSION "
+                        "FROM information_schema.COLUMNS "
+                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table"
+                    ),
+                    {"table": table},
+                ).all()
+            }
+            assert "deleted_at" in columns, f"{table} 缺软删除列"
+            marker = columns["active_marker"]
+            assert "STORED GENERATED" in str(marker.EXTRA), (
+                f"{table}.active_marker 必须是 STORED 生成列"
+            )
+            assert "if" in str(marker.GENERATION_EXPRESSION).lower()
+
+        # 唯一键必须是含 active_marker 的三元组：少了它，「删掉再加回同名」撞 1062；
+        # 历史行（marker=NULL）靠 MySQL「唯一索引允许多个 NULL」自由重复。
+        for table, index, expected in (
+            ("skills", "uq_skills_profile_name", ["student_profile_id", "name", "active_marker"]),
+            (
+                "profile_certificates",
+                "uq_profile_certificates_profile_name",
+                ["student_profile_id", "name", "active_marker"],
+            ),
+            (
+                "portfolio_links",
+                "uq_portfolio_links_profile_url",
+                ["student_profile_id", "url", "active_marker"],
+            ),
+            (
+                "profile_city_preferences",
+                "uq_profile_city_preferences_profile_city",
+                ["student_profile_id", "city", "active_marker"],
+            ),
+            ("resumes", "uq_resumes_profile_head", ["student_profile_id", "is_head"]),
+        ):
+            rows = connection.execute(
+                text(
+                    """
+                    SELECT SEQ_IN_INDEX, COLUMN_NAME, NON_UNIQUE
+                    FROM information_schema.STATISTICS
+                    WHERE TABLE_SCHEMA = DATABASE()
+                      AND TABLE_NAME = :table AND INDEX_NAME = :index
+                    ORDER BY SEQ_IN_INDEX
+                    """
+                ),
+                {"table": table, "index": index},
+            ).all()
+            assert [row.COLUMN_NAME for row in rows] == expected, f"{table}.{index} 列序不对"
+            assert all(int(row.NON_UNIQUE) == 0 for row in rows), f"{table}.{index} 不是唯一索引"
+
+        # 三张新子表的列名即契约（ADR-015 §2.1 / §5 ③ 逐字）。
+        for table, expected_columns in (
+            (
+                "profile_certificates",
+                {
+                    "id",
+                    "student_profile_id",
+                    "name",
+                    "issuer",
+                    "issued_on",
+                    "deleted_at",
+                    "active_marker",
+                    "created_at",
+                    "updated_at",
+                },
+            ),
+            (
+                "portfolio_links",
+                {
+                    "id",
+                    "student_profile_id",
+                    "label",
+                    "url",
+                    "deleted_at",
+                    "active_marker",
+                    "created_at",
+                    "updated_at",
+                },
+            ),
+            (
+                "profile_city_preferences",
+                {
+                    "id",
+                    "student_profile_id",
+                    "city",
+                    "deleted_at",
+                    "active_marker",
+                    "created_at",
+                    "updated_at",
+                },
+            ),
+        ):
+            columns = set(
+                connection.execute(
+                    text(
+                        "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table"
+                    ),
+                    {"table": table},
+                ).scalars()
+            )
+            assert columns == expected_columns, f"{table} 列集合与 ADR-015 不一致"
+
+        resume_columns = {
+            row.COLUMN_NAME: row
+            for row in connection.execute(
+                text(
+                    "SELECT COLUMN_NAME, EXTRA, COLUMN_DEFAULT, IS_NULLABLE "
+                    "FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'resumes'"
+                )
+            ).all()
+        }
+        assert {"version_no", "current_version_id", "is_head"} <= set(resume_columns)
+        assert resume_columns["version_no"].IS_NULLABLE == "NO"
+        assert str(resume_columns["version_no"].COLUMN_DEFAULT) == "1"
+        assert resume_columns["current_version_id"].IS_NULLABLE == "YES"
+        # is_head 是 VIRTUAL 生成列（不是 ADR 字面的 STORED）：MySQL 禁止 STORED
+        # 生成列的基列挂 ON DELETE SET NULL 外键（1215，实测），而 SET NULL 是
+        # ADR-015 §2.3 的硬契约。偏离理由见迁移 20261110_0016 的 docstring。
+        assert "VIRTUAL GENERATED" in str(resume_columns["is_head"].EXTRA)
+
         triggers = connection.execute(
             text(
                 """
@@ -403,6 +549,9 @@ def _assert_schema_removed(engine: Engine) -> None:
     # 残留一张「有结构但没有词表」的表会让下一次 upgrade 之前的任何写入口撞 1146，
     # 而 `alias_version` 那一格仍然照发 v1——屏幕上一切正常，库里已经不对。
     assert "skill_aliases" not in remaining_tables
+    # B4 的三张多值子表（ADR-015）同理必须真的被 `20261110_0016` 的 downgrade 删掉。
+    for table in ("profile_certificates", "portfolio_links", "profile_city_preferences"):
+        assert table not in remaining_tables
 
 
 def test_upgrade_schema_constraints_and_downgrade() -> None:

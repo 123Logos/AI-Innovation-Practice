@@ -111,9 +111,9 @@ class LayoutSectionInput(BaseModel):
 class LayoutConfigInput(BaseModel):
     """`PUT` 里的 `layout_config`（完整快照，不是差异）。
 
-    - `version` 只认 `LAYOUT_VERSION`：将来升到 v2 时，旧客户端写 v1 会被拒，
+    - `version` 只认 `LAYOUT_VERSION`：ADR-015 升到 v2 后，旧客户端写 v1 会被拒，
       避免「用旧语义覆盖新结构」；
-    - `sections` 允许**少于** 3 段：缺的模块由读侧的 `resolve_layout()` 追加到末尾
+    - `sections` 允许**少于** 5 段：缺的模块由读侧的 `resolve_layout()` 追加到末尾
       （老客户端不认识新模块时，不该因为少传一项就 422）；
     - 重复 id 直接 422（ADR-007 §6.8(3)）：重复会让前端 `v-for` 的 key 冲突，
       属于用户输入错误，应当报错而不是猜他想表达什么。
@@ -216,6 +216,95 @@ class EducationRead(BaseModel):
     edu_end: date | None = None
 
 
+class CertificateInput(BaseModel):
+    """一条证书（ADR-015 §2.1，表 `profile_certificates`）。
+
+    `name` 是「这条证书存在」的锚点，必须非空；`issuer` / `issued_on` 选填，
+    与教育经历的「学校必填、其余可草稿」同一口径。空白 issuer 折成 `None`，
+    库里不留「半空不空」的第二种表示。
+    """
+
+    name: str = Field(min_length=1, max_length=100)
+    issuer: str | None = Field(default=None, max_length=100)
+    issued_on: date | None = None
+
+    @model_validator(mode="after")
+    def normalize_certificate(self) -> "CertificateInput":
+        name = self.name.strip()
+        if not name:
+            raise ValueError("certificate name must not be blank")
+        self.name = name
+        if self.issuer is not None:
+            self.issuer = self.issuer.strip() or None
+        return self
+
+
+class CertificateRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    issuer: str | None = None
+    issued_on: date | None = None
+
+
+class PortfolioLinkInput(BaseModel):
+    """一条作品链接（ADR-015 §2.1，表 `portfolio_links`）。
+
+    `url` 只收 `http://` / `https://`：生成物里它是 `<a href>`，放开 scheme
+    等于开一条 `javascript:` 的存储型 XSS 通道（与生成器「模型不产 HTML」同一条边界）。
+    """
+
+    label: str = Field(min_length=1, max_length=100)
+    url: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def normalize_link(self) -> "PortfolioLinkInput":
+        label = self.label.strip()
+        if not label:
+            raise ValueError("portfolio label must not be blank")
+        self.label = label
+        url = self.url.strip()
+        if not url:
+            raise ValueError("portfolio url must not be blank")
+        if not url.lower().startswith(("http://", "https://")):
+            raise ValueError("portfolio url must start with http:// or https://")
+        self.url = url
+        return self
+
+
+class PortfolioLinkRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    label: str
+    url: str
+
+
+class CityPreferenceInput(BaseModel):
+    """一个期望城市（ADR-015 §5 ③，表 `profile_city_preferences`）。
+
+    **它不是简历区块**：不进 `content_html`，是投递元数据（将来给来源/城市匹配用）。
+    """
+
+    city: str = Field(min_length=1, max_length=50)
+
+    @model_validator(mode="after")
+    def normalize_city(self) -> "CityPreferenceInput":
+        city = self.city.strip()
+        if not city:
+            raise ValueError("city must not be blank")
+        self.city = city
+        return self
+
+
+class CityPreferenceRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    city: str
+
+
 class ProfileUpsertRequest(BaseModel):
     """写入档案的请求体。
 
@@ -272,6 +361,13 @@ class ProfileUpsertRequest(BaseModel):
     experiences: list[ExperienceInput] = Field(default_factory=list, max_length=3)
     #: 教育经历 0–5 段；为空时不渲染教育区块，缺省值兼容尚未升级的旧客户端。
     educations: list[EducationInput] = Field(default_factory=list, max_length=5)
+    #: B4（ADR-015 §2.1 / §5 ③）：证书 / 作品链接 / 期望城市，各 0–5 条。
+    #: 与 `educations` 同档，理由只有一条——一页 A4。上限数的是**本次提交的活跃行**：
+    #: 子表写路径是「全量替换 + 软删除」，历史行不参与计数（否则存几次就永久加不进东西）。
+    #: 期望城市不是简历区块，不进 `content_html`。
+    certificates: list[CertificateInput] = Field(default_factory=list, max_length=5)
+    portfolio_links: list[PortfolioLinkInput] = Field(default_factory=list, max_length=5)
+    city_preferences: list[CityPreferenceInput] = Field(default_factory=list, max_length=5)
 
     @field_validator("contact")
     @classmethod
@@ -315,6 +411,42 @@ class ProfileUpsertRequest(BaseModel):
         if len(keys) != len(set(keys)):
             raise ValueError("skill names must be unique")
         return skills
+
+    @field_validator("certificates")
+    @classmethod
+    def validate_unique_certificate_names(
+        cls, certificates: list[CertificateInput]
+    ) -> list[CertificateInput]:
+        """同名证书在提交内就拒（422），与技能同一口径：判定键 `skill_name_key`。
+
+        库里的唯一键是 `(student_profile_id, name, active_marker)`（大小写不敏感的
+        `utf8mb4_0900_ai_ci`），裸相等放得过 `CET-6` / `cet-6`，走到 INSERT 才撞
+        1062 变 500——用户该看到的是一句可读的「证书名称重复」。
+        """
+        keys = [skill_name_key(certificate.name) for certificate in certificates]
+        if len(keys) != len(set(keys)):
+            raise ValueError("certificate names must be unique")
+        return certificates
+
+    @field_validator("portfolio_links")
+    @classmethod
+    def validate_unique_portfolio_urls(
+        cls, links: list[PortfolioLinkInput]
+    ) -> list[PortfolioLinkInput]:
+        """同一 URL 在提交内只收一条（唯一键 `(student_profile_id, url, active_marker)`）。"""
+        keys = [skill_name_key(link.url) for link in links]
+        if len(keys) != len(set(keys)):
+            raise ValueError("portfolio urls must be unique")
+        return links
+
+    @field_validator("city_preferences")
+    @classmethod
+    def validate_unique_cities(cls, cities: list[CityPreferenceInput]) -> list[CityPreferenceInput]:
+        """同一城市在提交内只收一条（唯一键 `(student_profile_id, city, active_marker)`）。"""
+        keys = [skill_name_key(city.city) for city in cities]
+        if len(keys) != len(set(keys)):
+            raise ValueError("city preferences must be unique")
+        return cities
 
     @field_validator("email")
     @classmethod
@@ -413,6 +545,12 @@ class ProfileRead(BaseModel):
     skills: list[SkillRead]
     experiences: list[ExperienceRead]
     educations: list[EducationRead] = Field(default_factory=list)
+    #: B4（ADR-015）：三张新子表的读侧。**只含活跃行**——软删除过滤在仓储层
+    #: （`list_certificates` / `list_portfolio_links` / `list_city_preferences`），
+    #: 这里与技能/经历/教育一样不再自比 `deleted_at`。
+    certificates: list[CertificateRead] = Field(default_factory=list)
+    portfolio_links: list[PortfolioLinkRead] = Field(default_factory=list)
+    city_preferences: list[CityPreferenceRead] = Field(default_factory=list)
 
     @field_serializer("created_at", "updated_at")
     def serialize_shanghai(self, value: datetime) -> str:

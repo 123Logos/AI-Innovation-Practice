@@ -18,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+from app.core.error_messages import ErrorMessage
 from app.integrations.skill_extractor import (
     DEEPSEEK_MODEL,
     EXTRACT_PROMPT_VERSION,
@@ -994,7 +995,12 @@ def test_job_not_found_uses_unified_error_model(client: TestClient) -> None:
     assert response.status_code == 404
     body = response.json()
     assert body["error"]["code"] == "NOT_FOUND"
-    assert body["error"]["message"] == "资源不存在。"
+    # 文案的唯一来源是 G3 那张表（批次 F1c）：断言枚举而不是抄一句中文，
+    # 否则表里改一次措辞就要来这里追一遍，而「改文案」本来是允许的动作。
+    # 断言的是**岗位专属**那一格：`HTTP_DETAIL_ALIASES` 把 `"岗位不存在。"` 映到
+    # `JOB_NOT_FOUND` 而不是通用的 `NOT_FOUND`，因为守则 C3 要求一句话说清「是哪一件事」
+    # （用户此刻在岗位列表，不在简历列表）。
+    assert body["error"]["message"] == ErrorMessage.JOB_NOT_FOUND
     assert body["meta"]["request_id"]
 
 

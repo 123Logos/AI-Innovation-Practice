@@ -515,7 +515,7 @@ def _h2_titles(html: str) -> list[str]:
 
 
 def _layout(*pairs: tuple[str, str]) -> dict[str, object]:
-    return {"version": 1, "sections": [{"id": key, "title": title} for key, title in pairs]}
+    return {"version": 2, "sections": [{"id": key, "title": title} for key, title in pairs]}
 
 
 def test_generate_uses_default_layout_when_never_customized(client: TestClient) -> None:
@@ -595,7 +595,7 @@ def test_generate_escapes_custom_layout_title(client: TestClient) -> None:
         connection.execute(
             text("UPDATE student_profiles SET layout_config = CAST(:raw AS JSON) WHERE id = :id"),
             {
-                "raw": '{"version": 1, "sections": [{"id": "skills", "title": "<img src=x>"}]}',
+                "raw": '{"version": 2, "sections": [{"id": "skills", "title": "<img src=x>"}]}',
                 "id": saved["id"],
             },
         )
@@ -608,14 +608,71 @@ def test_generate_escapes_custom_layout_title(client: TestClient) -> None:
     assert "<img src=x>" not in html
 
 
-def test_generate_falls_back_to_default_layout_for_broken_config(client: TestClient) -> None:
-    """库里的排版坏掉时不能让生成 500，一律按默认顺序出稿（ADR-007 §6.8(3)）。"""
+def test_generate_rejects_old_layout_version_with_actionable_message(client: TestClient) -> None:
+    """ADR-015 §2.2：旧布局**生成新简历** → 422，文案必须修得动。
+
+    这条用例在升版时按裁定改了方向：原先钉的是「坏排版静默回落默认出稿」，
+    而 ADR-015 明确否掉了生成侧的静默回落——它会把用户排好的顺序换成默认顺序，
+    用户看不出来，比报错更糟。读侧（GET 档案）仍然静默回落，那半边由
+    `test_profiles.py::test_broken_layout_in_db_falls_back_in_read` 守着。
+    已存在的简历永不受影响：`content_html` 是不可变快照，本用例不触它。
+    """
     token = _register_and_login(client)
     saved = client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token)).json()[
         "data"
     ]["profile"]
 
-    broken_values = ['"junk"', "[]", '{"version": 9, "sections": []}']
+    # 旧版本 / 未知版本 / 非对象（手工改库）：只要存过配置且版本不是 2，一律 422。
+    old_values = [
+        '{"version": 1, "sections": [{"id": "skills", "title": "技能"}]}',
+        '{"version": 9, "sections": []}',
+        '"junk"',
+        "[]",
+    ]
+    for raw in old_values:
+        with get_engine().begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE student_profiles SET layout_config = CAST(:raw AS JSON) WHERE id = :id"
+                ),
+                {"raw": raw, "id": saved["id"]},
+            )
+
+        response = client.post(GENERATE_URL, json=_payload("旧排版"), headers=_headers(token))
+
+        assert response.status_code == 422, f"{raw} -> {response.text}"
+        body = response.json()
+        assert body["error"]["message"] == "你的排版设置是旧版本，请在排版面板重新保存一次再生成"
+        assert _count("resumes") == 0, "被拦下的生成不许落库"
+
+    # 修得动的验证：按文案去排版面板重新保存一次（version=2），生成即恢复。
+    fixed = client.put(
+        PROFILES_URL,
+        json=_profile_payload(layout_config=_layout(("skills", "技能"))),
+        headers=_headers(token),
+    )
+    assert fixed.status_code == 200, fixed.text
+    response = client.post(GENERATE_URL, json=_payload("重新保存后"), headers=_headers(token))
+    assert response.status_code == 200, response.text
+    assert _count("resumes") == 1
+
+
+def test_generate_falls_back_for_broken_sections_at_current_version(client: TestClient) -> None:
+    """版本相符但 sections 脏：仍由 `resolve_layout()` 宽松降级出稿，不 500 也不 422。
+
+    「版本失配」与「数据损坏」是两件事：前者拦（上一条），后者降级——
+    这是 ADR-007 §6.8(3) 的既有原则在生成侧的保留部分。
+    """
+    token = _register_and_login(client)
+    saved = client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token)).json()[
+        "data"
+    ]["profile"]
+
+    broken_values = [
+        '{"version": 2, "sections": []}',
+        '{"version": 2, "sections": "junk"}',
+        '{"version": 2}',
+    ]
     for raw in broken_values:
         with get_engine().begin() as connection:
             connection.execute(
@@ -730,3 +787,127 @@ def test_generate_does_not_mark_optional_email_as_pending(client: TestClient) ->
     content_html = response.json()["data"]["content_html"]
     assert "待补充：邮箱" not in content_html
     assert "contact-email" not in content_html
+
+
+# --------------------------------------------------------------------------- #
+# B4（ADR-015 §2.1 / §2.2 / §5 ③）：证书与作品链接进简历，期望城市不进。
+# 追加在文件末尾（本文件的既有位置约束）。
+# --------------------------------------------------------------------------- #
+
+
+def _certificate(name: str = "软件设计师", **extra: object) -> dict[str, object]:
+    payload: dict[str, object] = {"name": name}
+    payload.update(extra)
+    return payload
+
+
+def _link(label: str = "个人博客", url: str = "https://example.com/blog") -> dict[str, object]:
+    return {"label": label, "url": url}
+
+
+def test_generate_renders_certificates_and_portfolio_sections(client: TestClient) -> None:
+    """证书 / 作品链接各自成节（默认标题「证书」「作品链接」），内容转义后上纸面。"""
+    token = _register_and_login(client)
+    client.put(
+        PROFILES_URL,
+        json=_profile_payload(
+            certificates=[
+                _certificate("软件设计师", issuer="工信部", issued_on="2024-05-01"),
+                _certificate("CET-6"),
+            ],
+            portfolio_links=[_link("个人博客", "https://example.com/blog")],
+            city_preferences=[{"city": "深圳"}],
+        ),
+        headers=_headers(token),
+    )
+
+    response = client.post(GENERATE_URL, json=_payload("多值简历"), headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    html = response.json()["data"]["content_html"]
+    assert "<h2>证书</h2>" in html
+    assert '<h3 class="certificate-name">软件设计师</h3>' in html
+    assert '<span class="certificate-issuer">工信部</span>' in html
+    assert '<span class="certificate-date">2024.05</span>' in html
+    # 选填格缺了不标「待补充」，也不留空 meta 行（与邮箱同一口径）。
+    assert '<h3 class="certificate-name">CET-6</h3>' in html
+    assert "待补充" not in html
+    assert "<h2>作品链接</h2>" in html
+    assert '<h3 class="portfolio-label">个人博客</h3>' in html
+    assert '<a class="portfolio-url" href="https://example.com/blog"' in html
+    # 期望城市**不是简历区块**（ADR-015 §5 ③）：一个字都不许进 content_html。
+    assert "深圳" not in html
+    assert "期望城市" not in html
+    # 默认顺序：证书 / 作品排在项目经历之后。
+    assert _h2_titles(html) == ["教育经历", "技能", "项目经历", "证书", "作品链接"]
+
+
+def test_generate_skips_empty_certificate_and_portfolio_sections(client: TestClient) -> None:
+    """没填证书 / 作品时整节不渲染，不留空标题（空模块自动跳过的既有规则）。"""
+    token = _register_and_login(client)
+    client.put(PROFILES_URL, json=_profile_payload(), headers=_headers(token))
+
+    response = client.post(GENERATE_URL, json=_payload("无证书"), headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    html = response.json()["data"]["content_html"]
+    assert "<h2>证书</h2>" not in html
+    assert "<h2>作品链接</h2>" not in html
+    assert "<h2></h2>" not in html
+
+
+def test_generate_escapes_certificate_and_portfolio_fields(client: TestClient) -> None:
+    """证书名 / 作品标签与 URL 都是用户输入，必须 escape()，href 也不例外。"""
+    token = _register_and_login(client)
+    client.put(
+        PROFILES_URL,
+        json=_profile_payload(
+            certificates=[_certificate("<img src=x>", issuer="<script>steal()</script>")],
+            portfolio_links=[_link("<b>作品</b>", 'https://example.com/"onmouseover="alert(1)')],
+        ),
+        headers=_headers(token),
+    )
+
+    response = client.post(GENERATE_URL, json=_payload("转义"), headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    html = response.json()["data"]["content_html"]
+    assert "<img src=x>" not in html
+    assert "&lt;img src=x&gt;" in html
+    assert "<script>steal()</script>" not in html
+    assert "<b>作品</b>" not in html
+    assert "&lt;b&gt;作品&lt;/b&gt;" in html
+    # href 里的引号被转义，属性 breakout 不成立。
+    assert 'onmouseover="alert(1)"' not in html
+    assert "&quot;onmouseover=&quot;alert(1)" in html
+
+
+def test_generate_follows_layout_order_for_new_sections(client: TestClient) -> None:
+    """新两段可排序：把作品链接拖到最前，生成物的 <h2> 顺序必须跟着走。"""
+    token = _register_and_login(client)
+    client.put(
+        PROFILES_URL,
+        json=_profile_payload(
+            certificates=[_certificate()],
+            portfolio_links=[_link()],
+            layout_config=_layout(
+                ("portfolio", "我的作品"),
+                ("certificates", "荣誉证书"),
+                ("skills", "技术栈"),
+                ("experiences", "项目经验"),
+                ("educations", "教育背景"),
+            ),
+        ),
+        headers=_headers(token),
+    )
+
+    response = client.post(GENERATE_URL, json=_payload("新顺序"), headers=_headers(token))
+
+    assert response.status_code == 200, response.text
+    assert _h2_titles(response.json()["data"]["content_html"]) == [
+        "我的作品",
+        "荣誉证书",
+        "技术栈",
+        "项目经验",
+        "教育背景",
+    ]

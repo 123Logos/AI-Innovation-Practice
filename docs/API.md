@@ -31,7 +31,7 @@
 {"error": {"code": "NOT_FOUND", "message": "资源不存在。", "details": {}}, "meta": {"request_id": "req_123"}}
 ```
 
-实际由代码发出的错误码（以 `app/` 全量 grep 这些字面量为准，不含测试）：`VALIDATION_ERROR`（`app/main.py:211`）、`RATE_LIMITED`（`app/main.py:231`）、`NOT_FOUND`（`app/main.py:190`）、`CLIENT_ERROR`（`app/main.py:193`）、`INTERNAL_ERROR`（`app/main.py:179`、`:196`）、`AI_KEY_MISSING`（`app/main.py:263`）、`AI_KEY_INVALID`（`app/main.py:272`）、`AI_SERVICE_UNAVAILABLE`（`app/main.py:283`、`app/api/v1/jobs.py:154`）。三个 `AI_*` 码只在 `/resumes/polish` 与 `/jobs/extract-skills` 上可达（`app/main.py:239-240` 的注释写明这一沿革；`POST /jobs/{job_id}/match` **不在这个集合里**——它 AI 失败也返回 `200`，见 §4.10；`GET /jobs/{job_id}/requirement-match` 同样不在——它按定义不调 AI，见 §4.10.1），且处理器文案要求作用域中性——不得出现「润色」或「简历」（`docs/adr/ADR-011-job-board-and-skill-extraction.md` 2.F）。
+实际由代码发出的错误码（以 `app/` 全量 grep 这些字面量为准，不含测试）：`VALIDATION_ERROR`（`app/main.py::validation_exception`）、`RATE_LIMITED`（`app/main.py::rate_limit_exceeded`）、`NOT_FOUND`（`app/main.py::http_exception`）、`CLIENT_ERROR`（同上，`http_exception` 的兜底档）、`INTERNAL_ERROR`（`app/main.py::unhandled_exception`，以及 `::http_exception` 的 5xx 档）、`AI_KEY_MISSING`（`app/main.py::resume_api_key_missing`）、`AI_KEY_INVALID`（`app/main.py::resume_copy_rejected`）、`AI_SERVICE_UNAVAILABLE`（`app/main.py::resume_copy_unavailable`、`app/api/v1/jobs.py` 的提取端点）。三个 `AI_*` 码只在 `/resumes/polish` 与 `/jobs/extract-skills` 上可达（`app/main.py:239-240` 的注释写明这一沿革；`POST /jobs/{job_id}/match` **不在这个集合里**——它 AI 失败也返回 `200`，见 §4.10；`GET /jobs/{job_id}/requirement-match` 同样不在——它按定义不调 AI，见 §4.10.1），且处理器文案要求作用域中性——不得出现「润色」或「简历」（`docs/adr/ADR-011-job-board-and-skill-extraction.md` 2.F）。
 
 以下码目前**只是本文件的设计意图**，`app/` 下没有任何一处产生它们：`AUTH_REQUIRED`、`AUTH_INVALID_CREDENTIALS`、`AUTH_FORBIDDEN`、`RESOURCE_NOT_FOUND`、`CONSENT_REQUIRED`、`CONFLICT`。未登录与令牌失效实际走 `HTTPException(401)`（`app/services/dependencies.py:53`、`:138`），被通用 4xx 处理器压成 `CLIENT_ERROR`（`app/main.py:192-194`），message 取 `UNAUTHORIZED_MESSAGE`（`app/services/dependencies.py:35`）。
 
@@ -101,7 +101,7 @@
 | `PUT /profiles/{profile_id}/restore` | 从回收站恢复 | `:221` |
 | `DELETE /profiles/{profile_id}/permanent` | **永久删除**——档案有这条，岗位没有（ADR-011 1.D 缺口②） | `:236` |
 
-### 3.2 `PUT /profiles/me` 请求体（`ProfileUpsertRequest`，`app/schemas/profile.py:220` 起）
+### 3.2 `PUT /profiles/me` 请求体（`ProfileUpsertRequest`，`app/schemas/profile.py::ProfileUpsertRequest`）
 
 | 字段 | 约束 | 备注 |
 |---|---|---|
@@ -116,6 +116,17 @@
 | `skills` | `list[SkillInput]`，**≤8** | 见 §3.3 |
 | `experiences` | `list[ExperienceInput]`，**≤3** | `title`/`start_date`/`end_date`/`description`/`responsibility` |
 | `educations` | `list[EducationInput]`，**≤5** | `d02b176` |
+| `certificates` | `list[CertificateInput]`，**≤5** | B4 / `ADR-015` §2.1：`name`（必填，≤100）、`issuer`（选填，≤100）、`issued_on`（选填，`YYYY-MM-DD`）。空白的 `issuer` 折成 `None`；进简历渲染（区块「证书」） |
+| `portfolio_links` | `list[PortfolioLinkInput]`，**≤5** | B4：`label`（必填，≤100）、`url`（必填，≤500，**只收 `http://` / `https://`**——放开 scheme 等于开一条 `javascript:` 的存储型 XSS 通道）。进简历渲染（区块「作品链接」）与导出前隐私检查 |
+| `city_preferences` | `list[CityPreferenceInput]`，**≤5** | B4：`city`（必填，≤50）。**不是简历区块**：不进 `content_html`，只作投递元数据 |
+
+**三格（以及原有的 `skills` / `experiences` / `educations`）的写路径只有一套口径**（`ADR-015` §2.1）：`PUT` 时先给该档案**当前活跃行**（`deleted_at IS NULL`）盖 `deleted_at = now`，再插入本次提交的行——不再物理 `DELETE`。由此有三条必须知道的性质：
+
+1. **没传就等于清空**：这是「整体覆盖」语义的展开，与 `target_role` 一致（想保留就把当前值原样带上）；
+2. **上限只数活跃行**：历史行不参与计数，所以「存几次之后就永久加不进东西」不会发生；
+3. **空行会 422**：`name` / `label` / `url` / `city` 都是 `min_length=1`，前端必须先剔除空行再提交（`frontend/src/stores/resume.ts::toUpsertPayload` 负责这件事）。
+
+`GET /profiles/me` 与 `GET /profiles/{profile_id}` 的响应里三组都以**活跃行**返回（`CertificateRead` / `PortfolioLinkRead` / `CityPreferenceRead`，各带 `id`），顺序即用户录入顺序。
 
 ### 3.3 `skills[]` 每条的名字规矩（2026-11-07 起）
 
@@ -158,7 +169,7 @@
 |---|---|---|---|
 | 请求体或查询参数不合模型 | 422 | `VALIDATION_ERROR` | `app/main.py:203-215` |
 | 无 `Authorization` 头 / 令牌无效或过期 | 401 | `CLIENT_ERROR`，message 为 `UNAUTHORIZED_MESSAGE` | 抛出 `app/services/dependencies.py:53`、`:138`；映射 `app/main.py:192-194` |
-| 岗位不存在 / 不属于当前用户 / 已在回收站 | 404 | `NOT_FOUND`（处理器的固定文案「资源不存在。」） | 抛出 `app/api/v1/jobs.py:68-70`；映射 `app/main.py:189-191` |
+| 岗位不存在 / 不属于当前用户 / 已在回收站 | 404 | `NOT_FOUND`（处理器的固定文案「资源不存在。」） | 抛出 `app/api/v1/jobs.py:68-70`；映射 `app/main.py::http_exception` |
 | 提取请求缺 `X-DeepSeek-Key` | 400 | `AI_KEY_MISSING`，`retryable: false` | `app/services/job_service.py:204-205` → `app/main.py:259-264` |
 | DeepSeek 拒绝该 Key（鉴权失败） | 401 | `AI_KEY_INVALID` | `app/integrations/skill_extractor.py:294-298` → `app/services/job_service.py:208-209` → `app/main.py:266-275` |
 | 上游不可用 / 输出不是可解析 JSON / 内容为空 / 无一可回溯 | 502 | `AI_SERVICE_UNAVAILABLE`，`retryable: true` | `app/main.py:277-290`（异常族 `app/services/job_service.py:204-213`、`:270-281`） |
@@ -366,7 +377,7 @@
 
 401 有两个互不相干的来源，前端靠 `error.code` 区分而不是靠状态码或 URL：令牌失效是 401 + `CLIENT_ERROR`（会触发刷新），`AI_KEY_INVALID` 是 401 + `AI_KEY_INVALID`（**不触发令牌刷新、不踢下线**），后者由 `frontend/src/api/client.ts::refreshPromise` 分流、并由 `frontend/src/api/__tests__/byok.spec.ts:181` 钉住。
 
-三个 `AI_*` 码的处理器文案必须作用域中性（`app/main.py:247-250` 的注释与 ADR-011 2.F）：**不得出现「润色」或「简历」**，因为提取侧复用润色的异常族、两个端点进同一组处理器。
+三个 `AI_*` 码的处理器文案必须作用域中性（`app/main.py` 里三个 `resume_*` 处理器上方的公共注释，与 ADR-011 2.F）：**不得出现「润色」或「简历」**，因为提取侧复用润色的异常族、两个端点进同一组处理器。
 
 日志里只出现计数、`finish_reason`、`request_id`，不出现 Key、JD 正文、`evidence` 内容、技能名（`app/services/job_service.py:274-292`）。
 

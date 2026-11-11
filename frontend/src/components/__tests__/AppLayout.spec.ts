@@ -27,7 +27,7 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { AxiosError, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import App from '@/App.vue'
 import { http } from '@/api/client'
@@ -57,30 +57,46 @@ class StubResizeObserver {
  * `useViewport()` 是全站唯一发宽度 `matchMedia` 的地方（守则 L2），而 jsdom 没有这个函数。
  * 桩必须在**第一次 mount 之前**装好：那个 composable 把每条查询的 Ref 缓存在模块级，
  * 装晚了缓存里已经是「不宽」，之后再换 `window.matchMedia` 也不会重算。
- * 所以连 change 监听一起桩，`setWide()` 通过监听把新答案推进去——
- * 这样「宽屏常驻左栏 / 窄屏折叠成抽屉」两条路都能在同一个文件里验。
+ * 所以连 change 监听一起桩，`setViewportWidth()` 通过监听把新答案推进去。
+ *
+ * **按宽度求值而不是按「是不是 min-width」**（2026-11-11 显式改写，守则 R1）：
+ * 表里现在有两档「至少」——`wide: 1100`（宽屏形状）与 `sidebar: 1440`（左栏常驻）。
+ * 旧桩把任何 min-width 都答成同一个布尔，于是 1100–1439 这段**根本表达不出来**，
+ * 而那段恰恰是本次裁定改的东西：左栏不常驻、列表走抽屉。
  */
 type WidthListener = (event: { matches: boolean }) => void
-let wideMatches = false
-const wideListeners = new Set<WidthListener>()
+let viewportWidth = 375
+const widthListeners = new Map<string, Set<WidthListener>>()
+
+function matchesQuery(query: string): boolean {
+  const min = /min-width:\s*(\d+)px/.exec(query)
+  if (min) return viewportWidth >= Number(min[1])
+  const max = /max-width:\s*(\d+)px/.exec(query)
+  if (max) return viewportWidth <= Number(max[1])
+  return false
+}
 
 window.matchMedia = ((query: string) => {
-  const isWideQuery = query.includes('min-width')
   return {
     media: query,
-    matches: isWideQuery ? wideMatches : false,
+    matches: matchesQuery(query),
     addEventListener: (_type: string, listener: WidthListener) => {
-      if (isWideQuery) wideListeners.add(listener)
+      const set = widthListeners.get(query) ?? new Set<WidthListener>()
+      set.add(listener)
+      widthListeners.set(query, set)
     },
     removeEventListener: (_type: string, listener: WidthListener) => {
-      wideListeners.delete(listener)
+      widthListeners.get(query)?.delete(listener)
     },
   }
 }) as unknown as typeof window.matchMedia
 
-function setWide(value: boolean): void {
-  wideMatches = value
-  for (const listener of wideListeners) listener({ matches: value })
+function setViewportWidth(px: number): void {
+  viewportWidth = px
+  for (const [query, listeners] of widthListeners) {
+    const matches = matchesQuery(query)
+    for (const listener of listeners) listener({ matches })
+  }
 }
 
 /* ----------------------------- 内存小服务器 ----------------------------- */
@@ -174,8 +190,8 @@ beforeEach(async () => {
   sessionStorage.clear()
   document.body.innerHTML = ''
   requested = []
-  // 每条用例都从「不宽」起步：jsdom 没有真实视口，宽屏那条路由用例自己 setWide(true)。
-  setWide(false)
+  // 每条用例都从 375 起步：jsdom 没有真实视口，要宽屏的用例自己 setViewportWidth()。
+  setViewportWidth(375)
   savedAdapter = http.defaults.adapter
   http.defaults.adapter = fakeAdapter
 
@@ -225,17 +241,29 @@ describe('外框只有一处定义（守则 L1）', () => {
   })
 
   it('简历工作台：外框、三列工作区与纸面列同屏，高度依赖没有被搬走', async () => {
+    // 这一页的淡入必须真的生效：`<Transition>` 认不了多根，多根时它**静默不动画**
+    // 并每次报一条警告。判据取那个真实症状，而不是数模板里有几个标签。
+    const warnings: string[] = []
+    vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '))
+    })
     const wrapper = await visit('/')
 
     expect(wrapper.findAll('.app-topbar')).toHaveLength(1)
+    // 批次 F6 显式改写（R1）：这一页原来是四个并列根，`<Transition>` 认不了多根，
+    // 淡入静默失效还每次报一条 Vue 警告。收进单根 `<main class="editor-page">` 之后
+    // 嵌套多了一层——验的还是同一件事：外框换层没漏层、工作区没退化成空壳。
     expect(
-      wrapper.find('.app-shell > .app-body > .app-content > .resume-workspace').exists(),
+      wrapper
+        .find('.app-shell > .app-body > .app-content > main.editor-page > .resume-workspace')
+        .exists(),
     ).toBe(true)
     // `.editor` / `.style-panel` 是 `ResumeEditorView` 打给子组件的类：
     // 它们在，就说明外框换层之后工作区还是三列那一棵，没有退化成空 `<main>`。
     expect(wrapper.find('.resume-workspace > .editor').exists()).toBe(true)
     expect(wrapper.find('.resume-workspace > .style-panel').exists()).toBe(true)
     expect(requested).toContain('get /profiles')
+    expect(warnings.filter((line) => line.includes('non-element root node'))).toEqual([])
   })
 
   it('访客页不带外框：布局是路由嵌套出来的，不是全局糊上去的', async () => {
@@ -307,8 +335,8 @@ describe('简历列表住哪（清单第 5 条：宽屏常驻左栏 / 其余宽�
     expect(bodyEl('#resume-drawer')).toBeNull()
   })
 
-  it('宽屏：左栏常驻在内容区左边，触发按钮整个不渲染', async () => {
-    setWide(true)
+  it('≥1440：左栏常驻在内容区左边，触发按钮整个不渲染', async () => {
+    setViewportWidth(1440)
     const wrapper = await visit('/jobs')
 
     const sidebar = wrapper.find('.app-body > .resume-sidebar')
@@ -320,6 +348,23 @@ describe('简历列表住哪（清单第 5 条：宽屏常驻左栏 / 其余宽�
     expect(wrapper.find('.resumes-trigger').exists()).toBe(false)
     // 常驻的意思是「不用点一下才出现」：没有任何抽屉被打开。
     expect(bodyEl('#resume-drawer')).toBeNull()
+  })
+
+  it('1100–1439：左栏不常驻，列表改走同一个抽屉（裁定：左栏一登场纸面就缩水）', async () => {
+    // 这一档是 2026-11-11 裁定新划出来的：1280 的笔记本原来会被 240px 左栏把纸面
+    // 从 794px 挤到 645px。左栏退场，但列表不能跟着消失——它走下面那个抽屉。
+    setViewportWidth(1280)
+    const wrapper = await visit('/jobs')
+
+    expect(wrapper.find('.resume-sidebar').exists()).toBe(false)
+    const trigger = wrapper.find('.resumes-trigger')
+    expect(trigger.exists()).toBe(true)
+
+    await trigger.trigger('click')
+    const drawer = bodyEl('#resume-drawer')
+    expect(drawer).not.toBeNull()
+    expect(drawer?.querySelector('.menu-sort')).not.toBeNull()
+    expect(drawer?.querySelectorAll('.menu-action')).toHaveLength(2)
   })
 
   it('两个抽屉互斥：开账户抽屉时简历抽屉被基座的「点外面」关掉', async () => {
@@ -371,8 +416,8 @@ describe('简历列表住哪（清单第 5 条：宽屏常驻左栏 / 其余宽�
     expect(bodyEl('#create-profile-heading')).toBeNull()
   })
 
-  it('宽屏左栏里的「新建简历」走同一个意图，开的是同一个弹窗', async () => {
-    setWide(true)
+  it('常驻左栏里的「新建简历」走同一个意图，开的是同一个弹窗', async () => {
+    setViewportWidth(1440)
     const wrapper = await visit('/jobs')
     const createButton = wrapper.find('.resume-sidebar .menu-action')
 

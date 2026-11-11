@@ -31,8 +31,9 @@
 （Cannot drop table referenced by a foreign key constraint），而且是「跑到一半炸」，
 表现为「必须手动清库才能再跑」。
 
-现在：建表只 `upgrade head`（幂等），清理只 DELETE **本项目的 10 张表**
-（Phase 4 · B1 起含 `jobs` / `job_skills`，B1 别名层起含 `skill_aliases`），
+现在：建表只 `upgrade head`（幂等），清理只 DELETE **本项目的 13 张表**
+（Phase 4 · B1 起含 `jobs` / `job_skills`，B1 别名层起含 `skill_aliases`，
+B4 / ADR-015 起含 `profile_certificates` / `portfolio_links` / `profile_city_preferences`），
 多余的表既不碰也不依赖，3730 从根上消失。真正的迁移可逆性由
 `test_migrations.py` 自己验证（那是被测对象，不是清理手段）——它也只被允许
 在**自己用例内部**降级，并在 `finally` 里把库交回 head。
@@ -127,6 +128,11 @@ APP_TABLES = (
     "jobs",
     "refresh_tokens",
     "resumes",
+    # B4（ADR-015）：三张多值子表，外键 RESTRICT 指向 student_profiles，
+    # 必须排在它前面清；软删除的历史行也一并 DELETE（清理不区分 deleted_at）。
+    "profile_certificates",
+    "portfolio_links",
+    "profile_city_preferences",
     "educations",
     "skills",
     "experiences",

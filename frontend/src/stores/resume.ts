@@ -64,6 +64,8 @@ import { defineStore } from 'pinia'
 import { ApiError, hasDeepSeekKey, profilesApi, resumesApi } from '@/api'
 import { DEFAULT_POLISH_MAX_WORDS } from '@/api/types'
 import type {
+  CityPreferenceInput,
+  PortfolioLinkInput,
   Degree,
   LayoutConfig,
   LayoutSection,
@@ -146,10 +148,12 @@ export const DEFAULT_LAYOUT_SECTIONS: readonly LayoutSection[] = [
   { id: 'educations', title: '教育经历' },
   { id: 'skills', title: '技能' },
   { id: 'experiences', title: '项目经历' },
+  { id: 'certificates', title: '证书' },
+  { id: 'portfolio', title: '作品链接' },
 ]
 
 /** 后端 `LAYOUT_VERSION` 的同源常量；版本不匹配时后端会整份回退默认顺序。 */
-export const LAYOUT_VERSION = 1
+export const LAYOUT_VERSION = 2
 
 /**
  * 标题长度上限（ADR-007 §6.8(4)）：`h2` 在 360px 视口最多 15 字不折行，取 12 留余量。
@@ -165,6 +169,8 @@ const DEFAULT_SECTION_TITLES: Record<SectionId, string> = {
   educations: '教育经历',
   skills: '技能',
   experiences: '项目经历',
+  certificates: '证书',
+  portfolio: '作品链接',
 }
 
 /**
@@ -254,6 +260,7 @@ export const SKILL_LIMIT = { min: 0, max: 8 } as const
 export const EXPERIENCE_LIMIT = { min: 0, max: 3 } as const
 /** 后端 `educations` 最多 5 段；UI 至少保留 1 行空的，避免区段消失。 */
 export const EDUCATION_LIMIT = { min: 1, max: 5 } as const
+export const MULTIVALUE_LIMIT = { min: 0, max: 5 } as const
 
 /** 生成简历时的最低要求（后端 `ResumeService` 对技能/经历为空会返回 400）。 */
 export const GENERATE_MIN = { skills: 1, experiences: 1, educations: 1 } as const
@@ -315,6 +322,15 @@ export interface EducationDraft {
   edu_end: string
 }
 
+export interface CertificateDraft {
+  name: string
+  issuer: string
+  issued_on: string
+}
+
+export type PortfolioLinkDraft = PortfolioLinkInput
+export type CityPreferenceDraft = CityPreferenceInput
+
 export interface ProfileDraft {
   full_name: string
   /** 简历上展示的邮箱（可空），与登录邮箱无关。 */
@@ -347,6 +363,12 @@ export interface ProfileDraft {
   skills: SkillDraft[]
   experiences: ExperienceDraft[]
   educations: EducationDraft[]
+  /** 证书：ADR-015 §5 ②，进简历区块，上限 5（MULTIVALUE_LIMIT）。 */
+  certificates: CertificateDraft[]
+  /** 作品链接：ADR-015 §5 ②，进简历区块，上限 5（MULTIVALUE_LIMIT）。 */
+  portfolio_links: PortfolioLinkDraft[]
+  /** 期望城市：ADR-015 §5 ③，投递元数据，不进简历区块，上限 5（MULTIVALUE_LIMIT）。 */
+  city_preferences: CityPreferenceDraft[]
 }
 
 /**
@@ -364,6 +386,18 @@ export interface PolishResult {
   /** 发送时的技能名顺序：弹窗要如实展示「顺序会被改成什么样」，不能悄悄重排。 */
   originalSkills: string[]
   mode: PolishMode
+}
+
+/**
+ * 接受润色之后留在表单上的「这段的目标」（ADR-018 §2.5 / §6）。
+ *
+ * 只存目标与截断标记，**不存服务端算好的超出字数**：用户接受之后会自己删字，
+ * 超出多少要跟着他现在的文字实时算，否则删到一半提示还停在旧数字上。
+ */
+export interface PolishTarget {
+  index: number
+  targetWords: number | null
+  truncated: boolean
 }
 
 /**
@@ -447,6 +481,11 @@ function createEmptyDraft(): ProfileDraft {
       },
     ],
     educations: [createEmptyEducation()],
+    // 证书 / 作品 / 期望城市不是必填，且后端要求 `name`/`label`/`url`/`city` 至少 1 字，
+    // 预填空行既逼用户删、又会在提交时因空串 422。所以给空数组，由「+ 添加」按需新增。
+    certificates: [],
+    portfolio_links: [],
+    city_preferences: [],
   }
 }
 
@@ -475,6 +514,20 @@ function draftFromProfile(profile: ProfileRead): ProfileDraft {
       degree: education.degree,
       edu_start: toMonth(education.edu_start),
       edu_end: toMonth(education.edu_end),
+    })),
+    // ADR-015 §5：后端返回的子表。后端 `issuer` / `issued_on` 可能为 null（没填），
+    // 草稿里统一用空串表示「没填」——`<input type="date">` / 文本框不接受 null。
+    certificates: (profile.certificates ?? []).map((certificate) => ({
+      name: certificate.name,
+      issuer: certificate.issuer ?? '',
+      issued_on: certificate.issued_on ?? '',
+    })),
+    portfolio_links: (profile.portfolio_links ?? []).map((link) => ({
+      label: link.label,
+      url: link.url,
+    })),
+    city_preferences: (profile.city_preferences ?? []).map((city) => ({
+      city: city.city,
     })),
   }
 }
@@ -673,6 +726,21 @@ function normalizeDraft(raw: ProfileDraft): ProfileDraft {
         edu_start: toMonth(education.edu_start),
         edu_end: toMonth(education.edu_end),
       })),
+    // ADR-015 §5（B4 之后才加的字段）：老草稿缺这三个键必须补成空数组，
+    // 否则会让整份旧草稿被判废、用户正在编辑的内容悄悄丢掉。有则过滤掉脏元素。
+    certificates: (raw.certificates ?? [])
+      .filter((certificate) => certificate && typeof certificate.name === 'string')
+      .map((certificate) => ({
+        name: certificate.name,
+        issuer: certificate.issuer ?? '',
+        issued_on: certificate.issued_on ?? '',
+      })),
+    portfolio_links: (raw.portfolio_links ?? [])
+      .filter((link) => link && typeof link.label === 'string' && typeof link.url === 'string')
+      .map((link) => ({ label: link.label, url: link.url })),
+    city_preferences: (raw.city_preferences ?? [])
+      .filter((city) => city && typeof city.city === 'string')
+      .map((city) => ({ city: city.city })),
   }
 }
 
@@ -693,6 +761,29 @@ function meaningfulExperiences(source: ProfileDraft): ExperienceDraft[] {
 
 function meaningfulEducations(source: ProfileDraft): EducationDraft[] {
   return (source.educations ?? []).filter((education) => education.school.trim() !== '')
+}
+
+/**
+ * 证书的有效行：锚点是 `name`（后端必填 min_length=1）。
+ * 颁发机构 / 颁发日期是选填，空着不影响这一行算「有内容」。
+ */
+function meaningfulCertificates(source: ProfileDraft): CertificateDraft[] {
+  return (source.certificates ?? []).filter((certificate) => certificate.name.trim() !== '')
+}
+
+/**
+ * 作品链接的有效行：锚点是 `label` 与 `url` 都必填（后端 min_length=1），
+ * 任何一个没填都视为 UI 占位行，提交与比较时都跳过。
+ */
+function meaningfulPortfolioLinks(source: ProfileDraft): PortfolioLinkDraft[] {
+  return (source.portfolio_links ?? []).filter(
+    (link) => link.label.trim() !== '' && link.url.trim() !== '',
+  )
+}
+
+/** 期望城市的有效行：锚点是 `city`（后端必填 min_length=1）。 */
+function meaningfulCityPreferences(source: ProfileDraft): CityPreferenceDraft[] {
+  return (source.city_preferences ?? []).filter((city) => city.city.trim() !== '')
 }
 
 /**
@@ -735,6 +826,18 @@ function comparableOf(source: ProfileDraft): string {
       education.edu_start,
       education.edu_end,
     ]),
+    // ADR-015 §5：三格都进比较投影，否则「只加了一条证书」会被判成没有未保存修改。
+    // 与技能等一致——只投影有效行，空行不算内容，否则空白骨架会跟服务端 0 条判成有差异。
+    certificates: meaningfulCertificates(source).map((certificate) => [
+      certificate.name.trim(),
+      certificate.issuer.trim(),
+      certificate.issued_on || '',
+    ]),
+    portfolio_links: meaningfulPortfolioLinks(source).map((link) => [
+      link.label.trim(),
+      link.url.trim(),
+    ]),
+    city_preferences: meaningfulCityPreferences(source).map((city) => city.city.trim()),
   })
 }
 
@@ -753,6 +856,17 @@ export const useResumeStore = defineStore('resume', () => {
    * 「接受 / 放弃」必须原子地改写 `draft`，放在组件里就得把 draft 传来传去。
    */
   const polishResult = ref<PolishResult | null>(null)
+  /** 接受润色后留在表单上的每段目标（ADR-018 §2.5）；换档案 / 重新润色时清掉。 */
+  const polishTargets = ref<PolishTarget[]>([])
+  /**
+   * 「与服务端一致」那一刻的内容投影（S2）。
+   *
+   * `dirty` 从「动过没有」改成「内容有没有差异」：原来 `markContentChanged()` 恒置真，
+   * 于是把一个字改回去、或者只加了一行空技能，按钮也亮着「保存修改」，
+   * 点下去发一次无变更的 PUT——而后端每次 PUT 都全删重插子表（S3）。
+   * 现成工具 `comparableOf()` 原先只服务本地草稿探测，这里接进主路径，两处同一把尺。
+   */
+  const savedComparable = ref<string>(comparableOf(createEmptyDraft()))
   const dirty = ref(false)
   const lastSavedAt = ref<string | null>(null)
 
@@ -776,16 +890,16 @@ export const useResumeStore = defineStore('resume', () => {
   const pageCount = ref(1)
 
   /**
-   * 样式 / 排版类改动（配色、模块顺序、标题）把「已生成简历」顶掉之后的提示（D5.2 / D5.3）。
+   * 生成物过期之后那一行轻量提示（D5.2 / D5.3 / S5 / ADR-018 §2.5）。
    *
-   * 放在 store 而不是组件里：改动的入口可能不止一处（面板、顶栏、快捷键），
+   * 放在 store 而不是组件里：让生成物过期的入口有四个（改文案、接受润色、改主题、改排版），
    * 提示文案必须只有一份，否则「有的入口提示、有的入口静默」会被当成 bug。
+   * 它**不可关闭**：只要还没重新生成，「为什么要点这个按钮」就仍然成立；
+   * 生成成功或换一份档案时自然消失。
    */
-  const styleNotice = ref<string | null>(null)
-
-  function dismissStyleNotice(): void {
-    styleNotice.value = null
-  }
+  const regenerateHint = ref<string | null>(null)
+  /** 主行动要不要升到高亮态（S5：失效即点亮，但不许自动重生成）。 */
+  const needsRegenerate = computed(() => regenerateHint.value !== null)
 
   /** 当前纸张的物理尺寸（mm）；预览与面板共用，避免两处各写一份数字。 */
   const paperSpec = computed(() => PAPER_SPECS[draft.paper_size])
@@ -861,9 +975,35 @@ export const useResumeStore = defineStore('resume', () => {
   /** 教育经历：至少保留 1 段，最多与后端 `max_length=5` 对齐。 */
   const canAddEducation = computed(() => draft.educations.length < EDUCATION_LIMIT.max)
   const canRemoveEducation = computed(() => draft.educations.length > EDUCATION_LIMIT.min)
+  /** 证书 / 作品 / 期望城市：可选，下限 0（不预填空行），上限与后端 max_length=5 对齐。 */
+  const canAddCertificate = computed(() => draft.certificates.length < MULTIVALUE_LIMIT.max)
+  const canRemoveCertificate = computed(() => draft.certificates.length > MULTIVALUE_LIMIT.min)
+  const canAddPortfolioLink = computed(() => draft.portfolio_links.length < MULTIVALUE_LIMIT.max)
+  const canRemovePortfolioLink = computed(() => draft.portfolio_links.length > MULTIVALUE_LIMIT.min)
+  const canAddCityPreference = computed(() => draft.city_preferences.length < MULTIVALUE_LIMIT.max)
+  const canRemoveCityPreference = computed(() => draft.city_preferences.length > MULTIVALUE_LIMIT.min)
 
-  function markDirty(): void {
-    dirty.value = true
+  /**
+   * 内容改动的**唯一**出口（S1 / S5）。
+   *
+   * 四件事一起做，不许有入口只做其中几件：
+   * 1. `dirty` 由内容投影与基线的差异算出来，不再无条件置真（S2）；
+   * 2. 点亮主行动（`needsRegenerate`）并给一行原因；
+   * 3. 若正停在「已生成简历」视图，切回实时预览——生成物是快照，不会跟着 draft 变；
+   * 4. **不自动重生成**：那会替用户花他自己的额度（老板 2026-11-09 原话）。
+   *
+   * 原来这里叫 `markDirty` 且只置一个布尔，另有一个只管主题与排版两个入口的失效函数——
+   * 于是「接受润色后纸面还是上一次生成的样子」（S1 的那处违例）。
+   * 现在合成一处：改文案、接受润色、改主题、改排版走的是同一条路。
+   */
+  function markContentChanged(message = '内容已更新，点击生成最新简历。'): void {
+    // S2：脏 = 内容有差异，不是「动过」。把一个字改回去、只加一行空技能，都不算脏。
+    const changed = comparableOf(draft) !== savedComparable.value
+    dirty.value = changed
+    // 没有净变化就不点亮：加一行空经历、把主题改回原样，都不该催用户去生成。
+    if (!changed) return
+    regenerateHint.value = message
+    if (generatedHtml.value !== null) showLivePreview()
   }
 
   function applyDraft(next: ProfileDraft, profile: ProfileRead | null): void {
@@ -880,10 +1020,17 @@ export const useResumeStore = defineStore('resume', () => {
     draft.skills = next.skills
     draft.experiences = next.experiences
     draft.educations = next.educations
+    draft.certificates = next.certificates
+    draft.portfolio_links = next.portfolio_links
+    draft.city_preferences = next.city_preferences
     savedProfile.value = profile
+    // 基线取**服务端那一份**而不是 `next`：恢复本地草稿时 `next` 是草稿、profile 是服务器，
+    // 两者不同才正是「有未保存的修改」要表达的事（S2）。
+    savedComparable.value = comparableOf(profile ? draftFromProfile(profile) : createEmptyDraft())
     dirty.value = false
-    // 换了一份数据，上一条样式提示就过期了（否则切到 B 还挂着 A 的提示）。
-    styleNotice.value = null
+    // 换了一份数据，上一条提示与上一份润色目标都过期了（否则切到 B 还挂着 A 的提示）。
+    regenerateHint.value = null
+    polishTargets.value = []
   }
 
   function updateProfileField(
@@ -891,7 +1038,7 @@ export const useResumeStore = defineStore('resume', () => {
     value: string,
   ): void {
     draft[field] = value
-    markDirty()
+    markContentChanged()
   }
 
   /**
@@ -901,7 +1048,7 @@ export const useResumeStore = defineStore('resume', () => {
   function updatePaperSize(size: PaperSize): void {
     if (draft.paper_size === size) return
     draft.paper_size = size
-    markDirty()
+    markContentChanged()
   }
 
   /**
@@ -917,21 +1064,7 @@ export const useResumeStore = defineStore('resume', () => {
     if (draft.theme === theme) return
     draft.theme = theme
     syncGlobalTheme(theme)
-    markDirty()
-    invalidateGeneratedResult('主题已修改，需重新生成简历。')
-  }
-
-  /**
-   * 样式类改动（配色 / 排版）把「已生成简历」顶掉时的统一处理。
-   *
-   * 生成物里的颜色与顺序都是**生成那一刻**内联进 HTML 的快照，不会跟着 draft 变。
-   * 继续停在生成结果视图里，用户会以为「点了没反应」；所以切回实时预览并留一条提示。
-   * 两个入口共用这一处，避免「配色有提示、排版静默」这种不一致。
-   */
-  function invalidateGeneratedResult(message: string): void {
-    if (generatedHtml.value === null) return
-    showLivePreview()
-    styleNotice.value = message
+    markContentChanged('主题已修改，需重新生成简历。')
   }
 
   /* ------------------------------ 排版（D5.3） ------------------------------ */
@@ -947,8 +1080,7 @@ export const useResumeStore = defineStore('resume', () => {
     if (index < 0 || target < 0 || target >= sections.length) return
     const [moved] = sections.splice(index, 1)
     sections.splice(target, 0, moved)
-    markDirty()
-    invalidateGeneratedResult('排版已修改，需重新生成简历。')
+    markContentChanged('排版已修改，需重新生成简历。')
   }
 
   function moveSectionUp(id: SectionId): void {
@@ -976,8 +1108,7 @@ export const useResumeStore = defineStore('resume', () => {
     const next = clampTitle(title)
     if (section.title === next) return
     section.title = next
-    markDirty()
-    invalidateGeneratedResult('排版已修改，需重新生成简历。')
+    markContentChanged('排版已修改，需重新生成简历。')
   }
 
   /** 渲染层用：空标题不能让纸面上出现一个空 `h2`。 */
@@ -989,26 +1120,26 @@ export const useResumeStore = defineStore('resume', () => {
     const skill = draft.skills[index]
     if (!skill) return
     skill.name = value
-    markDirty()
+    markContentChanged()
   }
 
   function addSkill(): void {
     if (!canAddSkill.value) return
     draft.skills.push({ name: '' })
-    markDirty()
+    markContentChanged()
   }
 
   function removeSkill(index: number): void {
     if (!canRemoveSkill.value) return
     draft.skills.splice(index, 1)
-    markDirty()
+    markContentChanged()
   }
 
   function updateExperience(index: number, field: keyof ExperienceDraft, value: string): void {
     const experience = draft.experiences[index]
     if (!experience) return
     experience[field] = value
-    markDirty()
+    markContentChanged()
   }
 
   function addExperience(): void {
@@ -1020,13 +1151,13 @@ export const useResumeStore = defineStore('resume', () => {
       description: '',
       responsibility: '',
     })
-    markDirty()
+    markContentChanged()
   }
 
   function removeExperience(index: number): void {
     if (!canRemoveExperience.value) return
     draft.experiences.splice(index, 1)
-    markDirty()
+    markContentChanged()
   }
 
   function updateEducation(index: number, field: keyof EducationDraft, value: string): void {
@@ -1038,19 +1169,82 @@ export const useResumeStore = defineStore('resume', () => {
     } else {
       education[field] = value
     }
-    markDirty()
+    markContentChanged()
   }
 
   function addEducation(): void {
     if (!canAddEducation.value) return
     draft.educations.push(createEmptyEducation())
-    markDirty()
+    markContentChanged()
   }
 
   function removeEducation(index: number): void {
     if (!canRemoveEducation.value) return
     draft.educations.splice(index, 1)
-    markDirty()
+    markContentChanged()
+  }
+
+  /* ------------------------------ 证书（ADR-015 §5 ②） ------------------------------ */
+
+  function updateCertificate(index: number, field: keyof CertificateDraft, value: string): void {
+    const certificate = draft.certificates[index]
+    if (!certificate) return
+    certificate[field] = value
+    markContentChanged()
+  }
+
+  function addCertificate(): void {
+    if (!canAddCertificate.value) return
+    draft.certificates.push({ name: '', issuer: '', issued_on: '' })
+    markContentChanged()
+  }
+
+  function removeCertificate(index: number): void {
+    if (!canRemoveCertificate.value) return
+    draft.certificates.splice(index, 1)
+    markContentChanged()
+  }
+
+  /* ------------------------------ 作品链接（ADR-015 §5 ②） ------------------------------ */
+
+  function updatePortfolioLink(index: number, field: keyof PortfolioLinkDraft, value: string): void {
+    const link = draft.portfolio_links[index]
+    if (!link) return
+    link[field] = value
+    markContentChanged()
+  }
+
+  function addPortfolioLink(): void {
+    if (!canAddPortfolioLink.value) return
+    draft.portfolio_links.push({ label: '', url: '' })
+    markContentChanged()
+  }
+
+  function removePortfolioLink(index: number): void {
+    if (!canRemovePortfolioLink.value) return
+    draft.portfolio_links.splice(index, 1)
+    markContentChanged()
+  }
+
+  /* ------------------------------ 期望城市（ADR-015 §5 ③） ------------------------------ */
+
+  function updateCityPreference(index: number, value: string): void {
+    const city = draft.city_preferences[index]
+    if (!city) return
+    city.city = value
+    markContentChanged()
+  }
+
+  function addCityPreference(): void {
+    if (!canAddCityPreference.value) return
+    draft.city_preferences.push({ city: '' })
+    markContentChanged()
+  }
+
+  function removeCityPreference(index: number): void {
+    if (!canRemoveCityPreference.value) return
+    draft.city_preferences.splice(index, 1)
+    markContentChanged()
   }
 
   /**
@@ -1107,6 +1301,20 @@ export const useResumeStore = defineStore('resume', () => {
         // 后端是 DATE：`YYYY-MM` 补成当月 1 号；空值由生成前校验拦住。
         edu_start: toIsoDate(education.edu_start) ?? '',
         edu_end: toIsoDate(education.edu_end),
+      })),
+      // ADR-015 §5：三格按后端契约发出，空行必须剔除——后端 `name`/`label`/`url`/`city`
+      // 都要求 min_length=1，发空串会 422。`issued_on` 空串转 null（至今 / 没填）。
+      certificates: meaningfulCertificates(draft).map((certificate) => ({
+        name: certificate.name.trim(),
+        issuer: certificate.issuer.trim() || null,
+        issued_on: certificate.issued_on ? certificate.issued_on : null,
+      })),
+      portfolio_links: meaningfulPortfolioLinks(draft).map((link) => ({
+        label: link.label.trim(),
+        url: link.url.trim(),
+      })),
+      city_preferences: meaningfulCityPreferences(draft).map((city) => ({
+        city: city.city.trim(),
       })),
     }
   }
@@ -1494,6 +1702,9 @@ export const useResumeStore = defineStore('resume', () => {
   async function save(): Promise<ProfileRead> {
     const problem = validateForSave()
     if (problem) throw new Error(problem)
+    // S2：没有差异就不发请求。后端每次 PUT 都全删重插子表（S3），
+    // 一次「什么都没改」的保存不该在库里留下任何痕迹。还没有档案时仍要建。
+    if (!dirty.value && savedProfile.value) return savedProfile.value
     saving.value = true
     const owner = draftOwnerId.value
     try {
@@ -1507,7 +1718,10 @@ export const useResumeStore = defineStore('resume', () => {
         // 空白骨架那格草稿（`:new`）已经没有意义，别留着让下次误提示。
         if (owner) removeDraft(owner, null)
       }
+      const hintBeforeSave = regenerateHint.value
       applyDraft(draftFromProfile(profile), profile)
+      // 保存 ≠ 生成：落库之后纸面快照仍是旧的，「点生成」这一步还得做，提示不能在这里被吞掉。
+      regenerateHint.value = hintBeforeSave
       // 列表里的 updated_at / 标题要跟着刷新；失败不影响「已保存」这个事实。
       try {
         await refreshProfiles()
@@ -1544,8 +1758,8 @@ export const useResumeStore = defineStore('resume', () => {
       generatedHtml.value = resume.content_html
       generatedResumeId.value = resume.resume_id
       generatedTitle.value = resume.title
-      // 生成物已经带上最新配色，「需重新生成」的提示到此为止。
-      styleNotice.value = null
+      // 生成物已经带上最新内容与配色，「需重新生成」的提示到此为止。
+      regenerateHint.value = null
       return resume
     } finally {
       generating.value = false
@@ -1599,6 +1813,7 @@ export const useResumeStore = defineStore('resume', () => {
         mode: options.mode,
       }
       polishResult.value = result
+      polishTargets.value = []
       return result
     } finally {
       polishing.value = false
@@ -1639,8 +1854,39 @@ export const useResumeStore = defineStore('resume', () => {
     ordered.push(...remaining, ...blanks)
     draft.skills.splice(0, draft.skills.length, ...ordered)
 
-    markDirty()
+    // 目标与截断标记跟着文字一起进表单：弹窗关掉之后用户仍然要能看到「哪段超了多少」
+    // （ADR-018 §6：吞掉标记等于违反，「可见」是指在用户正看着的那块区域里可见）。
+    polishTargets.value = result.copy.experiences.map((item) => ({
+      index: item.index,
+      targetWords: item.target_words,
+      truncated: item.truncated,
+    }))
+
+    markContentChanged()
     polishResult.value = null
+  }
+
+  /**
+   * 表单上第 `index` 段经历的超限提示；没有就返回 null。
+   *
+   * 超出字数**实时算**（描述 + 职责合计，与 `max_words` 一直以来的口径一致）：
+   * 用户删到目标以内，这句话自己消失，不用他再点一次什么。
+   * 契约级截断只说「被截断了」，不报少了多少字——那是老板 2026-11-09 第 6 轮的裁定。
+   */
+  function polishNoteFor(index: number): string | null {
+    const target = polishTargets.value.find((item) => item.index === index)
+    if (!target) return null
+    const experience = meaningfulExperiences(draft)[index]
+    if (!experience) return null
+    const parts: string[] = []
+    if (target.truncated) {
+      parts.push('这段内容超长，末尾已被截断，请自己补完整。')
+    }
+    if (target.targetWords !== null) {
+      const over = experience.description.length + experience.responsibility.length - target.targetWords
+      if (over > 0) parts.push(`比目标多 ${over} 字，删掉 ${over} 字再保存。`)
+    }
+    return parts.length > 0 ? parts.join('') : null
   }
 
   /** 放弃这次润色结果：只清快照，表单一个字段都不动。 */
@@ -1771,7 +2017,7 @@ export const useResumeStore = defineStore('resume', () => {
     const pending = pendingDraft.value
     if (!pending) return
     applyDraft(normalizeDraft(pending.data), savedProfile.value)
-    dirty.value = true
+    markContentChanged()
     pendingDraft.value = null
   }
 
@@ -1835,6 +2081,7 @@ export const useResumeStore = defineStore('resume', () => {
     generatedResumeId,
     generatedTitle,
     polishResult,
+    polishNoteFor,
     pendingDraft,
     autosavedAt,
     hasSavedProfile,
@@ -1847,8 +2094,8 @@ export const useResumeStore = defineStore('resume', () => {
     /* 配色（D5.2） */
     themeSpec,
     updateTheme,
-    styleNotice,
-    dismissStyleNotice,
+    regenerateHint,
+    needsRegenerate,
     /* 排版（D5.3） */
     layoutSections,
     sectionTitle,
@@ -1883,6 +2130,12 @@ export const useResumeStore = defineStore('resume', () => {
     canRemoveExperience,
     canAddEducation,
     canRemoveEducation,
+    canAddCertificate,
+    canRemoveCertificate,
+    canAddPortfolioLink,
+    canRemovePortfolioLink,
+    canAddCityPreference,
+    canRemoveCityPreference,
     updateProfileField,
     updateSkill,
     addSkill,
@@ -1893,6 +2146,15 @@ export const useResumeStore = defineStore('resume', () => {
     updateEducation,
     addEducation,
     removeEducation,
+    updateCertificate,
+    addCertificate,
+    removeCertificate,
+    updatePortfolioLink,
+    addPortfolioLink,
+    removePortfolioLink,
+    updateCityPreference,
+    addCityPreference,
+    removeCityPreference,
     validateForGenerate,
     validateForSave,
     validateForPolish,

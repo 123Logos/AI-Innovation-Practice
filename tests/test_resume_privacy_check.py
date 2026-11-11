@@ -4,9 +4,10 @@
 不落库、不加列、不建表（形态与 `POST /jobs/extract-skills` 同一条路子，ADR-011 议题 2.A）。
 所以本文件的第一条判据不是清单内容，而是「调用之后库里一行都没多」。
 
-四类里今天真能核对的只有两类（联系方式 / 个人信息）：作品链接与授权范围在数据模型里
-没有任何对应的列或表。这两格必须如实返回 `not_available` 并带一句理由——
-把它们伪装成「用户什么都没填」是假话，把它们省掉则是把 FR-06 点名的两格悄悄删了。
+四类里，**批次 B4 之后**只剩一类核不了：授权范围（没有任何 consent/授权相关的列或表，
+要等 B5 的组织与角色）。它必须如实返回 `not_available` 并带一句理由——把它伪装成
+「用户什么都没填」是假话，把它省掉则是把 FR-06 点名的那一格悄悄删了。
+作品链接在 B4 建出 `portfolio_links` 之后**改为真核**（`test_privacy_check_reports_real_portfolio_links`）。
 
 错误口径与 `/generate` 逐字对齐（同一份简历不能两边各说一套）：
 指定不存在的 / 别人的 / 在回收站的 → 404；一份档案都没有 → 400。
@@ -211,28 +212,61 @@ def test_privacy_check_announces_missing_education_section(client: TestClient) -
     assert educations["note"]
 
 
-def test_privacy_check_is_honest_about_the_two_unbuildable_categories(
+def test_privacy_check_is_honest_about_the_unbuildable_category(
     client: TestClient,
 ) -> None:
-    """作品链接 / 授权范围：数据模型里没有这一栏，就说没有，不伪装成「用户没填」。
+    """授权范围：数据模型里没有这一层，就说没有，不伪装成「用户没填」。
 
     `status="not_available"` 时 `note` 是**必给**的：不给，用户看见的就是一个没有来由的空壳。
+
+    **这一格从「两格」变成「一格」是批次 B4 的直接后果**：`portfolio_links` 表建起来之后，
+    作品链接第一次真的可核（见下一条用例），再写 `not_available` 就是假话。
+    只有「授权给谁看」还缺数据模型——它等 B5 的组织与角色。
     """
     token = _register_and_login(client)
     _saved(client, token)
 
     response = client.post(PRIVACY_URL, json={}, headers=_headers(token))
 
-    portfolio = _category(response, "portfolio")
-    assert portfolio["status"] == "not_available"
-    assert portfolio["items"] == []
-    assert portfolio["note"]
-    assert "没填" not in portfolio["note"]
-
     authorization = _category(response, "authorization")
     assert authorization["status"] == "not_available"
     assert authorization["items"] == []
     assert authorization["note"]
+
+
+def test_privacy_check_reports_real_portfolio_links(client: TestClient) -> None:
+    """作品链接这一格：B4 之后它真的在核对，而不是一句「今天没有这一栏」。
+
+    三件事必须同时成立，缺一条这格就会退回成一句安慰话：
+    ① 没填时是 `missing`（诚实说没填，不是 `not_available`）；
+    ② 填了就逐条列出来，`included=True`——简历里它确实是可点的链接；
+    ③ 每条都带上那条 URL 本身，用户才知道「带出去的到底是哪一个」。
+    """
+    token = _register_and_login(client)
+    _saved(client, token)
+
+    empty = client.post(PRIVACY_URL, json={}, headers=_headers(token))
+    empty_portfolio = _category(empty, "portfolio")
+    assert empty_portfolio["status"] == "missing"
+    assert empty_portfolio["items"] == []
+
+    _saved(
+        client,
+        token,
+        portfolio_links=[
+            {"label": "个人博客", "url": "https://example.com/blog"},
+            {"label": "开源项目", "url": "https://example.com/repo"},
+        ],
+    )
+    filled = client.post(PRIVACY_URL, json={}, headers=_headers(token))
+    portfolio = _category(filled, "portfolio")
+    assert portfolio["status"] == "present"
+    labels = [item["label"] for item in portfolio["items"]]
+    assert labels == ["个人博客", "开源项目"]
+    assert all(item["present"] and item["included"] for item in portfolio["items"])
+    notes = " ".join(str(item["note"]) for item in portfolio["items"])
+    assert "https://example.com/blog" in notes
+    assert "https://example.com/repo" in notes
 
 
 def test_privacy_check_and_generate_point_at_the_same_resume(client: TestClient) -> None:

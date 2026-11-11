@@ -28,7 +28,7 @@
 - 状态字段的既有做法：`educations.degree` 用 `VARCHAR(50)` + CHECK，注释写明「字符串列 + CHECK，避免 MySQL ENUM 难以演进」。本文沿用。
 - 分层落地的文件形状：`app/repositories/` 下五个仓储清一色 `*_repository.py`（`user_repository.py`、`refresh_token_repository.py`、`student_profile_repository.py`、`resume_repository.py`、`fake_resume_repository.py`），**本仓没有 `models/` 目录**，ORM 声明与仓储实现同文件。
 - 越权语义的既有先例（本文权限矩阵的依据）：`app/api/v1/profiles.py:10` ——「越权处理：不属于当前用户的 id 一律 404（不是 403）——403 会暴露「该 id 存在」。」
-- BYOK 请求头已在 CORS 白名单里：`app/main.py:46` `CORS_ALLOW_HEADERS = ["Authorization", "Content-Type", "X-Request-ID", "X-DeepSeek-Key"]`（注释还写明：少列一个，浏览器预检会在跨源部署时直接拒掉这个头，而本地 Vite 代理同源、测不出来）。
+- BYOK 请求头已在 CORS 白名单里：`app/main.py::CORS_ALLOW_HEADERS` `CORS_ALLOW_HEADERS = ["Authorization", "Content-Type", "X-Request-ID", "X-DeepSeek-Key"]`（注释还写明：少列一个，浏览器预检会在跨源部署时直接拒掉这个头，而本地 Vite 代理同源、测不出来）。
 - AI 通道现状（`app/integrations/copy_writer.py`）：`DEEPSEEK_MODEL = "deepseek-flash"`、`REQUEST_TIMEOUT_SECONDS = 30.0`、`stream=False`、`extra_body={"thinking": {"type": "disabled"}}`、`max_retries=0`；Key 只来自请求头 `X-DeepSeek-Key`（`app/services/dependencies.py`），不落库、不写日志、不进异常消息；测试缝是 `httpx2.Client` + `MockTransport`。
 - 端点现状（`app/api/v1/resumes.py`）：`POST /resumes/generate` 纯模板；`POST /resumes/polish` 纯计算不落库 + `@limiter.limit(POLISH_RATE_LIMIT)`。
 - `docs/design/schema-draft.sql` 里有岗位设计（`companies` L175-187、`job_posts` L189-217、`job_skill_requirements` L219-237、技能字典 `skills` L117-126），但该文件标注**非迁移源**，且外键指向实现中根本不存在的 `organizations`、`memberships`（L28-48）和字典式 `skills`。照搬会一次性拖进 5 张以上的表。
@@ -498,7 +498,7 @@ def skill_name_key(name: str) -> str:
   - `app/api/v1/__init__.py` —— **补 `include_router(jobs.router)`**（不改这一行，端点根本不存在）；
   - `app/core/rate_limit.py` —— 增 `EXTRACT_RATE_LIMIT`；
   - `app/services/dependencies.py` —— 增装配（Key 取法与 `get_resume_service` 同构）。
-  - 无需改 `app/main.py`：`CORS_ALLOW_HEADERS`（`app/main.py:46`）已含 `X-DeepSeek-Key`，本端点复用同一个头，加它反而会让人误以为引入了第二套凭据通道。
+  - 无需改 `app/main.py`：`CORS_ALLOW_HEADERS`（`app/main.py::CORS_ALLOW_HEADERS`）已含 `X-DeepSeek-Key`，本端点复用同一个头，加它反而会让人误以为引入了第二套凭据通道。
 - 迁移：`0011_jobs.py` + `0012_job_skills.py`，各自必须可 `downgrade`；沿用 0007（先建替换索引）与 0010（JSON 列不能带 `server_default`——本文已决定不用 JSON，该坑自然绕开）的既有教训。
 - **迁移改动的落点纪律（v7 补正实例）**：`ck_job_skills_origin` 的值域改名是**就地改在 `20261105_0012` 原文上，没有新开 revision**。这只在一个前提下成立——该 revision **尚未进入 git 历史**（实测 `git log -- alembic/versions/20261105_0012_job_skills.py` 为空，文件仍未跟踪）。已经应用过旧值的库必须重建这两张表：dev 走 `downgrade 20261104_0010 → upgrade head`（实测两表为空，`users=13`、`resumes=55` 原样未动），test 由 `tests/test_migrations.py` 的 base→head 往返重建。**由此定规**：迁移一旦 commit 进历史，就只能新开 revision，禁止就地改——否则 `upgrade head` 是 no-op，旧约束会原样留在下一个环境的库里。
 - 前端：新增 3 条路由 + 3 个视图 + 一个 `jobs` store，顶栏加一个入口。

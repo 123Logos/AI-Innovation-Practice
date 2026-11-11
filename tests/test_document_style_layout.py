@@ -31,13 +31,31 @@ def _titles(layout: list) -> dict[str, str]:  # type: ignore[type-arg]
 
 def test_default_order_when_layout_is_null() -> None:
     """`layout_config IS NULL` = 从未自定义，用默认顺序。"""
-    assert _ids(resolve_layout(None)) == ["educations", "skills", "experiences"]
+    assert _ids(resolve_layout(None)) == [
+        "educations",
+        "skills",
+        "experiences",
+        "certificates",
+        "portfolio",
+    ]
 
 
 def test_default_sections_constant_is_the_documented_order() -> None:
-    """默认顺序必须与 D5.3 之前的硬编码一致（教育 → 技能 → 项目）。"""
-    assert _ids(list(DEFAULT_SECTIONS)) == ["educations", "skills", "experiences"]
-    assert [section.title for section in DEFAULT_SECTIONS] == ["教育经历", "技能", "项目经历"]
+    """默认顺序（ADR-015 §2.2）：教育 → 技能 → 项目 → 证书 → 作品链接。"""
+    assert _ids(list(DEFAULT_SECTIONS)) == [
+        "educations",
+        "skills",
+        "experiences",
+        "certificates",
+        "portfolio",
+    ]
+    assert [section.title for section in DEFAULT_SECTIONS] == [
+        "教育经历",
+        "技能",
+        "项目经历",
+        "证书",
+        "作品链接",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -46,10 +64,10 @@ def test_default_sections_constant_is_the_documented_order() -> None:
         "junk",  # 手工改库塞了字符串
         [],  # 整体存成了数组
         42,
-        {"version": 1},  # 缺 sections
-        {"version": 1, "sections": "skills"},  # sections 不是数组
-        {"version": 1, "sections": []},  # 空数组（数据损坏，不是「全隐藏」）
-        {"version": 1, "sections": {}},  # dict 不是 list
+        {"version": 2},  # 缺 sections
+        {"version": 2, "sections": "skills"},  # sections 不是数组
+        {"version": 2, "sections": []},  # 空数组（数据损坏，不是「全隐藏」）
+        {"version": 2, "sections": {}},  # dict 不是 list
     ],
 )
 def test_broken_config_falls_back_to_default(
@@ -80,7 +98,7 @@ def test_missing_section_is_appended_in_default_order() -> None:
     """只给了两段时，缺的那段追加到**末尾**（不是插回原位）。"""
     layout = resolve_layout(
         {
-            "version": 1,
+            "version": 2,
             "sections": [
                 {"id": "experiences", "title": "项目"},
                 {"id": "skills", "title": "技能"},
@@ -88,14 +106,20 @@ def test_missing_section_is_appended_in_default_order() -> None:
         }
     )
 
-    assert _ids(layout) == ["experiences", "skills", "educations"]
+    assert _ids(layout) == [
+        "experiences",
+        "skills",
+        "educations",
+        "certificates",
+        "portfolio",
+    ]
 
 
 def test_unknown_section_id_is_dropped() -> None:
     """未知 id 丢弃（可能是新版本写入的模块），其余顺序不受影响。"""
     layout = resolve_layout(
         {
-            "version": 1,
+            "version": 2,
             "sections": [
                 {"id": "awards", "title": "获奖"},
                 {"id": "skills", "title": "技能"},
@@ -103,7 +127,13 @@ def test_unknown_section_id_is_dropped() -> None:
         }
     )
 
-    assert _ids(layout) == ["skills", "educations", "experiences"]
+    assert _ids(layout) == [
+        "skills",
+        "educations",
+        "experiences",
+        "certificates",
+        "portfolio",
+    ]
     assert "awards" not in _titles(layout)
 
 
@@ -111,7 +141,7 @@ def test_duplicate_section_id_keeps_first_position_and_first_title() -> None:
     """重复 id 保留**首次出现**的位置与标题，后面的整条丢弃。"""
     layout = resolve_layout(
         {
-            "version": 1,
+            "version": 2,
             "sections": [
                 {"id": "skills", "title": "技术栈"},
                 {"id": "educations", "title": "学历"},
@@ -120,7 +150,13 @@ def test_duplicate_section_id_keeps_first_position_and_first_title() -> None:
         }
     )
 
-    assert _ids(layout) == ["skills", "educations", "experiences"]
+    assert _ids(layout) == [
+        "skills",
+        "educations",
+        "experiences",
+        "certificates",
+        "portfolio",
+    ]
     assert _titles(layout)["skills"] == "技术栈"
 
 
@@ -128,7 +164,7 @@ def test_duplicate_section_id_keeps_first_position_and_first_title() -> None:
 def test_blank_or_non_string_title_falls_back_to_default(blank: object) -> None:
     """标题为空 / 全空白 / 不是字符串时回落默认标题（不能留一个空 `h2`）。"""
     layout = resolve_layout(
-        {"version": 1, "sections": [{"id": "skills", "title": blank}]},
+        {"version": 2, "sections": [{"id": "skills", "title": blank}]},
     )
 
     assert _titles(layout)["skills"] == "技能"
@@ -138,7 +174,7 @@ def test_title_whitespace_is_collapsed_and_length_is_capped() -> None:
     """标题压平空白并截断到 12 字：`h2` 是单行，折行会把版式撑开。"""
     layout = resolve_layout(
         {
-            "version": 1,
+            "version": 2,
             "sections": [
                 {"id": "skills", "title": "  技术\n栈   与工具  "},
                 {"id": "experiences", "title": "项目经历与开源贡献说明文档"},
@@ -156,7 +192,7 @@ def test_valid_config_keeps_order_and_titles_verbatim() -> None:
     """正常配置原样生效——这是「没坏就别动」的那一半。"""
     layout = resolve_layout(
         {
-            "version": 1,
+            "version": 2,
             "sections": [
                 {"id": "skills", "title": "技术栈"},
                 {"id": "educations", "title": "教育背景"},
@@ -165,16 +201,24 @@ def test_valid_config_keeps_order_and_titles_verbatim() -> None:
         }
     )
 
-    assert _ids(layout) == ["skills", "educations", "experiences"]
+    assert _ids(layout) == [
+        "skills",
+        "educations",
+        "experiences",
+        "certificates",
+        "portfolio",
+    ]
     assert _titles(layout) == {
         "skills": "技术栈",
         "educations": "教育背景",
         "experiences": "项目经验",
+        "certificates": "证书",
+        "portfolio": "作品链接",
     }
 
 
 def test_resolution_always_yields_every_section_once() -> None:
-    """不变量：不管输入多脏，输出恒为**三个模块各一次**。
+    """不变量：不管输入多脏，输出恒为**五个模块各一次**（ADR-015 §2.2）。
 
     生成器靠这条保证「用户把某段拖到第一位但那段没内容」时，
     后面的内容不会因为那次丢弃而整体消失。
@@ -182,9 +226,9 @@ def test_resolution_always_yields_every_section_once() -> None:
     messy_inputs: list[object] = [
         None,
         "x",
-        {"version": 1, "sections": []},
-        {"version": 1, "sections": [{"id": "skills"}, {"id": "skills"}, {"id": "nope"}]},
-        {"version": 1, "sections": [{"title": "没有 id"}]},
+        {"version": 2, "sections": []},
+        {"version": 2, "sections": [{"id": "skills"}, {"id": "skills"}, {"id": "nope"}]},
+        {"version": 2, "sections": [{"title": "没有 id"}]},
     ]
 
     for messy in messy_inputs:

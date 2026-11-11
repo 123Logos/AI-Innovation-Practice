@@ -359,21 +359,21 @@ async function goTrash(): Promise<void> {
 }
 
 .menu-sort { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; border-bottom: 1px solid var(--ui-surface-sunken); padding: 10px; }
-.menu-sort__label { color: var(--ui-ink-faint); font-size: 11px; }
-.sort-chip { border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 3px 8px; color: var(--ui-ink-muted); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 11px; line-height: 1.5; white-space: nowrap; }
+.menu-sort__label { color: var(--ui-ink-faint); font-size: var(--text-xs); }
+.sort-chip { border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 3px 8px; color: var(--ui-ink-muted); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-xs); line-height: 1.5; white-space: nowrap; }
 .sort-chip:hover { border-color: var(--theme-rule-soft); color: var(--theme-primary-deep); }
 .sort-chip--active { border-color: var(--theme-primary); color: var(--theme-primary-strong); background: var(--theme-bg-light); font-weight: 600; }
-.sort-direction { margin-left: auto; width: auto; min-width: 26px; padding: 0 6px; height: 24px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); color: var(--theme-primary); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 12px; line-height: 1; }
+.sort-direction { margin-left: auto; width: auto; min-width: 26px; padding: 0 6px; height: 24px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); color: var(--theme-primary); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-sm); line-height: 1; }
 .sort-direction:hover { border-color: var(--theme-rule); background: var(--theme-bg-hover); }
 .sort-chip:focus-visible, .sort-direction:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 1px; }
 
 .default-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--ui-border); border-left: 3px solid var(--ui-warning-border); padding: 10px; background: var(--ui-warning-soft); }
-.default-banner__text { color: var(--ui-warning); font-size: 11px; line-height: 1.5; }
-.default-banner__button { flex: 0 0 auto; border: 1px solid var(--ui-warning-border); border-radius: var(--ui-radius); padding: 4px 10px; color: var(--ui-warning); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.default-banner__text { color: var(--ui-warning); font-size: var(--text-xs); line-height: 1.5; }
+.default-banner__button { flex: 0 0 auto; border: 1px solid var(--ui-warning-border); border-radius: var(--ui-radius); padding: 4px 10px; color: var(--ui-warning); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-xs); font-weight: 600; white-space: nowrap; }
 .default-banner__button:hover { border-color: var(--ui-warning); background: var(--ui-surface-soft); }
 .default-banner__button:focus-visible { outline: 2px solid var(--ui-warning-border); outline-offset: 1px; }
 
-.menu-hint { margin: 0; padding: 14px; color: var(--ui-ink-faint); font-size: 12px; line-height: 1.5; }
+.menu-hint { margin: 0; padding: 14px; color: var(--ui-ink-faint); font-size: var(--text-sm); line-height: 1.5; }
 /* 骨架与列表本体同一层内缩（`.menu-list` 的 6px），数据到达时行不会横向挪一下。 */
 .menu-skeleton { padding: 6px; }
 .menu-list { flex: 1 1 auto; min-height: 0; margin: 0; padding: 6px; list-style: none; overflow-y: auto; }
@@ -384,12 +384,12 @@ async function goTrash(): Promise<void> {
 /* 主按钮：整行的可点区域就是它，动作按钮是它的兄弟而不是子节点（button 不许套 button）。 */
 .menu-item__main { display: flex; flex: 1 1 auto; min-width: 0; align-items: center; gap: 6px; border: 0; padding: 0; color: inherit; background: transparent; font: inherit; text-align: left; cursor: pointer; }
 .menu-item__main:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
-.menu-item__title { overflow: hidden; color: var(--ui-ink); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.menu-item__title { overflow: hidden; color: var(--ui-ink); font-size: var(--text-base); text-overflow: ellipsis; white-space: nowrap; }
 .menu-item--active .menu-item__title { font-weight: 650; }
-.default-tag { flex: 0 0 auto; border: 1px solid var(--theme-rule-soft); border-radius: var(--ui-radius); padding: 1px 5px; color: var(--theme-primary-deep); background: var(--theme-bg-light); font-size: 10px; line-height: 1.4; white-space: nowrap; }
-.current-tag { flex: 0 0 auto; color: var(--theme-primary); font-size: 10px; white-space: nowrap; }
+.default-tag { flex: 0 0 auto; border: 1px solid var(--theme-rule-soft); border-radius: var(--ui-radius); padding: 1px 5px; color: var(--theme-primary-deep); background: var(--theme-bg-light); font-size: var(--text-2xs); line-height: 1.4; white-space: nowrap; }
+.current-tag { flex: 0 0 auto; color: var(--theme-primary); font-size: var(--text-2xs); white-space: nowrap; }
 .menu-item__actions { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; }
-.menu-item__busy { color: var(--ui-warning); font-size: 11px; white-space: nowrap; }
+.menu-item__busy { color: var(--ui-warning); font-size: var(--text-xs); white-space: nowrap; }
 
 .icon-button { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: 1px solid transparent; border-radius: var(--ui-radius); padding: 0; color: var(--ui-ink-faint); background: transparent; cursor: pointer; }
 .icon-button:hover { border-color: var(--theme-rule-soft); color: var(--theme-primary-deep); background: var(--ui-surface); }
@@ -397,16 +397,16 @@ async function goTrash(): Promise<void> {
 .icon-button:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 1px; }
 
 .rename-row { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 8px 8px; }
-.rename-input { flex: 1 1 120px; min-width: 0; border: 1px solid var(--theme-rule); border-radius: var(--ui-radius); padding: 5px 8px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: 12px; outline: 0; }
-.rename-button { flex: 0 0 auto; border: 1px solid var(--theme-primary); border-radius: var(--ui-radius); padding: 4px 10px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: 11px; line-height: 1.5; white-space: nowrap; }
+.rename-input { flex: 1 1 120px; min-width: 0; border: 1px solid var(--theme-rule); border-radius: var(--ui-radius); padding: 5px 8px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: var(--text-sm); outline: 0; }
+.rename-button { flex: 0 0 auto; border: 1px solid var(--theme-primary); border-radius: var(--ui-radius); padding: 4px 10px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: var(--text-xs); line-height: 1.5; white-space: nowrap; }
 .rename-button:hover:not(:disabled) { background: var(--theme-primary-hover); }
 .rename-button:disabled { opacity: .6; cursor: progress; }
 .rename-button--ghost { border-color: var(--ui-border-strong); color: var(--ui-ink-muted); background: var(--ui-surface); }
 .rename-button--ghost:hover:not(:disabled) { border-color: var(--theme-rule-soft); color: var(--theme-primary-deep); background: var(--theme-bg-hover); }
 
-.menu-error { margin: 0; border-top: 1px solid var(--ui-danger-border); padding: 10px 14px; color: var(--ui-danger); font-size: 12px; line-height: 1.5; }
+.menu-error { margin: 0; border-top: 1px solid var(--ui-danger-border); padding: 10px 14px; color: var(--ui-danger); font-size: var(--text-sm); line-height: 1.5; }
 .menu-footer { display: flex; flex: 0 0 auto; gap: 8px; border-top: 1px solid var(--ui-border); padding: 10px; }
-.menu-action { flex: 1 1 0; min-width: 0; border: 1px solid var(--theme-primary); border-radius: var(--ui-radius); padding: 8px 10px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: 12px; line-height: 1.4; white-space: nowrap; }
+.menu-action { flex: 1 1 0; min-width: 0; border: 1px solid var(--theme-primary); border-radius: var(--ui-radius); padding: 8px 10px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: var(--text-sm); line-height: 1.4; white-space: nowrap; }
 .menu-action:hover { background: var(--theme-primary-hover); }
 .menu-action--ghost { border-color: var(--ui-border-strong); color: var(--ui-ink-muted); background: var(--ui-surface); }
 .menu-action--ghost:hover { border-color: var(--theme-rule); color: var(--theme-primary-deep); background: var(--theme-bg-hover); }

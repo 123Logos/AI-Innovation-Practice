@@ -91,13 +91,13 @@ function onKeydown(event: KeyboardEvent): void {
 .dialog-title {
   margin: 0;
   color: var(--ui-ink);
-  font-size: 17px;
+  font-size: var(--text-xl);
   font-weight: 650;
 }
 .dialog-body {
   margin: 8px 0 0;
   color: var(--ui-ink-muted);
-  font-size: 13px;
+  font-size: var(--text-base);
   line-height: 1.6;
 }
 .dialog-subject {
@@ -107,7 +107,7 @@ function onKeydown(event: KeyboardEvent): void {
   border-radius: var(--ui-radius);
   color: var(--ui-ink);
   background: var(--ui-canvas);
-  font-size: 13px;
+  font-size: var(--text-base);
   line-height: 1.5;
 }
 .dialog-actions {
@@ -126,12 +126,12 @@ function onKeydown(event: KeyboardEvent): void {
   color: var(--ui-ink);
   background: var(--ui-surface);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--text-base);
   cursor: pointer;
 }
 .dialog-button--primary {
   border-color: var(--theme-primary);
-  color: #fff;
+  color: var(--theme-on-primary);
   background: var(--theme-primary);
 }
 .dialog-button--danger {

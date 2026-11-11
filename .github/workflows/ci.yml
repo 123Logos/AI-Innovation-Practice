@@ -89,6 +89,27 @@ jobs:
       - name: UI copy check (G1)
         run: uv run python scripts/check_ui_copy.py
 
+      # G3 错误文案表（守则 C3 + §9 G3，老板 2026-11-11 第 13 轮批准，原话「G3（错误文案表）：
+      # 随 F1c 的落地一起进」）。G1 只扫前端，`app/` 那侧曾经是 `message = str(exc.detail)`
+      # ——路由里任何一条英文 detail 都会裸上屏，而 G1 看不见（ROADMAP §3 X2）。这一步守的是
+      # 「上屏那句话只能来自 app/core/error_messages.py 那张表」，并且机械钉住出口真的接在表上。
+      - name: Error copy check (G3)
+        run: uv run python scripts/check_error_copy.py
+
+      # G5 路由可达性（守则 L6 + §9 G5，老板 2026-11-11 第 13 轮批准进 CI，原话
+      # 「立刻接进 CI，但必须带上守则 §11 的豁免名单…它如果不能机械守门，写在脚本里就毫无意义」）。
+      # 名单在脚本里显式维护，首当其冲就是 DashboardView.vue——老板点名「纳入路由，不要删」的
+      # 规划期资产，归批次 F7。名单本身也防腐：豁免项在磁盘上消失同样报红。
+      - name: Route reachability check (G5)
+        run: uv run python scripts/check_route_reachability.py
+
+      # G4 令牌检查（守则 T1/T2 + §9 G4，同一轮批准）：组件样式里不许有裸 hex 与裸 px 字号。
+      # 与 T1 的存量替换同批上线——第一次运行扫出 205 处，全部换成令牌后归零，
+      # 没有一处靠注释豁免。豁免名单在脚本里显式维护：纸面（.paper）、打印稿（@media print）、
+      # 令牌定义本身（:root）、--paper-* 色板，四类都是「必须固定值」的地方。
+      - name: Design token check (G4)
+        run: uv run python scripts/check_design_tokens.py
+
       # test_migrations covers upgrade/downgrade against the MySQL service.
       - name: Test and migration check
         run: uv run pytest -q

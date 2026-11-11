@@ -4,7 +4,7 @@
 要么出现在下面的豁免名单里（= 守则 §11 登记的**规划期资产**），否则按死代码报红。
 两类都不占的，就是一份谁都不会渲染、却会跟着每次重构一起改的孤儿模板。
 
-为什么是一条脚本 + 一道（还没批准的）CI 步骤，而不是一条 vitest：
+为什么是一条脚本 + 一道 CI 步骤，而不是一条 vitest：
 与 `scripts/check_docs_citations.py` 同一个理由——纯文本检查不该为了跑起来去开数据库，
 而 `tests/conftest.py` 的会话夹具会连真实 MySQL。放在 `scripts/` 还顺带被
 `ruff format --check` / `ruff check` / `mypy` 三道既有闸覆盖。
@@ -14,9 +14,10 @@
 现在还没挂路由（归批次 F7）。没有这份名单，本脚本上线第一天就会把它判成死代码，
 而「清一下死代码」恰恰是最没人会拦的动作。名单即判据：每一项都必须写清它归哪一批。
 
-状态（2026-11-10）：**脚本已交付，`ci.yml` 里还没有这一步**。
-G5 进不进 CI 是老板名下挂着的一句话（`docs/ROADMAP.md` §6 第 2 条），批次 F2 只交脚本本体；
-拍板当天只需在 `ci.yml` 里加一行 `uv run python scripts/check_route_reachability.py`。
+状态（2026-11-11）：**已接进 CI**（`.github/workflows/ci.yml` 的 `Route reachability check (G5)`）。
+老板第 13 轮批准 G3/G4/G5 全部进 CI 且必须带豁免名单；G5 是其中立刻生效的一道。
+上线当天用两个探针验过它会红：① 临时放一个无路由无引用的视图进 `views/`；
+② 把视图目录换成一份缺 `DashboardView.vue` 的副本（名单防腐那条）。探针跑完即删。
 """
 
 from __future__ import annotations

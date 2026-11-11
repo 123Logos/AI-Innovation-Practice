@@ -3,10 +3,15 @@ import {
   DEGREE_OPTIONS,
   EDUCATION_LIMIT,
   EXPERIENCE_LIMIT,
+  MULTIVALUE_LIMIT,
   SKILL_LIMIT,
   useResumeStore,
 } from '@/stores/resume'
-import type { EducationDraft } from '@/stores/resume'
+import type {
+  CertificateDraft,
+  EducationDraft,
+  PortfolioLinkDraft,
+} from '@/stores/resume'
 import { currentMonthValue, todayIsoDate } from '@/utils/datetime'
 
 import AutoTextarea from './AutoTextarea.vue'
@@ -53,6 +58,26 @@ function onExperienceInput(
 /** 两个多行字段走共享组件，拿到的已经是字符串，不再从 `event.target` 上抠值。 */
 function onExperienceText(index: number, field: 'description' | 'responsibility', value: string): void {
   store.updateExperience(index, field, value)
+}
+
+function onCertificateInput(
+  index: number,
+  field: keyof CertificateDraft,
+  event: Event,
+): void {
+  store.updateCertificate(index, field, (event.target as HTMLInputElement).value)
+}
+
+function onPortfolioInput(
+  index: number,
+  field: keyof PortfolioLinkDraft,
+  event: Event,
+): void {
+  store.updatePortfolioLink(index, field, (event.target as HTMLInputElement).value)
+}
+
+function onCityInput(index: number, event: Event): void {
+  store.updateCityPreference(index, (event.target as HTMLInputElement).value)
 }
 </script>
 
@@ -190,6 +215,117 @@ function onExperienceText(index: number, field: 'description' | 'responsibility'
 
     <section class="form-section">
       <div class="section-title">
+        <h2>证书</h2>
+        <span class="counter">{{ store.draft.certificates.length }} / {{ MULTIVALUE_LIMIT.max }}</span>
+      </div>
+      <article
+        v-for="(certificate, index) in store.draft.certificates"
+        :key="`certificate-${index}`"
+        class="education-form"
+      >
+        <div class="section-title">
+          <span class="item-index">0{{ index + 1 }}</span>
+          <button
+            class="remove-button"
+            type="button"
+            :disabled="!store.canRemoveCertificate"
+            :aria-label="`删除第 ${index + 1} 条证书`"
+            @click="store.removeCertificate(index)"
+          >
+            ×
+          </button>
+        </div>
+        <label class="field">
+          <span>证书名称 <b class="required">*</b></span>
+          <input
+            :value="certificate.name"
+            placeholder="如 大学英语六级"
+            @input="onCertificateInput(index, 'name', $event)"
+          />
+        </label>
+        <div class="field-row">
+          <label class="field">
+            <span>颁发机构</span>
+            <input
+              :value="certificate.issuer"
+              placeholder="选填，如 教育部考试中心"
+              @input="onCertificateInput(index, 'issuer', $event)"
+            />
+          </label>
+          <label class="field">
+            <span>颁发日期</span>
+            <input
+              type="date"
+              :value="certificate.issued_on"
+              @input="onCertificateInput(index, 'issued_on', $event)"
+            />
+          </label>
+        </div>
+      </article>
+      <button
+        class="text-button"
+        type="button"
+        :disabled="!store.canAddCertificate"
+        @click="store.addCertificate"
+      >
+        + 添加证书
+      </button>
+      <p class="hint">最多 {{ MULTIVALUE_LIMIT.max }} 条，可先存草稿。</p>
+    </section>
+
+    <section class="form-section">
+      <div class="section-title">
+        <h2>作品链接</h2>
+        <span class="counter">{{ store.draft.portfolio_links.length }} / {{ MULTIVALUE_LIMIT.max }}</span>
+      </div>
+      <article
+        v-for="(link, index) in store.draft.portfolio_links"
+        :key="`portfolio-${index}`"
+        class="education-form"
+      >
+        <div class="section-title">
+          <span class="item-index">0{{ index + 1 }}</span>
+          <button
+            class="remove-button"
+            type="button"
+            :disabled="!store.canRemovePortfolioLink"
+            :aria-label="`删除第 ${index + 1} 条作品链接`"
+            @click="store.removePortfolioLink(index)"
+          >
+            ×
+          </button>
+        </div>
+        <label class="field">
+          <span>作品名称 <b class="required">*</b></span>
+          <input
+            :value="link.label"
+            placeholder="如 个人技术博客"
+            @input="onPortfolioInput(index, 'label', $event)"
+          />
+        </label>
+        <label class="field">
+          <span>作品链接 <b class="required">*</b></span>
+          <input
+            type="url"
+            :value="link.url"
+            placeholder="https://"
+            @input="onPortfolioInput(index, 'url', $event)"
+          />
+        </label>
+      </article>
+      <button
+        class="text-button"
+        type="button"
+        :disabled="!store.canAddPortfolioLink"
+        @click="store.addPortfolioLink"
+      >
+        + 添加作品链接
+      </button>
+      <p class="hint">最多 {{ MULTIVALUE_LIMIT.max }} 条，可先存草稿。</p>
+    </section>
+
+    <section class="form-section">
+      <div class="section-title">
         <h2>技能</h2>
         <span class="counter">{{ store.draft.skills.length }} / {{ SKILL_LIMIT.max }}</span>
       </div>
@@ -280,6 +416,13 @@ function onExperienceText(index: number, field: 'description' | 'responsibility'
             @update:model-value="onExperienceText(index, 'responsibility', $event)"
           />
         </label>
+        <!--
+          接受润色之后这一段的目标与截断标记（ADR-018 §2.5 / §6）。
+          超出字数跟着当前文字实时算，删到目标以内这行自己消失。
+        -->
+        <p v-if="store.polishNoteFor(index)" class="polish-note" role="status">
+          {{ store.polishNoteFor(index) }}
+        </p>
       </article>
       <button
         class="text-button"
@@ -291,37 +434,72 @@ function onExperienceText(index: number, field: 'description' | 'responsibility'
       </button>
       <p class="hint">最多 {{ EXPERIENCE_LIMIT.max }} 条。</p>
     </section>
+
+    <section class="form-section">
+      <div class="section-title">
+        <h2>期望城市</h2>
+        <span class="counter">{{ store.draft.city_preferences.length }} / {{ MULTIVALUE_LIMIT.max }}</span>
+      </div>
+      <div v-for="(city, index) in store.draft.city_preferences" :key="`city-${index}`" class="skill-row">
+        <input
+          :value="city.city"
+          :aria-label="`期望城市 ${index + 1}`"
+          placeholder="如 上海"
+          @input="onCityInput(index, $event)"
+        />
+        <button
+          class="remove-button"
+          type="button"
+          :disabled="!store.canRemoveCityPreference"
+          :aria-label="`删除期望城市 ${index + 1}`"
+          @click="store.removeCityPreference(index)"
+        >
+          ×
+        </button>
+      </div>
+      <button
+        class="text-button"
+        type="button"
+        :disabled="!store.canAddCityPreference"
+        @click="store.addCityPreference"
+      >
+        + 添加期望城市
+      </button>
+      <p class="hint">最多 {{ MULTIVALUE_LIMIT.max }} 个，只用于投递，不显示在简历里。</p>
+    </section>
   </aside>
 </template>
 
 <style scoped>
 .editor-panel { min-width: 0; }
 .panel-heading { margin-bottom: 20px; }
-.eyebrow { margin: 0 0 8px; color: var(--theme-rule); font-size: 12px; letter-spacing: .12em; }
+.eyebrow { margin: 0 0 8px; color: var(--theme-rule); font-size: var(--text-sm); letter-spacing: .12em; }
 h1, h2, p { margin: 0; }
-h1 { font-size: 24px; font-weight: 650; }
-.panel-intro { margin-top: 8px; color: var(--ui-ink-muted); font-size: 13px; line-height: 1.5; }
+h1 { font-size: var(--text-5xl); font-weight: 650; }
+.panel-intro { margin-top: 8px; color: var(--ui-ink-muted); font-size: var(--text-base); line-height: 1.5; }
 .form-section { display: grid; gap: 10px; margin-bottom: 20px; }
-.form-section h2 { font-size: 13px; font-weight: 650; }
+.form-section h2 { font-size: var(--text-base); font-weight: 650; }
 .section-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.counter { color: var(--ui-ink-faint); font-family: "SF Mono", Consolas, monospace; font-size: 11px; }
+.counter { color: var(--ui-ink-faint); font-family: "SF Mono", Consolas, monospace; font-size: var(--text-xs); }
 .field { display: grid; gap: 6px; min-width: 0; }
-.field span { color: var(--ui-ink-muted); font-size: 12px; }
+.field span { color: var(--ui-ink-muted); font-size: var(--text-sm); }
 /* 圆角与 Element Plus 侧（纸张下拉、润色弹窗里的输入框）统一到 `--ui-radius`。 */
-input, textarea, select { width: 100%; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 9px 10px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: 13px; outline: 0; }
+input, textarea, select { width: 100%; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 9px 10px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: var(--text-base); outline: 0; }
 input:focus, textarea:focus, select:focus { border-color: var(--theme-rule); box-shadow: 0 0 0 2px var(--theme-fade); }
 /* 高度归 AutoTextarea（守则 F1）：这里只留行高，下限 58px 由调用点的 `min-height` 传进去。 */
 textarea { line-height: 1.45; }
 .field-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.text-button { justify-self: start; border: 0; padding: 0; color: var(--theme-primary); background: transparent; cursor: pointer; font-size: 12px; }
+/* 润色超限 / 截断：琥珀色细条，与「未保存」同色系——它要用户动手，不是报错。 */
+.polish-note { margin: 0; border-left: 3px solid var(--ui-warning-border); padding-left: 8px; color: var(--ui-ink-muted); font-size: var(--text-sm); line-height: 1.6; }
+.text-button { justify-self: start; border: 0; padding: 0; color: var(--theme-primary); background: transparent; cursor: pointer; font-size: var(--text-sm); }
 .text-button:disabled { color: var(--el-text-color-disabled); cursor: not-allowed; }
 .skill-row { display: grid; grid-template-columns: minmax(0, 1fr) 20px; align-items: center; gap: 8px; }
-.remove-button { border: 0; padding: 0 4px; color: var(--ui-danger); background: transparent; cursor: pointer; font-size: 18px; line-height: 1; }
+.remove-button { border: 0; padding: 0 4px; color: var(--ui-danger); background: transparent; cursor: pointer; font-size: var(--text-2xl); line-height: 1; }
 .remove-button:disabled { color: var(--ui-border); cursor: not-allowed; }
 .experience-form, .education-form { display: grid; gap: 10px; border-top: 1px solid var(--ui-border); padding-top: 12px; }
 .required { color: var(--ui-danger); font-weight: 400; }
-.item-index { color: var(--theme-rule); font-family: "SF Mono", Consolas, monospace; font-size: 12px; }
-.hint { color: var(--ui-ink-faint); font-size: 11px; line-height: 1.5; }
+.item-index { color: var(--theme-rule); font-family: "SF Mono", Consolas, monospace; font-size: var(--text-sm); }
+.hint { color: var(--ui-ink-faint); font-size: var(--text-xs); line-height: 1.5; }
 @media print {
   .editor-panel { display: none; }
 }

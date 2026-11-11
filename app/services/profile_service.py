@@ -12,11 +12,16 @@
 """
 
 import re
+from collections import Counter
+from collections.abc import Sequence
 
 from app.core.document_style import DEFAULT_THEME, normalize_theme, resolve_layout
 from app.repositories.student_profile_repository import (
+    CertificateDraft,
+    CityPreferenceDraft,
     EducationDraft,
     ExperienceDraft,
+    PortfolioLinkDraft,
     ProfileDraft,
     SkillDraft,
     StudentProfile,
@@ -24,9 +29,12 @@ from app.repositories.student_profile_repository import (
 )
 from app.schemas.profile import (
     DEFAULT_PAPER_SIZE,
+    CertificateRead,
+    CityPreferenceRead,
     EducationRead,
     ExperienceRead,
     LayoutConfigRead,
+    PortfolioLinkRead,
     ProfileCreateRequest,
     ProfileRead,
     ProfileSummary,
@@ -239,41 +247,153 @@ class ProfileService:
     # -------------------------------------------------------------- 内部
 
     def _save_content(self, profile: StudentProfile, payload: ProfileUpsertRequest) -> ProfileRead:
+        draft = ProfileDraft(
+            full_name=payload.full_name,
+            email=payload.email,
+            # 年级列仍在库里但产品已移除该字段：不再写入任何业务值（见仓储）。
+            contact=payload.contact,
+            target_role=payload.target_role,
+            paper_size=self._resolve_paper_size(profile, payload),
+            theme=self._resolve_theme(profile, payload),
+            layout_config=self._resolve_layout_config(profile, payload),
+        )
+        skills = [SkillDraft(name=skill.name) for skill in payload.skills]
+        experiences = [
+            ExperienceDraft(
+                title=experience.title,
+                start_date=experience.start_date,
+                end_date=experience.end_date,
+                description=experience.description,
+                responsibility=experience.responsibility,
+            )
+            for experience in payload.experiences
+        ]
+        educations = [
+            EducationDraft(
+                school=education.school,
+                major=education.major,
+                degree=education.degree,
+                edu_start=education.edu_start,
+                edu_end=education.edu_end,
+            )
+            for education in payload.educations
+        ]
+        certificates = [
+            CertificateDraft(
+                name=certificate.name,
+                issuer=certificate.issuer,
+                issued_on=certificate.issued_on,
+            )
+            for certificate in payload.certificates
+        ]
+        portfolio_links = [
+            PortfolioLinkDraft(label=link.label, url=link.url) for link in payload.portfolio_links
+        ]
+        city_preferences = [
+            CityPreferenceDraft(city=city.city) for city in payload.city_preferences
+        ]
+
+        # no-op 检测（ADR-018 §5，先例是 `rename_profile` 的「改成原名不写库」）：
+        # 内容无变化时**不发任何副作用**——不 bump `updated_at`、不重建子表、不盖
+        # `deleted_at`。没有这一条，「全量替换 + 软删除」会把每次无变更保存放大成
+        # 历史爆炸：子表行数随保存次数线性增长，而用户什么都没改。
+        if self._content_unchanged(
+            profile,
+            draft,
+            skills,
+            experiences,
+            educations,
+            certificates,
+            portfolio_links,
+            city_preferences,
+        ):
+            return self._reload(profile.user_id, profile.id)
+
         self._repository.replace_profile_content(
             profile,
-            ProfileDraft(
-                full_name=payload.full_name,
-                email=payload.email,
-                # 年级列仍在库里但产品已移除该字段：不再写入任何业务值（见仓储）。
-                contact=payload.contact,
-                target_role=payload.target_role,
-                paper_size=self._resolve_paper_size(profile, payload),
-                theme=self._resolve_theme(profile, payload),
-                layout_config=self._resolve_layout_config(profile, payload),
-            ),
-            [SkillDraft(name=skill.name) for skill in payload.skills],
-            [
-                ExperienceDraft(
-                    title=experience.title,
-                    start_date=experience.start_date,
-                    end_date=experience.end_date,
-                    description=experience.description,
-                    responsibility=experience.responsibility,
-                )
-                for experience in payload.experiences
-            ],
-            [
-                EducationDraft(
-                    school=education.school,
-                    major=education.major,
-                    degree=education.degree,
-                    edu_start=education.edu_start,
-                    edu_end=education.edu_end,
-                )
-                for education in payload.educations
-            ],
+            draft,
+            skills,
+            experiences,
+            educations,
+            certificates,
+            portfolio_links,
+            city_preferences,
         )
         return self._reload(profile.user_id, profile.id)
+
+    def _content_unchanged(
+        self,
+        profile: StudentProfile,
+        draft: ProfileDraft,
+        skills: Sequence[SkillDraft],
+        experiences: Sequence[ExperienceDraft],
+        educations: Sequence[EducationDraft],
+        certificates: Sequence[CertificateDraft],
+        portfolio_links: Sequence[PortfolioLinkDraft],
+        city_preferences: Sequence[CityPreferenceDraft],
+    ) -> bool:
+        """逐格比对「解析后的本次提交」与「库里的活跃内容」。
+
+        三条口径：
+
+        - 父表字段比的是**三态解析后**的值（`_resolve_*`）：「没传 paper_size」解析成
+          库里原值，自然判等；「显式 null」解析成默认值，与原值不同才算变更。
+        - 技能 / 证书 / 作品 / 城市按**保存顺序**比（读侧按 created_at 排，顺序即内容：
+          用户在表单里拖动排序是一次真实变更）。
+        - 经历 / 教育按**多重集**比：读侧与渲染都按开始时间倒序，提交顺序不改变任何
+          用户可见物，重排不算变更；同内容两条（多重集计重数）也算一致。
+        - 子表只与**活跃行**比：`list_*` 已在仓储层过滤软删除，这里不自比 `deleted_at`。
+        """
+        if (
+            profile.full_name != draft.full_name
+            or profile.email != draft.email
+            or profile.contact != draft.contact
+            or profile.target_role != draft.target_role
+            or profile.paper_size != draft.paper_size
+            or profile.theme != draft.theme
+            or profile.layout_config != draft.layout_config
+        ):
+            return False
+        if [item.name for item in self._repository.list_skills(profile.id)] != [
+            item.name for item in skills
+        ]:
+            return False
+        if Counter(
+            ExperienceDraft(
+                title=item.title,
+                start_date=item.start_date,
+                end_date=item.end_date,
+                description=item.description,
+                responsibility=item.responsibility,
+            )
+            for item in self._repository.list_experiences(profile.id)
+        ) != Counter(experiences):
+            return False
+        if Counter(
+            EducationDraft(
+                school=item.school,
+                major=item.major,
+                degree=item.degree,
+                edu_start=item.edu_start,
+                edu_end=item.edu_end,
+            )
+            for item in self._repository.list_educations(profile.id)
+        ) != Counter(educations):
+            return False
+        if [
+            CertificateDraft(name=item.name, issuer=item.issuer, issued_on=item.issued_on)
+            for item in self._repository.list_certificates(profile.id)
+        ] != list(certificates):
+            return False
+        if [
+            PortfolioLinkDraft(label=item.label, url=item.url)
+            for item in self._repository.list_portfolio_links(profile.id)
+        ] != list(portfolio_links):
+            return False
+        return [
+            CityPreferenceDraft(city=item.city)
+            for item in self._repository.list_city_preferences(profile.id)
+        ] == list(city_preferences)
 
     @staticmethod
     def _resolve_paper_size(profile: StudentProfile, payload: ProfileUpsertRequest) -> str:
@@ -402,6 +522,18 @@ class ProfileService:
             educations=[
                 EducationRead.model_validate(education)
                 for education in self._repository.list_educations(profile.id)
+            ],
+            certificates=[
+                CertificateRead.model_validate(certificate)
+                for certificate in self._repository.list_certificates(profile.id)
+            ],
+            portfolio_links=[
+                PortfolioLinkRead.model_validate(link)
+                for link in self._repository.list_portfolio_links(profile.id)
+            ],
+            city_preferences=[
+                CityPreferenceRead.model_validate(city)
+                for city in self._repository.list_city_preferences(profile.id)
             ],
         )
 

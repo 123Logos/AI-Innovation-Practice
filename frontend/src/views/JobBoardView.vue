@@ -242,33 +242,33 @@ onMounted(load)
 /* 页面外壳与内缩沿用 `RecycleBinView` 那一套（同一个产品不该有两套页边距）。 */
 .board-page { width: min(1180px, 100%); margin: 0 auto; padding: 32px 48px 72px; }
 .board-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
-.eyebrow { margin: 0 0 10px; color: var(--theme-rule); font-size: 12px; letter-spacing: .12em; }
-h1 { margin: 0; color: var(--ui-ink); font-size: 22px; font-weight: 650; }
-.intro { margin: 8px 0 0; max-width: 60ch; color: var(--ui-ink-muted); font-size: 13px; line-height: 1.6; }
+.eyebrow { margin: 0 0 10px; color: var(--theme-rule); font-size: var(--text-sm); letter-spacing: .12em; }
+h1 { margin: 0; color: var(--ui-ink); font-size: var(--text-4xl); font-weight: 650; }
+.intro { margin: 8px 0 0; max-width: 60ch; color: var(--ui-ink-muted); font-size: var(--text-base); line-height: 1.6; }
 .heading-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 10px 14px; }
 
 /* 主入口与两个文字链接的层级：录入是动作，回收站与返回是导航。 */
-.primary-link { display: inline-flex; align-items: center; height: 32px; border: 1px solid var(--theme-primary); border-radius: var(--ui-radius); padding: 0 14px; color: var(--theme-on-primary); background: var(--theme-primary); font-size: 12px; text-decoration: none; white-space: nowrap; }
+.primary-link { display: inline-flex; align-items: center; height: 32px; border: 1px solid var(--theme-primary); border-radius: var(--ui-radius); padding: 0 14px; color: var(--theme-on-primary); background: var(--theme-primary); font-size: var(--text-sm); text-decoration: none; white-space: nowrap; }
 .primary-link:hover { background: var(--theme-primary-hover); }
-.text-link { color: var(--theme-primary); font-size: 13px; text-decoration: none; white-space: nowrap; }
+.text-link { color: var(--theme-primary); font-size: var(--text-base); text-decoration: none; white-space: nowrap; }
 .text-link:hover { text-decoration: underline; }
 
 .filter-bar { display: grid; gap: 14px; margin-bottom: 18px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 14px 16px; background: var(--ui-surface); }
-.field-label { color: var(--ui-ink-faint); font-size: 11px; letter-spacing: .04em; }
+.field-label { color: var(--ui-ink-faint); font-size: var(--text-xs); letter-spacing: .04em; }
 .keyword-form { display: grid; gap: 6px; }
 .keyword-row { display: flex; flex-wrap: wrap; gap: 8px; }
-.keyword-input { flex: 1 1 200px; min-width: 0; height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 10px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: 13px; outline: 0; }
+.keyword-input { flex: 1 1 200px; min-width: 0; height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 10px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: var(--text-base); outline: 0; }
 .keyword-input:focus { border-color: var(--theme-rule); box-shadow: 0 0 0 2px var(--theme-fade); }
 .filter-group { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
 .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
-.filter-chip { height: 26px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 0 10px; color: var(--ui-ink-muted); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 11px; white-space: nowrap; }
+.filter-chip { height: 26px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 0 10px; color: var(--ui-ink-muted); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-xs); white-space: nowrap; }
 .filter-chip:hover { border-color: var(--theme-rule-soft); color: var(--theme-primary-deep); }
 .filter-chip--active { border-color: var(--theme-primary); color: var(--theme-primary-strong); background: var(--theme-bg-light); font-weight: 600; }
-.expired-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--ui-ink-muted); font-size: 12px; cursor: pointer; }
+.expired-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--ui-ink-muted); font-size: var(--text-sm); cursor: pointer; }
 .expired-toggle input { margin: 0; accent-color: var(--theme-primary); }
-.filter-hint { margin: 0; color: var(--ui-ink-faint); font-size: 11px; line-height: 1.5; }
+.filter-hint { margin: 0; color: var(--ui-ink-faint); font-size: var(--text-xs); line-height: 1.5; }
 
-.feedback { margin: 0 0 14px; color: var(--ui-ink-faint); font-size: 13px; line-height: 1.5; }
+.feedback { margin: 0 0 14px; color: var(--ui-ink-faint); font-size: var(--text-base); line-height: 1.5; }
 .feedback--error { color: var(--ui-danger); }
 
 /* 375px 单列；≥1100px 两列（议题 3.B 的断点，中间宽度维持单列以免卡片被压扁）。 */
@@ -280,20 +280,20 @@ h1 { margin: 0; color: var(--ui-ink); font-size: 22px; font-weight: 650; }
 .job-card { display: grid; gap: 10px; height: 100%; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 16px 18px; color: inherit; background: var(--ui-surface); text-decoration: none; }
 .job-card:hover { border-color: var(--theme-rule-soft); background: var(--ui-surface-soft); }
 .card-head { display: grid; gap: 4px; }
-.card-company { margin: 0; color: var(--ui-ink-muted); font-size: 12px; }
-.card-title { margin: 0; color: var(--ui-ink); font-size: 15px; font-weight: 650; }
+.card-company { margin: 0; color: var(--ui-ink-muted); font-size: var(--text-sm); }
+.card-title { margin: 0; color: var(--ui-ink); font-size: var(--text-lg); font-weight: 650; }
 .card-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-.tag { border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 1px 6px; color: var(--ui-ink-muted); background: var(--ui-surface-soft); font-size: 11px; line-height: 1.5; white-space: nowrap; }
+.tag { border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 1px 6px; color: var(--ui-ink-muted); background: var(--ui-surface-soft); font-size: var(--text-xs); line-height: 1.5; white-space: nowrap; }
 .tag--draft { border-color: var(--ui-warning-border); color: var(--ui-warning); background: var(--ui-warning-soft); }
 .tag--expired { border-color: var(--ui-danger-border); color: var(--ui-danger); background: var(--ui-danger-soft); }
-.card-deadline { margin: 0; color: var(--ui-ink-faint); font-size: 12px; }
+.card-deadline { margin: 0; color: var(--ui-ink-faint); font-size: var(--text-sm); }
 .card-skills { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.skill-chip { border: 1px solid var(--theme-rule-soft); border-radius: var(--ui-radius); padding: 2px 7px; color: var(--theme-primary-deep); background: var(--theme-bg-light); font-size: 11px; line-height: 1.5; }
-.card-empty-skills { margin: 0; color: var(--ui-ink-faint); font-size: 11px; }
+.skill-chip { border: 1px solid var(--theme-rule-soft); border-radius: var(--ui-radius); padding: 2px 7px; color: var(--theme-primary-deep); background: var(--theme-bg-light); font-size: var(--text-xs); line-height: 1.5; }
+.card-empty-skills { margin: 0; color: var(--ui-ink-faint); font-size: var(--text-xs); }
 
 .pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px; margin-top: 22px; }
-.pager-info { color: var(--ui-ink-faint); font-size: 12px; }
-.row-button { height: 32px; border: 1px solid var(--theme-rule); border-radius: var(--ui-radius); padding: 0 14px; color: var(--theme-primary-deep); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 12px; white-space: nowrap; }
+.pager-info { color: var(--ui-ink-faint); font-size: var(--text-sm); }
+.row-button { height: 32px; border: 1px solid var(--theme-rule); border-radius: var(--ui-radius); padding: 0 14px; color: var(--theme-primary-deep); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-sm); white-space: nowrap; }
 .row-button:hover:not(:disabled) { background: var(--theme-bg-hover); }
 .row-button:disabled { opacity: .5; cursor: not-allowed; }
 .row-button--ghost { border-color: var(--ui-border-strong); color: var(--ui-ink-muted); }

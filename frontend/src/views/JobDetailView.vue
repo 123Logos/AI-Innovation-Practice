@@ -612,20 +612,20 @@ onBeforeUnmount(() => {
 .detail-page { width: min(880px, 100%); margin: 0 auto; padding: 32px 48px 72px; }
 .page-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .heading-main { min-width: 0; }
-.eyebrow { margin: 0 0 10px; color: var(--theme-rule); font-size: 12px; letter-spacing: .12em; }
+.eyebrow { margin: 0 0 10px; color: var(--theme-rule); font-size: var(--text-sm); letter-spacing: .12em; }
 .heading-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 8px 14px; }
-.text-link { color: var(--theme-primary); font-size: 13px; text-decoration: none; white-space: nowrap; }
+.text-link { color: var(--theme-primary); font-size: var(--text-base); text-decoration: none; white-space: nowrap; }
 .text-link:hover { text-decoration: underline; }
 
-.feedback { margin: 0 0 12px; color: var(--ui-ink-faint); font-size: 13px; line-height: 1.5; }
+.feedback { margin: 0 0 12px; color: var(--ui-ink-faint); font-size: var(--text-base); line-height: 1.5; }
 .feedback--error { color: var(--ui-danger); }
 .feedback--ok { color: var(--theme-primary-deep); }
 
 .detail-card { display: grid; gap: 12px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 20px 22px; background: var(--ui-surface); }
-.detail-title { margin: 0; color: var(--ui-ink); font-size: 20px; font-weight: 650; }
-.detail-company { margin: 0; color: var(--ui-ink-muted); font-size: 13px; }
+.detail-title { margin: 0; color: var(--ui-ink); font-size: var(--text-3xl); font-weight: 650; }
+.detail-company { margin: 0; color: var(--ui-ink-muted); font-size: var(--text-base); }
 .badge-row { display: flex; flex-wrap: wrap; gap: 6px; }
-.badge { border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 2px 7px; color: var(--ui-ink-muted); background: var(--ui-surface-soft); font-size: 11px; line-height: 1.5; white-space: nowrap; }
+.badge { border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 2px 7px; color: var(--ui-ink-muted); background: var(--ui-surface-soft); font-size: var(--text-xs); line-height: 1.5; white-space: nowrap; }
 .badge--soft { border-color: var(--theme-rule-soft); color: var(--theme-primary-deep); background: var(--theme-bg-light); }
 .badge--expired { border-color: var(--ui-danger-border); color: var(--ui-danger); background: var(--ui-danger-soft); }
 /* 出处徽标刻意用中性色：它不是成就，只是一个「能不能回溯」的事实。 */
@@ -634,27 +634,27 @@ onBeforeUnmount(() => {
 
 .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px 18px; margin: 0; }
 .meta-item { min-width: 0; }
-.meta-item dt { color: var(--ui-ink-faint); font-size: 11px; letter-spacing: .04em; }
-.meta-item dd { margin: 4px 0 0; color: var(--ui-ink); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
-.meta-flag { margin-left: 6px; color: var(--ui-danger); font-size: 11px; }
+.meta-item dt { color: var(--ui-ink-faint); font-size: var(--text-xs); letter-spacing: .04em; }
+.meta-item dd { margin: 4px 0 0; color: var(--ui-ink); font-size: var(--text-base); line-height: 1.5; overflow-wrap: anywhere; }
+.meta-flag { margin-left: 6px; color: var(--ui-danger); font-size: var(--text-xs); }
 
 .owner-actions { display: flex; flex-wrap: wrap; gap: 10px; border-top: 1px solid var(--ui-surface-sunken); padding-top: 14px; }
 
 .detail-block { margin-top: 16px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 18px 22px; background: var(--ui-surface); }
-.block-title { margin: 0 0 10px; color: var(--ui-ink); font-size: 14px; font-weight: 650; }
-.block-hint { margin: 0 0 12px; color: var(--ui-ink-faint); font-size: 11px; line-height: 1.5; }
+.block-title { margin: 0 0 10px; color: var(--ui-ink); font-size: var(--text-md); font-weight: 650; }
+.block-hint { margin: 0 0 12px; color: var(--ui-ink-faint); font-size: var(--text-xs); line-height: 1.5; }
 /* JD 是用户粘进来的原文：保留换行，但不允许它撑破容器（长 URL / 长英文单词）。 */
-.description { margin: 0; color: var(--ui-ink); font-size: 13px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
-.expand-button { margin-top: 10px; border: 0; padding: 0; color: var(--theme-primary); background: none; cursor: pointer; font: inherit; font-size: 12px; text-decoration: underline; }
+.description { margin: 0; color: var(--ui-ink); font-size: var(--text-base); line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.expand-button { margin-top: 10px; border: 0; padding: 0; color: var(--theme-primary); background: none; cursor: pointer; font: inherit; font-size: var(--text-sm); text-decoration: underline; }
 .expand-button:hover { color: var(--theme-primary-strong); }
 
 .skill-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
 .skill-item { display: grid; gap: 6px; border-bottom: 1px solid var(--ui-surface-sunken); padding-bottom: 10px; }
 .skill-item:last-child { border-bottom: 0; padding-bottom: 0; }
 .skill-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.skill-name { color: var(--ui-ink); font-size: 13px; font-weight: 600; }
-.skill-evidence { margin: 0; border-left: 2px solid var(--theme-rule-soft); padding-left: 8px; color: var(--ui-ink-faint); font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
-.empty { margin: 0; color: var(--ui-ink-faint); font-size: 13px; }
+.skill-name { color: var(--ui-ink); font-size: var(--text-base); font-weight: 600; }
+.skill-evidence { margin: 0; border-left: 2px solid var(--theme-rule-soft); padding-left: 8px; color: var(--ui-ink-faint); font-size: var(--text-sm); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.empty { margin: 0; color: var(--ui-ink-faint); font-size: var(--text-base); }
 
 /* 匹配卡：一个分数 + 三档清单。刻意不显示权重与计数（ADR-013 §7.5 的 2026-11-07 裁定）。 */
 .match-block { display: grid; gap: 12px; }
@@ -662,39 +662,39 @@ onBeforeUnmount(() => {
 .match-block > .row-button { justify-self: start; }
 .match-result { display: grid; gap: 14px; border-top: 1px solid var(--ui-surface-sunken); padding-top: 14px; }
 .match-score { display: flex; align-items: baseline; gap: 8px; margin: 0; }
-.match-score__value { color: var(--theme-primary-strong); font-size: 30px; font-weight: 700; line-height: 1.1; }
-.match-score__caption { color: var(--ui-ink-faint); font-size: 12px; letter-spacing: .04em; }
-.match-source { margin: 0; color: var(--ui-ink-muted); font-size: 12px; line-height: 1.6; }
+.match-score__value { color: var(--theme-primary-strong); font-size: var(--text-6xl); font-weight: 700; line-height: 1.1; }
+.match-score__caption { color: var(--ui-ink-faint); font-size: var(--text-sm); letter-spacing: .04em; }
+.match-source { margin: 0; color: var(--ui-ink-muted); font-size: var(--text-sm); line-height: 1.6; }
 .match-source b { color: var(--ui-ink); font-weight: 600; }
 /* 退化提示用中性虚线框：它不是错误（分数是真的），但也不能长得像正文，
    否则用户会把它当成一次普通的说明读过去。 */
-.match-degrade { display: grid; gap: 4px; margin: 0; padding: 10px 12px; border: 1px dashed var(--ui-border-strong); border-radius: var(--ui-radius); background: var(--ui-surface-soft); list-style: none; color: var(--ui-ink-muted); font-size: 12px; line-height: 1.6; }
+.match-degrade { display: grid; gap: 4px; margin: 0; padding: 10px 12px; border: 1px dashed var(--ui-border-strong); border-radius: var(--ui-radius); background: var(--ui-surface-soft); list-style: none; color: var(--ui-ink-muted); font-size: var(--text-sm); line-height: 1.6; }
 .match-tiers { display: grid; gap: 16px; }
 .match-tier { display: grid; gap: 8px; }
-.tier-title { margin: 0; color: var(--ui-ink); font-size: 13px; font-weight: 650; }
+.tier-title { margin: 0; color: var(--ui-ink); font-size: var(--text-base); font-weight: 650; }
 .tier-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
 .tier-item { display: grid; gap: 4px; border-left: 2px solid var(--ui-surface-sunken); padding-left: 10px; }
 .match-tier--covered .tier-item { border-left-color: var(--theme-primary); }
 .match-tier--partial .tier-item { border-left-color: var(--theme-rule-soft); }
-.tier-skill { color: var(--ui-ink); font-size: 13px; font-weight: 600; }
-.tier-reason { color: var(--ui-ink-faint); font-size: 12px; line-height: 1.6; }
-.tier-action, .tier-verify { margin: 0; color: var(--ui-ink-faint); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.tier-skill { color: var(--ui-ink); font-size: var(--text-base); font-weight: 600; }
+.tier-reason { color: var(--ui-ink-faint); font-size: var(--text-sm); line-height: 1.6; }
+.tier-action, .tier-verify { margin: 0; color: var(--ui-ink-faint); font-size: var(--text-sm); line-height: 1.6; overflow-wrap: anywhere; }
 .tier-verify { color: var(--ui-ink-muted); }
 /* 证据片段是用户自己写过的原文：保留换行、允许断词，但不允许撑破容器。 */
 .tier-evidence { display: grid; gap: 4px; margin: 2px 0 0; padding: 0; list-style: none; }
 /* 每条片段两行：上面那行是「出自哪一栏」，下面才是原文。
    不分行会把标签和原文连成一句（「项目描述用 Python 重写了…」），读起来像原文里有这个词。 */
 .evidence-line { display: grid; gap: 1px; }
-.evidence-from { color: var(--ui-ink-faint); font-size: 11px; letter-spacing: .04em; }
-.evidence-text { color: var(--ui-ink-muted); font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.evidence-from { color: var(--ui-ink-faint); font-size: var(--text-xs); letter-spacing: .04em; }
+.evidence-text { color: var(--ui-ink-muted); font-size: var(--text-sm); line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* 删除确认弹层：外壳是全局 `.ui-overlay` / `.ui-panel`，这里只补这一页特有的三件。 */
-.dialog-title { margin: 0; color: var(--ui-ink); font-size: 17px; font-weight: 650; }
-.dialog-body { margin: 8px 0 0; color: var(--ui-ink-muted); font-size: 13px; line-height: 1.6; }
+.dialog-title { margin: 0; color: var(--ui-ink); font-size: var(--text-xl); font-weight: 650; }
+.dialog-body { margin: 8px 0 0; color: var(--ui-ink-muted); font-size: var(--text-base); line-height: 1.6; }
 .dialog-body b { color: var(--ui-ink); font-weight: 600; }
 .dialog-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 20px; }
 
-.row-button { height: 32px; border: 1px solid var(--theme-rule); border-radius: var(--ui-radius); padding: 0 14px; color: var(--theme-primary-deep); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 12px; white-space: nowrap; }
+.row-button { height: 32px; border: 1px solid var(--theme-rule); border-radius: var(--ui-radius); padding: 0 14px; color: var(--theme-primary-deep); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-sm); white-space: nowrap; }
 .row-button:hover:not(:disabled) { background: var(--theme-bg-hover); }
 .row-button:disabled { opacity: .5; cursor: progress; }
 .row-button--primary { border-color: var(--theme-primary); color: var(--theme-on-primary); background: var(--theme-primary); }

@@ -15,7 +15,7 @@
 | 用户设定的目标 | `max_words`，`ge=40, le=800`，缺省补 **200**，且**只对 `expand` 档有意义** | `app/schemas/resume.py:139/142-152`、`:98 DEFAULT_MAX_WORDS` |
 | 发给模型的话术 | expand：「严格不超过 {max_words} 个汉字」；heavy：description ≤120 汉字、responsibility ≤60 | `app/integrations/copy_writer.py:76/80/85/90` |
 | **模型调用的 token 预算** | **没有**：请求体只有 `model/stream/messages/thinking`，**不含 `max_tokens`**，本路径也没有 `finish_reason == "length"` 处理 | `copy_writer.py:178-189`（对比 `evidence_scorer.py:265`、`skill_extractor.py:108`、`match_service.py:90/423` 才有） |
-| 响应契约 | `PolishedExperience.description ≤ 600`、`responsibility ≤ 300`；不合格 → **整单 502** | `resume.py:165-166`、`copy_writer.py:217` |
+| 响应契约 | `PolishedExperience.description ≤ 600`、`responsibility ≤ 300`；不合格 → **整单 502** | `app/schemas/resume.py::POLISHED_DESCRIPTION_MAX_LEN`、`copy_writer.py:217`（这是**决策前**的 600/300 + 整单 502；§2.4 已改为 1200/600 + 段级截断标注） |
 | **服务端砍尾** | `_cap_pair`/`_cap_text`：把 description+responsibility **合计**压到 `max_words` 以内，按句末 `rfind` 断句后 **`window.rstrip()` 直接丢尾** | `app/services/resume_service.py:112-113/125/129-138/141-159` |
 
 **结论：这一条链路上不存在"被 API 的 token 切断"。** 让用户看到半句话的，是我们自己的 `_cap_text`，而且它**不留任何痕迹**——没有省略号、没有 `truncated` 标记、响应体（`ResumeCopy`，`app/schemas/resume.py:169-178`）里根本没有能表达「被砍过」的字段，所以前端连想说都无从说起。这正面违反老板 2026-11-04 的裁定（`ADR-009:24`「AI 失败时绝不静默降级」）与守则 C4。
@@ -39,7 +39,7 @@
 - `tests/test_resume_ai_copywriting.py:402 other_modes_keep_model_text_untouched` 与 `:323/:333`（prompt 注入 `max_words`）、`:729`（40–800 区间）**不动**：提示词仍然带目标字数，其它档仍然不碰文字。
 - **API 变更是加字段，不是改语义**，所以不算破坏性变更；`docs/API.md` §6 要加这两个字段的读法，并加一句「超出目标是标注而不是截断」。
 - 额度影响：不砍尾意味着模型偶尔会写更多字，BYOK 下**这部分由用户承担**，而用户已经知道自己设过上限——这是他的选择，不是我们的浪费。但 `max_words` 作为提示词约束仍然留着，它仍然是成本闸。
-- 一处真实取舍必须写明：**放宽响应契约后，简历里可能出现比用户预期更长的段落**，而一页 A4 是硬约束（`MVP_SCOPE.md:35`）。这不靠截断解决，靠批次 F6 的那条链路解决——超限时用户减字 → 再点生成；生成侧若仍超页，走 ADR-015 §3 那条「超长时要不要截断/缩字号」的可见文案决定，而不是回头偷偷砍。
+- 一处真实取舍必须写明：**放宽响应契约后，简历里可能出现比用户预期更长的段落**，而一页 A4 是硬约束（`MVP_SCOPE.md:35`）。这不靠截断解决，靠批次 F6 的那条链路解决——超限时用户减字 → 再点生成；生成侧若仍超页，走 ADR-015 §3 那条可见文案决定——**该决定已于 2026-11-12 拍定**：不截断、不缩字号，纸面自然分页，在「一页高度」处画虚线并提示「建议单页，此处后内容可能被 HR 忽略」，导出时按 CSS 分页（`page-break-inside: avoid`）。`over_limit_by` 保留为**首道软防线**（用户改字在前，页界线在后），顺序不能反：先让他改，再告诉他后果。
 
 ## 4. 替代方案
 

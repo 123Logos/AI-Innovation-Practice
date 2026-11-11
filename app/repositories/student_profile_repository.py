@@ -1,21 +1,28 @@
-"""`student_profiles` / `skills` / `experiences` / `educations` 的映射与仓储。
+"""`student_profiles` / `skills` / `experiences` / `educations` 及三张多值子表的映射与仓储。
 
 表结构由 Alembic 迁移建立（`20261023_0001_initial_phase1` 建前四张，
 `20261102_0002_educations` 建教育经历，`20261103_0007_multi_profiles` 放开
-`user_id` 唯一约束并新增 `title` / `is_default` / `deleted_at`），本模块只做映射。
+`user_id` 唯一约束并新增 `title` / `is_default` / `deleted_at`，
+`20261110_0016` 按 ADR-015 建 `profile_certificates` / `portfolio_links` /
+`profile_city_preferences` 并给全部子表加软删除），本模块只做映射。
 
 **D4.1 起一个用户可以有多份档案**（ADR-006 方案 C）：`student_profiles` 的每一行
-就是一份简历，`skills` / `experiences` / `educations` / `resumes` 仍挂
-`student_profile_id`，所以「一个用户多份简历」不需要新增任何表。
+就是一份简历，子表与 `resumes` 仍挂 `student_profile_id`，所以「一个用户多份简历」
+不需要新增任何表。
 
 两条写入口径：
 
 - 定位一份简历**必须**同时带 `user_id` 与 `profile_id`（`get_by_id`），
   把水平越权写进函数签名里，而不是指望调用方记得再比一次；
-- 内容写入仍是「父表字段覆盖 + 子表先删后插」，语义对齐 PUT。
+- 内容写入是「父表字段覆盖 + 子表**全量替换 + 软删除**」（ADR-015 §2.1）：
+  PUT 时把活跃行盖 `deleted_at=now` 再插新行，**不再物理 DELETE**。
 
-软删除（回收站）用 `deleted_at` 表达；`purge_expired()` 负责惰性物理清理
-超过保留期的行（连带子表）。
+**读侧过滤只写在本文件的 `list_*` 方法里**（ADR-015 §2.1 的推论）：
+`deleted_at IS NULL` 这一条只在仓储层比一次，服务层的 6 处调用点一律不自比——
+漏掉任何一处就是「档案页干净、生成的简历多一条已删技能、匹配分母被污染」三屏不一致。
+
+软删除（回收站）用 `student_profiles.deleted_at` 表达；`purge_expired()` 负责惰性
+物理清理超过保留期的行（连带子表，物理 DELETE 不区分 `deleted_at`，历史行一并清掉）。
 """
 
 from collections.abc import Sequence
@@ -27,12 +34,13 @@ from uuid import uuid4
 from sqlalchemy import (
     JSON,
     Boolean,
+    Computed,
     Date,
     DateTime,
+    Integer,
     String,
     Text,
     bindparam,
-    delete,
     select,
     text,
     update,
@@ -46,7 +54,28 @@ TRASH_RETENTION_DAYS = 30
 
 #: 挂在 `student_profiles` 下的子表。外键全是 `ON DELETE RESTRICT`，
 #: 物理删除父行前必须按这个顺序把子行清干净，否则 MySQL 报 1451。
-_CHILD_TABLES = ("resumes", "educations", "experiences", "skills")
+#: ADR-015 §3：三张新子表必须一起在册——漏一张就是「档案删了、证书还活着」。
+#: 清理是物理 `DELETE ... WHERE student_profile_id IN`，不区分 `deleted_at`，
+#: 软删除积累的历史行会一并清掉。
+_CHILD_TABLES = (
+    "resumes",
+    "profile_certificates",
+    "portfolio_links",
+    "profile_city_preferences",
+    "educations",
+    "experiences",
+    "skills",
+)
+
+
+#: 子表共用的软删除两列（ADR-015 §2.1）：`deleted_at` 为 NULL 即活跃；
+#: `active_marker` 是 STORED 生成列 `IF(deleted_at IS NULL, 1, NULL)`，
+#: 唯一键把它含进去后，历史行（marker=NULL）可自由重复，活跃行仍逐字唯一——
+#: MySQL 唯一索引允许多个 NULL，「删掉 Python 再加回 Python」不再撞 1062。
+#: 生成列由数据库计算，SQLAlchemy 不会把它写进 INSERT/UPDATE。
+#: 用工厂函数而不是共享一个 Computed 实例：schema 元素不该跨表复用同一对象。
+def _active_marker() -> Computed:
+    return Computed("IF(deleted_at IS NULL, 1, NULL)", persisted=True)
 
 
 def _staggered(now: datetime, index: int) -> datetime:
@@ -104,6 +133,7 @@ class StudentProfile(ProfileBase):
     contact: Mapped[str] = mapped_column(String(255), nullable=False)
     #: ADR-013 §5：目标岗位偏好，自由文本、可空。没填时匹配侧走权重归一，不记 0 分。
     target_role: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    resume_version_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
@@ -114,6 +144,9 @@ class Skill(ProfileBase):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     student_profile_id: Mapped[str] = mapped_column(String(36), nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
+    #: ADR-015 §2.1：非空即历史行（全量替换时被盖戳），读侧只取 NULL 的行。
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    active_marker: Mapped[int | None] = mapped_column(Integer, _active_marker(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
@@ -128,6 +161,8 @@ class Experience(ProfileBase):
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     responsibility: Mapped[str] = mapped_column(Text, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    active_marker: Mapped[int | None] = mapped_column(Integer, _active_marker(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
@@ -142,6 +177,53 @@ class Education(ProfileBase):
     degree: Mapped[str] = mapped_column(String(50), nullable=False)
     edu_start: Mapped[date] = mapped_column(Date, nullable=False)
     edu_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    active_marker: Mapped[int | None] = mapped_column(Integer, _active_marker(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class ProfileCertificate(ProfileBase):
+    """一条证书（ADR-015 §2.1）。列名即契约：name / issuer / issued_on。"""
+
+    __tablename__ = "profile_certificates"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    student_profile_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    issuer: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    issued_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    active_marker: Mapped[int | None] = mapped_column(Integer, _active_marker(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class PortfolioLink(ProfileBase):
+    """一条作品链接（ADR-015 §2.1）。列名即契约：label / url。"""
+
+    __tablename__ = "portfolio_links"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    student_profile_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    label: Mapped[str] = mapped_column(String(100), nullable=False)
+    url: Mapped[str] = mapped_column(String(500), nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    active_marker: Mapped[int | None] = mapped_column(Integer, _active_marker(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class ProfileCityPreference(ProfileBase):
+    """一个期望城市（ADR-015 §5 ③）。**不是简历区块**：投递元数据，不进 content_html。"""
+
+    __tablename__ = "profile_city_preferences"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    student_profile_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    city: Mapped[str] = mapped_column(String(50), nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    active_marker: Mapped[int | None] = mapped_column(Integer, _active_marker(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
@@ -191,6 +273,24 @@ class EducationDraft:
     degree: str
     edu_start: date
     edu_end: date | None
+
+
+@dataclass(frozen=True)
+class CertificateDraft:
+    name: str
+    issuer: str | None
+    issued_on: date | None
+
+
+@dataclass(frozen=True)
+class PortfolioLinkDraft:
+    label: str
+    url: str
+
+
+@dataclass(frozen=True)
+class CityPreferenceDraft:
+    city: str
 
 
 class StudentProfileRepository:
@@ -298,11 +398,15 @@ class StudentProfileRepository:
         return self._session.scalar(statement) is not None
 
     # 子表读取
+    #
+    # **软删除过滤只写在这里**（ADR-015 §2.1 的推论）：`deleted_at IS NULL` 由这六个
+    # `list_*` 方法各自保证，调用方（profile_service / resume_service / match_service）
+    # 一律不许自己再比一次。漏掉任何一处就是档案页、生成物、匹配分母三屏读数不一致。
 
     def list_skills(self, student_profile_id: str) -> list[Skill]:
         statement = (
             select(Skill)
-            .where(Skill.student_profile_id == student_profile_id)
+            .where(Skill.student_profile_id == student_profile_id, Skill.deleted_at.is_(None))
             .order_by(Skill.created_at, Skill.id)
         )
         return list(self._session.scalars(statement))
@@ -310,7 +414,10 @@ class StudentProfileRepository:
     def list_experiences(self, student_profile_id: str) -> list[Experience]:
         statement = (
             select(Experience)
-            .where(Experience.student_profile_id == student_profile_id)
+            .where(
+                Experience.student_profile_id == student_profile_id,
+                Experience.deleted_at.is_(None),
+            )
             .order_by(Experience.start_date.desc(), Experience.id)
         )
         return list(self._session.scalars(statement))
@@ -319,8 +426,45 @@ class StudentProfileRepository:
         """按入学时间倒序：最近的一段学历排在最前（与简历渲染顺序一致）。"""
         statement = (
             select(Education)
-            .where(Education.student_profile_id == student_profile_id)
+            .where(
+                Education.student_profile_id == student_profile_id,
+                Education.deleted_at.is_(None),
+            )
             .order_by(Education.edu_start.desc(), Education.id)
+        )
+        return list(self._session.scalars(statement))
+
+    def list_certificates(self, student_profile_id: str) -> list[ProfileCertificate]:
+        """证书按保存顺序（created_at, id），与技能同一口径。"""
+        statement = (
+            select(ProfileCertificate)
+            .where(
+                ProfileCertificate.student_profile_id == student_profile_id,
+                ProfileCertificate.deleted_at.is_(None),
+            )
+            .order_by(ProfileCertificate.created_at, ProfileCertificate.id)
+        )
+        return list(self._session.scalars(statement))
+
+    def list_portfolio_links(self, student_profile_id: str) -> list[PortfolioLink]:
+        statement = (
+            select(PortfolioLink)
+            .where(
+                PortfolioLink.student_profile_id == student_profile_id,
+                PortfolioLink.deleted_at.is_(None),
+            )
+            .order_by(PortfolioLink.created_at, PortfolioLink.id)
+        )
+        return list(self._session.scalars(statement))
+
+    def list_city_preferences(self, student_profile_id: str) -> list[ProfileCityPreference]:
+        statement = (
+            select(ProfileCityPreference)
+            .where(
+                ProfileCityPreference.student_profile_id == student_profile_id,
+                ProfileCityPreference.deleted_at.is_(None),
+            )
+            .order_by(ProfileCityPreference.created_at, ProfileCityPreference.id)
         )
         return list(self._session.scalars(statement))
 
@@ -373,7 +517,7 @@ class StudentProfileRepository:
         title: str,
         is_default: bool,
     ) -> StudentProfile:
-        """服务端深拷贝：基本信息 + 全部技能 / 经历 / 教育，一次事务写完。
+        """服务端深拷贝：基本信息 + 全部**活跃**技能 / 经历 / 教育 / 证书 / 作品 / 城市，一次事务写完。
 
         子行全部重新分配 id，所以「改副本」不会回写到源简历。
         `resumes`（已生成物）不复制 —— 新简历应当是「未生成」状态。
@@ -441,6 +585,45 @@ class StudentProfileRepository:
                     degree=education.degree,
                     edu_start=education.edu_start,
                     edu_end=education.edu_end,
+                    deleted_at=None,
+                    created_at=_staggered(now, index),
+                    updated_at=now,
+                )
+            )
+        # ADR-015 §2.1：`list_*` 只返回活跃行，所以深拷贝天然只复制活跃行——
+        # 软删除积累的历史行不该跟着副本再活一次。
+        for index, certificate in enumerate(self.list_certificates(source.id)):
+            self._session.add(
+                ProfileCertificate(
+                    id=str(uuid4()),
+                    student_profile_id=target.id,
+                    name=certificate.name,
+                    issuer=certificate.issuer,
+                    issued_on=certificate.issued_on,
+                    deleted_at=None,
+                    created_at=_staggered(now, index),
+                    updated_at=now,
+                )
+            )
+        for index, link in enumerate(self.list_portfolio_links(source.id)):
+            self._session.add(
+                PortfolioLink(
+                    id=str(uuid4()),
+                    student_profile_id=target.id,
+                    label=link.label,
+                    url=link.url,
+                    deleted_at=None,
+                    created_at=_staggered(now, index),
+                    updated_at=now,
+                )
+            )
+        for index, city in enumerate(self.list_city_preferences(source.id)):
+            self._session.add(
+                ProfileCityPreference(
+                    id=str(uuid4()),
+                    student_profile_id=target.id,
+                    city=city.city,
+                    deleted_at=None,
                     created_at=_staggered(now, index),
                     updated_at=now,
                 )
@@ -458,8 +641,17 @@ class StudentProfileRepository:
         skills: Sequence[SkillDraft],
         experiences: Sequence[ExperienceDraft],
         educations: Sequence[EducationDraft],
+        certificates: Sequence[CertificateDraft] = (),
+        portfolio_links: Sequence[PortfolioLinkDraft] = (),
+        city_preferences: Sequence[CityPreferenceDraft] = (),
     ) -> StudentProfile:
-        """父表字段覆盖 + 子表先删后插，整体一次提交（PUT 语义）。
+        """父表字段覆盖 + 子表**全量替换 + 软删除**，整体一次提交（PUT 语义）。
+
+        ADR-015 §2.1：把当前活跃行（`deleted_at IS NULL`）全部盖上 `deleted_at = now`，
+        再插入本次提交的行；**不再执行物理 DELETE**。六张子表同一套口径——
+        只让新表软删、老表继续物理删，同一个档案就有两套写路径，那是被否掉的方案。
+        盖戳必须在插入之前：唯一键含 `active_marker`，旧活跃行不让位，
+        同名新行会撞 1062。
 
         `grade` 已从产品中下架：列在库里保留（NOT NULL），但前后端都不再写入业务值，
         统一落空串，避免「一个没人维护的字段」继续漂移。
@@ -471,6 +663,9 @@ class StudentProfileRepository:
         `layout_config`（D5.3）也是**整份赋值**，绝不原地改 `profile.layout_config`
         内部的 list/dict —— SQLAlchemy 不追踪 JSON 内部的可变对象，
         原地改会「保存成功但顺序没变」（ADR-007 §6.8(5)）。
+
+        **no-op 检测在服务层**（`ProfileService._save_content`，ADR-018 §5）：
+        内容无变化时根本不会走到这里——否则每次无变更保存都在给子表盖戳并复制历史行。
         """
         now = utc_now()
         profile.full_name = draft.full_name
@@ -483,15 +678,26 @@ class StudentProfileRepository:
         profile.updated_at = now
         self._session.flush()
 
-        self._session.execute(delete(Skill).where(Skill.student_profile_id == profile.id))
-        self._session.execute(delete(Experience).where(Experience.student_profile_id == profile.id))
-        self._session.execute(delete(Education).where(Education.student_profile_id == profile.id))
+        for model in (
+            Skill,
+            Experience,
+            Education,
+            ProfileCertificate,
+            PortfolioLink,
+            ProfileCityPreference,
+        ):
+            self._session.execute(
+                update(model)
+                .where(model.student_profile_id == profile.id, model.deleted_at.is_(None))
+                .values(deleted_at=now)
+            )
         for index, skill in enumerate(skills):
             self._session.add(
                 Skill(
                     id=str(uuid4()),
                     student_profile_id=profile.id,
                     name=skill.name,
+                    deleted_at=None,
                     created_at=_staggered(now, index),
                     updated_at=now,
                 )
@@ -506,6 +712,7 @@ class StudentProfileRepository:
                     end_date=experience.end_date,
                     description=experience.description,
                     responsibility=experience.responsibility,
+                    deleted_at=None,
                     created_at=_staggered(now, index),
                     updated_at=now,
                 )
@@ -520,6 +727,43 @@ class StudentProfileRepository:
                     degree=education.degree,
                     edu_start=education.edu_start,
                     edu_end=education.edu_end,
+                    deleted_at=None,
+                    created_at=_staggered(now, index),
+                    updated_at=now,
+                )
+            )
+        for index, certificate in enumerate(certificates):
+            self._session.add(
+                ProfileCertificate(
+                    id=str(uuid4()),
+                    student_profile_id=profile.id,
+                    name=certificate.name,
+                    issuer=certificate.issuer,
+                    issued_on=certificate.issued_on,
+                    deleted_at=None,
+                    created_at=_staggered(now, index),
+                    updated_at=now,
+                )
+            )
+        for index, link in enumerate(portfolio_links):
+            self._session.add(
+                PortfolioLink(
+                    id=str(uuid4()),
+                    student_profile_id=profile.id,
+                    label=link.label,
+                    url=link.url,
+                    deleted_at=None,
+                    created_at=_staggered(now, index),
+                    updated_at=now,
+                )
+            )
+        for index, city in enumerate(city_preferences):
+            self._session.add(
+                ProfileCityPreference(
+                    id=str(uuid4()),
+                    student_profile_id=profile.id,
+                    city=city.city,
+                    deleted_at=None,
                     created_at=_staggered(now, index),
                     updated_at=now,
                 )
@@ -600,7 +844,7 @@ class StudentProfileRepository:
         self._session.commit()
 
     def hard_delete(self, profile_id: str) -> None:
-        """物理删除：先清四张子表再删父行。调用方**必须**先校验归属。"""
+        """物理删除：先清七张子表再删父行。调用方**必须**先校验归属。"""
         self._delete_rows([profile_id])
         self._session.commit()
 

@@ -11,9 +11,10 @@ CI（AGENTS.md 4.4 明确禁止）。自己注入 transport 之后，拦截发�
 真正发出去的字节：`model` / `stream` / `thinking` / `Authorization` / System Prompt
 里的档位指令全部可见。该夹具是 **autouse**，所以本模块没有任何一条用例可能真出网。
 
-用例覆盖：线级请求参数、四档 Prompt 差异与 `max_words` 注入、`expand` 的服务端字数硬上限、
-润色不落库、Key 缺失、生成路径零外呼、上游 401/402/429/5xx/超时、模型不合契约（段数不符 /
-非 JSON）、AI 不得凭空加技能、请求体校验上限、Key 不进日志。
+用例覆盖：线级请求参数、四档 Prompt 差异与 `max_words` 注入、`expand` 的「目标 + 超限标注」
+（ADR-018：不砍尾，超目标报数、超契约段级截断）、润色不落库、Key 缺失、生成路径零外呼、
+上游 401/402/429/5xx/超时、模型不合契约（段数不符 / 非 JSON）、AI 不得凭空加技能、
+请求体校验上限、Key 不进日志。
 """
 
 from __future__ import annotations
@@ -353,40 +354,60 @@ def test_non_expand_modes_ignore_max_words(fake_deepseek: FakeDeepSeek, client: 
 
 
 # --------------------------------------------------------------------------- #
-# 三、expand 的字数上限由服务端兜住，而不是「相信模型」
+# 三、expand 的字数是「目标 + 超限标注」，不再砍尾（ADR-018 §2 / §6）
+#
+# 下面两条用例在 ADR-018 之前锁的是「超了就砍」（_cap_pair），裁定之后锁的是
+# 「超了就标注」：断言方向反转，且 over_limit_by 必须验**数值**而不是只验字段存在。
 # --------------------------------------------------------------------------- #
 
 
 def test_expand_caps_oversized_model_output(
     fake_deepseek: FakeDeepSeek, client: TestClient
 ) -> None:
-    """用户要的是「不超过」，不是「尽量不超过」：模型超了就必须截。"""
+    """ADR-018：模型超了目标**不砍尾**，原文返回 + 报出超出多少，让用户自己减。
+
+    旧断言方向是「合计 ≤ max_words」；新方向是「合计 == 模型原文长度」且
+    `over_limit_by == len(返回文字) - target_words`（必须有数，§6 机械判据）。
+    """
     token = _register_and_login(client)
+    description = "建设" * 120  # 240 字
+    responsibility = "承担" * 60  # 120 字
     fake_deepseek.copy_payload = {
         "skills": ["Python", "SQL"],
-        "experiences": [{"index": 0, "description": "建设" * 120, "responsibility": "承担" * 60}],
+        "experiences": [{"index": 0, "description": description, "responsibility": responsibility}],
     }
 
     response = _polish(client, token, mode="expand", max_words=60)
 
     assert response.status_code == 200, response.text
     item = _polished_item(response)
-    total = len(item["description"]) + len(item["responsibility"])
-    assert total <= 60, f"合计 {total} 字，超过用户设定的 60 字上限"
-    assert item["description"], "截断不能把描述截成空"
-    assert item["responsibility"], "职责也要留有内容，不能整段吃掉"
+    # 不砍尾：模型原文一字不动地回来（240 + 120 = 360，远超目标 60）。
+    assert item["description"] == description
+    assert item["responsibility"] == responsibility
+    # 超限必须有数：360 - 60 = 300，不是只验字段存在。
+    assert item["target_words"] == 60
+    assert item["over_limit_by"] == 300
+    assert item["over_limit_by"] == len(item["description"]) + len(item["responsibility"]) - 60
+    # 超的是「目标」不是「契约」（1200/600）：不许截断，也不许整单报错。
+    assert item["truncated"] is False
 
 
 def test_expand_caps_at_sentence_boundary(fake_deepseek: FakeDeepSeek, client: TestClient) -> None:
-    """能落在句末就落在句末，别把一句话切成半个词。"""
+    """ADR-018：句子完整不再是「截到句末」的结果，而是「根本没截」的结果。
+
+    旧断言方向是「截断落在句末且合计 ≤ 40」；新方向是「原文逐字返回（自然以句号
+    结尾）且 over_limit_by == 49 - 40 == 9」。
+    """
     token = _register_and_login(client)
+    description = "负责检索模块搭建。支撑多路召回与重排。接入向量索引服务。持续迭代排序策略。"
+    responsibility = "负责召回与排序链路质量。"
     fake_deepseek.copy_payload = {
         "skills": ["Python", "SQL"],
         "experiences": [
             {
                 "index": 0,
-                "description": "负责检索模块搭建。支撑多路召回与重排。接入向量索引服务。持续迭代排序策略。",
-                "responsibility": "负责召回与排序链路质量。",
+                "description": description,
+                "responsibility": responsibility,
             }
         ],
     }
@@ -395,8 +416,114 @@ def test_expand_caps_at_sentence_boundary(fake_deepseek: FakeDeepSeek, client: T
 
     assert response.status_code == 200, response.text
     item = _polished_item(response)
+    assert item["description"] == description
     assert item["description"].endswith("。"), item["description"]
-    assert len(item["description"]) + len(item["responsibility"]) <= 40
+    assert item["responsibility"] == responsibility
+    # 37 + 12 = 49，超目标 40 共 9 字——数值必须对上。
+    assert item["target_words"] == 40
+    assert item["over_limit_by"] == 9
+    assert item["over_limit_by"] == len(item["description"]) + len(item["responsibility"]) - 40
+    assert item["truncated"] is False
+
+
+def test_expand_within_target_reports_zero_over_limit(
+    fake_deepseek: FakeDeepSeek, client: TestClient
+) -> None:
+    """不超目标时 `over_limit_by` 恒为 0（不是 null、不是缺字段）。"""
+    token = _register_and_login(client)
+
+    response = _polish(client, token, mode="expand", max_words=800)
+
+    assert response.status_code == 200, response.text
+    item = _polished_item(response)
+    assert item["target_words"] == 800
+    assert item["over_limit_by"] == 0
+    assert item["truncated"] is False
+
+
+def test_non_expand_modes_have_no_target_and_zero_over_limit(
+    fake_deepseek: FakeDeepSeek, client: TestClient
+) -> None:
+    """`target_words` 只有 expand 有；其它档 None，`over_limit_by` 恒 0（ADR-018 §2.2）。"""
+    token = _register_and_login(client)
+
+    for mode in ("detail", "medium", "heavy"):
+        response = _polish(client, token, mode=mode)
+        assert response.status_code == 200, response.text
+        item = _polished_item(response)
+        assert item["target_words"] is None, mode
+        assert item["over_limit_by"] == 0, mode
+        assert item["truncated"] is False, mode
+
+
+def test_over_contract_output_is_truncated_per_segment_not_502(
+    fake_deepseek: FakeDeepSeek, client: TestClient
+) -> None:
+    """ADR-018 §2.4 / §6：超**契约**（1200/600）时段级截断 + truncated=true，其余段照常。
+
+    这是放宽契约后第一次可达的路径：模型写飞不再毁掉整次润色。
+    契约那道边只要求「出现 + 标注」，**不要求报出截断前长度**
+    （truncated_from_words 之类字段被老板否掉，§6 末）——所以这里反向钉住它不存在。
+    """
+    token = _register_and_login(client)
+    fake_deepseek.copy_payload = {
+        "skills": ["Python", "SQL"],
+        "experiences": [
+            {"index": 0, "description": "超" * 1500, "responsibility": "责" * 700},
+            {"index": 1, "description": "正常的一段", "responsibility": "负责后端"},
+        ],
+    }
+
+    response = _polish(
+        client,
+        token,
+        mode="expand",
+        max_words=800,
+        experiences=[
+            {"title": "第一段", "description": "原文一", "responsibility": "职责一"},
+            {"title": "第二段", "description": "原文二", "responsibility": "职责二"},
+        ],
+    )
+
+    assert response.status_code == 200, response.text
+    items = _copy(response)["experiences"]
+    bad, good = items[0], items[1]
+    # 坏的那段：截到契约上限并标注，不是整单 502。
+    assert bad["truncated"] is True
+    assert len(bad["description"]) == 1200
+    assert len(bad["responsibility"]) == 600
+    assert bad["description"] == "超" * 1200
+    assert bad["responsibility"] == "责" * 600
+    # over_limit_by 按**返回文字**算：1200 + 600 - 800 = 1000。
+    assert bad["over_limit_by"] == 1000
+    # 好的那段照常返回，不被连坐。
+    assert good["truncated"] is False
+    assert good["description"] == "正常的一段"
+    assert good["responsibility"] == "负责后端"
+    assert good["over_limit_by"] == 0
+    # 被否掉的字段不许出现（ADR-018 §6 末）。
+    assert "truncated_from_words" not in bad
+    assert "truncated_from_words" not in good
+
+
+def test_other_modes_over_contract_also_truncate_per_segment(
+    fake_deepseek: FakeDeepSeek, client: TestClient
+) -> None:
+    """契约是响应侧的最后一道硬边，与档位无关：heavy 写飞了也是段级截断，不是 502。"""
+    token = _register_and_login(client)
+    fake_deepseek.copy_payload = {
+        "skills": ["Python", "SQL"],
+        "experiences": [{"index": 0, "description": "长" * 1300, "responsibility": "负责"}],
+    }
+
+    response = _polish(client, token, mode="heavy")
+
+    assert response.status_code == 200, response.text
+    item = _polished_item(response)
+    assert item["truncated"] is True
+    assert len(item["description"]) == 1200
+    assert item["target_words"] is None
+    assert item["over_limit_by"] == 0
 
 
 def test_other_modes_keep_model_text_untouched(

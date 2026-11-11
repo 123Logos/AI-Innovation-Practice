@@ -174,13 +174,13 @@ async function submit(): Promise<void> {
  */
 .auth-page { display: flex; min-height: 100vh; padding: 32px 20px; background: var(--ui-canvas); }
 .auth-card { margin: auto; width: min(420px, 100%); border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 40px 36px; background: var(--ui-surface); }
-.eyebrow { margin: 0 0 12px; color: var(--theme-rule); font-size: 12px; letter-spacing: .12em; }
-h1 { margin: 0; font-size: 24px; font-weight: 650; }
-.intro { margin: 10px 0 26px; color: var(--ui-ink-muted); font-size: 13px; line-height: 1.6; }
+.eyebrow { margin: 0 0 12px; color: var(--theme-rule); font-size: var(--text-sm); letter-spacing: .12em; }
+h1 { margin: 0; font-size: var(--text-5xl); font-weight: 650; }
+.intro { margin: 10px 0 26px; color: var(--ui-ink-muted); font-size: var(--text-base); line-height: 1.6; }
 .auth-form { display: grid; gap: 16px; }
 .field { display: grid; gap: 6px; }
-.field span { color: var(--ui-ink-muted); font-size: 12px; }
-input { width: 100%; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 11px 12px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: 14px; outline: 0; }
+.field span { color: var(--ui-ink-muted); font-size: var(--text-sm); }
+input { width: 100%; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 11px 12px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: var(--text-md); outline: 0; }
 input:focus { border-color: var(--theme-rule); box-shadow: 0 0 0 2px var(--theme-fade); }
 
 /* ---- 密码可见性切换（常驻） ---- */
@@ -208,10 +208,10 @@ input:focus { border-color: var(--theme-rule); box-shadow: 0 0 0 2px var(--theme
 .password-toggle:hover { color: var(--theme-primary-deep); }
 .password-toggle:active { color: var(--ui-ink); }
 .password-toggle:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 1px; }
-.primary-button { border: 0; border-radius: var(--ui-radius); padding: 12px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: 14px; line-height: 1.4; }
+.primary-button { border: 0; border-radius: var(--ui-radius); padding: 12px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: var(--text-md); line-height: 1.4; }
 .primary-button:hover:not(:disabled) { background: var(--theme-primary-hover); }
 .primary-button:disabled { opacity: .6; cursor: progress; }
-.feedback { margin: 0; font-size: 13px; line-height: 1.5; }
+.feedback { margin: 0; font-size: var(--text-base); line-height: 1.5; }
 .feedback--error { color: var(--ui-danger); }
 /*
  * 会话过期提示走 warning 家族而不是 danger 红：这条说的是「状态没了、需要你做一件事」，
@@ -219,7 +219,7 @@ input:focus { border-color: var(--theme-rule); box-shadow: 0 0 0 2px var(--theme
  * 而用户本来就怀疑是自己账号坏了。规格与 `.draft-banner`（编辑器里的草稿恢复条）同档：
  * 1px 描边 + 4px 左强调条 + `--ui-radius`（= 2px）+ 13px 正文，全部取 `--ui-*` 令牌。
  */
-.expired-notice { margin: 0 0 20px; border: 1px solid var(--ui-warning-border); border-left: 4px solid var(--ui-warning-border); border-radius: var(--ui-radius); padding: 12px 16px; color: var(--ui-warning); background: var(--ui-warning-soft); font-size: 13px; line-height: 1.5; }
-.switch-hint { margin: 22px 0 0; color: var(--ui-ink-muted); font-size: 13px; }
+.expired-notice { margin: 0 0 20px; border: 1px solid var(--ui-warning-border); border-left: 4px solid var(--ui-warning-border); border-radius: var(--ui-radius); padding: 12px 16px; color: var(--ui-warning); background: var(--ui-warning-soft); font-size: var(--text-base); line-height: 1.5; }
+.switch-hint { margin: 22px 0 0; color: var(--ui-ink-muted); font-size: var(--text-base); }
 .switch-hint a { color: var(--theme-primary); }
 </style>

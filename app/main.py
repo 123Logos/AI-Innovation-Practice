@@ -21,6 +21,12 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.router import router
 from app.core.config import Settings, get_settings
+from app.core.error_messages import (
+    HTTP_DETAIL_ALIASES,
+    ErrorMessage,
+    http_error_message,
+    validation_details,
+)
 from app.core.errors import error_response
 from app.core.rate_limit import limiter
 from app.services.resume_service import (
@@ -186,18 +192,41 @@ def create_app() -> FastAPI:
         request: Request,
         exc: StarletteHTTPException,
     ) -> JSONResponse:
-        if exc.status_code == 404:
-            code = "NOT_FOUND"
-            message = "资源不存在。"
-        elif 400 <= exc.status_code < 500:
-            code = "CLIENT_ERROR"
-            message = str(exc.detail)
-        else:
-            code = "INTERNAL_ERROR"
-            message = "服务暂时不可用，请稍后重试。"
+        """4xx 的 message **只从 `app/core/error_messages.py` 那张表来**（批次 F1c / G3）。
+
+        改动前这里对 4xx 直接 `message = str(exc.detail)`：路由里任何一条英文 detail
+        （`"Not Found"`、`"invalid token"`、上游透传的一句英文）都会原样上屏，
+        而 G1 只扫前端，这道洞在闸门眼里是看不见的（`ROADMAP.md` §3 X2）。
+
+        现在三档：
+
+        - **表里认得的** detail（或直接抛 `ErrorMessage` 的）→ 换成表里那句人话；
+        - **认不得的** → 落到按状态码兜底的通用句（401/403/404/405/429 各有专属，其余
+          `CLIENT_ERROR`），原始 detail 只进 `details.reason` 供排障，**不再当消息**；
+        - **5xx** → 固定一句 `INTERNAL`，细节只进日志。
+
+        原始字符串仍按枚举名留在 `details.reason` 里：排障需要知道是哪一条，
+        但它已经不再是「用户要读的那句话」。
+        """
+        status_code = exc.status_code
+        message = http_error_message(status_code, exc.detail)
+        code = {
+            404: "NOT_FOUND",
+        }.get(status_code) or ("INTERNAL_ERROR" if status_code >= 500 else "CLIENT_ERROR")
+        # `details.reason` 只放**枚举名**，不放原始句子：认得的 detail 走别名表，
+        # 认不得的记 `UNMAPPED`——这样「表里少了一条」在响应里看得见，而原始英文
+        # 只留在服务端日志里（本函数所在的请求日志会带 request_id）。
+        details: dict[str, object] = {}
+        if isinstance(exc.detail, ErrorMessage):
+            details["reason"] = exc.detail.name
+        elif status_code < 500:
+            known = type(exc.detail) is str and exc.detail in HTTP_DETAIL_ALIASES
+            details["reason"] = HTTP_DETAIL_ALIASES[exc.detail].name if known else "UNMAPPED"
+        elif exc.detail not in (None, ""):
+            logger.warning("http %s 未映射的 detail: %r", status_code, exc.detail)
         return JSONResponse(
-            status_code=exc.status_code,
-            content=error_response(request, code, message, details={"detail": exc.detail}),
+            status_code=status_code,
+            content=error_response(request, code, str(message), details=details or None),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -205,11 +234,16 @@ def create_app() -> FastAPI:
         request: Request,
         exc: RequestValidationError,
     ) -> JSONResponse:
-        details = jsonable_encoder(exc.errors())
+        """422 也收进同一张表（G3）：顶层一句人话 + 每条字段错误各一句。
+
+        `loc` / `type` 保留（既有断言与排障都靠它们），`msg` 与 `input` 都不再上屏：
+        前者是英文诊断，后者可能回显用户刚输入的整段文本。
+        """
+        details = validation_details(jsonable_encoder(exc.errors()))
         body = error_response(
             request,
             "VALIDATION_ERROR",
-            "请求参数校验失败。",
+            str(ErrorMessage.VALIDATION),
             details=details,
         )
         return JSONResponse(status_code=422, content=body)
