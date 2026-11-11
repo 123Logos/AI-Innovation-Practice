@@ -47,7 +47,7 @@
 
 ### 2.1 纸张：从来没有 `@page`，所谓 A4 只是一条 `aspect-ratio`
 
-`frontend/src/components/ResumePreview.vue:523`：
+`frontend/src/components/ResumePreview.vue`：
 
 ```css
 .paper { aspect-ratio: 210 / 297; min-height: 720px; overflow: auto; padding: 56px 52px;
@@ -57,7 +57,7 @@
 全仓搜索 `@page`：**`frontend/src` 下零命中**（`dist/` 和 `node_modules/` 里的不算）。
 也就是说：
 
-1. **屏幕上的「A4」是算出来的**：宽度由栅格决定（`ResumeEditorView.vue:85` 的
+1. **屏幕上的「A4」是算出来的**：宽度由栅格决定（`ResumeEditorView.vue` 的
    `grid-template-columns: 340px minmax(420px,1fr) 220px`），高度 = 宽度 × 297/210。
 2. **打印时的「A4」是浏览器给的**：没有 `@page` 就等于「用浏览器默认纸张 + 默认边距」。
    于是打印结果实际是 **三层边距叠加**：浏览器默认页边距（约 10mm）
@@ -75,13 +75,13 @@
 
 ### 2.2 「A4 · 1 页」是硬编码字符串，页数从未被测量
 
-`ResumePreview.vue:207`：
+`ResumePreview.vue`：
 
 ```html
 <span class="page-count">A4 · 1 页</span>
 ```
 
-`StylePanel.vue:82-84`：
+`StylePanel.vue`：
 
 ```html
 <div class="status-row"><span>纸张</span><strong>A4</strong></div>
@@ -99,7 +99,7 @@
 
 ### 2.3 版式颜色是 8 个硬编码色值，没有 CSS 变量
 
-`ResumePreview.vue:561-592` 的非 scoped 样式块（这一段同时负责「实时预览」和「已生成」的观感，
+`ResumePreview.vue` 的非 scoped 样式块（这一段同时负责「实时预览」和「已生成」的观感，
 是「所见即所得」的实现方式），里面硬编码了 8 个颜色：
 
 | 变量（建议名） | 现值 | 用在哪 | 对比度 vs 白底（实测） | 能当正文色吗 |
@@ -119,7 +119,7 @@
 
 ### 2.4 生成物不自包含：后端只产 `body`，不带任何 `<style>`
 
-`app/integrations/resume_generator.py:50-61`：
+`app/integrations/resume_generator.py::TemplateResumeGenerator`：
 
 ```python
 self._template = template or (
@@ -138,7 +138,7 @@ self._template = template or (
 `head` 里只有 `meta` 和 `title`，**一行 CSS 都没有**。
 它之所以看起来对，是因为前端把 `content_html` 塞进了 `.paper` 里：
 
-`ResumePreview.vue:19-23`：
+`ResumePreview.vue`：
 
 ```ts
 const generatedBody = computed(() => {
@@ -164,12 +164,12 @@ const generatedBody = computed(() => {
 
 | 位置 | 形态 | 改顺序要动什么 |
 |---|---|---|
-| `resume_generator.py:57-59` | 模板里三个占位符 `{education_section}{skill_section}{experience_section}` | 调整占位符顺序 |
-| `resume_generator.py:84-133` | 三段各自 `if 有内容才生成`，标题写死 `技能` / `项目经历` / `教育经历` | 改三个 `f'<h2>…</h2>'` |
-| `ResumePreview.vue:271-409` | 三个 `<section class="paper-section">` 顺序写死 | 调整三个 `<template>` 块的先后 |
+| `resume_generator.py` | 模板里三个占位符 `{education_section}{skill_section}{experience_section}` | 调整占位符顺序 |
+| `resume_generator.py` | 三段各自 `if 有内容才生成`，标题写死 `技能` / `项目经历` / `教育经历` | 改三个 `f'<h2>…</h2>'` |
+| `ResumePreview.vue` | 三个 `<section class="paper-section">` 顺序写死 | 调整三个 `<template>` 块的先后 |
 
 三处必须**同时**改，且必须保持同序，否则「实时预览」和「已生成」会不一致。
-这条约束今天靠注释维持（`resume_generator.py:36-38` 明确写了「必须与 `ResumePreview.vue` 的
+这条约束今天靠注释维持（`resume_generator.py` 明确写了「必须与 `ResumePreview.vue` 的
 DOM 结构、CSS 类名一一对应」），没有任何测试或类型系统在守它。
 
 **【硬约束】** 任何「顺序」能力都不能只改一处。
@@ -239,10 +239,10 @@ DOM 结构、CSS 类名一一对应」），没有任何测试或类型系统在
 
 这条极易漏，且漏了就是「改了颜色不生效/会丢」：
 
-- `frontend/src/stores/resume.ts:140-148` `ProfileDraft` 是草稿的形状；
-- `resume.ts:436` `comparableOf()` 决定「本地草稿是否值得提示恢复」——
+- `frontend/src/stores/resume.ts::DEFAULT_LAYOUT_SECTIONS` `ProfileDraft` 是草稿的形状；
+- `resume.ts` `comparableOf()` 决定「本地草稿是否值得提示恢复」——
   它把 draft 投影成一串可比较的字符串，**不包含的字段等于不存在**；
-- `resume.ts:1150-1157` 自动存草稿的 `watch(draft, …, { deep: true })`
+- `resume.ts` 自动存草稿的 `watch(draft, …, { deep: true })`
   只在 `dirty` 为真时才写。
 
 若把 `theme` 放在 draft 外面（例如单独的 `ref`）：
@@ -425,7 +425,7 @@ contrast = (L_light + 0.05) / (L_dark + 0.05)
 - **正文（< 18.66px 粗体 / < 24px 常规）：≥ 4.5:1**
 - **大字与「非文本 UI 边界」：≥ 3:1**
 
-对本项目的映射（字号来自 `ResumePreview.vue:568-580`）：
+对本项目的映射（字号来自 `ResumePreview.vue`）：
 
 | 用途 | 字号 | 门槛 | 现有色 | 实测 | 判定 |
 |---|---|---|---|---|---|
@@ -441,7 +441,7 @@ contrast = (L_light + 0.05) / (L_dark + 0.05)
 
 ### 5.5 CSS 变量化清单（这是「配色」真正的第一步）
 
-把 `ResumePreview.vue:561-592` 的 8 个色值替换为变量，**变量声明挂在 `.paper` 上**：
+把 `ResumePreview.vue` 的 8 个色值替换为变量，**变量声明挂在 `.paper` 上**：
 
 ```css
 .paper { --paper-accent: #527873; --paper-rule: #6b8f8a; --paper-ink: #263330;
@@ -489,7 +489,7 @@ contrast = (L_light + 0.05) / (L_dark + 0.05)
 
 | 路线 | 做法 | 后果 |
 |---|---|---|
-| ❌ 重排数据数组 | 把 `experiences` / `skills` 数组按用户拖拽结果重排 | 毁掉语义：教育经历本该按入学时间倒序（`resume_generator.py:126` `sorted(..., reverse=True)`），重排后「最近学历在前」失效；将来做「按时间排序」开关会与手工顺序打架 |
+| ❌ 重排数据数组 | 把 `experiences` / `skills` 数组按用户拖拽结果重排 | 毁掉语义：教育经历本该按入学时间倒序（`resume_generator.py` `sorted(..., reverse=True)`），重排后「最近学历在前」失效；将来做「按时间排序」开关会与手工顺序打架 |
 | ✅ 存展示顺序 | 数据数组不动，另存一份 `[{id, title}]` 的有序列表 | 零语义污染；顺序可以随时重置为默认；换模板/换渲染器都能复用 |
 
 **本文档所有选项都走第二条。** 这一点确定了，剩下的只是「这份有序列表存哪」。
@@ -703,7 +703,7 @@ profile.layout_config = {"version": 1, "sections": [...]}
 
 「隐藏某个模块」听起来和「排序」是一家人，但它引入新问题：
 全隐藏 = 一张只有姓名的纸；隐藏「项目经历」后生成接口的完整性校验
-（`resume_service.py:47` 要求 `skills` 和 `experiences` 都非空）会与 UI 打架。
+（`resume_service.py` 要求 `skills` 和 `experiences` 都非空）会与 UI 打架。
 **建议 D5.3 只做「顺序 + 标题」，`visible` 单独评估。**
 
 ### 6.9 迁移草案（A 方案，3 条 DDL，双向可逆）
@@ -738,7 +738,7 @@ op.drop_column("student_profiles", "paper_size")
 | | 生成器 | 预览 |
 |---|---|---|
 | 载体 | Python f-string 拼 HTML | Vue 模板 |
-| 对齐方式 | 类名手抄 + 注释约定（`resume_generator.py:36-48` 那张对应关系表） | 同名 class |
+| 对齐方式 | 类名手抄 + 注释约定（`resume_generator.py` 那张对应关系表） | 同名 class |
 | 顺序 | 模板占位符顺序 | `<section>` 排列顺序 |
 | 校验 | 无 | 无 |
 
@@ -824,7 +824,7 @@ body = "".join(blocks[section.id] for section in layout.sections if section.id i
 浏览器对 `contenteditable` 内的 `mousedown + move` 默认解释为**选择文本**。
 用户想把「技能」拖走，实际得到的是「技能」两个字被选中——**这是必然发生，不是偶发**。
 
-`ResumePreview.vue:582-585` 还有一层：失焦回写（`@blur` → `commitText()` → `store.updateXxx()`）。
+`ResumePreview.vue` 还有一层：失焦回写（`@blur` → `commitText()` → `store.updateXxx()`）。
 拖拽会触发 `blur`，于是「拖一下 → 顺手写了一次 store → `dirty` 变 true」。
 不致命，但会让「拖拽算不算修改」的账变得混乱。
 
@@ -843,7 +843,7 @@ body = "".join(blocks[section.id] for section in layout.sections if section.id i
 1. `item-key` 必填且必须稳定——用 index 会在重排后错乱（与 `v-for` 同一个坑）；
 2. sortable 插入的「幽灵元素 / 拖拽副本」**不带 Vue 的 scoped 属性**，
    所以 `ghost-class` 的样式必须写在**非 scoped** 块里——
-   本项目已有这个先例（`ResumePreview.vue:561` 的纸面样式就是非 scoped，并写明了原因）；
+   本项目已有这个先例（`ResumePreview.vue` 的纸面样式就是非 scoped，并写明了原因）；
 3. 与 `transform: scale()` 冲突：sortablejs 用 `getBoundingClientRect()` 与鼠标坐标比对，
    **纸面被 zoom 缩小后，判定会整体偏移**（这是第 4.2 节 P2 与本节交叉产生的隐藏 bug）。
    缓解：`forceFallback: true` 并让拖拽层脱离缩放容器，或干脆在「未缩放」的编辑层里做拖拽；
@@ -1055,7 +1055,7 @@ content_html = self._generator.generate(
 ```
 
 **唯一的例外**：如果将来支持「不保存也能预览生成效果」，那才需要请求参数。
-当前流程强制「先保存再生成」（`StylePanel.vue:35-53` 有 `window.confirm` 拦着），所以不需要。
+当前流程强制「先保存再生成」（`StylePanel.vue` 有 `window.confirm` 拦着），所以不需要。
 
 ---
 
@@ -1124,7 +1124,7 @@ docstring 明确说「`title`/`is_default`/`deleted_at` 不在这里改」。
 
 ### 11.7 打印水印的位置
 
-`ResumePreview.vue:544-551` 的打印态水印用 `right: 6mm; bottom: 4mm`（已经是 mm，很好）。
+`ResumePreview.vue` 的打印态水印用 `right: 6mm; bottom: 4mm`（已经是 mm，很好）。
 换纸张后水印位置不受影响，但**若采用 P2 的 `transform: scale`，绝对定位以未缩放坐标系为基准**——
 `bottom: 4mm` 会跟着纸面一起缩放，位置仍然正确。**这点 P2 是安全的**，可以确认。
 
@@ -1160,7 +1160,7 @@ docstring 明确说「`title`/`is_default`/`deleted_at` 不在这里改」。
 2. **`@page` 动态注入 + `.paper` 改 mm 定尺 + zoom 容器（P2）**——
    视觉变化最大的一步，验收方式：1440 / 1100 / 760 / 360 四个视口截图比对，比例都是 A4；
 3. **页数测量**：用 `scrollHeight / paperContentHeight` 算出真实页数，
-   替换 `ResumePreview.vue:207` 与 `StylePanel.vue:83` 的字面量。
+   替换 `ResumePreview.vue` 与 `StylePanel.vue` 的字面量。
    顺带修掉「窄屏显示 A4 但实际不是」的问题（2.1 第 3 点）。
 
 ### 12.3 D5.2 配色（3 个小步）
@@ -1254,7 +1254,7 @@ D5.1(纸张) ──┬─→ D5.2(配色)          # 纸面定尺后调色，避
 | **前端无测试框架**（`package.json` 无 vitest） | 本文档有 4 处「必须两端一致」的约束（颜色、顺序、标题、页数），**只有后端能测**。这是最大的质量缺口，建议单独立项 |
 | **`content_html` 只写不读**（`/resumes` 只有 `POST /generate`） | 主题/排版做进 HTML 后，**在出现读接口之前无法自动化验证**；建议 D5.2 时顺手加 `GET /resumes/{id}`（只读，风险极低），让生成物可被验证 |
 | **「页数」标签是字面量** | 本轮必须先修（4.2/12.2 第 3 步），否则换纸张和调顺序会让它开始说谎 |
-| **`@media print` 里 `.paper { min-height: 0 }`**（`ResumePreview.vue:539`） | 改成 mm 定尺后这行要重新校：`min-height:0` 会让打印高度塌陷，必须显式给 `height: 297mm` |
+| **`@media print` 里 `.paper { min-height: 0 }`**（`ResumePreview.vue`） | 改成 mm 定尺后这行要重新校：`min-height:0` 会让打印高度塌陷，必须显式给 `height: 297mm` |
 | **`grade` 列保留但业务已下架** | 与排版无关，但它是「加了列却没人维护」的先例——新增三个样式列时，务必同步写进 `docs/DATABASE.md` 与 `ProfileRead`，不要再留一个孤儿列 |
 | **测试库必须置空才能跑 pytest**（`test_auth` 的 `drop_all`） | D5.3 的降级矩阵用例会让这个纪律更重要；建议与「测试隔离」条目一起解决 |
 | **A4 比例在窄屏失效（<509px）** | 已在 2.1 记录；若选 P2 则自动修复，若选 P1 则需显式放弃 `aspect-ratio` 改用固定尺寸 |

@@ -414,7 +414,7 @@ h2 { font-size: 18px; }
   padding: 0;
   box-shadow: 0 0 0 1px var(--ui-border-strong);
   cursor: pointer;
-  transition: box-shadow .12s ease;
+  transition: box-shadow var(--motion-fast) var(--motion-ease);
 }
 .swatch:hover { box-shadow: 0 0 0 2px var(--ui-ink-faint); }
 .swatch--active { box-shadow: 0 0 0 2px var(--ui-ink); }

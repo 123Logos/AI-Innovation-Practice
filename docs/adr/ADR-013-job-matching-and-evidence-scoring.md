@@ -2,7 +2,7 @@
 
 - 状态：**已接受**（2026-11-07）。🚩 决策 1–5 由人类负责人的概括指令接受：「其余未提到的部分采用你推荐的方案」；
   🚩 **决策 6 同日单独批准**，原话：「**我同意BYOK白名单加入新的URL**」（他同时说「其他没有别的问题了」）。
-  这条之所以要单独留痕：它动的是 `frontend/src/api/client.ts:207-222` 那条他自己写的约定，
+  这条之所以要单独留痕：它动的是 `frontend/src/api/client.ts::hasDeepSeekKey` 那条他自己写的约定，
   不能拿概括指令当它的签字。§6 的白名单实现因此可以开工，但必须连它要求的断言一起做。
 
 - 日期：2026-11-07
@@ -45,8 +45,8 @@ dev 库实测：`published` 岗位 **0** 条，`draft` 3 条，回收站 1 条�
 
 ### 1.2 `self_rating` 是零信息常量
 - 定义：`SkillInput.self_rating: int = Field(ge=1, le=5)`（必填）；列在 `skills` 表 `SmallInteger NOT NULL`，DDL `alembic/versions/20261023_0001_initial_phase1.py:60-78`（65 行建列、68 行 CHECK 1..5）。**代码与列都已被 §10 第 4 步删除**（`alembic/versions/20261107_0013_drop_skill_self_rating.py`），故本条不给 Python 侧行号。
-- UI 不再采集：`frontend/src/stores/resume.ts:12` 写明「技能熟练度（`self_rating`）与年级已从 UI 移除」，`:1092` 写明「后端仍必填，UI 不再采集，统一写 3」，常量在 `:264` `DEFAULT_SKILL_RATING = 3`。
-- 渲染也不用：`app/integrations/resume_generator.py:104` 「只渲染技能名：熟练度已从产品中移除，`self_rating` 仅作为入参保留校验」。
+- UI 不再采集：`frontend/src/stores/resume.ts` 写明「技能熟练度（`self_rating`）与年级已从 UI 移除」，`:1092` 写明「后端仍必填，UI 不再采集，统一写 3」，常量在 `:264` `DEFAULT_SKILL_RATING = 3`。
+- 渲染也不用：`app/integrations/resume_generator.py::generate` 「只渲染技能名：熟练度已从产品中移除，`self_rating` 仅作为入参保留校验」。
 - 库里的分布（实测）：`{2: 1, 3: 23, 4: 1}` —— 25 行里 23 行是那个常量 3，另外 2 行是熟练度下线前留下的。
 - 结论：它既不能当「证据强度」，也不能当任何东西。老板指令 6.2 说它「已在简历部分废除」，与代码一致；本文 §4 决定它的去留。
 
@@ -55,7 +55,7 @@ dev 库实测：`published` 岗位 **0** 条，`draft` 3 条，回收站 1 条�
 |---|---|---|
 | MySQL 唯一索引 | `utf8mb4_0900_ai_ci`，**NO PAD** | `SELECT ('Python ' = 'Python') → 0`，即带空格的两个名字可以共存 |
 | 后端 `skill_name_key`（诊断时在 `app/schemas/job.py`，现居 `app/core/skill_names.py`，见下方两处偏差说明） | NFKC + casefold，**不 strip** | `'Python '` vs `'Python'` → 不同 |
-| 前端角标 `normalizeSkillName`（`frontend/src/stores/job.ts:213-215`） | trim + NFKC + toLowerCase | 同上 → 相同 |
+| 前端角标 `normalizeSkillName`（`frontend/src/stores/job.ts::normalizeSkillName`） | trim + NFKC + toLowerCase | 同上 → 相同 |
 
 除首尾空白外三套行为一致（`Web␣␣开发` 内部空格、`ß`/`strasse`、`Ｃ#` 都判不同，实测过）。岗位侧在 API 边界已 strip（`app/schemas/job.py:99-110`），**学生侧没有**：`SkillInput.name` 无校验器，档案技能去重用的是裸相等（`app/schemas/profile.py`，修复前的状态，无行号可指）。今天库里 0 条带首尾空白的技能名，但门开着：一旦学生存进 `"Python "`，服务端算「未覆盖」而前端角标显示「已具备」，同一屏上自相矛盾。
 
@@ -131,7 +131,7 @@ dev 库实测：`published` 岗位 **0** 条，`draft` 3 条，回收站 1 条�
 
 所以：同一个岗位在列表里只有前 6 条技能，在详情里才是全量。任何「按列表载荷算匹配」的实现
 都会把分母算小——载荷形状决定的必然结果，不是理论风险。差别在于**忘了切片**会撞上有界校验、
-当场报错，而不是静默把 15 条发出去，这一点 `frontend/src/views/JobBoardView.vue:7` 的注释说得对。
+当场报错，而不是静默把 15 条发出去，这一点 `frontend/src/views/JobBoardView.vue` 的注释说得对。
 
 我错的两处：初稿写「JobRead 只回 6 条」（张冠李戴，那是 `JobSummary`）；改的时候又矫枉过正，
 写了「`max_length` 不是校验、只是配合切片」——实测证明它就是校验，会拒。两次都是没有先跑一遍
@@ -204,8 +204,8 @@ PRD `:181` 要求「至少展示三条可验证证据或明确缺口」：`cover
 🚩 **决策 3**：**彻底删除**，而不是留着不用。
 
 - 迁移：`skills` 表 drop `self_rating` 列；`downgrade` 重新加回为 `SmallInteger NOT NULL server_default '3'`（能回退，且回退后与今天的数据分布一致）。
-- 代码：`SkillInput` / `SkillRead` / `SkillDraft`（`app/schemas/resume.py:32`、`app/schemas/profile.py:170`、`app/services/profile_service.py:254`、`app/services/resume_service.py:199`）同步去掉字段；仓储两处构造点删除。
-- 前端：`DEFAULT_SKILL_RATING`、草稿抹平逻辑、`api/types.ts:80`、以及 `resume.ts:984` 的字段白名单一并清理。
+- 代码：`SkillInput` / `SkillRead` / `SkillDraft`（`app/schemas/resume.py:32`、`app/schemas/profile.py:170`、`app/services/profile_service.py:254`、`app/services/resume_service.py::generate`）同步去掉字段；仓储两处构造点删除。
+- 前端：`DEFAULT_SKILL_RATING`、草稿抹平逻辑、`api/types.ts:80`、以及 `resume.ts` 的字段白名单一并清理。
 - 文档：`docs/API.md` 技能字段表与示例载荷。
 
 理由：留着它，等于让每一个新来的人（包括未来的我自己）以为「技能上有熟练度」，而它恒等于 3。**一个恒定值的必填字段比没有字段更坏**：它要求客户端必须编一个数。
@@ -338,7 +338,7 @@ preference=None/no_target_role    remaining_time=None/no_deadline
 
 ## 6. AI 参与打分的边界（🚩 决策 6：这条动的是你自己划的线，必须单独确认）
 
-`frontend/src/api/client.ts:207-222` 的注释是项目里最硬的一条安全约定，原文：
+`frontend/src/api/client.ts::hasDeepSeekKey` 的注释是项目里最硬的一条安全约定，原文：
 
 > 判据是一份**白名单**而不是模式匹配，且只列真正消耗用户 AI 额度的端点：目前两个——`/resumes/polish`（ADR-010）与 `POST /jobs/extract-skills`（ADR-011 2.A）……**每扩一个 URL 都必须能回答「这个请求会不会被转发给 DeepSeek」，答不上来就不许加。**……匹配刻意做到**整段相等**……宁可写死两条精确路径。
 
@@ -352,7 +352,7 @@ preference=None/no_target_role    remaining_time=None/no_deadline
 
 ### 6.1 上面那句自证不够严（§13 复核更正，实现以此节为准）
 
-「匹配成功后请求确实会转发 DeepSeek」这句在字面上是**假的**，我写的时候没算过。实测 `client.ts:224-230` 现在的判据是
+「匹配成功后请求确实会转发 DeepSeek」这句在字面上是**假的**，我写的时候没算过。实测 `client.ts` 现在的判据是
 `BYOK_KEY_PATHS.includes(path)` —— **整段相等**，模式机制今天不存在，加正则等于新引入一种判据。而 `/^\/jobs\/[^/]+\/match$/`
 会命中 `/jobs/extract-skills/match`、`/jobs/trash/match` 这类**根本没有路由**的路径（`[^/]+` 吃得下 `extract-skills`），
 这些请求返回 404，一个字节都没发往 DeepSeek。所以「命中即转发」只能对**已注册的路由**说。
@@ -360,7 +360,7 @@ preference=None/no_target_role    remaining_time=None/no_deadline
 可辩护、且能测的版本是**路由表论证**，三条断言分工明确，全部加进 `frontend/src/api/__tests__/byok.spec.ts` 现有的注入矩阵：
 
 1. **正向**：`/jobs/{id}/match` 注入 Key（`{id}` 取一个真实 uuid 与一个非数字串，防止判据意外写成 uuid 形状）。
-2. **不扩张**：`/jobs/x/y/match`、`/jobs/match`、`/jobs/1/match/extra`、`/jobs/1/match/`（尾斜杠走 `client.ts:229` 的既有归一化）、`/jobs/1/match?x=1` 五种都不注入 —— 前四种是模式本身不该吃到的形状，后两种是「归一化之后仍只认那一条」。
+2. **不扩张**：`/jobs/x/y/match`、`/jobs/match`、`/jobs/1/match/extra`、`/jobs/1/match/`（尾斜杠走 `client.ts` 的既有归一化）、`/jobs/1/match?x=1` 五种都不注入 —— 前四种是模式本身不该吃到的形状，后两种是「归一化之后仍只认那一条」。
 3. **路由表闭合**：这条**不属于 vitest**（前端不知道后端有哪些路由）。它落在后端测试里：从 `app.openapi()["paths"]` 取 `/jobs` 下
    **所有已注册路由**，断言「凡是能被这条正则命中的 `POST` 路由，其处理器一定走 DeepSeek」。判定方式用白名单式的显式集合，
    而不是猜函数体：今天的答案是一个已知列表（`/jobs/{job_id}/match` 一条），将来新增匹配形状的路由时这条测试必须红。
@@ -722,7 +722,7 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
      那条用例仍留在测试里防复发。判据 (b) 也解释了两档为什么可以合并成一个布尔：角标回答的只有「命中没有」，
      证据够不够是匹配卡那一层的事。
      **并集恒等不是巧合**：`score_match` 装配三档时把「命中却拿不到强度」的技能一律补进 `partial`
-     （`app/services/match_scoring.py:808` 那一段），所以模型漏答、拒答、给出不可用强度都只能把一条
+     （`app/services/match_scoring.py::score_match` 那一段），所以模型漏答、拒答、给出不可用强度都只能把一条
      命中从 `covered` 挪到 `partial`，挪不出并集。这件事原先只是我读代码推的，现在是一条测试：
      `test_badge_union_still_equals_match_union_in_ai_mode` 把每条 AI 强度都判成 0.1（全低于
      `PARTIAL_STRENGTH_THRESHOLD`），于是卡上 `covered` 必须全空、角标那侧仍有 `covered`——
@@ -927,7 +927,7 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
 | 2 | 「AI 失败退化成 200」与三个全局 AI 处理器冲突，实现时最自然的写法会把它变成红字报错 | `app/main.py:259/266/277` 分别 400/401/502；异常类 `ResumeApiKeyMissingError` / `ResumeCopyRejectedError` / `ResumeCopyUnavailableError`（`app/services/resume_service.py:43/47/51`） | §3 新增「状态码边界」；§6.5 新增 `degrade_reason` 五值 + 五情形各一测试 |
 | 3 | 交给模型的输入没有上界，而它由用户自由文本决定 | 技能 ≤8 / 经历 ≤3（`app/schemas/profile.py:271-272`），但 `description`/`responsibility` 无长度约束（`app/schemas/resume.py:67-68`，列型 `Text`）；dev 库 8 条经历 `description` p50 44 / p90 102 / **max 615** | §6 第 2 点改窗口化（±80 字）+ `fragments_truncated`；不给 `ExperienceInput` 加 `max_length`（那是截断用户数据，另一个决定） |
 | 4 | §7.5 与 §5.1 的「未知怎么办」自相矛盾，常数 0.5 进分母会把总分往中间挤 | `status='published'` 6 行、`deadline is null` 2 行（其中 1 行是回收站异常行）→ 真实可点 5 个里 1 个走这一支 | §7.5 改为 `computed=False`，键名 `freshness` → `remaining_time`，UI 改名「剩余投递时间」 |
-| 5 | §6 的白名单自证不成立：正则也命中**不存在**的路径，那些请求不转发 DeepSeek | `client.ts:224` 现在是 `BYOK_KEY_PATHS.includes(path)` 整段相等，模式机制今天不存在；`:229` 只做查询串与尾斜杠归一化 | §6.1 换成路由表论证 + 三条断言（正向 / 不扩张 / 已注册路由闭合），并进 `byok.spec.ts` 现有注入矩阵 |
+| 5 | §6 的白名单自证不成立：正则也命中**不存在**的路径，那些请求不转发 DeepSeek | `client.ts` 现在是 `BYOK_KEY_PATHS.includes(path)` 整段相等，模式机制今天不存在；`:229` 只做查询串与尾斜杠归一化 | §6.1 换成路由表论证 + 三条断言（正向 / 不扩张 / 已注册路由闭合），并进 `byok.spec.ts` 现有注入矩阵 |
 | 6 | §8 故意不做计数闭合，等于把一条漏计写进设计 | 少一个「模型没回这条」的通道，等式必然不闭合 | 新增 `dropped_missing_output` + 四桶互斥次序 + **要求写成断言**；同时更正我引用的 ADR-011 「先例」其实是已知缺陷 |
 | 7 | 「请求体为空 ⇒ 用哪份档案」是隐式选择，用户会以为分数算错 | `student_profiles.is_default`（`app/repositories/student_profile_repository.py:76`）；岗位页与编辑页无共享档案上下文 | §3 响应新增 `profile_id` / `profile_title` / `job_id` 回显 |
 | 8 | 编排层若复用两个既有 DI 会开两个 session、两个快照 | `app/services/dependencies.py:65-84`：每个 `get_*_service` 各自 `session_scope()` | §10 第 7c 条：一个新 DI、一个 session、两个仓储 |

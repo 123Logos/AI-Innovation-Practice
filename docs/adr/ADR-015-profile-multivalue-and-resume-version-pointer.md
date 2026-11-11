@@ -17,7 +17,7 @@ FR-02 还差三格：**期望城市 / 证书 / 作品链接**。老板 2026-11-0
 | `LAYOUT_VERSION = 1`，写侧版本不符即 422 | `app/core/document_style.py:158`、`app/schemas/profile.py:127-132` | 升版会立刻让老客户端存不进配置 |
 | 读侧版本不符**静默回落默认顺序**（只 warning） | `app/core/document_style.py:234-237` | 老配置 + 新版本 = 用户精心排的顺序**悄悄没了**，这是 C/1 那半句要拦的东西 |
 | `resumes` 只有 `content_html` 快照，**零版本列**（无 revision / parent_id / is_current / deleted_at），「最新」全靠 `created_at` 猜 | `alembic/versions/20261023_0001_initial_phase1.py:105-122`、`app/repositories/resume_repository.py:33-51` | C/3 的对象 |
-| 前端另有一份默认区块表 | `frontend/src/stores/resume.ts:145`，由 `tests/test_profile_contract.py:310` 比对 | 升版要**两处同改**，否则契约测试红 |
+| 前端另有一份默认区块表 | `frontend/src/stores/resume.ts::DEFAULT_LAYOUT_SECTIONS`，由 `tests/test_profile_contract.py:310` 比对 | 升版要**两处同改**，否则契约测试红 |
 | 条数上限：技能 8 / 经历 3 / 教育 5 | `app/schemas/profile.py:271-274` | 新子表必须自己带上限，一页 A4 装不下无限个证书 |
 
 ## 2. 决策
@@ -42,7 +42,7 @@ portfolio_links(id PK, student_profile_id FK→… ON DELETE RESTRICT,
 
 **全量替换 + 软删除**的确切含义（写路径只留这一套口径）：`PUT` 时把当前**活跃行**（`deleted_at IS NULL`）全部盖上 `deleted_at = now`，再插入本次提交的行；**不再执行 `DELETE`**。同一套改法**适用于现有三张子表**（skills / experiences / educations）——老板 2026-11-09 拍的第 ① 格：「要」，理由与我提的一致：只让新表软删、老表继续物理删，同一个档案就有两套写路径口径。
 
-**这条裁定有一句必须同时生效的推论，否则它是破坏性的**：软删除一旦落在子表上，**所有读侧都要加 `deleted_at IS NULL`**，而这件事**只准写在仓储层那三个方法里**（`student_profile_repository.py:302 list_skills` / `:310 list_experiences` / `:318 list_educations`），调用方**一律不许自己再比一次**。今天这两个方法的调用点有 6 处（`profile_service.py:396/400/404`、`resume_service.py:183-185`、`match_service.py:244/252/260`），漏掉任何一处就是：档案页干净、生成的简历里多一条已删的技能、匹配的分母也被那条已删技能污染——而这三屏读数互不相同，正是本项目最贵的那种 bug。同理，**条数上限现在只数活跃行**（`skills:8 / experiences:3 / educations:5`，`app/schemas/profile.py:271-274`），否则用户存几次之后就永久加不进东西。`duplicate_profile` 也只复制活跃行。
+**这条裁定有一句必须同时生效的推论，否则它是破坏性的**：软删除一旦落在子表上，**所有读侧都要加 `deleted_at IS NULL`**，而这件事**只准写在仓储层那三个方法里**（`student_profile_repository.py:302 list_skills` / `:310 list_experiences` / `:318 list_educations`），调用方**一律不许自己再比一次**。今天这两个方法的调用点有 6 处（`profile_service.py:396/400/404`、`resume_service.py`、`match_service.py::_gather`），漏掉任何一处就是：档案页干净、生成的简历里多一条已删的技能、匹配的分母也被那条已删技能污染——而这三屏读数互不相同，正是本项目最贵的那种 bug。同理，**条数上限现在只数活跃行**（`skills:8 / experiences:3 / educations:5`，`app/schemas/profile.py:271-274`），否则用户存几次之后就永久加不进东西。`duplicate_profile` 也只复制活跃行。
 
 
 唯一键必须跟着改：`uq_skills_profile_name(student_profile_id, name)`（`20261023_0001:76`）这类约束在软删除下会**误伤**——用户删掉「Python」再加回「Python」，历史行还在，直接撞 MySQL 1062 变 500。机制：每张表加一个生成列 `active_marker AS (IF(deleted_at IS NULL, 1, NULL)) STORED`，唯一键改成 `(student_profile_id, name, active_marker)`。MySQL 的唯一索引**允许多个 NULL**，所以历史行自由重复，而活跃行仍逐字唯一。新表同理（证书按 `(profile_id, name, active_marker)`，链接按 `(profile_id, url, active_marker)`）。
@@ -76,7 +76,7 @@ portfolio_links(id PK, student_profile_id FK→… ON DELETE RESTRICT,
 - 老客户端**能读能看，不能存不能生成**（读回落默认 / 写与生成 422），这是刻意的：宁可给一句修得动的报错，也不静默改人家的排版顺序。
 - 软删除让子表行数随保存次数增长，**「永久删除档案」的路径必须物理清干净**：现有实现按 `_CHILD_TABLES` 列表清子行（`app/repositories/student_profile_repository.py:49` = `("resumes", "educations", "experiences", "skills")`，`:628-643` 是执行处），**新表三张必须一起加进这个元组**（`profile_certificates` / `portfolio_links` / `profile_city_preferences`，见 §5 第 ③ 格），漏一张就是「档案删了、证书还活着」。好在该删除是物理 `DELETE ... WHERE student_profile_id IN`，不区分 `deleted_at`，所以软删除积累的历史行会一并清掉，不需要额外条件。
 - 一页 A4 的约束现在要兜 5 个区块，证书/作品很容易把版面撑爆；B4 实现时必须实测 375px 与 1280px 两档，并把「超长时截断还是缩字号」当一条**可见文案**决定，不是 CSS 巧合。
-- 匹配（ADR-013）**暂时读不到**新表：`MatchFacts` 只装 `student_skills / experiences / target_role / deadline`（`app/services/match_service.py:225-278`），教育都从来不进。证书/作品要不要进匹配是**另一个 ADR**，不在本 ADR 里顺手定。
+- 匹配（ADR-013）**暂时读不到**新表：`MatchFacts` 只装 `student_skills / experiences / target_role / deadline`（`app/services/match_service.py::_gather`），教育都从来不进。证书/作品要不要进匹配是**另一个 ADR**，不在本 ADR 里顺手定。
 
 ## 4. 替代方案（都否了，理由留档）
 

@@ -21,6 +21,7 @@ import { RouterLink } from 'vue-router'
 import { isApiError } from '@/api'
 import { EMPLOYMENT_TYPE_LABELS, JOB_STATUS_LABELS, useJobStore } from '@/stores/job'
 import { formatDate, formatDateTime } from '@/utils/datetime'
+import SkeletonList from '@/components/SkeletonList.vue'
 
 const store = useJobStore()
 
@@ -83,7 +84,13 @@ onMounted(load)
     </div>
 
     <p v-if="loadError" class="feedback feedback--error" role="alert">{{ loadError }}</p>
-    <p v-else-if="store.trashLoading" class="feedback">正在加载岗位回收站…</p>
+    <!-- 稳定态实测：回收站行 1280 档 71px、375 档 140px（窄屏动作换行），行之间只有分隔线。 -->
+    <SkeletonList
+      v-else-if="store.trashLoading"
+      label="正在加载岗位回收站…"
+      :heights="[71, 71, 71]"
+      :heights-compact="[140, 140, 140]"
+    />
 
     <p v-if="actionError" class="feedback feedback--error" role="alert">{{ actionError }}</p>
     <p v-if="actionNotice" class="feedback feedback--ok" role="status">{{ actionNotice }}</p>

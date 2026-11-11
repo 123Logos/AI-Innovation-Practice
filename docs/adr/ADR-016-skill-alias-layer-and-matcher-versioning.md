@@ -14,11 +14,11 @@
 | 岗位技能判重 | `app/schemas/job.py:134 → :190`（422 `skill names must be unique`） | 判重口径与库里 `uq_job_skills_job_name`（`20261105_0012:96`）脱节 |
 | 档案技能判重 | `app/schemas/profile.py:314`、`app/services/job_service.py:257` | 同上，且 `deduped_count` 的含义变 |
 | coverage 的分子分母域 | `app/services/match_scoring.py:404/437/625` | 同一岗位同一批技能的分母口径变 |
-| 真正的命中判定 | **不是键**，是 `skill_forms_match`（`skill_names.py:78-110`，被 `match_scoring.py:440` 用） | — |
+| 真正的命中判定 | **不是键**，是 `skill_forms_match`（`skill_names.py:78-110`，被 `app/services/match_scoring.py::matched_with_forms` 用） | — |
 | 偏好档位 | `app/services/match_scoring.py` 的 `preference` 折叠那一格（行号已搬家，不再引）：`skill_name_key(target_role)` vs `skill_name_key(job.title)` 互相包含 + `overlap_ratio` | **完全不查技能表、不进 `skill_forms_match`** |
-| 回显 | `app/schemas/match.py:138`（`name` = 岗位侧原始写法逐字回显）、`:143`（`matched_form` = 学生侧原始写法） | 回显语义变 |
+| 回显 | `app/schemas/match.py::RequirementCoverageRow`（`name` = 岗位侧原始写法逐字回显、`matched_form` = 学生侧原始写法） | 回显语义变 |
 
-还有一组**裸字符串等值**的点，任何别名表都修不到、也不许顺手改：`match_scoring.py:629`（`matched_names` 用 `item.name` 原值组集合）、:477/485/501-517（AI 必须逐字复述技能名才能对上候选对）、:554/558/562（按原值分组）、:752（命中却无强度那条并集不变式）。
+还有一组**裸字符串等值**的点，任何别名表都修不到、也不许顺手改：`match_scoring.py`（`matched_names` 用 `item.name` 原值组集合）、:477/485/501-517（AI 必须逐字复述技能名才能对上候选对）、:554/558/562（按原值分组）、:752（命中却无强度那条并集不变式）。
 
 ## 2. 决策
 
@@ -52,7 +52,7 @@ UNIQUE (canonical_key, alias_key, scope)      -- 单向存一行，判定双向�
 
 `skill_forms_match` 现有四条规则（键相等 / 词干+版本尾巴 / 其余两条，`skill_names.py:100-110`）**全判否之后**才查别名表。顺序是刻意的：便宜的、可解释的、用户看得见的先跑，人工词表只做兜底，命中时它替谁都不留痕。
 
-影响面：coverage 的 covered/partial 集合、badge（`requirement-match`）、证据定位窗口（`locate_snippets` 的复核同样认别名）。并集不变式（`match_scoring.py:752` 那条）**不许因为别名而破坏**——B1 必须像 `test_badge_union_still_equals_match_union_in_ai_mode` 那样再钉一条带别名行的测试。
+影响面：coverage 的 covered/partial 集合、badge（`requirement-match`）、证据定位窗口（`locate_snippets` 的复核同样认别名）。并集不变式（`match_scoring.py` 那条）**不许因为别名而破坏**——B1 必须像 `test_badge_union_still_equals_match_union_in_ai_mode` 那样再钉一条带别名行的测试。
 
 ### 2.4 角色域：`preference` 增加第四档来源，给 0.6 不给 1.0
 
@@ -67,7 +67,7 @@ UNIQUE (canonical_key, alias_key, scope)      -- 单向存一行，判定双向�
 | 轴 | 管什么 | 什么时候必须 +1 | 别名层的影响 |
 |---|---|---|---|
 | `MATCH_WEIGHTS_VERSION`（现 `v2`） | **权重表 + 归一公式** | 权重变了，或分数算法含义变了 | **不升**。别名不动权重也不动公式 |
-| `SKILL_MATCHER_VERSION` → `meta.matcher_version`（现 `v1`） | **写法判据**（`skill_forms_match` / `skill_stem` / `_VERSION_TAIL`） | 这三者任一逻辑变化 | **B1 落地时 v1→v2**：判据里多了查表这一步，哪怕表是空的。按 `skill_names.py:25-26` 自己写的规则，这就是必须升的情形 |
+| `SKILL_MATCHER_VERSION` → `meta.matcher_version`（现 `v1`） | **写法判据**（`skill_forms_match` / `skill_stem` / `_VERSION_TAIL`） | 这三者任一逻辑变化 | **B1 落地时 v1→v2**：判据里多了查表这一步，哪怕表是空的。按 `app/core/skill_names.py::SKILL_MATCHER_VERSION` 上面那段自己写的规则，这就是必须升的情形 |
 | `meta.alias_version`（**新增**，起始 `v1`） | **别名表内容** | 任何一行增删改 | 词表是「内容」而不是「代码」，所以给它自己的轴；同一份代码 + 不同词表给出不同判定，只有这格能说明是哪一版 |
 
 分工写明白，是为了避免将来「分数变了，不知道是哪一版造成的」这种无法回答的对账问题。**空表的 `alias_version` 仍是 `v1`**，不因为「还没有数据」而不发这一格。

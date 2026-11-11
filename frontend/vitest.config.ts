@@ -30,6 +30,8 @@ export default defineConfig({
     // 不开 globals：避免 tsconfig 里再补一份 global 类型声明，也让依赖来源可见。
     globals: false,
     include: ['src/**/__tests__/**/*.spec.ts'],
+    // 关掉 VTU 对 <Transition> 的默认桩（理由与 `settled()` 助手都在这个文件里）。
+    setupFiles: ['./src/__tests__/setup.ts'],
     // 每个用例都应该是独立的：mock 与 spy 不留到下一个用例。
     clearMocks: true,
     restoreMocks: true,

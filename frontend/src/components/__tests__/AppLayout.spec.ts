@@ -34,6 +34,7 @@ import { http } from '@/api/client'
 import type { ApiErrorBody } from '@/api/types'
 import router from '@/router'
 import { useAuthStore } from '@/stores/auth'
+import { settled } from '@/__tests__/setup'
 
 /* --------------------------- jsdom 缺的那一样 --------------------------- */
 
@@ -49,6 +50,38 @@ class StubResizeObserver {
 }
 
 ;(globalThis as unknown as Record<string, unknown>).ResizeObserver = StubResizeObserver
+
+/* ------------------------- jsdom 缺的第二样：宽度 ------------------------- */
+
+/**
+ * `useViewport()` 是全站唯一发宽度 `matchMedia` 的地方（守则 L2），而 jsdom 没有这个函数。
+ * 桩必须在**第一次 mount 之前**装好：那个 composable 把每条查询的 Ref 缓存在模块级，
+ * 装晚了缓存里已经是「不宽」，之后再换 `window.matchMedia` 也不会重算。
+ * 所以连 change 监听一起桩，`setWide()` 通过监听把新答案推进去——
+ * 这样「宽屏常驻左栏 / 窄屏折叠成抽屉」两条路都能在同一个文件里验。
+ */
+type WidthListener = (event: { matches: boolean }) => void
+let wideMatches = false
+const wideListeners = new Set<WidthListener>()
+
+window.matchMedia = ((query: string) => {
+  const isWideQuery = query.includes('min-width')
+  return {
+    media: query,
+    matches: isWideQuery ? wideMatches : false,
+    addEventListener: (_type: string, listener: WidthListener) => {
+      if (isWideQuery) wideListeners.add(listener)
+    },
+    removeEventListener: (_type: string, listener: WidthListener) => {
+      wideListeners.delete(listener)
+    },
+  }
+}) as unknown as typeof window.matchMedia
+
+function setWide(value: boolean): void {
+  wideMatches = value
+  for (const listener of wideListeners) listener({ matches: value })
+}
 
 /* ----------------------------- 内存小服务器 ----------------------------- */
 
@@ -127,6 +160,8 @@ async function visit(path: string): Promise<VueWrapper> {
   mounted.push(wrapper)
   await router.push(path)
   await flushPromises()
+  // 页面切换是 out-in 的淡出淡入（批次 F4）：等它收尾，否则量到的是正在退场的上一页。
+  await settled()
   return wrapper
 }
 
@@ -139,6 +174,8 @@ beforeEach(async () => {
   sessionStorage.clear()
   document.body.innerHTML = ''
   requested = []
+  // 每条用例都从「不宽」起步：jsdom 没有真实视口，宽屏那条路由用例自己 setWide(true)。
+  setWide(false)
   savedAdapter = http.defaults.adapter
   http.defaults.adapter = fakeAdapter
 
@@ -169,9 +206,11 @@ describe('外框只有一处定义（守则 L1）', () => {
     const wrapper = await visit('/jobs')
 
     expect(wrapper.findAll('.app-topbar')).toHaveLength(1)
-    // 顶栏与内容区是外框的**两个直接子项**：嵌套漏一层就会变成「顶栏套顶栏」或「没顶栏」。
+    // 顶栏与内容区仍同屏，但中间多了外框的两层：`.app-body`（左栏 + 内容）与 `.app-content`
+    // （容器查询的参照）。批次 F3 第三片加了常驻左栏，嵌套因此从两层变四层——
+    // 这条断言跟着显式改写，验的还是同一件事：嵌套没漏层、顶栏没被套进内容里。
     expect(wrapper.find('.app-shell > .app-topbar').exists()).toBe(true)
-    expect(wrapper.find('.app-shell > main.board-page').exists()).toBe(true)
+    expect(wrapper.find('.app-shell > .app-body > .app-content > main.board-page').exists()).toBe(true)
     // 视图确实自己拉过数据（不是靠异常分支渲染出的一具空壳）。
     expect(requested).toContain('get /jobs')
   })
@@ -189,7 +228,9 @@ describe('外框只有一处定义（守则 L1）', () => {
     const wrapper = await visit('/')
 
     expect(wrapper.findAll('.app-topbar')).toHaveLength(1)
-    expect(wrapper.find('.app-shell > .resume-workspace').exists()).toBe(true)
+    expect(
+      wrapper.find('.app-shell > .app-body > .app-content > .resume-workspace').exists(),
+    ).toBe(true)
     // `.editor` / `.style-panel` 是 `ResumeEditorView` 打给子组件的类：
     // 它们在，就说明外框换层之后工作区还是三列那一棵，没有退化成空 `<main>`。
     expect(wrapper.find('.resume-workspace > .editor').exists()).toBe(true)
@@ -213,7 +254,7 @@ describe('外框只有一处定义（守则 L1）', () => {
 })
 
 describe('顶栏的一级导航来自模块表（守则 L4）', () => {
-  it('顶栏渲染出「岗位库」文字入口，href 指向 /jobs，且不在「更多」弹层里', async () => {
+  it('顶栏渲染出「岗位库」文字入口，href 指向 /jobs，且不在账户抽屉里', async () => {
     const wrapper = await visit('/jobs')
     const entries = wrapper.findAll('.app-shell > .app-topbar .jobs-entry')
 
@@ -222,6 +263,125 @@ describe('顶栏的一级导航来自模块表（守则 L4）', () => {
     expect(entries[0]?.element.tagName).toBe('A')
     expect(entries[0]?.text()).toBe('岗位库')
     expect(entries[0]?.attributes('href')).toBe('/jobs')
-    expect(entries[0]?.element.closest('.user-actions')).toBeNull()
+    // 判据要真的把抽屉打开再看：它 Teleport 到 body 且收起态根本不存在，
+    // 不收时 `closest` 必然为 null，那是空检。
+    await wrapper.find('.account-trigger').trigger('click')
+    expect(document.body.querySelector('.drawer-root')).not.toBeNull()
+    expect(entries[0]?.element.closest('.drawer-root')).toBeNull()
+  })
+})
+
+describe('简历列表住哪（清单第 5 条：宽屏常驻左栏 / 其余宽度折叠成抽屉）', () => {
+  const bodyEl = (selector: string): Element | null => document.body.querySelector(selector)
+
+  it('窄屏：不渲染左栏，顶栏给一个触发按钮，点开是满高抽屉里的同一份列表', async () => {
+    const wrapper = await visit('/jobs')
+
+    expect(wrapper.find('.resume-sidebar').exists()).toBe(false)
+    const trigger = wrapper.find('.resumes-trigger')
+    expect(trigger.exists()).toBe(true)
+    expect(bodyEl('#resume-drawer')).toBeNull()
+
+    await trigger.trigger('click')
+    const drawer = bodyEl('#resume-drawer')
+    expect(drawer).not.toBeNull()
+    // 抽屉里就是 `ResumeList` 那一棵：排序条与底部两个行动都在，不是另写的一份。
+    expect(drawer?.querySelector('.menu-sort')).not.toBeNull()
+    expect(drawer?.querySelectorAll('.menu-action')).toHaveLength(2)
+    expect(drawer?.closest('body')).toBe(document.body)
+    expect(trigger.attributes('aria-expanded')).toBe('true')
+
+    // 再点一次收起：基座按 `aria-controls` 认出这是它自己的触发器，不会先关再开。
+    trigger.element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    await trigger.trigger('click')
+    await settled()
+    expect(bodyEl('#resume-drawer')).toBeNull()
+    expect(trigger.attributes('aria-expanded')).toBe('false')
+
+    // Esc 走基座那一条路径（抽屉自己没写 keydown）。
+    await trigger.trigger('click')
+    expect(bodyEl('#resume-drawer')).not.toBeNull()
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await flushPromises()
+    await settled()
+    expect(bodyEl('#resume-drawer')).toBeNull()
+  })
+
+  it('宽屏：左栏常驻在内容区左边，触发按钮整个不渲染', async () => {
+    setWide(true)
+    const wrapper = await visit('/jobs')
+
+    const sidebar = wrapper.find('.app-body > .resume-sidebar')
+    expect(sidebar.exists()).toBe(true)
+    expect(sidebar.attributes('aria-label')).toBe('我的简历')
+    // 列表在左栏里，且左栏与内容区是兄弟（不是把内容区套进左栏）。
+    expect(sidebar.find('.menu-sort').exists()).toBe(true)
+    expect(wrapper.find('.app-body > .app-content > main.board-page').exists()).toBe(true)
+    expect(wrapper.find('.resumes-trigger').exists()).toBe(false)
+    // 常驻的意思是「不用点一下才出现」：没有任何抽屉被打开。
+    expect(bodyEl('#resume-drawer')).toBeNull()
+  })
+
+  it('两个抽屉互斥：开账户抽屉时简历抽屉被基座的「点外面」关掉', async () => {
+    const wrapper = await visit('/jobs')
+    await wrapper.find('.resumes-trigger').trigger('click')
+    expect(bodyEl('#resume-drawer')).not.toBeNull()
+
+    // 真机顺序：pointerdown 先于 click。账户按钮的 `aria-controls` 指的是账户面板，
+    // 所以简历抽屉的基座不豁免它 → 判成「点外面」关掉；随后 click 才开账户抽屉。
+    const account = wrapper.find('.account-trigger')
+    account.element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    await flushPromises()
+    await settled()
+    expect(bodyEl('#resume-drawer')).toBeNull()
+
+    await account.trigger('click')
+    expect(bodyEl('#user-drawer')).not.toBeNull()
+    // 反向也要成立：开简历抽屉时账户抽屉关掉（同一条机制，不是各写一份互斥）。
+    const resumes = wrapper.find('.resumes-trigger')
+    resumes.element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    await flushPromises()
+    await settled()
+    expect(bodyEl('#user-drawer')).toBeNull()
+    await resumes.trigger('click')
+    expect(bodyEl('#resume-drawer')).not.toBeNull()
+    expect(bodyEl('#user-drawer')).toBeNull()
+  })
+
+  it('「新建简历」弹窗归外框：抽屉收起了它还在，字不会打到一半消失', async () => {
+    const wrapper = await visit('/jobs')
+    await wrapper.find('.resumes-trigger').trigger('click')
+    const createButton = [...document.body.querySelectorAll('.menu-action')].find(
+      (node) => node.textContent?.trim() === '新建简历',
+    )
+    expect(createButton).toBeDefined()
+    ;(createButton as HTMLElement).click()
+    await flushPromises()
+
+    // 抽屉收起（与原来 openCreate 先关菜单的行为一致），但弹窗活着。
+    await settled()
+    expect(bodyEl('#resume-drawer')).toBeNull()
+    expect(bodyEl('#create-profile-heading')).not.toBeNull()
+    expect(bodyEl('.modal-field input')).not.toBeNull()
+
+    // Esc 关弹窗：监听挂在遮罩上，焦点在输入框里，按键冒泡得到。
+    bodyEl('.ui-overlay')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await flushPromises()
+    await settled()
+    expect(bodyEl('#create-profile-heading')).toBeNull()
+  })
+
+  it('宽屏左栏里的「新建简历」走同一个意图，开的是同一个弹窗', async () => {
+    setWide(true)
+    const wrapper = await visit('/jobs')
+    const createButton = wrapper.find('.resume-sidebar .menu-action')
+
+    expect(createButton.text()).toBe('新建简历')
+    await createButton.trigger('click')
+    await flushPromises()
+
+    expect(bodyEl('#create-profile-heading')).not.toBeNull()
+    // 左栏是常驻的，开弹窗不该把它收掉（它没有可收的东西）。
+    expect(wrapper.find('.resume-sidebar').exists()).toBe(true)
   })
 })

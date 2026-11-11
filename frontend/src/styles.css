@@ -71,6 +71,58 @@
   --ui-shadow-menu: 0 12px 28px rgba(38, 51, 48, 0.12);
   --ui-shadow-dialog: 0 20px 48px rgba(31, 42, 40, 0.2);
 
+  /* ---------------- 间距刻度（批次 F4，守则 T2） ---------------- */
+  /*
+   * 刻度取自**存量实测**而不是理想倍率：全站 gap 的实际取值是 4/6/8/10/12/16/24，
+   *  padding 里另有 32/48。照理想倍率（4/8/16/32）建表会让每一次替换都改像素，
+   * 那是一次视觉改动而不是令牌化。这样建表，将来批量替换可以零像素变化。
+   */
+  --space-1: 4px;
+  --space-2: 6px;
+  --space-3: 8px;
+  --space-4: 10px;
+  --space-5: 12px;
+  --space-6: 16px;
+  --space-7: 24px;
+  --space-8: 32px;
+  --space-9: 48px;
+
+  /* ---------------- 字号刻度（批次 F4，守则 T2） ---------------- */
+  /*
+   * 同样取自存量：10/11/12/13/14 是正文与标签的五档（13px 69 处、12px 65 处、11px 44 处），
+   * 15/17/18/20/22/24/30 是卡片标题到页面大标题。**纸面的 32px 不在表内**：
+   * 打印稿要离线复现，字号固定，属 T1 的豁免面。
+   */
+  --text-2xs: 10px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 15px;
+  --text-xl: 17px;
+  --text-2xl: 18px;
+  --text-3xl: 20px;
+  --text-4xl: 22px;
+  --text-5xl: 24px;
+  --text-6xl: 30px;
+
+  /* ---------------- 动效刻度（批次 F4，守则 M1/M3） ---------------- */
+  /*
+   * 三档时长也是从存量来的：`.12s` 是 hover 换色、`.15s` 是箭头翻转，
+   * 240ms 是这一批新加的进入/退出。位移 6px（M1 的上限是 8px）。
+   * **组件里不许再写裸时长**：`src/__tests__/motionGuards.spec.ts` 扫描每个 `.vue`
+   * 的 `transition:` / `animation:`，出现字面时长即红。
+   */
+  --motion-fast: 120ms;
+  --motion-base: 150ms;
+  --motion-slow: 240ms;
+  --motion-pulse: 1400ms;
+  --motion-ease: ease;
+  --motion-shift: 6px;
+  /* 骨架的呼吸动画整条放在令牌里：减弱动效时把它整条换成 none，
+     而不是在组件里再写一个 `@media (prefers-reduced-motion)` 分支（M3 要一个开关）。 */
+  --skeleton-pulse: ui-skeleton-pulse var(--motion-pulse) var(--motion-ease) infinite;
+
   /* ---------------- 主题色（forest 静态兜底，运行时由 theme.ts 改写） ---------------- */
   /*
    * 分工（不要混用）：
@@ -163,6 +215,19 @@
     --ui-shadow-dialog: 0 20px 48px rgba(0, 0, 0, 0.55);
     --el-text-color-disabled: #5d6b67;
     --el-mask-color: rgba(0, 0, 0, 0.72);
+  }
+}
+
+/*
+ * 减弱动效（守则 M3）：**一个开关管全站**，组件里不许再各写一个
+ * `@media (prefers-reduced-motion)` 分支。降级口径按 M3 原文——去掉位移、保留淡入，
+ * 所以这里只把位移归零、把骨架的呼吸整条换成 none，时长不动。
+ * 骨架与过渡因此共用同一组令牌，不需要各自判断偏好。
+ */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-shift: 0px;
+    --skeleton-pulse: none;
   }
 }
 
@@ -291,4 +356,102 @@ button, input, textarea { font: inherit; }
   color: var(--ui-ink);
   background: var(--ui-surface);
   box-shadow: var(--ui-shadow-dialog);
+}
+
+/*
+ * 自建弹窗的内容套件（标题 / 说明 / 字段 / 单选组 / 错误 / 行动区）。
+ *
+ * 批次 F3 第三片之前它只写在 `AppTopBar.vue` 的 scoped 块里，因为那时两个自建弹窗
+ * （AI 设置、新建简历）都在那一个文件里。「新建简历」随简历列表搬进 `ResumeCreateDialog.vue`
+ * 之后，同一套样式就有了第二个消费者——留在 scoped 里等于要抄一份，而抄出来的那一份
+ * 下次改字号时一定会漏。所以收进全局：它和上面的 `.ui-overlay` / `.ui-panel` 本来就是同一层东西。
+ * 全仓只有这一处定义 `.modal-*`（搬之前 grep 过：其余弹窗各用自己的类名，不冲突）。
+ */
+.modal-title { margin: 0; color: var(--ui-ink); font-size: 17px; font-weight: 650; }
+.modal-intro { margin: 8px 0 18px; color: var(--ui-ink-muted); font-size: 12px; line-height: 1.6; }
+.modal-intro code { padding: 1px 4px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); background: var(--ui-surface-soft); font-family: "SF Mono", Consolas, monospace; font-size: 11px; }
+.modal-field { display: grid; gap: 6px; }
+.modal-field span { color: var(--ui-ink-muted); font-size: 12px; }
+.modal-field input { width: 100%; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 10px 12px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: 14px; outline: 0; }
+.modal-field input:focus { border-color: var(--theme-rule); box-shadow: 0 0 0 2px var(--theme-fade); }
+.modal-modes { display: grid; gap: 8px; margin: 16px 0 0; border: 0; padding: 0; }
+.modal-modes legend { padding: 0 0 6px; color: var(--ui-ink-muted); font-size: 12px; }
+.modal-radio { display: inline-flex; align-items: center; gap: 8px; color: var(--ui-ink); font-size: 13px; cursor: pointer; }
+.modal-radio input { margin: 0; accent-color: var(--theme-primary); }
+.modal-radio--disabled { color: var(--el-text-color-disabled); cursor: not-allowed; }
+.modal-error { margin: 14px 0 0; color: var(--ui-danger); font-size: 12px; line-height: 1.5; }
+.modal-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+/*
+ * 主行动按钮 32px 高：与顶栏控件、`el-button` 同一档（议题 3.A）。
+ * 用 `height` 而不是 `padding` 推，字号变了也不会互相错开。
+ */
+.modal-button { flex: 0 0 auto; height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 16px; color: var(--ui-ink-muted); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 13px; line-height: 1; white-space: nowrap; }
+.modal-button:hover:not(:disabled) { border-color: var(--theme-rule); color: var(--theme-primary-deep); }
+.modal-button--primary { border-color: var(--theme-primary); color: var(--theme-on-primary); background: var(--theme-primary); }
+.modal-button--primary:hover:not(:disabled) { background: var(--theme-primary-hover); }
+.modal-button:disabled { opacity: .6; cursor: progress; }
+.modal-button:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
+
+/* ---------------- 进入 / 退出：淡入淡出 + 微位移（批次 F4，守则 M1） ---------------- */
+/*
+ * 全站只有这一份过渡定义，组件用 `<Transition name="ui-fade">` 消费它。
+ * 为什么放全局而不是各组件 scoped：`<Transition>` 的类名是 Vue 在运行时挂上去的，
+ * 而 scoped 编译只给模板里写死的元素加作用域属性——leave 阶段的类名落在
+ * 正在被移除的那个根元素上，写在组件里会时灵时不灵。放这里，形态一致且只有一处。
+ *
+ * 位移 6px 取自 `--motion-shift`（M1 上限 8px）；减弱动效时该令牌归零，
+ * 于是同一份 CSS 自动降级成纯淡入，不需要第二套类名。
+ */
+.ui-fade-enter-active,
+.ui-fade-leave-active,
+.ui-fade-down-enter-active,
+.ui-fade-down-leave-active {
+  transition:
+    opacity var(--fade-duration, var(--motion-slow)) var(--motion-ease),
+    transform var(--fade-duration, var(--motion-slow)) var(--motion-ease);
+}
+.ui-fade-enter-from,
+.ui-fade-leave-to {
+  opacity: 0;
+  transform: translateY(var(--motion-shift));
+}
+/* 浮层从上方落下更像「从触发器长出来」，页面内容则从下方浮起。两者共用时长与缓动。 */
+.ui-fade-down-enter-from,
+.ui-fade-down-leave-to {
+  opacity: 0;
+  transform: translateY(calc(var(--motion-shift) * -1));
+}
+
+/* ---------------- 骨架屏（批次 F4，守则 M2） ---------------- */
+/*
+ * 尺寸不写在这里：每个消费点用 `--skeleton-h` / `--skeleton-w` 传入**实测**的稳定态尺寸
+ * （M2 明确禁止凭感觉写 min-height）。这里只管形状、底色与呼吸。
+ */
+.ui-skeleton {
+  display: block;
+  width: var(--skeleton-w, 100%);
+  height: var(--skeleton-h, var(--space-6));
+  border-radius: var(--ui-radius);
+  background: var(--ui-surface-sunken);
+  animation: var(--skeleton-pulse);
+}
+.ui-skeleton-stack {
+  display: grid;
+  gap: var(--space-3);
+}
+/* 读屏可见、视觉隐藏：骨架把状态文案收进这里，M3 的「加载中可读」不靠可见文字兑现。 */
+.ui-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+  padding: 0;
+}
+@keyframes ui-skeleton-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .55; }
 }

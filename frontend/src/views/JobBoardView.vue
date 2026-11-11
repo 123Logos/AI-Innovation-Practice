@@ -21,6 +21,7 @@ import { isApiError } from '@/api'
 import type { jobsApi as JobsContract } from '@/api'
 import { EMPLOYMENT_TYPE_LABELS, JOB_STATUS_LABELS, useJobStore } from '@/stores/job'
 import { formatDate } from '@/utils/datetime'
+import SkeletonList from '@/components/SkeletonList.vue'
 
 const store = useJobStore()
 
@@ -171,7 +172,15 @@ onMounted(load)
     </section>
 
     <p v-if="loadError" class="feedback feedback--error" role="alert">{{ loadError }}</p>
-    <p v-else-if="store.loading" class="feedback">正在加载岗位…</p>
+    <!-- 稳定态实测：卡片 1280 档 158px、375 档 187px；≥1100 两列，列间距 14px（`.job-grid`）。 -->
+    <SkeletonList
+      v-else-if="store.loading"
+      label="正在加载岗位…"
+      :heights="[158, 158, 158, 158]"
+      :heights-compact="[187, 187, 187, 187]"
+      :columns="2"
+      :gap="14"
+    />
     <p v-else-if="!store.jobs.length" class="feedback">
       {{ store.filter.keyword ? '没有匹配的岗位，换个关键词试试。' : '这里还没有岗位。' }}
     </p>

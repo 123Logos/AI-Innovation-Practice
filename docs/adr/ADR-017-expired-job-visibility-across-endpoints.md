@@ -14,8 +14,8 @@
 | `is_expired` 是对外字段（详情与列表两种模型都有） | `app/schemas/job.py:235`、`:275` |
 | **只有列表默认过滤**过期行，`include_expired=true` 才一起给 | `app/repositories/job_repository.py:488-490`、参数在 `app/api/v1/jobs.py:80` |
 | 详情按 id 打得开过期岗位（200 + `is_expired=True`），且这条**已有测试锁着** | `tests/test_jobs.py:899`（三态）与 `:937`（陌生人读详情） |
-| 匹配侧的过期表达是 `terms[remaining_time] = {value 0.0, computed True, note "expired"}` | `app/services/match_scoring.py:625-626` |
-| 前端**不自己比日期**，只读后端那个布尔 | `frontend/src/stores/job.ts:32-33`、`JobDetailView.vue:6`、`JobBoardView.vue:195` |
+| 匹配侧的过期表达是 `terms[remaining_time] = {value 0.0, computed True, note "expired"}` | `app/services/match_scoring.py::remaining_time_value` |
+| 前端**不自己比日期**，只读后端那个布尔 | `frontend/src/stores/job.ts`、`JobDetailView.vue`、`JobBoardView.vue` |
 
 所以「统一判据」这件事**早就成立了**，`ADR-011` 2.G 明确禁止两处各写一份。**没有成立的只有两件**：① 过期在四个读端点上**是否互相说得通**没有断言；② `include_expired` 这个概念只存在于列表，别处没有对应物，于是「过期可见性」天然按端点各自为政。
 
