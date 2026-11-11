@@ -250,9 +250,22 @@ describe('守则 L4：导航条目只有一张表', () => {
       .filter((source) => /from '@\/config\/modules'/.test(source.text))
       .map((source) => source.rel)
 
-    // 今天只许有顶栏这一个消费者；F3 的抽屉 / 切换器进来时改这一格，
-    // 而不是让谁「顺手」在组件里贴一份名字。
-    expect(consumers).toEqual(['components/AppTopBar.vue'])
+    // 两个消费者，都是**读表**而不是抄表：顶栏取 `TOP_BAR_MODULES`（`inTopBar` 过滤），
+    // 工作区切换器取 `APP_MODULES` 渲染卡片。F3 第四片按原计划改的就是这一格
+    // （原注释：「F3 的抽屉 / 切换器进来时改这一格」）。再多一个消费者要在这里显式记账。
+    expect(consumers).toEqual(['components/AppTopBar.vue', 'components/WorkspaceSwitcher.vue'])
+  })
+
+  it('工作区切换器的卡片文案也一律来自表，模板里没有写死的模块名', () => {
+    const source = file('components/WorkspaceSwitcher.vue')
+    const template = withoutHtmlComments(templateOf(source.text))
+
+    for (const module of APP_MODULES) {
+      expect(template, `${module.name} 不该以字面量出现在切换器模板里`).not.toContain(module.name)
+    }
+    // 正向：它确实在遍历那张表，否则上面那条会因为「什么都没渲染」而假绿。
+    expect(template).toContain('v-for="module in APP_MODULES"')
+    expect(template).toContain(':to="{ name: module.routeName }"')
   })
 })
 

@@ -1,6 +1,9 @@
 <script setup lang="ts">
 /**
- * 顶栏：品牌 + 一级导航 + 简历入口（只在窄屏）+ 账户入口。
+ * 顶栏：品牌 + 工作区切换器 + 一级导航 + 简历入口（只在窄屏）+ 账户入口。
+ *
+ * 工作区切换器（清单第 6 条，第四片）在 Logo 右侧，是 `WorkspaceSwitcher.vue` 一个组件：
+ * 卡片与当前工作区名都读模块表，顶栏这里只负责把它摆在品牌旁边（`.brand-side` 那一组）。
  *
  * 批次 F3 第三片之后顶栏不再持有简历列表：清单第 5 条把「简历切换」改成左侧常驻 Sidebar、
  * 窄屏折叠成 Drawer，列表内容与全部 handler 收进 `components/ResumeList.vue` 一份，
@@ -25,6 +28,7 @@ import { RouterLink, useRouter } from 'vue-router'
 
 import { clearDeepSeekKey, hasDeepSeekKey, setDeepSeekKey } from '@/api'
 import UserDrawer from '@/components/UserDrawer.vue'
+import WorkspaceSwitcher from '@/components/WorkspaceSwitcher.vue'
 import { TOP_BAR_MODULES } from '@/config/modules'
 import { useAuthStore } from '@/stores/auth'
 import { useJobStore } from '@/stores/job'
@@ -127,12 +131,16 @@ async function handleLogout(): Promise<void> {
 </script>
 <template>
   <header class="app-topbar">
-    <div class="brand">
-      <span class="brand-mark">AI</span>
-      <div class="brand-text">
-        <p class="brand-title">职业发展助手</p>
-        <p class="brand-sub">简历工作台</p>
+    <div class="brand-side">
+      <div class="brand">
+        <span class="brand-mark">AI</span>
+        <div class="brand-text">
+          <p class="brand-title">职业发展助手</p>
+          <p class="brand-sub">简历工作台</p>
+        </div>
       </div>
+      <!-- 工作区切换器（清单第 6 条）：Logo 右侧，卡片与文案都读模块表，见组件文件头。 -->
+      <WorkspaceSwitcher />
     </div>
 
     <div class="user-area">
@@ -280,7 +288,9 @@ async function handleLogout(): Promise<void> {
  * 注意这层 `backdrop-filter` 会给所有后代生成 fixed 定位的包含块——
  * 所以抽屉必须 Teleport 出去（`DrawerPanel`），留在顶栏里只有顶栏那么高（两档实测过）。
  */
-.app-topbar { position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; padding: 14px 48px; border-bottom: 1px solid var(--ui-border); background: var(--ui-surface); background: color-mix(in srgb, var(--ui-surface) 92%, transparent); backdrop-filter: blur(8px); }
+.app-topbar { --topbar-inset: 48px; position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; padding: 14px var(--topbar-inset); border-bottom: 1px solid var(--ui-border); background: var(--ui-surface); background: color-mix(in srgb, var(--ui-surface) 92%, transparent); backdrop-filter: blur(8px); }
+/* 品牌与工作区切换器同属左边一组：顶栏仍是「左一组 / 右一组」两个直接子项。 */
+.brand-side { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 12px; }
 .brand { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 12px; }
 .brand-mark { display: grid; width: 34px; height: 34px; color: var(--theme-on-primary); background: var(--theme-primary); font-family: "SF Mono", Consolas, monospace; font-size: 13px; place-items: center; }
 .brand-text { display: grid; min-width: 0; gap: 2px; }
@@ -324,7 +334,19 @@ async function handleLogout(): Promise<void> {
 .resumes-trigger__caret--open { transform: rotate(180deg); }
 
 @media (max-width: 760px) {
-  .app-topbar { padding: 12px 16px; }
+  /* 内缩值只写一处：工作区弹层的左右边界也读它（`--topbar-inset`），改这里两处一起动。 */
+  /*
+   * 375px 的横向预算（实测，不是估）：可用 343px。加上工作区切换器之后，
+   * 原来那套间距与内缩会让顶栏换成两行（实测 101px，比第三片的 59px 多吃 42px）。
+   * 下面这几条把预算压回一行：间距 16/12 → 10/8、三个控件内缩各收 2–4px、
+   * 简历入口去掉「简历」二字只留名字（名字本身就在说它是哪一份）。
+   * 名字宽度是**封顶**的，所以长名字也不会把顶栏挤成两行。
+   */
+  .app-topbar { --topbar-inset: 16px; gap: 10px 10px; padding: 12px var(--topbar-inset); }
+  .brand-side { gap: 8px; }
+  .user-area { gap: 8px; }
+  .jobs-entry { padding: 0 8px; }
+  .account-trigger { padding: 0 10px; }
   /*
    * 手机上只留品牌方块：连同品牌文字实测要 458px（可用 343px），顶栏被挤成两行、
    * 高 102px，占掉 375×812 视口的 12.6%。收起文字后同一行放得下（~314px），
@@ -335,8 +357,9 @@ async function handleLogout(): Promise<void> {
   .account-name { display: none; }
   .account-word { display: inline; }
   /* 窄屏先压缩简历名的显示宽度，整条入口再跟着容器收缩，保证省略号生效而不是撑破顶栏。 */
-  .resumes-trigger { max-width: min(200px, 100%); }
-  .resumes-trigger__title { max-width: 96px; }
+  .resumes-trigger { max-width: min(140px, 100%); padding: 0 8px; }
+  .resumes-trigger__label { display: none; }
+  .resumes-trigger__title { max-width: 56px; }
   /* 简历列表在窄屏是外框持有的满高抽屉，不再需要「把弹层从按钮上挪到顶栏」那套挂载点特例。 */
 }
 @media print {

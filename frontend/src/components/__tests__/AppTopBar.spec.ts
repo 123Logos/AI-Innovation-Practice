@@ -42,6 +42,9 @@ let pinia: Pinia
 
 function makeRouter(): Router {
   const routes: RouteRecordRaw[] = [
+    // 工作区切换器会 `router.resolve()` **模块表里的每一项**（它靠真实路径判断当前工作区），
+    // 所以这份替身必须覆盖整张表：少一条它当场抛「No match」，而不是静默少一张卡片。
+    { path: '/', name: 'resume-editor', component: BLANK },
     { path: '/jobs', name: 'job-board', component: BLANK },
     { path: '/trash', name: 'recycle-bin', component: BLANK },
     { path: '/login', name: 'login', component: BLANK },
@@ -200,7 +203,7 @@ describe('右侧用户抽屉的开关（清单 4，批次 F3 第二片）', () =
     expect(drawerEl()).toBeNull()
   })
 
-  it('点触发按钮自己算「开合」：pointerdown 不冒泡到基座，所以不会先关再开', async () => {
+  it('点触发按钮自己算「开合」：基座按 aria-controls 认出它，所以不会先关再开', async () => {
     const { wrapper } = await mountTopBar()
     const trigger = wrapper.find('.account-trigger')
 
@@ -359,6 +362,47 @@ describe('窄屏的入口组织（结构判据，不测像素）', () => {
     )
     expect(labels.filter((text) => text === 'AI 设置')).toHaveLength(1)
     expect(labels.filter((text) => text === '退出登录')).toHaveLength(1)
+  })
+
+  it('工作区切换器在 Logo 右侧那一组里，不占 .user-area 的格子（清单第 6 条）', async () => {
+    const { wrapper } = await mountTopBar()
+
+    // 顶栏仍是「左一组 / 右一组」两个直接子项：切换器并进左边那一组，
+    // 而不是变成第三个 flex 子项（那样 space-between 会把它甩到正中间）。
+    expect(wrapper.findAll('.app-topbar > *').map((node) => node.classes()[0])).toEqual([
+      'brand-side',
+      'user-area',
+    ])
+    expect(wrapper.findAll('.brand-side > *').map((node) => node.classes()[0])).toEqual([
+      'brand',
+      'workspace-switcher',
+    ])
+    expect(wrapper.find('.user-area .workspace-switcher').exists()).toBe(false)
+    // 它在品牌**之后**：清单第 6 条说的是「Logo 右侧」，顺序反了就是另一个设计。
+    const side = wrapper.find('.brand-side').element
+    expect(side.children[0]?.classList.contains('brand')).toBe(true)
+    expect(side.children[1]?.classList.contains('workspace-switcher')).toBe(true)
+  })
+
+  it('三个浮层两两互斥：开账户抽屉时切换器收起，开切换器时账户抽屉收起', async () => {
+    const { wrapper } = await mountTopBar()
+    const press = async (selector: string): Promise<void> => {
+      const node = wrapper.find(selector)
+      node.element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      await node.trigger('click')
+      await flushPromises()
+    }
+
+    await press('.workspace-trigger')
+    expect(wrapper.find('.workspace-popover').exists()).toBe(true)
+
+    await press('.account-trigger')
+    expect(drawerEl()).not.toBeNull()
+    expect(wrapper.find('.workspace-popover').exists()).toBe(false)
+
+    await press('.workspace-trigger')
+    expect(wrapper.find('.workspace-popover').exists()).toBe(true)
+    expect(drawerEl()).toBeNull()
   })
 })
 
