@@ -386,7 +386,13 @@ function printResume(): void {
 .eyebrow { margin: 0 0 8px; color: var(--theme-rule); font-size: 12px; letter-spacing: .12em; }
 h2, p { margin: 0; }
 h2 { font-size: 18px; }
-.panel-section { display: grid; gap: 10px; border-bottom: 1px solid var(--ui-border); padding: 18px 0; }
+/*
+ * `minmax(0, 1fr)` 而不是默认的 `auto`：grid 轨道的 auto 最小值是 min-content，
+ * 于是「标题输入框 + 上移/下移」那一行会把整条轨道顶到 228px，在 220px 的侧栏里
+ * 溢出 8px、在 200px 里溢出 28px（两档都实测过）。下限给 0，行内的输入框自己
+ * 已经有 `min-width: 0`，这才收得住。
+ */
+.panel-section { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; border-bottom: 1px solid var(--ui-border); padding: 18px 0; }
 .status-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--ui-ink-muted); font-size: 13px; }
 .status-row strong { color: var(--ui-ink); font-family: "SF Mono", Consolas, monospace; font-weight: 500; }
 /* 纸张切换：下拉比按钮省地方，也天然表达「二选一」。 */

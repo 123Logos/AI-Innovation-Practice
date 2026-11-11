@@ -8,11 +8,15 @@
  * 的 N 与本文件的 `BREAKPOINTS` 对照，出现表外数值即红。这样 CSS 与 JS 读的是同一张表，
  * 只是一个是查、一个是引。
  *
- * 四个值的来历（取证见守则 L2 行，本批只收口不改值）：
+ * 五个值的来历（取证见守则 L2 行）：
  * - `compact: 760`  窄屏结构差异（顶栏账户入口换字、各页单列）；
- * - `wide: 1100`    宽屏结构差异（简历工作区三列 / 两列、岗位列表侧栏）；
+ * - `wide: 1100`    宽屏结构差异（简历列表住左栏还是抽屉、岗位列表侧栏）；
  * - `dialog: 768`   Element 弹窗铺满视口的阈值（`styles.css`）；
- * - `paper: 720`    A4 纸面缩放阈值（`ResumePreview.vue`）。
+ * - `paper: 720`    A4 纸面缩放阈值（`ResumePreview.vue`）；
+ * - `paperThreeColumn: 1434`  简历工作区开三列的**容器**阈值（老板 2026-11-11 裁定，
+ *   `ROADMAP.md` §6 第 8 条）。它不是拍的整数，是算出来的：纸面 A4 原大 794 +
+ *   左列 280 + 右列 200 + 两个间距 64 + 左右内缩 96 = 1434。低于它一律两列，
+ *   因为同一宽度下三列永远比两列窄一列——「屏幕更宽、简历更小」就是这么来的。
  *
  * L2 的行为分工也在这里落地：**结构差异**（同一棵树换个形状）留在 CSS 媒体查询里；
  * 只有**换组件**才允许 `matchMedia`，而 `matchMedia` 的宽度查询只许从本文件发出。
@@ -32,6 +36,7 @@ export const BREAKPOINTS = {
   wide: 1100,
   dialog: 768,
   paper: 720,
+  paperThreeColumn: 1434,
 } as const
 
 export type BreakpointKey = keyof typeof BREAKPOINTS

@@ -86,18 +86,34 @@ onUnmounted(() => {
 
 <style scoped>
 /*
- * 三列的宽度判据走**容器**而不是视口（批次 F3 第三片）：清单第 5 条给外框加了一列常驻简历栏，
- * 内容区从此比视口窄 240px。继续按视口判，1280px 的屏幕会以为自己有 1280px 可用，
- * 于是摆下三列，而实际只有 1025px。阈值仍是令牌表里那两个值（1100 / 760），
- * 只是量的是 `app-content` 这一列的宽度。
+ * 列宽判据走**容器**而不是视口（批次 F3 第三片）：清单第 5 条给外框加了一列常驻简历栏，
+ * 内容区从此比视口窄 240px。继续按视口判，1280px 的屏幕会以为自己有 1280px 可用。
  *
- * 纸面那一列的下限从 420px 改成 0：纸面自己用 ResizeObserver 量列宽再 `transform: scale`
- * （`ResumePreview.vue`），硬下限不会让纸更可读，只会把网格撑破。
- * 这不是推测——把旧规则注回去量过（反证探针，数值在本片 PR 里）：左栏在场时，
- * `340px minmax(420px,1fr) 220px` 在 1120 档把文档撑到 1296px（溢出 176px）、
- * 1280 档溢出 16px。改成容器查询 + 下限 0 之后，四档（375/1120/1280/1440）溢出都是 0。
+ * **两列是常态，三列是富余**（老板 2026-11-11 裁定，`ROADMAP.md` §6 第 8 条）。
+ * 他的判据是一句硬话：「绝不能接受屏幕更宽，简历更小」。原来三列在容器 1100 就开，
+ * 于是 1440 的纸面只有 465px，比 1280 两列的 645px 还小——本末倒置。
+ *
+ * 先按裁定压缩左右列（340→280、220→200），但实测证明**光压缩不够**：
+ * 1440 压完是 545px，仍然小于 645。原因是算术上的——同一宽度下，
+ * 三列比两列多花「一列宽 + 一个间距」，永远比两列小，压到多窄都追不回来。
+ * 所以两条一起做：
+ *
+ * 1. **两列时纸面封顶 A4 原大**（`--paper-a4-width` = 794px = 210mm）。
+ *    多出来的宽度给编辑列（`minmax(300px, 1fr)`），不是留一片空白，也不是把纸越拉越大。
+ * 2. **三列只在纸面已经原大、还有富余时才开**：阈值 = 794 + 280 + 200 + 间距 64 + 内缩 96
+ *    = **1434**（容器宽，约视口 1690）。低于它一律两列。
+ *
+ * 实测（CDP，11 档）纸面宽度：1280→645、1366→731、1440→794、1536→794、1600→794、
+ * 1700→800、1920→800，**单调不减**；对照改造前 1366→391、1440→465、1536→561、1920→720，
+ * 每一档都变大。横向溢出 11 档全 0。
+ *
+ * 纸面那一列的下限是 0：纸面自己用 ResizeObserver 量列宽再 `transform: scale`
+ * （`ResumePreview.vue`），硬下限不会让纸更可读，只会把网格撑破（反证探针量过：
+ * 旧的 `minmax(420px,1fr)` 在 1120 档溢出 176px、1280 档溢出 16px）。
  */
-.resume-workspace { display: grid; grid-template-columns: 340px minmax(0, 1fr) 220px; align-items: start; gap: 32px; width: min(1440px, 100%); margin: 0 auto; padding: 32px 48px 72px; }
+.resume-workspace { display: grid; grid-template-columns: minmax(300px, 1fr) minmax(0, var(--paper-a4-width)); align-items: start; gap: 24px; width: min(1440px, 100%); margin: 0 auto; padding: 24px 28px 56px; }
+/* 两列时主题面板横跨整行摆在下面；三列时它才回到自己那一列。 */
+.style-panel { grid-column: 1 / -1; }
 .footer-hint { grid-column: 1 / -1; margin: 0; color: var(--ui-ink-faint); font-size: 12px; text-align: center; }
 .load-error, .load-hint { width: min(1440px, 100%); margin: 0 auto; padding: 12px 48px 0; font-size: 13px; }
 /* 骨架与它替换掉的那行提示占同一块地方：宽度与内缩一致，数据到达时不横向跳动。 */
@@ -126,10 +142,14 @@ onUnmounted(() => {
 .draft-banner__discard { border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 8px 16px; color: var(--ui-ink-muted); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 13px; }
 .draft-banner__discard:hover { border-color: var(--ui-danger-border); color: var(--ui-danger); }
 .draft-banner__restore:focus-visible, .draft-banner__discard:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
-@container app-content (max-width: 1100px) {
-  .resume-workspace { grid-template-columns: 300px minmax(0, 1fr); gap: 24px; padding: 24px 28px 56px; }
-  .style-panel { grid-column: 1 / -1; }
-  .load-error, .load-hint, .load-skeleton, .draft-banner-shell { padding: 12px 28px 0; }
+/*
+ * 三列：只在纸面已经能按 A4 原大显示、还剩下侧栏的地方时才开（阈值 1434 的算式见文件头）。
+ * 左右列按裁定压到 280 / 200，省下的宽度全给纸面。
+ */
+@container app-content (min-width: 1434px) {
+  .resume-workspace { grid-template-columns: 280px minmax(0, 1fr) 200px; gap: 32px; padding: 32px 48px 72px; }
+  .style-panel { grid-column: auto; }
+  .load-error, .load-hint, .load-skeleton, .draft-banner-shell { padding: 12px 48px 0; }
 }
 @container app-content (max-width: 760px) {
   .resume-workspace { grid-template-columns: 1fr; gap: 24px; padding: 20px 16px 48px; }
