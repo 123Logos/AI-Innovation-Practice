@@ -217,62 +217,66 @@ async function handleLogout(): Promise<void> {
       </button>
 
       <!-- 收起态整个不渲染（原来是恒在 + 靠 CSS 类收起，那是为了宽屏把两个按钮当一级项用）。 -->
-      <UserDrawer
-        v-if="drawerOpen"
-        :username="auth.displayName || '已登录用户'"
-        :signing-out="auth.signingOut"
-        @close="closeDrawer"
-        @open-ai-settings="openAiSettings"
-        @logout="handleLogout"
-      />
+      <Transition name="ui-fade">
+        <UserDrawer
+          v-if="drawerOpen"
+          :username="auth.displayName || '已登录用户'"
+          :signing-out="auth.signingOut"
+          @close="closeDrawer"
+          @open-ai-settings="openAiSettings"
+          @logout="handleLogout"
+        />
+      </Transition>
     </div>
 
     <!-- AI 设置弹窗：BYOK（ADR-009），Key 只进 sessionStorage。 -->
     <Teleport to="body">
-      <div v-if="aiSettingsVisible" class="ui-overlay" @click.self="closeAiSettings">
-        <section
-          class="ui-panel"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="ai-settings-heading"
-        >
-          <h2 id="ai-settings-heading" class="modal-title">AI 设置</h2>
-          <p class="modal-intro">
-            <!-- ui-copy:allow 老板 2026-11-09 定的 C2 唯一豁免：用户必须亲手去 DeepSeek 拿这把凭据，
-                 界面里的原词（DeepSeek API Key）可以出现；删掉它他反而认不出要粘什么。 -->
-            「AI 润色」用的是你自己申请的 DeepSeek API Key；「生成简历」是纯模板，不需要这把 Key。
-            润色失败只会提示你重试，不会改动表单。
-            Key 只留在这个标签页里：关掉标签页就没了，不会存进你的账号，也不会被记录或转发。
-          </p>
+      <Transition name="ui-fade">
+        <div v-if="aiSettingsVisible" class="ui-overlay" @click.self="closeAiSettings">
+          <section
+            class="ui-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ai-settings-heading"
+          >
+            <h2 id="ai-settings-heading" class="modal-title">AI 设置</h2>
+            <p class="modal-intro">
+              <!-- ui-copy:allow 老板 2026-11-09 定的 C2 唯一豁免：用户必须亲手去 DeepSeek 拿这把凭据，
+                   界面里的原词（DeepSeek API Key）可以出现；删掉它他反而认不出要粘什么。 -->
+              「AI 润色」用的是你自己申请的 DeepSeek API Key；「生成简历」是纯模板，不需要这把 Key。
+              润色失败只会提示你重试，不会改动表单。
+              Key 只留在这个标签页里：关掉标签页就没了，不会存进你的账号，也不会被记录或转发。
+            </p>
 
-          <p class="ai-settings-status">
-            {{ aiKeySaved ? '这个标签页里已经填好了' : '这个标签页里还没填' }}
-          </p>
+            <p class="ai-settings-status">
+              {{ aiKeySaved ? '这个标签页里已经填好了' : '这个标签页里还没填' }}
+            </p>
 
-          <label class="modal-field">
-            <!-- ui-copy:allow 输入框标签：与他 DeepSeek 控制台里的叫法一致，是 C2 的唯一豁免 -->
-            <span>DeepSeek API Key</span>
-            <input
-              v-model="aiKeyDraft"
-              type="password"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="sk-……"
-              @keydown.enter.prevent="submitAiKey"
-            />
-          </label>
+            <label class="modal-field">
+              <!-- ui-copy:allow 输入框标签：与他 DeepSeek 控制台里的叫法一致，是 C2 的唯一豁免 -->
+              <span>DeepSeek API Key</span>
+              <input
+                v-model="aiKeyDraft"
+                type="password"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="sk-……"
+                @keydown.enter.prevent="submitAiKey"
+              />
+            </label>
 
-          <p v-if="aiSettingsError" class="modal-error" role="alert">{{ aiSettingsError }}</p>
+            <p v-if="aiSettingsError" class="modal-error" role="alert">{{ aiSettingsError }}</p>
 
-          <div class="modal-actions">
-            <button class="modal-button" type="button" @click="forgetAiKey">清除 Key</button>
-            <button class="modal-button" type="button" @click="closeAiSettings">关闭</button>
-            <button class="modal-button modal-button--primary" type="button" @click="submitAiKey">
-              保存 Key
-            </button>
-          </div>
-        </section>
-      </div>
+            <div class="modal-actions">
+              <button class="modal-button" type="button" @click="forgetAiKey">清除 Key</button>
+              <button class="modal-button" type="button" @click="closeAiSettings">关闭</button>
+              <button class="modal-button modal-button--primary" type="button" @click="submitAiKey">
+                保存 Key
+              </button>
+            </div>
+          </section>
+        </div>
+      </Transition>
     </Teleport>
   </header>
 </template>
@@ -314,7 +318,7 @@ async function handleLogout(): Promise<void> {
 .account-trigger:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
 .account-name { overflow: hidden; max-width: 16ch; color: var(--ui-ink-muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .account-word { display: none; color: var(--ui-ink-muted); font-size: 13px; }
-.account-caret { flex: 0 0 auto; color: var(--ui-ink-faint); font-size: 11px; line-height: 1; transition: transform .15s ease; }
+.account-caret { flex: 0 0 auto; color: var(--ui-ink-faint); font-size: 11px; line-height: 1; transition: transform var(--motion-base) var(--motion-ease); }
 .account-caret--open { transform: rotate(180deg); }
 /*
  * 岗位库入口：与上面控件同规格（32px 高、`--ui-radius`、`--ui-*` 令牌），
@@ -330,7 +334,7 @@ async function handleLogout(): Promise<void> {
 .resumes-trigger:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
 .resumes-trigger__label { flex: 0 0 auto; color: var(--ui-ink-faint); font-size: 11px; letter-spacing: .04em; white-space: nowrap; }
 .resumes-trigger__title { overflow: hidden; min-width: 0; max-width: 150px; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.resumes-trigger__caret { flex: 0 0 auto; color: var(--ui-ink-faint); font-size: 11px; line-height: 1; transition: transform .15s ease; }
+.resumes-trigger__caret { flex: 0 0 auto; color: var(--ui-ink-faint); font-size: 11px; line-height: 1; transition: transform var(--motion-base) var(--motion-ease); }
 .resumes-trigger__caret--open { transform: rotate(180deg); }
 
 @media (max-width: 760px) {

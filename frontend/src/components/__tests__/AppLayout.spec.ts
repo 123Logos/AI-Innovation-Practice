@@ -34,6 +34,7 @@ import { http } from '@/api/client'
 import type { ApiErrorBody } from '@/api/types'
 import router from '@/router'
 import { useAuthStore } from '@/stores/auth'
+import { settled } from '@/__tests__/setup'
 
 /* --------------------------- jsdom 缺的那一样 --------------------------- */
 
@@ -159,6 +160,8 @@ async function visit(path: string): Promise<VueWrapper> {
   mounted.push(wrapper)
   await router.push(path)
   await flushPromises()
+  // 页面切换是 out-in 的淡出淡入（批次 F4）：等它收尾，否则量到的是正在退场的上一页。
+  await settled()
   return wrapper
 }
 
@@ -288,9 +291,10 @@ describe('简历列表住哪（清单第 5 条：宽屏常驻左栏 / 其余宽�
     expect(drawer?.closest('body')).toBe(document.body)
     expect(trigger.attributes('aria-expanded')).toBe('true')
 
-    // 再点一次收起：触发按钮上的 `@pointerdown.stop` 保证基座不会先关再开。
+    // 再点一次收起：基座按 `aria-controls` 认出这是它自己的触发器，不会先关再开。
     trigger.element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
     await trigger.trigger('click')
+    await settled()
     expect(bodyEl('#resume-drawer')).toBeNull()
     expect(trigger.attributes('aria-expanded')).toBe('false')
 
@@ -299,6 +303,7 @@ describe('简历列表住哪（清单第 5 条：宽屏常驻左栏 / 其余宽�
     expect(bodyEl('#resume-drawer')).not.toBeNull()
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await flushPromises()
+    await settled()
     expect(bodyEl('#resume-drawer')).toBeNull()
   })
 
@@ -327,6 +332,7 @@ describe('简历列表住哪（清单第 5 条：宽屏常驻左栏 / 其余宽�
     const account = wrapper.find('.account-trigger')
     account.element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
     await flushPromises()
+    await settled()
     expect(bodyEl('#resume-drawer')).toBeNull()
 
     await account.trigger('click')
@@ -335,6 +341,7 @@ describe('简历列表住哪（清单第 5 条：宽屏常驻左栏 / 其余宽�
     const resumes = wrapper.find('.resumes-trigger')
     resumes.element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
     await flushPromises()
+    await settled()
     expect(bodyEl('#user-drawer')).toBeNull()
     await resumes.trigger('click')
     expect(bodyEl('#resume-drawer')).not.toBeNull()
@@ -352,6 +359,7 @@ describe('简历列表住哪（清单第 5 条：宽屏常驻左栏 / 其余宽�
     await flushPromises()
 
     // 抽屉收起（与原来 openCreate 先关菜单的行为一致），但弹窗活着。
+    await settled()
     expect(bodyEl('#resume-drawer')).toBeNull()
     expect(bodyEl('#create-profile-heading')).not.toBeNull()
     expect(bodyEl('.modal-field input')).not.toBeNull()
@@ -359,6 +367,7 @@ describe('简历列表住哪（清单第 5 条：宽屏常驻左栏 / 其余宽�
     // Esc 关弹窗：监听挂在遮罩上，焦点在输入框里，按键冒泡得到。
     bodyEl('.ui-overlay')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await flushPromises()
+    await settled()
     expect(bodyEl('#create-profile-heading')).toBeNull()
   })
 

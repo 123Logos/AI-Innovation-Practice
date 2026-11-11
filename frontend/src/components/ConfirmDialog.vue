@@ -35,49 +35,51 @@ function onKeydown(event: KeyboardEvent): void {
 
 <template>
   <Teleport to="body">
-    <div
-      v-if="dialog.pending"
-      class="ui-overlay"
-      data-testid="app-dialog"
-      @click.self="dialog.settle(false)"
-      @keydown="onKeydown"
-    >
-      <section
-        class="ui-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="app-dialog-title"
+    <Transition name="ui-fade">
+      <div
+        v-if="dialog.pending"
+        class="ui-overlay"
+        data-testid="app-dialog"
+        @click.self="dialog.settle(false)"
+        @keydown="onKeydown"
       >
-        <h2 id="app-dialog-title" class="dialog-title">{{ dialog.pending.title }}</h2>
-        <p class="dialog-body">{{ dialog.pending.body }}</p>
-        <p v-if="dialog.pending.subject" class="dialog-subject">
-          {{ dialog.pending.subject }}
-        </p>
-        <div class="dialog-actions">
-          <button
-            v-if="dialog.pending.kind === 'confirm'"
-            class="dialog-button dialog-button--ghost"
-            type="button"
-            data-testid="app-dialog-cancel"
-            @click="dialog.settle(false)"
-          >
-            {{ dialog.pending.cancelLabel }}
-          </button>
-          <button
-            ref="primaryButton"
-            class="dialog-button"
-            :class="
-              dialog.pending.tone === 'danger' ? 'dialog-button--danger' : 'dialog-button--primary'
-            "
-            type="button"
-            data-testid="app-dialog-confirm"
-            @click="dialog.settle(true)"
-          >
-            {{ dialog.pending.confirmLabel }}
-          </button>
-        </div>
-      </section>
-    </div>
+        <section
+          class="ui-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="app-dialog-title"
+        >
+          <h2 id="app-dialog-title" class="dialog-title">{{ dialog.pending.title }}</h2>
+          <p class="dialog-body">{{ dialog.pending.body }}</p>
+          <p v-if="dialog.pending.subject" class="dialog-subject">
+            {{ dialog.pending.subject }}
+          </p>
+          <div class="dialog-actions">
+            <button
+              v-if="dialog.pending.kind === 'confirm'"
+              class="dialog-button dialog-button--ghost"
+              type="button"
+              data-testid="app-dialog-cancel"
+              @click="dialog.settle(false)"
+            >
+              {{ dialog.pending.cancelLabel }}
+            </button>
+            <button
+              ref="primaryButton"
+              class="dialog-button"
+              :class="
+                dialog.pending.tone === 'danger' ? 'dialog-button--danger' : 'dialog-button--primary'
+              "
+              type="button"
+              data-testid="app-dialog-confirm"
+              @click="dialog.settle(true)"
+            >
+              {{ dialog.pending.confirmLabel }}
+            </button>
+          </div>
+        </section>
+      </div>
+    </Transition>
   </Teleport>
 </template>
 

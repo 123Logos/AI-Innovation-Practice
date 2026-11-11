@@ -82,17 +82,30 @@ function openCreate(): void {
       </aside>
 
       <div class="app-content">
-        <RouterView />
+        <!--
+          页面切换不硬切（守则 M1）：淡入淡出 + 6px 微位移，`out-in` 让旧页先退完，
+          避免两页同时在文档流里把布局顶一下。时长在这里压到 `--motion-fast`：
+          out-in 是「退 + 进」两段，用浮层那档 240ms 会让每次导航等近半秒。
+        -->
+        <RouterView v-slot="{ Component }">
+          <Transition name="ui-fade" mode="out-in">
+            <component :is="Component" />
+          </Transition>
+        </RouterView>
       </div>
     </div>
 
-    <ResumeDrawer
-      v-if="!isWide && resumesOpen"
-      @close="resumesOpen = false"
-      @create="openCreate"
-    />
+    <Transition name="ui-fade">
+      <ResumeDrawer
+        v-if="!isWide && resumesOpen"
+        @close="resumesOpen = false"
+        @create="openCreate"
+      />
+    </Transition>
 
-    <ResumeCreateDialog v-if="createVisible" @close="createVisible = false" />
+    <Transition name="ui-fade">
+      <ResumeCreateDialog v-if="createVisible" @close="createVisible = false" />
+    </Transition>
   </div>
 </template>
 
@@ -139,6 +152,9 @@ function openCreate(): void {
   container-name: app-content;
   flex: 1 1 auto;
   min-width: 0;
+
+  /* 页面切换的淡入淡出比浮层短一档：out-in 是两段，240ms×2 会让导航像卡住。 */
+  --fade-duration: var(--motion-fast);
 }
 
 @media print {

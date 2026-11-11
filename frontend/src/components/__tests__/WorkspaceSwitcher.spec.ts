@@ -20,6 +20,7 @@ import WorkspaceSwitcher from '@/components/WorkspaceSwitcher.vue'
 import { APP_MODULES } from '@/config/modules'
 import router from '@/router'
 import { useAuthStore } from '@/stores/auth'
+import { settled } from '@/__tests__/setup'
 
 let pinia: Pinia
 const mounted: VueWrapper[] = []
@@ -45,6 +46,8 @@ async function tap(wrapper: VueWrapper, selector: string): Promise<void> {
   node.element.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
   await node.trigger('click')
   await flushPromises()
+  // 退出有 240ms 的淡出（批次 F4）：「关掉之后不在了」要等它收尾，否则量到的是正在退场的那一个。
+  await settled()
 }
 
 const cards = (wrapper: VueWrapper) => wrapper.findAll('.workspace-card')
@@ -222,6 +225,7 @@ describe('关闭只有基座那一条路径', () => {
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await flushPromises()
+    await settled()
 
     expect(wrapper.find('.workspace-popover').exists()).toBe(false)
     expect(document.activeElement).toBe(trigger)
@@ -239,6 +243,7 @@ describe('关闭只有基座那一条路径', () => {
 
     document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
     await flushPromises()
+    await settled()
     expect(wrapper.find('.workspace-popover').exists()).toBe(false)
   })
 

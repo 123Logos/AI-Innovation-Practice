@@ -141,7 +141,7 @@ function submit(): void {
   padding: 10px 12px;
   background: var(--ui-surface);
   white-space: normal;
-  transition: border-color .12s ease, background-color .12s ease;
+  transition: border-color var(--motion-fast) var(--motion-ease), background-color var(--motion-fast) var(--motion-ease);
 }
 .polish-mode:hover {
   border-color: var(--theme-rule-soft);

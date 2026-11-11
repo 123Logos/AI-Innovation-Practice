@@ -31,6 +31,7 @@ import AppTopBar from '@/components/AppTopBar.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useJobStore } from '@/stores/job'
 import { useResumeStore } from '@/stores/resume'
+import { settled } from '@/__tests__/setup'
 
 /** 空组件：本地路由的占位目标，测试只关心 `currentRoute.name`。 */
 const BLANK = { template: '<div />' }
@@ -159,6 +160,8 @@ describe('右侧用户抽屉的开关（清单 4，批次 F3 第二片）', () =
     expect(wrapper.find('.account-caret').classes()).toContain('account-caret--open')
 
     await trigger.trigger('click')
+    // 退出有淡出（批次 F4）：等它收尾再判「不在了」，否则量到的是正在退场的那一个。
+    await settled()
     expect(trigger.attributes('aria-expanded')).toBe('false')
     expect(drawerEl()).toBeNull()
     expect(wrapper.find('.account-caret').classes()).not.toContain('account-caret--open')
@@ -171,6 +174,7 @@ describe('右侧用户抽屉的开关（清单 4，批次 F3 第二片）', () =
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await flushPromises()
+    await settled()
 
     expect(drawerEl()).toBeNull()
     expect(wrapper.find('.account-trigger').attributes('aria-expanded')).toBe('false')
@@ -190,6 +194,7 @@ describe('右侧用户抽屉的开关（清单 4，批次 F3 第二片）', () =
     // 页面别处：顶栏之外算「外面」→ 该关。
     document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
     await flushPromises()
+    await settled()
     expect(drawerEl()).toBeNull()
 
     // 遮罩：重开一次点遮罩，这是手机用户最常用的关闭手势。
@@ -200,6 +205,7 @@ describe('右侧用户抽屉的开关（清单 4，批次 F3 第二片）', () =
       new MouseEvent('pointerdown', { bubbles: true }),
     )
     await flushPromises()
+    await settled()
     expect(drawerEl()).toBeNull()
   })
 
@@ -219,6 +225,7 @@ describe('右侧用户抽屉的开关（清单 4，批次 F3 第二片）', () =
     expect(drawerEl()).not.toBeNull()
 
     await trigger.trigger('click')
+    await settled()
     expect(drawerEl()).toBeNull()
   })
 
@@ -391,6 +398,7 @@ describe('窄屏的入口组织（结构判据，不测像素）', () => {
       node.element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
       await node.trigger('click')
       await flushPromises()
+      await settled()
     }
 
     await press('.workspace-trigger')

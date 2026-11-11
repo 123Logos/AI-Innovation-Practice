@@ -25,6 +25,7 @@ import { http } from '@/api/client'
 import type { ApiErrorBody } from '@/api/types'
 import ResumeList from '@/components/ResumeList.vue'
 import { useResumeStore } from '@/stores/resume'
+import { settled } from '@/__tests__/setup'
 
 const BLANK = { template: '<div />' }
 
@@ -334,6 +335,7 @@ describe('删除与去回收站走页面内弹层（批次 F1b，守则 C6）', 
     resume.dirty = false
     await wrapper.find('.menu-action--ghost').trigger('click')
     await flushPromises()
+    await settled()
     expect(bodyText('[data-testid="app-dialog"]')).toBe('')
     expect(router.currentRoute.value.name).toBe('recycle-bin')
   })

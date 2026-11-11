@@ -20,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { useDialogStore } from '@/stores/dialog'
+import { settled } from '@/__tests__/setup'
 
 let pinia: Pinia
 
@@ -59,6 +60,8 @@ describe('确认弹窗的三条主干行为', () => {
     await click(bodyEl('[data-testid="app-dialog-confirm"]'))
     expect(await pending).toBe(true)
     expect(dialog.pending).toBeNull()
+    // 退出有淡出（批次 F4）：等它收尾再判「不在了」。
+    await settled()
     expect(bodyEl('[data-testid="app-dialog"]')).toBeNull()
   })
 

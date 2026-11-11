@@ -96,39 +96,41 @@ function close(): void {
       </svg>
     </button>
 
-    <OverlayPanel
-      v-if="open"
-      panel-id="workspace-panel"
-      panel-class="workspace-popover"
-      role="group"
-      label="切换工作区"
-      @close="close"
-    >
-      <div class="workspace-cards">
-        <RouterLink
-          v-for="module in APP_MODULES"
-          :key="module.key"
-          class="workspace-card"
-          :to="{ name: module.routeName }"
-          :aria-current="current?.key === module.key ? 'page' : undefined"
-          @click="close"
-        >
-          <svg
-            class="workspace-card__icon"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.6"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
+    <Transition name="ui-fade-down">
+      <OverlayPanel
+        v-if="open"
+        panel-id="workspace-panel"
+        panel-class="workspace-popover"
+        role="group"
+        label="切换工作区"
+        @close="close"
+      >
+        <div class="workspace-cards">
+          <RouterLink
+            v-for="module in APP_MODULES"
+            :key="module.key"
+            class="workspace-card"
+            :to="{ name: module.routeName }"
+            :aria-current="current?.key === module.key ? 'page' : undefined"
+            @click="close"
           >
-            <path v-for="(d, index) in module.iconPaths" :key="index" :d="d" />
-          </svg>
-          <span class="workspace-card__name">{{ module.name }}</span>
-        </RouterLink>
-      </div>
-    </OverlayPanel>
+            <svg
+              class="workspace-card__icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path v-for="(d, index) in module.iconPaths" :key="index" :d="d" />
+            </svg>
+            <span class="workspace-card__name">{{ module.name }}</span>
+          </RouterLink>
+        </div>
+      </OverlayPanel>
+    </Transition>
   </div>
 </template>
 
@@ -142,7 +144,7 @@ function close(): void {
 .workspace-trigger:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
 .workspace-trigger__name { overflow: hidden; max-width: 14ch; font-size: 13px; font-weight: 600; text-overflow: ellipsis; }
 .workspace-trigger__word { display: none; color: var(--ui-ink-muted); font-size: 13px; }
-.workspace-trigger__caret { flex: 0 0 auto; width: 12px; height: 12px; color: var(--ui-ink-faint); transition: transform .15s ease; }
+.workspace-trigger__caret { flex: 0 0 auto; width: 12px; height: 12px; color: var(--ui-ink-faint); transition: transform var(--motion-base) var(--motion-ease); }
 .workspace-trigger__caret--open { transform: rotate(180deg); }
 
 /*
