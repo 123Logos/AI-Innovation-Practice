@@ -42,6 +42,7 @@ import {
   useJobStore,
 } from '@/stores/job'
 import { formatDate, formatDateTime } from '@/utils/datetime'
+import SkeletonList from '@/components/SkeletonList.vue'
 
 const store = useJobStore()
 const route = useRoute()
@@ -321,7 +322,14 @@ onBeforeUnmount(() => {
     </div>
 
     <p v-if="loadError" class="feedback feedback--error" role="alert">{{ loadError }}</p>
-    <p v-else-if="store.detailLoading" class="feedback">正在加载岗位…</p>
+    <!-- 稳定态实测：前三块 1280 档 229/167/331px、375 档 377/200/508px，块间距 16px（`.detail-block`）。 -->
+    <SkeletonList
+      v-else-if="store.detailLoading"
+      label="正在加载岗位…"
+      :heights="[229, 167, 331]"
+      :heights-compact="[377, 200, 508]"
+      :gap="16"
+    />
     <p v-else-if="!job" class="feedback">没有可显示的内容。</p>
 
     <template v-else>

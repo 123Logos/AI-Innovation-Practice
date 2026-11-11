@@ -7,6 +7,7 @@ import StylePanel from '@/components/StylePanel.vue'
 import { isApiError } from '@/api'
 import { useAuthStore } from '@/stores/auth'
 import { useResumeStore } from '@/stores/resume'
+import SkeletonList from '@/components/SkeletonList.vue'
 
 const auth = useAuthStore()
 const store = useResumeStore()
@@ -46,7 +47,15 @@ onUnmounted(() => {
 
 <template>
   <p v-if="loadError" class="load-error">{{ loadError }}</p>
-  <p v-else-if="store.loading" class="load-hint">正在加载档案…</p>
+  <!-- 稳定态实测：表单前三段 1280 档 311/84/68px、375 档 311/68/68px，段间距 20px（`.form-section`）。 -->
+  <SkeletonList
+    v-else-if="store.loading"
+    class="load-skeleton"
+    label="正在加载档案…"
+    :heights="[311, 84, 68]"
+    :heights-compact="[311, 68, 68]"
+    :gap="20"
+  />
 
   <div v-if="store.pendingDraft" class="draft-banner-shell">
     <section class="draft-banner">
@@ -91,6 +100,8 @@ onUnmounted(() => {
 .resume-workspace { display: grid; grid-template-columns: 340px minmax(0, 1fr) 220px; align-items: start; gap: 32px; width: min(1440px, 100%); margin: 0 auto; padding: 32px 48px 72px; }
 .footer-hint { grid-column: 1 / -1; margin: 0; color: var(--ui-ink-faint); font-size: 12px; text-align: center; }
 .load-error, .load-hint { width: min(1440px, 100%); margin: 0 auto; padding: 12px 48px 0; font-size: 13px; }
+/* 骨架与它替换掉的那行提示占同一块地方：宽度与内缩一致，数据到达时不横向跳动。 */
+.load-skeleton { width: min(1440px, 100%); margin: 0 auto; padding: 12px 48px 0; }
 .load-error { color: var(--ui-danger); }
 .load-hint { color: var(--ui-ink-faint); }
 
@@ -118,18 +129,18 @@ onUnmounted(() => {
 @container app-content (max-width: 1100px) {
   .resume-workspace { grid-template-columns: 300px minmax(0, 1fr); gap: 24px; padding: 24px 28px 56px; }
   .style-panel { grid-column: 1 / -1; }
-  .load-error, .load-hint, .draft-banner-shell { padding: 12px 28px 0; }
+  .load-error, .load-hint, .load-skeleton, .draft-banner-shell { padding: 12px 28px 0; }
 }
 @container app-content (max-width: 760px) {
   .resume-workspace { grid-template-columns: 1fr; gap: 24px; padding: 20px 16px 48px; }
   .editor, .style-panel { grid-column: auto; }
   .footer-hint { grid-column: auto; }
-  .load-error, .load-hint, .draft-banner-shell { padding: 12px 16px 0; }
+  .load-error, .load-hint, .load-skeleton, .draft-banner-shell { padding: 12px 16px 0; }
   .draft-banner { flex-direction: column; align-items: stretch; }
   .draft-banner__actions { justify-content: flex-end; }
 }
 @media print {
   .resume-workspace { display: block; padding: 0; }
-  .editor, .style-panel, .footer-hint, .load-error, .load-hint, .draft-banner-shell { display: none; }
+  .editor, .style-panel, .footer-hint, .load-error, .load-hint, .load-skeleton, .draft-banner-shell { display: none; }
 }
 </style>

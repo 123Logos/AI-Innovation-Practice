@@ -439,6 +439,18 @@ button, input, textarea { font: inherit; }
   display: grid;
   gap: var(--space-3);
 }
+/* 读屏可见、视觉隐藏：骨架把状态文案收进这里，M3 的「加载中可读」不靠可见文字兑现。 */
+.ui-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+  padding: 0;
+}
 @keyframes ui-skeleton-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: .55; }

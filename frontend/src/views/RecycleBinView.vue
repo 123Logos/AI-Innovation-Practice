@@ -15,6 +15,7 @@ import { RouterLink } from 'vue-router'
 import { isApiError } from '@/api'
 import { useResumeStore } from '@/stores/resume'
 import { useDialogStore } from '@/stores/dialog'
+import SkeletonList from '@/components/SkeletonList.vue'
 
 const store = useResumeStore()
 const dialog = useDialogStore()
@@ -111,7 +112,13 @@ onMounted(load)
     </div>
 
     <p v-if="loadError" class="feedback feedback--error" role="alert">{{ loadError }}</p>
-    <p v-else-if="store.trashLoading" class="feedback">正在加载回收站…</p>
+    <!-- 稳定态实测：简历回收站行 1280 档 71px、375 档 120px。 -->
+    <SkeletonList
+      v-else-if="store.trashLoading"
+      label="正在加载回收站…"
+      :heights="[71, 71, 71]"
+      :heights-compact="[120, 120, 120]"
+    />
 
     <p v-if="actionError" class="feedback feedback--error" role="alert">{{ actionError }}</p>
     <p v-if="actionNotice" class="feedback feedback--ok" role="status">{{ actionNotice }}</p>

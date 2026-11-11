@@ -32,6 +32,7 @@ import { isApiError } from '@/api'
 import type { ProfileSortField, ProfileSummary } from '@/api/types'
 import { useDialogStore } from '@/stores/dialog'
 import { useResumeStore } from '@/stores/resume'
+import SkeletonList from '@/components/SkeletonList.vue'
 
 const emit = defineEmits<{
   /** 这件事做完之后容器该收起（切换成功、去回收站）。常驻栏没有可收的东西，忽略即可。 */
@@ -254,7 +255,15 @@ async function goTrash(): Promise<void> {
       </button>
     </div>
 
-    <p v-if="booting || resume.profilesLoading" class="menu-hint">正在加载简历…</p>
+    <!-- 稳定态实测：左栏一行 40px（1280 档），行间距 2px（`.menu-entry + .menu-entry`）。 -->
+    <SkeletonList
+      v-if="booting || resume.profilesLoading"
+      class="menu-skeleton"
+      label="正在加载简历…"
+      :heights="[40, 40, 40, 40]"
+      :heights-compact="[40, 40, 40, 40]"
+      :gap="2"
+    />
     <p v-else-if="!resume.profiles.length" class="menu-hint">
       还没有保存过的简历，点下方「新建简历」开始。
     </p>
@@ -365,6 +374,8 @@ async function goTrash(): Promise<void> {
 .default-banner__button:focus-visible { outline: 2px solid var(--ui-warning-border); outline-offset: 1px; }
 
 .menu-hint { margin: 0; padding: 14px; color: var(--ui-ink-faint); font-size: 12px; line-height: 1.5; }
+/* 骨架与列表本体同一层内缩（`.menu-list` 的 6px），数据到达时行不会横向挪一下。 */
+.menu-skeleton { padding: 6px; }
 .menu-list { flex: 1 1 auto; min-height: 0; margin: 0; padding: 6px; list-style: none; overflow-y: auto; }
 .menu-entry + .menu-entry { margin-top: 2px; }
 .menu-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-radius: var(--ui-radius); padding: 8px; }

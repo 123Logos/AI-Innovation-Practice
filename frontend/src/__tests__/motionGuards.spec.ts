@@ -136,6 +136,33 @@ describe('守则 M1：时长与缓动只从令牌来', () => {
   })
 })
 
+describe('守则 M2：加载点先占位后填充', () => {
+  it('骨架的呼吸来自令牌，且尺寸由调用方传入（组件自己不写死高度）', () => {
+    expect(tokens.text).toContain('animation: var(--skeleton-pulse)')
+    const skeleton = sources.find((source) => source.rel === 'components/SkeletonList.vue')
+    expect(skeleton, '找不到骨架组件').toBeDefined()
+    // 高度只从 props 来：组件样式里不许出现写死的 px 高度。
+    expect(styleOf(skeleton?.text ?? '')).not.toMatch(/height:\s*\d+px/)
+    expect(skeleton?.text).toContain('--row-h-compact')
+  })
+
+  it('六个加载点都换成了骨架，不再有「只有文字」的加载中提示', () => {
+    const textOnly: string[] = []
+    let skeletonLabels = 0
+    for (const source of components) {
+      const template = source.text.split('<template>')[1] ?? ''
+      for (const line of template.split('\n')) {
+        if (!line.includes('正在加载')) continue
+        if (/label="正在加载/.test(line)) skeletonLabels += 1
+        else textOnly.push(`${source.rel} → ${line.trim()}`)
+      }
+    }
+    // 正向护栏：真的接上了六处，否则「没有纯文字提示」会因为全仓没人写加载提示而假绿。
+    expect(skeletonLabels).toBe(6)
+    expect(textOnly).toEqual([])
+  })
+})
+
 describe('守则 M3：减弱动效只有一个开关', () => {
   it('styles.css 里那个开关把位移归零、把骨架呼吸停掉', () => {
     const block = /@media \(prefers-reduced-motion: reduce\)\s*\{([\s\S]*?)\n\}/.exec(tokens.text)
@@ -145,8 +172,9 @@ describe('守则 M3：减弱动效只有一个开关', () => {
   })
 
   it('组件里不许再各写一个 prefers-reduced-motion 分支', () => {
+    // 只看 `<style>` 段：组件注释里提一句这个媒体查询是在解释开关在哪，不是又写了一个分支。
     const offenders = components
-      .filter((source) => /prefers-reduced-motion/.test(source.text))
+      .filter((source) => /prefers-reduced-motion/.test(styleOf(source.text)))
       .map((source) => source.rel)
     expect(offenders).toEqual([])
   })
