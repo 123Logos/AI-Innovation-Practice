@@ -7,7 +7,7 @@
  * 于是每加一个浮层就要多抄一次，而 L3 的判据正是「出现第四份手写监听即红」。
  * 本文件把那一份实现收拢成一处，调用方只保留**产品决定**（谁跟谁互斥、打开时做什么）。
  *
- * 它只干三件事，而且这三件事只在这一处实现：
+ * 它只干下面这几件事，而且每一件只在这一处实现：
  *
  * 1. 点外面关闭：判定用 `root.contains(target)`，命中面板内部不算关闭，
  *    命中**自己的触发按钮**（`aria-controls` 指向本面板的那个元素）同样不算——
@@ -16,6 +16,7 @@
  * 2. `Escape` 关闭：同样一处；
  * 3. 监听的生命周期：挂载即注册、卸载即注销——所以调用方用 `v-if` 收起浮层时，
  *    不会在 document 上留下一份空转的监听。
+ * 4. 焦点进出（进面板 / 还触发器）与**模态形态的焦点陷阱**（`trapFocus`，见文件末）。
  *
  * 刻意**不做**的三件事，每一条都是决定不是遗漏：
  *
@@ -32,8 +33,9 @@
  * 关闭时还给当初打开它的那个元素——键盘用户按 Esc 关掉简历列表之后，
  * 焦点不该掉回页面顶端，那是「按 Tab 从头走一遍」级别的惩罚。
  *
- * 仍然**没有**焦点陷阱（Tab 圈在面板里出不去那一层）：它要求拦 `Tab` / `Shift+Tab` 并改写入射顺序，
- * 是独立一件可测的事。账户抽屉那一片也没有顺手做，所以这句到当前仍是「未做」，不是「已做」。
+ * 焦点陷阱是第四片补的，而且**按形态开关**（`trapFocus`）：带遮罩的抽屉是模态的，
+ * Tab 必须圈在里面（`DrawerPanel` 打开它）；不带遮罩的 Popover 不是模态的，
+ * Tab 该能走出去，圈住它反而把键盘用户关在一个没有遮罩的小盒子里。
  */
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 
@@ -48,6 +50,8 @@ const props = defineProps<{
   role?: 'menu' | 'group'
   /** 关掉之后焦点给谁。默认给「打开它的那个元素」；调用方也可以显式指定。 */
   focusFallback?: string
+  /** 模态形态（带遮罩的抽屉）才开：Tab / Shift+Tab 圈在面板里。Popover 不开。 */
+  trapFocus?: boolean
 }>()
 
 const emit = defineEmits<{ close: [] }>()
@@ -99,7 +103,38 @@ function onPointerDown(event: PointerEvent): void {
 }
 
 function onKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape') emit('close')
+  if (event.key === 'Escape') {
+    emit('close')
+    return
+  }
+  if (event.key !== 'Tab' || !props.trapFocus) return
+  const el = root.value
+  if (!el) return
+
+  const items = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)]
+  if (items.length === 0) {
+    // 只有文字的面板：Tab 不该把焦点交给背后那一页（遮罩还盖着，点不到）。
+    event.preventDefault()
+    el.focus({ preventScroll: true })
+    return
+  }
+
+  const first = items[0] as HTMLElement
+  const last = items[items.length - 1] as HTMLElement
+  const active = document.activeElement
+  const outside = !(active instanceof HTMLElement) || !el.contains(active)
+
+  if (event.shiftKey) {
+    if (outside || active === first || active === el) {
+      event.preventDefault()
+      last.focus({ preventScroll: true })
+    }
+    return
+  }
+  if (outside || active === last) {
+    event.preventDefault()
+    first.focus({ preventScroll: true })
+  }
 }
 
 onMounted(() => {

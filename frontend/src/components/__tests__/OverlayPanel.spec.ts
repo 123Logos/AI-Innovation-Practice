@@ -332,3 +332,128 @@ describe('OverlayPanel：自己的触发按钮不算「外面」（aria-controls
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('OverlayPanel：模态形态的焦点陷阱（trapFocus）', () => {
+  /**
+   * jsdom 不实现 Tab 的默认导航，所以这一组量的是**基座该不该拦这一下**：
+   * `defaultPrevented` + `document.activeElement` 两个一起看。
+   * 只断言焦点会漏掉「拦了但没移」，只断言 prevented 会漏掉「移了但没拦」
+   * （后者在真浏览器里等于既跳了一格又被浏览器再跳一格）。
+   */
+  const local: { unmount: () => void }[] = []
+  afterEach(() => {
+    while (local.length) local.pop()?.unmount()
+  })
+
+  function mountTrapped(options: { trap?: boolean; items?: number } = {}) {
+    const trap = options.trap ?? true
+    const count = options.items ?? 3
+    const onClose = vi.fn()
+    const wrapper = mount(
+      {
+        components: { OverlayPanel },
+        setup: () => ({ trap, count, onClose }),
+        template: `
+          <div>
+            <button class="outside" type="button">外面</button>
+            <OverlayPanel label="探针面板" :trap-focus="trap" @close="onClose">
+              <button v-for="n in count" :key="n" class="item" type="button">第 {{ n }} 项</button>
+            </OverlayPanel>
+          </div>
+        `,
+      },
+      { attachTo: document.body },
+    )
+    local.push(wrapper)
+    const items = wrapper.findAll('.item').map((node) => node.element as HTMLButtonElement)
+    return { wrapper, items, onClose }
+  }
+
+  function tab(shiftKey = false): KeyboardEvent {
+    const event = new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true })
+    document.dispatchEvent(event)
+    return event
+  }
+
+  it('最后一项上按 Tab → 拦下来并回到第一项（不会走到背后那一页）', async () => {
+    const { items } = mountTrapped()
+    items[2]?.focus()
+
+    const event = tab()
+    await nextTick()
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(items[0])
+  })
+
+  it('第一项上按 Shift+Tab → 拦下来并绕到最后一项', async () => {
+    const { items } = mountTrapped()
+    items[0]?.focus()
+
+    const event = tab(true)
+    await nextTick()
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(items[2])
+  })
+
+  it('中间那一项上按 Tab → 不拦，交给浏览器走下一格', async () => {
+    const { items } = mountTrapped()
+    items[1]?.focus()
+
+    const event = tab()
+    await nextTick()
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(document.activeElement).toBe(items[1])
+  })
+
+  it('焦点在面板自己身上时按 Shift+Tab → 绕到最后一项，而不是退出面板', async () => {
+    const { wrapper, items } = mountTrapped()
+    ;(wrapper.find('.overlay-panel').element as HTMLElement).focus()
+
+    const event = tab(true)
+    await nextTick()
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(items[2])
+  })
+
+  it('只有文字的面板：Tab 被拦下，焦点留在面板上（遮罩还盖着，背后点不到）', async () => {
+    const wrapper = mount(
+      {
+        components: { OverlayPanel },
+        template: `<OverlayPanel label="说明" trap-focus><p>只有文字</p></OverlayPanel>`,
+      },
+      { attachTo: document.body },
+    )
+    local.push(wrapper)
+    const panel = wrapper.element as HTMLElement
+
+    const event = tab()
+    await nextTick()
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(panel)
+  })
+
+  it('不开 trapFocus 的 Popover：最后一项上按 Tab 不拦（非模态，键盘该能走出去）', async () => {
+    const { items } = mountTrapped({ trap: false })
+    items[2]?.focus()
+
+    const event = tab()
+    await nextTick()
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(document.activeElement).toBe(items[2])
+  })
+
+  it('开着陷阱时 Esc 仍然关（Tab 那一支不许把 Esc 吞掉）', async () => {
+    const { onClose } = mountTrapped()
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await nextTick()
+
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+})

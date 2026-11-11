@@ -13,6 +13,9 @@
  * 3. **形态本身**：贴右、满高、`min(320px, 86vw)`、`z-index` 取 L3 现阶梯的 30 档。
  *    两个抽屉（账户、简历）共用这一份尺寸与层级，不各写一个数。
  *
+ * 它也是「模态」这句话的落点：`trap-focus` 只在这里开。有遮罩 = 背后那一页点不到，
+ * 所以 Tab 必须圈在抽屉里；不带遮罩的 Popover 不圈（那是基座的默认）。
+ *
  * 内容内缩与排布归调用方（`UserDrawer.vue` / `ResumeDrawer.vue`）：账户那两行要 20px 内缩，
  * 简历列表的排序条与行各自带内缩，外壳替它们决定只会打架。
  */
@@ -40,6 +43,7 @@ const emit = defineEmits<{ close: [] }>()
         panel-class="drawer-panel ui-scroll"
         :role="props.role ?? 'group'"
         :label="props.label"
+        trap-focus
         @close="emit('close')"
       >
         <slot />

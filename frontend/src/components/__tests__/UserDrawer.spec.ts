@@ -144,4 +144,24 @@ describe('接线：关闭只有基座那一条路径', () => {
     expect(wrapper.emitted('close')).toHaveLength(1)
     expect(wrapper.emitted('logout')).toHaveLength(1)
   })
+
+  it('Tab 圈在抽屉里：最后一行再按 Tab 回到第一行（DrawerPanel 开了 trap-focus）', async () => {
+    const wrapper = mountDrawer()
+    const items = bodyAll('.drawer-item') as HTMLButtonElement[]
+    expect(items).toHaveLength(2)
+    items[1]?.focus()
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      cancelable: true,
+    })
+    document.dispatchEvent(event)
+    await wrapper.vm.$nextTick()
+
+    // 这条测的是接线：基座的陷阱默认关，抽屉这一层必须显式打开，
+    // 否则遮罩盖着整页、焦点却能 Tab 到背后那些点不到的按钮上。
+    expect(event.defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(items[0])
+  })
 })
