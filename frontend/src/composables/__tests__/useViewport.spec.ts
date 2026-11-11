@@ -92,10 +92,20 @@ async function load(): Promise<ViewportModule> {
 }
 
 describe('断点表本身（L2 的「同一组值」）', () => {
-  it('四个值就是那四个：760 / 1100 / 768 / 720，多一格少一格都要显式改这里', async () => {
+  it('五个值就是那五个：760 / 1100 / 768 / 720 / 1434，多一格少一格都要显式改这里', async () => {
     const { BREAKPOINTS } = await load()
 
-    expect(BREAKPOINTS).toEqual({ compact: 760, wide: 1100, dialog: 768, paper: 720 })
+    // 第五格是老板 2026-11-11 裁定加的（`ROADMAP.md` §6 第 8 条）：简历工作区开三列的
+    // **容器**阈值。它不是拍的整数——794（A4 原大）+ 280 + 200 + 64（两个间距）
+    // + 96（左右内缩）= 1434，低于它一律两列，免得「屏幕更宽、简历更小」。
+    expect(BREAKPOINTS).toEqual({
+      compact: 760,
+      wide: 1100,
+      dialog: 768,
+      paper: 720,
+      paperThreeColumn: 1434,
+    })
+    expect(BREAKPOINTS.paperThreeColumn).toBe(794 + 280 + 200 + 64 + 96)
   })
 
   it('媒体查询串由表推导，不允许与表各写一份数字', async () => {

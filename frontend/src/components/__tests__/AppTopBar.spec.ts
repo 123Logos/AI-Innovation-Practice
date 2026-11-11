@@ -371,6 +371,17 @@ describe('窄屏的入口组织（结构判据，不测像素）', () => {
     expect(labels.filter((text) => text === '退出登录')).toHaveLength(1)
   })
 
+  it('品牌只留产品名一行：副标题已按裁定删掉，不是藏起来（§6 第 9 条）', async () => {
+    const { wrapper } = await mountTopBar()
+
+    // 原来那行写死「简历工作台」，站在 /jobs 上就是事实错误——右边的切换器已经
+    // 准确回答了「我在哪」。裁定是**去掉**，所以判据是 DOM 里没有这一行，
+    // 而不是 `display: none`（jsdom 不跑 CSS，藏起来在这里量不出来）。
+    expect(wrapper.find('.brand-sub').exists()).toBe(false)
+    expect(wrapper.find('.brand-text').text()).toBe('职业发展助手')
+    expect(wrapper.findAll('.brand-text > *')).toHaveLength(1)
+  })
+
   it('工作区切换器在 Logo 右侧那一组里，不占 .user-area 的格子（清单第 6 条）', async () => {
     const { wrapper } = await mountTopBar()
 

@@ -136,7 +136,6 @@ async function handleLogout(): Promise<void> {
         <span class="brand-mark">AI</span>
         <div class="brand-text">
           <p class="brand-title">职业发展助手</p>
-          <p class="brand-sub">简历工作台</p>
         </div>
       </div>
       <!-- 工作区切换器（清单第 6 条）：Logo 右侧，卡片与文案都读模块表，见组件文件头。 -->
@@ -297,9 +296,13 @@ async function handleLogout(): Promise<void> {
 .brand-side { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 12px; }
 .brand { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 12px; }
 .brand-mark { display: grid; width: 34px; height: 34px; color: var(--theme-on-primary); background: var(--theme-primary); font-family: "SF Mono", Consolas, monospace; font-size: 13px; place-items: center; }
-.brand-text { display: grid; min-width: 0; gap: 2px; }
+/*
+ * 品牌只留产品名一行（老板 2026-11-11 裁定，§6 第 9 条）：原来那行副标题写死「简历工作台」，
+ * 而它右边的工作区切换器显示的是**当前**工作区——站在 /jobs 上时副标题就是事实错误。
+ * 「跟着当前工作区走」被明确否掉（与切换器完全冗余），所以整行删掉，不是藏起来。
+ */
+.brand-text { display: grid; min-width: 0; }
 .brand-title { margin: 0; overflow: hidden; color: var(--ui-ink); font-size: 14px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.brand-sub { margin: 0; color: var(--ui-ink-faint); font-size: 11px; letter-spacing: .08em; }
 .user-area { display: flex; flex: 1 1 auto; flex-wrap: wrap; min-width: 0; align-items: center; justify-content: flex-end; gap: 10px 12px; }
 .dirty-dot { flex: 0 0 auto; border: 1px solid var(--ui-warning-border); border-radius: var(--ui-radius); padding: 2px 7px; color: var(--ui-warning); font-size: 11px; white-space: nowrap; }
 /*

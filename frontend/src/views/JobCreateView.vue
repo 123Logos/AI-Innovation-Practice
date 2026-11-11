@@ -38,6 +38,7 @@ import {
   jobToFormInput,
   useJobStore,
 } from '@/stores/job'
+import AutoTextarea from '@/components/AutoTextarea.vue'
 
 /** `create` = 录入新岗位；`edit` = 改一条已有的。两条路由共用本组件。 */
 const props = withDefaults(defineProps<{ mode?: 'create' | 'edit'; jobId?: string }>(), {
@@ -352,14 +353,13 @@ void loadForEdit()
         <h2 class="block-title">岗位描述（JD 原文）</h2>
         <label class="field">
           <span>原文 <em class="required">必填</em></span>
-          <textarea
+          <AutoTextarea
             v-model="form.description"
-            class="description-input"
-            rows="14"
+            :min-height="300"
             :maxlength="DESCRIPTION_LIMIT"
             placeholder="把招聘页的职责与要求原样粘进来"
             data-testid="jd-input"
-          ></textarea>
+          />
           <small class="field-hint">{{ descriptionLength }} / {{ DESCRIPTION_LIMIT }} 字</small>
         </label>
 
@@ -538,7 +538,6 @@ h1 { margin: 0; color: var(--ui-ink); font-size: 22px; font-weight: 650; }
 .field select:focus,
 .field textarea:focus { border-color: var(--theme-rule); box-shadow: 0 0 0 2px var(--theme-fade); }
 .field-hint { margin: 8px 0 0; color: var(--ui-ink-faint); font-size: 11px; line-height: 1.5; }
-.description-input { min-height: 300px; resize: vertical; }
 
 .extract-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 14px; }
 .extract-hint { flex: 1 1 200px; color: var(--ui-ink-faint); font-size: 11px; line-height: 1.5; }

@@ -165,6 +165,26 @@ describe('守则 L2：断点只用同一组值', () => {
     expect(file('components/AppLayout.vue').text).toContain('container-name: app-content')
   })
 
+  /**
+   * 老板 2026-11-11 裁定（`ROADMAP.md` §6 第 8 条）：「绝不能接受屏幕更宽，简历更小」。
+   * 真像素归 CDP 实测（11 档数值在 PR 里），这里钉住**兑现它的那三条写法**——
+   * 它们任何一条被改回去，纸面就会重新在宽屏上缩水。
+   */
+  it('两列时纸面封顶 A4 原大，三列只在算出来的富余阈值上开', () => {
+    const view = file('views/ResumeEditorView.vue').text
+    const css = file('styles.css').text
+
+    // ① 两列是常态，纸面列有上限；多出来的宽度给编辑列而不是把纸越拉越大。
+    expect(view).toContain('grid-template-columns: minmax(300px, 1fr) minmax(0, var(--paper-a4-width))')
+    expect(css).toContain('--paper-a4-width: 794px')
+    // ② 三列的阈值来自表，且是「至少」而不是「不超过」——方向写反就变成窄屏开三列。
+    expect(view).toContain(`@container app-content (min-width: ${BREAKPOINTS.paperThreeColumn}px)`)
+    // ③ 三列的左右列按裁定压缩，省下的宽度全给纸面。
+    expect(view).toContain('grid-template-columns: 280px minmax(0, 1fr) 200px')
+    // ④ 阈值必须是算出来的那个数，不是随手拍的整数。
+    expect(BREAKPOINTS.paperThreeColumn).toBe(794 + 280 + 200 + 64 + 96)
+  })
+
   it('宽度相关的 matchMedia 只出现在 composables/useViewport.ts 一处', () => {
     // 正向护栏：收口点自己得真的在用 `matchMedia`，否则「别处都没有」这条会因为
     // 全仓一处都不存在而假绿（`useViewport.ts` 被删空也会绿，那是要拦的）。
