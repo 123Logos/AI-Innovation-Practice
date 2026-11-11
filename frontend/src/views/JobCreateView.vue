@@ -511,58 +511,58 @@ void loadForEdit()
 <style scoped>
 .create-page { width: min(880px, 100%); margin: 0 auto; padding: 32px 48px 72px; }
 .page-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
-.eyebrow { margin: 0 0 10px; color: var(--theme-rule); font-size: 12px; letter-spacing: .12em; }
-h1 { margin: 0; color: var(--ui-ink); font-size: 22px; font-weight: 650; }
-.intro { margin: 8px 0 0; max-width: 62ch; color: var(--ui-ink-muted); font-size: 13px; line-height: 1.6; }
-.text-link { flex: 0 0 auto; color: var(--theme-primary); font-size: 13px; text-decoration: none; white-space: nowrap; }
+.eyebrow { margin: 0 0 10px; color: var(--theme-rule); font-size: var(--text-sm); letter-spacing: .12em; }
+h1 { margin: 0; color: var(--ui-ink); font-size: var(--text-4xl); font-weight: 650; }
+.intro { margin: 8px 0 0; max-width: 62ch; color: var(--ui-ink-muted); font-size: var(--text-base); line-height: 1.6; }
+.text-link { flex: 0 0 auto; color: var(--theme-primary); font-size: var(--text-base); text-decoration: none; white-space: nowrap; }
 .text-link:hover { text-decoration: underline; }
 
 .job-form { display: grid; gap: 18px; }
 .form-block { border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 18px 20px; background: var(--ui-surface); }
 .block-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.block-title { margin: 0 0 14px; color: var(--ui-ink); font-size: 14px; font-weight: 650; }
-.counter { color: var(--ui-ink-faint); font-size: 12px; }
+.block-title { margin: 0 0 14px; color: var(--ui-ink); font-size: var(--text-md); font-weight: 650; }
+.counter { color: var(--ui-ink-faint); font-size: var(--text-sm); }
 
 /* 两列字段在宽屏上并排，窄屏自动回落单列：不写死断点像素，靠 `auto-fit` + 最小列宽。 */
 .field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px 18px; }
 .field { display: grid; gap: 6px; }
-.field > span { color: var(--ui-ink-muted); font-size: 12px; }
-.required { margin-left: 4px; color: var(--ui-danger); font-size: 11px; font-style: normal; }
+.field > span { color: var(--ui-ink-muted); font-size: var(--text-sm); }
+.required { margin-left: 4px; color: var(--ui-danger); font-size: var(--text-xs); font-style: normal; }
 .field input,
 .field select,
-.field textarea { width: 100%; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 8px 10px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: 13px; outline: 0; }
+.field textarea { width: 100%; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 8px 10px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: var(--text-base); outline: 0; }
 .field input,
 .field select { height: 32px; padding: 0 10px; }
 .field textarea { padding: 10px; line-height: 1.6; }
 .field input:focus,
 .field select:focus,
 .field textarea:focus { border-color: var(--theme-rule); box-shadow: 0 0 0 2px var(--theme-fade); }
-.field-hint { margin: 8px 0 0; color: var(--ui-ink-faint); font-size: 11px; line-height: 1.5; }
+.field-hint { margin: 8px 0 0; color: var(--ui-ink-faint); font-size: var(--text-xs); line-height: 1.5; }
 
 .extract-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 14px; }
-.extract-hint { flex: 1 1 200px; color: var(--ui-ink-faint); font-size: 11px; line-height: 1.5; }
+.extract-hint { flex: 1 1 200px; color: var(--ui-ink-faint); font-size: var(--text-xs); line-height: 1.5; }
 
 /* 核验计数：虚线框 + 每行一条，视觉上就是三条独立结论，不给「并成一个数」留余地。 */
 .extract-counts { display: grid; gap: 4px; margin: 0 0 12px; padding: 10px 12px; border: 1px dashed var(--ui-border-strong); border-radius: var(--ui-radius); list-style: none; }
-.extract-count-line { color: var(--ui-ink-muted); font-size: 12px; line-height: 1.6; }
+.extract-count-line { color: var(--ui-ink-muted); font-size: var(--text-sm); line-height: 1.6; }
 /* 「跳过重名」是前端这一侧的合并（少这一步就变成保存时一条看不懂的 422），语气比核验计数轻一档。 */
 .extract-count-line--merge { color: var(--ui-ink-faint); }
 
 .skill-list { display: grid; gap: 8px; margin: 0 0 12px; padding: 0; list-style: none; }
 .skill-item { display: grid; gap: 4px; }
 .skill-row { display: flex; flex-wrap: wrap; gap: 8px; }
-.skill-name { flex: 1 1 220px; min-width: 0; height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 10px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: 13px; outline: 0; }
-.skill-type { flex: 0 0 auto; min-width: 108px; height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 8px; color: var(--ui-ink-muted); background: var(--ui-surface); font: inherit; font-size: 12px; outline: 0; }
+.skill-name { flex: 1 1 220px; min-width: 0; height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 10px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: var(--text-base); outline: 0; }
+.skill-type { flex: 0 0 auto; min-width: 108px; height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 8px; color: var(--ui-ink-muted); background: var(--ui-surface); font: inherit; font-size: var(--text-sm); outline: 0; }
 .skill-name:focus, .skill-type:focus { border-color: var(--theme-rule); box-shadow: 0 0 0 2px var(--theme-fade); }
-.skill-evidence { margin: 0; border-left: 2px solid var(--theme-rule-soft); padding-left: 8px; color: var(--ui-ink-faint); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
-.skill-origin { display: block; margin-top: 2px; color: var(--ui-ink-faint); font-size: 11px; }
+.skill-evidence { margin: 0; border-left: 2px solid var(--theme-rule-soft); padding-left: 8px; color: var(--ui-ink-faint); font-size: var(--text-xs); line-height: 1.6; overflow-wrap: anywhere; }
+.skill-origin { display: block; margin-top: 2px; color: var(--ui-ink-faint); font-size: var(--text-xs); }
 .add-skill { width: 100%; }
 
-.feedback { margin: 12px 0 0; color: var(--ui-ink-faint); font-size: 13px; line-height: 1.5; }
+.feedback { margin: 12px 0 0; color: var(--ui-ink-faint); font-size: var(--text-base); line-height: 1.5; }
 .feedback--error { color: var(--ui-danger); }
 .form-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
 
-.row-button { height: 32px; border: 1px solid var(--theme-rule); border-radius: var(--ui-radius); padding: 0 14px; color: var(--theme-primary-deep); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 12px; white-space: nowrap; }
+.row-button { height: 32px; border: 1px solid var(--theme-rule); border-radius: var(--ui-radius); padding: 0 14px; color: var(--theme-primary-deep); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-sm); white-space: nowrap; }
 .row-button:hover:not(:disabled) { background: var(--theme-bg-hover); }
 .row-button:disabled { opacity: .5; cursor: not-allowed; }
 .row-button--ghost { border-color: var(--ui-border-strong); color: var(--ui-ink-muted); }
@@ -571,7 +571,7 @@ h1 { margin: 0; color: var(--ui-ink); font-size: 22px; font-weight: 650; }
 /* AI 动作是增益而不是提交，底色用主题浅底；高度 32px、圆角 2px 仍走全局规格，不搞第二套按钮。 */
 .row-button--extract { border-color: var(--theme-rule-soft); color: var(--theme-primary-strong); background: var(--theme-bg-light); font-weight: 600; }
 .row-button--extract:hover:not(:disabled) { border-color: var(--theme-rule); background: var(--theme-bg-hover); }
-.row-button--tiny { height: 32px; padding: 0 10px; font-size: 11px; color: var(--ui-ink-faint); border-color: var(--ui-border-strong); }
+.row-button--tiny { height: 32px; padding: 0 10px; font-size: var(--text-xs); color: var(--ui-ink-faint); border-color: var(--ui-border-strong); }
 
 @media (max-width: 760px) {
   .create-page { padding: 20px 16px 48px; }

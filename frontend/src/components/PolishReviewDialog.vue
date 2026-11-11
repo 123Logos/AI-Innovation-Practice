@@ -66,7 +66,7 @@ function limitNoteOf(polished: PolishedExperience | undefined): string {
   if (!polished) return ''
   const parts: string[] = []
   if (polished.truncated) {
-    parts.push('模型写得比上限还长，这段已被截断，接受后请自己补完整。')
+    parts.push('这段内容超长，末尾已被截断，接受后请自己补完整。')
   }
   if (polished.target_words !== null && polished.over_limit_by > 0) {
     parts.push(
@@ -164,7 +164,7 @@ function discard(): void {
 .review-note {
   margin: 0 0 16px;
   color: var(--ui-ink-muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.6;
 }
 .review-block {
@@ -177,20 +177,20 @@ function discard(): void {
   border-left: 3px solid var(--ui-warning-border);
   padding-left: 8px;
   color: var(--ui-ink-muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.6;
 }
 .review-block__title {
   margin: 0 0 12px;
   color: var(--ui-ink);
-  font-size: 14px;
+  font-size: var(--text-md);
   font-weight: 650;
   line-height: 1.4;
 }
 .review-block__unchanged {
   margin-left: 6px;
   color: var(--ui-ink-muted);
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: 400;
 }
 .review-skills {
@@ -202,7 +202,7 @@ function discard(): void {
 .review-skills__label {
   margin: 0 0 8px;
   color: var(--theme-primary);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 /*
  * 两栏对照：`repeat(2, minmax(0,1fr))` 保证左右**等宽**，
@@ -230,18 +230,18 @@ function discard(): void {
 .review-column__label {
   margin: 0 0 8px;
   color: var(--ui-ink);
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 600;
 }
 .review-column__field {
   margin: 12px 0 4px;
   color: var(--ui-ink-muted);
-  font-size: 11px;
+  font-size: var(--text-xs);
 }
 .review-column__text {
   margin: 0;
   color: var(--ui-ink);
-  font-size: 13px;
+  font-size: var(--text-base);
   line-height: 1.6;
   /* 用户原文可能很长：保留换行、允许断词，不撑破弹窗。 */
   white-space: pre-wrap;
@@ -250,14 +250,14 @@ function discard(): void {
 .review-cell {
   margin: 0;
   color: var(--ui-ink);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
 .review-cell__tag {
   margin-right: 4px;
   color: var(--ui-ink-muted);
-  font-size: 11px;
+  font-size: var(--text-xs);
 }
 /* 按钮恒定右对齐；窄屏放不下时整组换行，仍然靠右，不「散成两行左对齐」。 */
 .review-footer {

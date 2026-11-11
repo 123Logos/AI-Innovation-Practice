@@ -211,15 +211,15 @@ async function submit(): Promise<void> {
 /* 居中同 LoginView：flex + `margin:auto`，注册卡片更高，矮视口上不能被切掉标题。 */
 .auth-page { display: flex; min-height: 100vh; padding: 32px 20px; background: var(--ui-canvas); }
 .auth-card { margin: auto; width: min(420px, 100%); border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 40px 36px; background: var(--ui-surface); }
-.eyebrow { margin: 0 0 12px; color: var(--theme-rule); font-size: 12px; letter-spacing: .12em; }
-h1 { margin: 0; font-size: 24px; font-weight: 650; }
-.intro { margin: 10px 0 26px; color: var(--ui-ink-muted); font-size: 13px; line-height: 1.6; }
+.eyebrow { margin: 0 0 12px; color: var(--theme-rule); font-size: var(--text-sm); letter-spacing: .12em; }
+h1 { margin: 0; font-size: var(--text-5xl); font-weight: 650; }
+.intro { margin: 10px 0 26px; color: var(--ui-ink-muted); font-size: var(--text-base); line-height: 1.6; }
 .auth-form { display: grid; gap: 16px; }
 .field { display: grid; gap: 6px; }
-.field span { color: var(--ui-ink-muted); font-size: 12px; }
+.field span { color: var(--ui-ink-muted); font-size: var(--text-sm); }
 /* 提示文案：比字段标签再淡一档，不抢注意力，也不与错误文案的红色混淆。 */
-.field-hint { color: var(--ui-ink-faint); font-size: 11px; line-height: 1.5; }
-input { width: 100%; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 11px 12px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: 14px; outline: 0; }
+.field-hint { color: var(--ui-ink-faint); font-size: var(--text-xs); line-height: 1.5; }
+input { width: 100%; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 11px 12px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: var(--text-md); outline: 0; }
 input:focus { border-color: var(--theme-rule); box-shadow: 0 0 0 2px var(--theme-fade); }
 
 /* ---- 密码可见性切换（与 LoginView 完全一致） ---- */
@@ -247,11 +247,11 @@ input:focus { border-color: var(--theme-rule); box-shadow: 0 0 0 2px var(--theme
 .password-toggle:hover { color: var(--theme-primary-deep); }
 .password-toggle:active { color: var(--ui-ink); }
 .password-toggle:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 1px; }
-.primary-button { border: 0; border-radius: var(--ui-radius); padding: 12px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: 14px; line-height: 1.4; }
+.primary-button { border: 0; border-radius: var(--ui-radius); padding: 12px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: var(--text-md); line-height: 1.4; }
 .primary-button:hover:not(:disabled) { background: var(--theme-primary-hover); }
 .primary-button:disabled { opacity: .6; cursor: progress; }
-.feedback { margin: 0; font-size: 13px; line-height: 1.5; }
+.feedback { margin: 0; font-size: var(--text-base); line-height: 1.5; }
 .feedback--error { color: var(--ui-danger); }
-.switch-hint { margin: 22px 0 0; color: var(--ui-ink-muted); font-size: 13px; }
+.switch-hint { margin: 22px 0 0; color: var(--ui-ink-muted); font-size: var(--text-base); }
 .switch-hint a { color: var(--theme-primary); }
 </style>

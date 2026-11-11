@@ -87,7 +87,10 @@ warn_unused_configs = true
 exclude = "tests/test_(migrations|resumes_generate)\\.py"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# `scripts/tests` 是 G4 令牌闸自己的用例（`unittest` 形态）：它测的是脚本能不能红，
+# 不连数据库。**必须一起收集**，否则「闸有测试」只写在纸上——CI 跑的是 `pytest -q`，
+# 漏掉这个目录等于给自己发一张从未执行的通过证书。
+testpaths = ["tests", "scripts/tests"]
 pythonpath = ["."]
 
 [tool.uv]

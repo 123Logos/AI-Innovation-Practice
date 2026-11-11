@@ -153,17 +153,53 @@ class ResumePolishRequest(BaseModel):
         return self
 
 
+#: 响应契约的最后一道硬边（ADR-018 §2.3 / §6）：`description ≤ 1200`、`responsibility ≤ 600`。
+#: 放宽自 600/300——`max_words` 上限 800 是两字段合计，放宽后单字段必然容得下合法输出。
+#: 模型写飞超出这道边时**段级**截断并标 `truncated=true`，不再整单 502；
+#: 常量单源在此，适配器（`copy_writer`）与服务层（`resume_service`）都从这里取。
+POLISHED_DESCRIPTION_MAX_LEN = 1200
+POLISHED_RESPONSIBILITY_MAX_LEN = 600
+
+
+def clamp_to_polish_contract(description: str, responsibility: str) -> tuple[str, str, bool]:
+    """把一对文案截到响应契约上限，返回 `(description, responsibility, truncated)`。
+
+    ADR-018 §2.4：超出放宽后的契约时不再整单 502——该段截到上限并标 `truncated=true`，
+    其余段照常返回。这是「出现但标注」：不承诺报出截断前少了多少字
+    （`truncated_from_words` 之类字段被老板明确否掉，ADR-018 §6 末）。
+    """
+    truncated = False
+    if len(description) > POLISHED_DESCRIPTION_MAX_LEN:
+        description = description[:POLISHED_DESCRIPTION_MAX_LEN]
+        truncated = True
+    if len(responsibility) > POLISHED_RESPONSIBILITY_MAX_LEN:
+        responsibility = responsibility[:POLISHED_RESPONSIBILITY_MAX_LEN]
+        truncated = True
+    return description, responsibility, truncated
+
+
 class PolishedExperience(BaseModel):
     """模型对**一段**既有经历的改写结果。
 
     `index` 是输入经历列表里的下标，不是数据库 id：让模型复述 id 既没必要也容易出错，
     而下标由我们在 Prompt 里编号，回贴时不会错位。标题与起止时间属于既有事实，
     模型无权改动，因此这里刻意不接受。
+
+    ADR-018 起新增三格（加字段，不改既有语义）：
+
+    - `target_words`：本次请求生效的目标字数，**只有 `expand` 有**，其它档 `None`；
+    - `over_limit_by`：返回文字（description + responsibility 合计）超出目标多少，
+      不超为 0。它必须有数：`len(返回文字) - target_words`，用户据此自己减字；
+    - `truncated`：是否撞到响应契约（1200/600）被段级截断。超**目标**不截断只标注，
+      超**契约**才截断——两道边的职责分开（ADR-018 §6）。
     """
 
     index: int = Field(ge=0)
-    description: str = Field(min_length=1, max_length=600)
-    responsibility: str = Field(min_length=1, max_length=300)
+    description: str = Field(min_length=1, max_length=POLISHED_DESCRIPTION_MAX_LEN)
+    responsibility: str = Field(min_length=1, max_length=POLISHED_RESPONSIBILITY_MAX_LEN)
+    target_words: int | None = None
+    over_limit_by: int = Field(default=0, ge=0)
+    truncated: bool = False
 
 
 class ResumeCopy(BaseModel):
@@ -183,6 +219,9 @@ class ResumeRead(BaseModel):
     title: str
     content_html: str
     created_at: datetime
+    #: ADR-015 §2.3（B8）：这份简历在档案内的版本号，从 1 递增。
+    #: 生成与「当前简历」读路径共用本模型，读侧恒为具体值。
+    version_no: int = 1
 
     @field_serializer("created_at")
     def serialize_shanghai(self, value: datetime) -> str:

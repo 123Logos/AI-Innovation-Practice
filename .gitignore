@@ -46,3 +46,5 @@ Thumbs.db
 .github/copilot-instructions.md
 .workbuddy
 .vscode
+.qoder
+.import_linter_cache/

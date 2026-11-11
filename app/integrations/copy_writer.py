@@ -25,11 +25,14 @@ import httpx2
 from openai import APIConnectionError, APIStatusError, AuthenticationError, OpenAI
 
 from app.schemas.resume import (
+    POLISHED_DESCRIPTION_MAX_LEN,
+    POLISHED_RESPONSIBILITY_MAX_LEN,
     PolishExperienceInput,
     PolishMode,
     PolishProfileInput,
     ResumeCopy,
     SkillInput,
+    clamp_to_polish_contract,
 )
 
 logger = logging.getLogger(__name__)
@@ -207,6 +210,12 @@ class DeepSeekCopyWriter(ResumeCopyWriter):
         模型经常把 JSON 包在 ``` 围栏里，或前后带一句废话，所以先剥围栏、再取第一个
         平衡的 `{...}` 片段；仍解析失败就是契约问题，按「上游不可用」处理，
         而不是把半截结果交给用户确认。
+
+        ADR-018 §2.4：**超契约不再整单 502**。校验前先对每段做契约级截断
+        （description ≤ 1200、responsibility ≤ 600）并标 `truncated=true`——
+        不先截就 `model_validate` 的话，`max_length` 会把整份输出打成
+        `CopyUnavailableError`，「坏的那段坏，好的那段能用」就无从谈起。
+        截断只针对长度这一个维度；段数不符、空串、非 JSON 仍然按上游不可用处理。
         """
         stripped = _FENCE.sub("", content).strip()
         candidate = stripped if stripped.startswith("{") else _first_object(stripped)
@@ -214,10 +223,54 @@ class DeepSeekCopyWriter(ResumeCopyWriter):
             logger.warning("DeepSeek 返回内容不是 JSON 对象（长度=%s）", len(content))
             raise CopyUnavailableError("AI 返回的内容无法解析。")
         try:
-            return ResumeCopy.model_validate_json(candidate)
+            raw = json.loads(candidate)
+        except ValueError as error:
+            logger.warning("DeepSeek 返回的 JSON 无法解析：%s", type(error).__name__)
+            raise CopyUnavailableError("AI 返回的内容无法解析。") from error
+        _clamp_oversized_experiences(raw)
+        try:
+            return ResumeCopy.model_validate(raw)
         except ValueError as error:
             logger.warning("DeepSeek 返回的 JSON 不符合文案契约：%s", type(error).__name__)
             raise CopyUnavailableError("AI 返回的内容不符合约定。") from error
+
+
+def _clamp_oversized_experiences(raw: object) -> None:
+    """就地把模型输出里超契约的段落截到上限并标 `truncated=true`（ADR-018 §2.4）。
+
+    只动「是 dict 的 experiences 里是 str 的两个字段」，其余形状原样留给
+    pydantic 去拒——结构不合契约仍然是整单 502，这条没有被放宽。
+    上限常量与截断函数都来自 `app/schemas/resume.py`，与服务层共用同一份实现。
+    """
+    if not isinstance(raw, dict):
+        return
+    experiences = raw.get("experiences")
+    if not isinstance(experiences, list):
+        return
+    for item in experiences:
+        if not isinstance(item, dict):
+            continue
+        description = item.get("description")
+        responsibility = item.get("responsibility")
+        if not isinstance(description, str) or not isinstance(responsibility, str):
+            continue
+        if (
+            len(description) <= POLISHED_DESCRIPTION_MAX_LEN
+            and len(responsibility) <= POLISHED_RESPONSIBILITY_MAX_LEN
+        ):
+            continue
+        capped_description, capped_responsibility, truncated = clamp_to_polish_contract(
+            description, responsibility
+        )
+        item["description"] = capped_description
+        item["responsibility"] = capped_responsibility
+        if truncated:
+            item["truncated"] = True
+            logger.warning(
+                "DeepSeek 输出超响应契约，已段级截断（description=%s, responsibility=%s）",
+                len(description),
+                len(responsibility),
+            )
 
 
 def _first_object(text: str) -> str | None:

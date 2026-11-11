@@ -15,7 +15,7 @@
 | 用户设定的目标 | `max_words`，`ge=40, le=800`，缺省补 **200**，且**只对 `expand` 档有意义** | `app/schemas/resume.py:139/142-152`、`:98 DEFAULT_MAX_WORDS` |
 | 发给模型的话术 | expand：「严格不超过 {max_words} 个汉字」；heavy：description ≤120 汉字、responsibility ≤60 | `app/integrations/copy_writer.py:76/80/85/90` |
 | **模型调用的 token 预算** | **没有**：请求体只有 `model/stream/messages/thinking`，**不含 `max_tokens`**，本路径也没有 `finish_reason == "length"` 处理 | `copy_writer.py:178-189`（对比 `evidence_scorer.py:265`、`skill_extractor.py:108`、`match_service.py:90/423` 才有） |
-| 响应契约 | `PolishedExperience.description ≤ 600`、`responsibility ≤ 300`；不合格 → **整单 502** | `resume.py:165-166`、`copy_writer.py:217` |
+| 响应契约 | `PolishedExperience.description ≤ 600`、`responsibility ≤ 300`；不合格 → **整单 502** | `app/schemas/resume.py::POLISHED_DESCRIPTION_MAX_LEN`、`copy_writer.py:217`（这是**决策前**的 600/300 + 整单 502；§2.4 已改为 1200/600 + 段级截断标注） |
 | **服务端砍尾** | `_cap_pair`/`_cap_text`：把 description+responsibility **合计**压到 `max_words` 以内，按句末 `rfind` 断句后 **`window.rstrip()` 直接丢尾** | `app/services/resume_service.py:112-113/125/129-138/141-159` |
 
 **结论：这一条链路上不存在"被 API 的 token 切断"。** 让用户看到半句话的，是我们自己的 `_cap_text`，而且它**不留任何痕迹**——没有省略号、没有 `truncated` 标记、响应体（`ResumeCopy`，`app/schemas/resume.py:169-178`）里根本没有能表达「被砍过」的字段，所以前端连想说都无从说起。这正面违反老板 2026-11-04 的裁定（`ADR-009:24`「AI 失败时绝不静默降级」）与守则 C4。

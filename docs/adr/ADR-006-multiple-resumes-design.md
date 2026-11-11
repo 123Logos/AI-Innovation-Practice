@@ -62,8 +62,9 @@ users 1 ──── 1 student_profiles 1 ──── N resumes
 ```
 
 **真正卡住「多份档案」的不是 `resumes`，而是 `student_profiles.user_id` 上的 `UNIQUE`**
-（DDL 第 53 行 `sa.UniqueConstraint("user_id")`；映射层 `student_profile_repository.py:27`
-写成 `unique=True`）。技能/经历/教育的所有行都靠 `student_profile_id` 归属，
+（DDL 第 53 行 `sa.UniqueConstraint("user_id")`；映射层当时写成 `unique=True`；
+这条约束已由 `alembic/versions/20261103_0007_multi_profiles.py::upgrade` 摘除，现映射见
+`app/repositories/student_profile_repository.py::StudentProfile`）。技能/经历/教育的所有行都靠 `student_profile_id` 归属，
 所以「档案只能有一份」这一条约束，把整棵子树锁成了单例。
 
 ### 2.2 现在的「1:N」是假象：N 行内容同源
@@ -96,7 +97,7 @@ class ResumeGenerateRequest(BaseModel):
 
 ### 2.3 写入是「全量替换 + 子表先删后插」，子记录 id 每次都变
 
-`student_profile_repository.py:184-188`：
+当时是这三行物理 `DELETE`（2026-11-10 起被 `ADR-015` §2.1 的「全量替换 + 软删除」取代，见 `app/repositories/student_profile_repository.py::replace_profile_content`——`id` 仍每次变，但旧行不再被删而是盖 `deleted_at`）：
 
 ```python
 self._session.execute(delete(Skill).where(Skill.student_profile_id == target.id))

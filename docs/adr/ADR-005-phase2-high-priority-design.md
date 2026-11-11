@@ -103,7 +103,7 @@ SELECT 'ZhangSan' = 'zhangsan' COLLATE utf8mb4_0900_as_cs;   -- 0
 | 位置 | 事实 |
 |---|---|
 | `frontend/src/components/ResumePreview.vue` | 所有 `contenteditable` 都在 `@blur` 时调 `store.updateXxx()`，只改 Pinia |
-| `frontend/src/stores/resume.ts::markDirty` | 每个 `updateXxx` 都置 `dirty = true` |
+| `frontend/src/stores/resume.ts::markContentChanged` | 每个 `updateXxx` 都走它，但 `dirty` 由**内容投影与基线的差异**算出（批次 F6 / `ADR-018` §5），不再无条件置真 |
 | `frontend/src/stores/resume.ts::startDraftAutosave` | `watch(draft, {deep:true})` → **400ms 防抖写 `localStorage`** |
 | `frontend/src/views/ResumeEditorView.vue` | 进页面 `detectLocalDraft()`，有差异就弹「检测到上次未保存的草稿，是否恢复？」 |
 | `app/repositories/student_profile_repository.py::replace_profile_content` | **全量替换**：父表 update + 三张子表 `DELETE` 后整批重新 `INSERT`，**每次都是新 UUID** |

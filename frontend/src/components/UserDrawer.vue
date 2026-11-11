@@ -71,14 +71,14 @@ const emit = defineEmits<{
 .drawer-eyebrow {
   margin: 0 0 4px;
   color: var(--ui-ink-faint);
-  font-size: 11px;
+  font-size: var(--text-xs);
   letter-spacing: 0.12em;
 }
 
 .drawer-name {
   margin: 0;
   color: var(--ui-ink);
-  font-size: 15px;
+  font-size: var(--text-lg);
   font-weight: 600;
   overflow-wrap: anywhere;
 }
@@ -93,7 +93,7 @@ const emit = defineEmits<{
   color: var(--ui-ink);
   background: var(--ui-canvas);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--text-md);
   text-align: left;
   cursor: pointer;
 }

@@ -124,9 +124,9 @@ onUnmounted(() => {
 .resume-workspace { display: grid; grid-template-columns: minmax(0, var(--paper-a4-width)); justify-content: center; align-items: start; gap: 24px; width: min(1440px, 100%); margin: 0 auto; padding: 24px 28px 56px; }
 /* 两列时主题面板横跨整行摆在下面；三列时它才回到自己那一列。 */
 .style-panel { grid-column: 1 / -1; }
-.footer-hint { grid-column: 1 / -1; margin: 0; color: var(--ui-ink-faint); font-size: 12px; text-align: center; }
+.footer-hint { grid-column: 1 / -1; margin: 0; color: var(--ui-ink-faint); font-size: var(--text-sm); text-align: center; }
 /* 单列堆叠时横幅与下面那一列对齐（横幅内缩 48，所以宽度要补 96 而不是 56）。 */
-.load-error, .load-hint { width: min(calc(var(--paper-a4-width) + 96px), 100%); margin: 0 auto; padding: 12px 48px 0; font-size: 13px; }
+.load-error, .load-hint { width: min(calc(var(--paper-a4-width) + 96px), 100%); margin: 0 auto; padding: 12px 48px 0; font-size: var(--text-base); }
 /* 骨架与它替换掉的那行提示占同一块地方：宽度与内缩一致，数据到达时不横向跳动。 */
 .load-skeleton { width: min(calc(var(--paper-a4-width) + 96px), 100%); margin: 0 auto; padding: 12px 48px 0; }
 .load-error { color: var(--ui-danger); }
@@ -146,11 +146,11 @@ onUnmounted(() => {
   padding: 12px 16px;
   background: var(--theme-bg-light);
 }
-.draft-banner__text { margin: 0; color: var(--theme-primary-strong); font-size: 13px; line-height: 1.5; }
+.draft-banner__text { margin: 0; color: var(--theme-primary-strong); font-size: var(--text-base); line-height: 1.5; }
 .draft-banner__actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.draft-banner__restore { border: 1px solid var(--theme-primary); border-radius: var(--ui-radius); padding: 8px 16px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: 13px; }
+.draft-banner__restore { border: 1px solid var(--theme-primary); border-radius: var(--ui-radius); padding: 8px 16px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: var(--text-base); }
 .draft-banner__restore:hover { background: var(--theme-primary-hover); }
-.draft-banner__discard { border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 8px 16px; color: var(--ui-ink-muted); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 13px; }
+.draft-banner__discard { border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 8px 16px; color: var(--ui-ink-muted); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-base); }
 .draft-banner__discard:hover { border-color: var(--ui-danger-border); color: var(--ui-danger); }
 .draft-banner__restore:focus-visible, .draft-banner__discard:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
 /*

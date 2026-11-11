@@ -295,16 +295,16 @@ async function handleLogout(): Promise<void> {
 /* 品牌与工作区切换器同属左边一组：顶栏仍是「左一组 / 右一组」两个直接子项。 */
 .brand-side { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 12px; }
 .brand { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 12px; }
-.brand-mark { display: grid; width: 34px; height: 34px; color: var(--theme-on-primary); background: var(--theme-primary); font-family: "SF Mono", Consolas, monospace; font-size: 13px; place-items: center; }
+.brand-mark { display: grid; width: 34px; height: 34px; color: var(--theme-on-primary); background: var(--theme-primary); font-family: "SF Mono", Consolas, monospace; font-size: var(--text-base); place-items: center; }
 /*
  * 品牌只留产品名一行（老板 2026-11-11 裁定，§6 第 9 条）：原来那行副标题写死「简历工作台」，
  * 而它右边的工作区切换器显示的是**当前**工作区——站在 /jobs 上时副标题就是事实错误。
  * 「跟着当前工作区走」被明确否掉（与切换器完全冗余），所以整行删掉，不是藏起来。
  */
 .brand-text { display: grid; min-width: 0; }
-.brand-title { margin: 0; overflow: hidden; color: var(--ui-ink); font-size: 14px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.brand-title { margin: 0; overflow: hidden; color: var(--ui-ink); font-size: var(--text-md); font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .user-area { display: flex; flex: 1 1 auto; flex-wrap: wrap; min-width: 0; align-items: center; justify-content: flex-end; gap: 10px 12px; }
-.dirty-dot { flex: 0 0 auto; border: 1px solid var(--ui-warning-border); border-radius: var(--ui-radius); padding: 2px 7px; color: var(--ui-warning); font-size: 11px; white-space: nowrap; }
+.dirty-dot { flex: 0 0 auto; border: 1px solid var(--ui-warning-border); border-radius: var(--ui-radius); padding: 2px 7px; color: var(--ui-warning); font-size: var(--text-xs); white-space: nowrap; }
 /*
  * 顶栏上的控件统一 32px 高（简历入口 / 账户 / 岗位库）：与 `el-button`（润色弹窗里）
  * 同一档高度，跨弹层看上去才是同一套控件。用 `height` 而不是靠 padding 堆，
@@ -316,28 +316,28 @@ async function handleLogout(): Promise<void> {
  * 名字原来是一个不说话的 `<span class="user-name">`，现在它是按钮的一部分：
  * 点名字本来就该想到「这是我账号的地方」。
  */
-.account-trigger { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 12px; color: var(--ui-ink); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 12px; white-space: nowrap; }
+.account-trigger { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 12px; color: var(--ui-ink); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-sm); white-space: nowrap; }
 .account-trigger:hover { border-color: var(--theme-rule); color: var(--theme-primary); }
 .account-trigger:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
-.account-name { overflow: hidden; max-width: 16ch; color: var(--ui-ink-muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.account-word { display: none; color: var(--ui-ink-muted); font-size: 13px; }
-.account-caret { flex: 0 0 auto; color: var(--ui-ink-faint); font-size: 11px; line-height: 1; transition: transform var(--motion-base) var(--motion-ease); }
+.account-name { overflow: hidden; max-width: 16ch; color: var(--ui-ink-muted); font-size: var(--text-base); text-overflow: ellipsis; white-space: nowrap; }
+.account-word { display: none; color: var(--ui-ink-muted); font-size: var(--text-base); }
+.account-caret { flex: 0 0 auto; color: var(--ui-ink-faint); font-size: var(--text-xs); line-height: 1; transition: transform var(--motion-base) var(--motion-ease); }
 .account-caret--open { transform: rotate(180deg); }
 /*
  * 岗位库入口：与上面控件同规格（32px 高、`--ui-radius`、`--ui-*` 令牌），
  * 但它是导航而不是动作，所以底色留空、hover 只加下划线级别的提示。
  */
-.jobs-entry { display: inline-flex; flex: 0 0 auto; align-items: center; height: 32px; border: 1px solid transparent; border-radius: var(--ui-radius); padding: 0 10px; color: var(--ui-ink-muted); font-size: 12px; text-decoration: none; white-space: nowrap; }
+.jobs-entry { display: inline-flex; flex: 0 0 auto; align-items: center; height: 32px; border: 1px solid transparent; border-radius: var(--ui-radius); padding: 0 10px; color: var(--ui-ink-muted); font-size: var(--text-sm); text-decoration: none; white-space: nowrap; }
 .jobs-entry:hover { border-color: var(--theme-rule); color: var(--theme-primary); }
 .jobs-entry[aria-current='page'] { border-color: var(--ui-border-strong); color: var(--theme-primary-deep); background: var(--theme-bg-light); font-weight: 600; }
-.ai-settings-status { margin: 0; color: var(--ui-ink-faint); font-size: 12px; }
+.ai-settings-status { margin: 0; color: var(--ui-ink-faint); font-size: var(--text-sm); }
 /* ---- 简历入口（只在窄屏渲染，宽屏那份列表常驻在左栏） ---- */
-.resumes-trigger { display: inline-flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 8px; max-width: min(300px, 100%); height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 12px; color: var(--ui-ink); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 12px; }
+.resumes-trigger { display: inline-flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 8px; max-width: min(300px, 100%); height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 12px; color: var(--ui-ink); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-sm); }
 .resumes-trigger:hover { border-color: var(--theme-rule); }
 .resumes-trigger:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
-.resumes-trigger__label { flex: 0 0 auto; color: var(--ui-ink-faint); font-size: 11px; letter-spacing: .04em; white-space: nowrap; }
-.resumes-trigger__title { overflow: hidden; min-width: 0; max-width: 150px; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.resumes-trigger__caret { flex: 0 0 auto; color: var(--ui-ink-faint); font-size: 11px; line-height: 1; transition: transform var(--motion-base) var(--motion-ease); }
+.resumes-trigger__label { flex: 0 0 auto; color: var(--ui-ink-faint); font-size: var(--text-xs); letter-spacing: .04em; white-space: nowrap; }
+.resumes-trigger__title { overflow: hidden; min-width: 0; max-width: 150px; font-size: var(--text-base); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.resumes-trigger__caret { flex: 0 0 auto; color: var(--ui-ink-faint); font-size: var(--text-xs); line-height: 1; transition: transform var(--motion-base) var(--motion-ease); }
 .resumes-trigger__caret--open { transform: rotate(180deg); }
 
 @media (max-width: 760px) {

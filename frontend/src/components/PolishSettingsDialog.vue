@@ -113,7 +113,7 @@ function submit(): void {
 .polish-intro {
   margin: 0 0 16px;
   color: var(--ui-ink-muted);
-  font-size: 13px;
+  font-size: var(--text-base);
   line-height: 1.6;
 }
 /* 四档竖排：一行一条说明才读得完，横排在窄弹窗里会挤成一团。 */
@@ -171,12 +171,12 @@ function submit(): void {
 }
 .polish-mode__label {
   color: var(--ui-ink);
-  font-size: 14px;
+  font-size: var(--text-md);
   font-weight: 600;
 }
 .polish-mode__hint {
   color: var(--ui-ink-muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-weight: 400;
 }
 /*
@@ -193,7 +193,7 @@ function submit(): void {
 }
 .polish-words__label {
   color: var(--ui-ink);
-  font-size: 13px;
+  font-size: var(--text-base);
 }
 .polish-words__input {
   width: 100%;
@@ -202,7 +202,7 @@ function submit(): void {
   grid-column: 1 / -1;
   margin: 0;
   color: var(--ui-ink-muted);
-  font-size: 11px;
+  font-size: var(--text-xs);
   line-height: 1.5;
 }
 /* 底部：说明与按钮两端对齐，窄屏放不下时整条换行，按钮靠右而不是被文字挤扁。 */
@@ -216,7 +216,7 @@ function submit(): void {
 .polish-footer__note {
   flex: 1 1 160px;
   color: var(--ui-ink-muted);
-  font-size: 11px;
+  font-size: var(--text-xs);
   line-height: 1.5;
 }
 .polish-footer :deep(.el-button) {

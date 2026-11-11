@@ -13,7 +13,7 @@
 | 服务层两处都调它（列表项 / 详情），**没有第二处 `deadline < today`** | `app/services/job_service.py:483-490`，被 `:515`（`JobSummary`）与 `:538`（`JobRead`）共用 |
 | `is_expired` 是对外字段（详情与列表两种模型都有） | `app/schemas/job.py:235`、`:275` |
 | **只有列表默认过滤**过期行，`include_expired=true` 才一起给 | `app/repositories/job_repository.py:488-490`、参数在 `app/api/v1/jobs.py:80` |
-| 详情按 id 打得开过期岗位（200 + `is_expired=True`），且这条**已有测试锁着** | `tests/test_jobs.py:899`（三态）与 `:937`（陌生人读详情） |
+| 详情按 id 打得开过期岗位（200 + `is_expired=True`），且这条**已有测试锁着** | `tests/test_jobs.py::test_expired_jobs_are_hidden_by_default_on_the_app_clock`（过期三态与「陌生人读详情」都在这一条里） |
 | 匹配侧的过期表达是 `terms[remaining_time] = {value 0.0, computed True, note "expired"}` | `app/services/match_scoring.py::remaining_time_value` |
 | 前端**不自己比日期**，只读后端那个布尔 | `frontend/src/stores/job.ts`、`JobDetailView.vue`、`JobBoardView.vue` |
 
@@ -86,3 +86,13 @@
 
 1. **match 的归层仍待他一句话**（§4 末第三条）。本 ADR 按「数据层」实现与描述，因为那正是 §2 已交付的口径；这一格不是我又开了一个决定，是把没被裁定覆盖的那一块显式留在原地。
 2. **连带解除**：`docs/ROADMAP.md` §2 的 B3 行原写「剩余那一格依赖这条待拍」，现在解除——`generated_at` 的口径只取决于「读侧组装时刻的来源」（§4 第二条），不取决于投递，**B3 随时可以开工**。
+
+## 6. §4 末尾那一格已收口（2026-11-12 第 14 轮）
+
+§4 留了一句「若老板认为 match 属动作层，改的只有那一个入口」，现在有答案了：
+
+> **归数据层。**「理由：它返回分数、不改变世界状态，纯粹是计算与读取。不能因为它消耗了 API 额度就把它当『动作层』。『动作层』的定义必须严格绑定在修改业务状态（如投递、审核）上。不能为了防滥用计费而把读接口强行改为动作层，那会污染接口语义。」
+
+- 现有实现**不改**：`POST /jobs/{job_id}/match` 在 AI 失败时仍给分、`200` + `degrade_reason`；过期岗位在这个端点上也不返回 422/404（它不改世界状态，就没有「不许对过期岗位动手」这回事）。
+- **计量与接口语义解耦**：额度消耗由速率限制与 BYOK 提示承担，不作为把读端点改判成动作层的理由。
+- 这条也钉住了后续边界：`GET /jobs/{job_id}/requirement-match` 同理；而投递、审核、批量下载这类**会改状态**的端点才进动作层（B5/B6/B10b）。

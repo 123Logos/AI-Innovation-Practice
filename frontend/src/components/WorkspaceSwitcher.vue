@@ -139,11 +139,11 @@ function close(): void {
  * 本组件与包裹层都不定位（见文件头）：弹层的包含块是顶栏。
  * 这里只负责触发按钮自己的尺寸，与顶栏其余控件同一档 32px 高。
  */
-.workspace-trigger { display: inline-flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 6px; height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 10px; color: var(--ui-ink); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 12px; white-space: nowrap; }
+.workspace-trigger { display: inline-flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 6px; height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 10px; color: var(--ui-ink); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-sm); white-space: nowrap; }
 .workspace-trigger:hover { border-color: var(--theme-rule); color: var(--theme-primary); }
 .workspace-trigger:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
-.workspace-trigger__name { overflow: hidden; max-width: 14ch; font-size: 13px; font-weight: 600; text-overflow: ellipsis; }
-.workspace-trigger__word { display: none; color: var(--ui-ink-muted); font-size: 13px; }
+.workspace-trigger__name { overflow: hidden; max-width: 14ch; font-size: var(--text-base); font-weight: 600; text-overflow: ellipsis; }
+.workspace-trigger__word { display: none; color: var(--ui-ink-muted); font-size: var(--text-base); }
 .workspace-trigger__caret { flex: 0 0 auto; width: 12px; height: 12px; color: var(--ui-ink-faint); transition: transform var(--motion-base) var(--motion-ease); }
 .workspace-trigger__caret--open { transform: rotate(180deg); }
 
@@ -180,7 +180,7 @@ function close(): void {
 .workspace-card:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
 .workspace-card[aria-current='page'] { border-color: var(--ui-border-strong); color: var(--theme-primary-deep); background: var(--theme-bg-light); }
 .workspace-card__icon { width: 24px; height: 24px; }
-.workspace-card__name { overflow: hidden; max-width: 100%; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-card__name { overflow: hidden; max-width: 100%; font-size: var(--text-base); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 
 @media (max-width: 760px) {
   /* 手机上顶栏只有 343px：当前工作区名让位给「切换」二字，与账户按钮同一套取舍。

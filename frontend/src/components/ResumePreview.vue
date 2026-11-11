@@ -599,7 +599,7 @@ function updateExpDate(
 
 <style scoped>
 .preview-column { min-width: 0; }
-.preview-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; color: var(--ui-ink-muted); font-size: 12px; }
+.preview-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; color: var(--ui-ink-muted); font-size: var(--text-sm); }
 /* 右侧占满剩余宽度，让「回到实时预览」能撑开（任务 2）。 */
 .toolbar-right { display: flex; flex: 1; align-items: center; justify-content: flex-end; gap: 12px; }
 .page-count, .date, .code { font-family: "SF Mono", Consolas, monospace; }
@@ -616,7 +616,7 @@ function updateExpDate(
   padding: 7px 14px;
   color: var(--theme-primary-strong);
   background: var(--theme-bg-light);
-  font-size: 16px;
+  font-size: var(--text-lg-plus);
   font-weight: 700;
   letter-spacing: .02em;
   line-height: 1.25;
@@ -642,7 +642,7 @@ function updateExpDate(
   background: var(--ui-surface-sunken);
   cursor: not-allowed;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 600;
   white-space: nowrap;
 }
@@ -659,7 +659,7 @@ function updateExpDate(
 .save-button--dirty:disabled { cursor: progress; opacity: .8; }
 .save-button:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
 .save-button__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ui-warning-border); }
-.save-error { max-width: 220px; margin: 0; color: var(--ui-danger); font-size: 12px; line-height: 1.4; }
+.save-error { max-width: 220px; margin: 0; color: var(--ui-danger); font-size: var(--text-sm); line-height: 1.4; }
 /*
  * 任务 2：尺寸对齐 StylePanel 的 .generate-button（padding 11px / font-size 13px），
  * 并靠 flex:1 撑满工具栏右侧剩余空间，视觉重量与「生成简历」同档。
@@ -680,7 +680,7 @@ function updateExpDate(
   background: var(--theme-bg-light);
   cursor: pointer;
   font: inherit;
-  font-size: 13px;
+  font-size: var(--text-base);
   font-weight: 600;
   white-space: nowrap;
 }

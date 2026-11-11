@@ -137,26 +137,26 @@ onMounted(load)
 <style scoped>
 .trash-page { width: min(880px, 100%); margin: 0 auto; padding: 32px 48px 72px; }
 .trash-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
-.eyebrow { margin: 0 0 10px; color: var(--theme-rule); font-size: 12px; letter-spacing: .12em; }
-h1 { margin: 0; color: var(--ui-ink); font-size: 22px; font-weight: 650; }
-.intro { margin: 8px 0 0; max-width: 62ch; color: var(--ui-ink-muted); font-size: 13px; line-height: 1.6; }
+.eyebrow { margin: 0 0 10px; color: var(--theme-rule); font-size: var(--text-sm); letter-spacing: .12em; }
+h1 { margin: 0; color: var(--ui-ink); font-size: var(--text-4xl); font-weight: 650; }
+.intro { margin: 8px 0 0; max-width: 62ch; color: var(--ui-ink-muted); font-size: var(--text-base); line-height: 1.6; }
 .intro strong { color: var(--ui-ink); }
-.back-link { flex: 0 0 auto; color: var(--theme-primary); font-size: 13px; text-decoration: none; white-space: nowrap; }
+.back-link { flex: 0 0 auto; color: var(--theme-primary); font-size: var(--text-base); text-decoration: none; white-space: nowrap; }
 .back-link:hover { text-decoration: underline; }
-.feedback { margin: 0 0 12px; font-size: 13px; line-height: 1.5; }
+.feedback { margin: 0 0 12px; font-size: var(--text-base); line-height: 1.5; }
 .feedback--error { color: var(--ui-danger); }
 .feedback--ok { color: var(--theme-primary-deep); }
 .trash-panel { border: 1px solid var(--ui-border); border-radius: var(--ui-radius); background: var(--ui-surface); }
-.empty { margin: 0; padding: 40px 24px; color: var(--ui-ink-faint); font-size: 13px; text-align: center; }
+.empty { margin: 0; padding: 40px 24px; color: var(--ui-ink-faint); font-size: var(--text-base); text-align: center; }
 .trash-list { margin: 0; padding: 0; list-style: none; }
 .trash-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--ui-surface-sunken); padding: 16px 20px; }
 .trash-row:last-child { border-bottom: 0; }
 .trash-main { min-width: 0; }
-.trash-title { margin: 0; overflow: hidden; color: var(--ui-ink); font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.trash-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0 0; color: var(--ui-ink-faint); font-size: 12px; }
+.trash-title { margin: 0; overflow: hidden; color: var(--ui-ink); font-size: var(--text-md); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.trash-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0 0; color: var(--ui-ink-faint); font-size: var(--text-sm); }
 .dot { color: var(--ui-border); }
 .trash-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-.row-button { height: 32px; border: 1px solid var(--theme-rule); border-radius: var(--ui-radius); padding: 0 14px; color: var(--theme-primary-deep); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 12px; white-space: nowrap; }
+.row-button { height: 32px; border: 1px solid var(--theme-rule); border-radius: var(--ui-radius); padding: 0 14px; color: var(--theme-primary-deep); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-sm); white-space: nowrap; }
 .row-button:hover:not(:disabled) { background: var(--theme-bg-hover); }
 .row-button:disabled { opacity: .6; cursor: progress; }
 @media (max-width: 760px) {
