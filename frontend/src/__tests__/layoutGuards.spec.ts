@@ -133,16 +133,20 @@ describe('守则 L2：断点只用同一组值', () => {
   // 「在不在表里」正是本组用例要判的事，把它写进类型里等于提前把答案塞给断言。
   const allowed = new Set<number>(Object.values(BREAKPOINTS))
 
-  it('扫描真的读到了带 @media 宽度的文件（否则下一条是空检）', () => {
-    const withWidthMedia = sources.filter((source) =>
-      /@media[^{]*\((?:max|min)-width:/.test(source.text),
+  it('扫描真的读到了带宽度查询的文件（否则下一条是空检）', () => {
+    // `@container` 与 `@media` 一起数：批次 F3 第三片把简历工作区的两档改成了容器查询
+    // （内容区加了常驻左栏之后，视口宽度不再等于可用宽度），只数 `@media` 会漏掉它们。
+    const withWidthQuery = sources.filter((source) =>
+      /@(?:media|container)[^{]*\((?:max|min)-width:/.test(source.text),
     )
-    expect(withWidthMedia.length).toBeGreaterThanOrEqual(5)
+    expect(withWidthQuery.length).toBeGreaterThanOrEqual(5)
   })
 
-  it('每一个 @media 宽度数值都来自 BREAKPOINTS 表', () => {
+  it('每一个宽度查询的数值都来自 BREAKPOINTS 表（@media 与 @container 同一把尺）', () => {
     for (const source of sources) {
-      for (const match of source.text.matchAll(/@media[^{]*?\((?:max|min)-width:\s*(\d+)px\)/g)) {
+      for (const match of source.text.matchAll(
+        /@(?:media|container)[^{]*?\((?:max|min)-width:\s*(\d+)px\)/g,
+      )) {
         const value = Number(match[1])
         expect(
           allowed.has(value),
@@ -150,6 +154,15 @@ describe('守则 L2：断点只用同一组值', () => {
         ).toBe(true)
       }
     }
+  })
+
+  it('容器查询真的有人用（否则上一条对 @container 的那半是空检）', () => {
+    const users = sources
+      .filter((source) => /@container[^{]*\((?:max|min)-width:/.test(source.text))
+      .map((source) => source.rel)
+    expect(users).toContain('views/ResumeEditorView.vue')
+    // 有查询就得有容器：名字对不上时浏览器会静默不匹配，页面退回三列并溢出。
+    expect(file('components/AppLayout.vue').text).toContain('container-name: app-content')
   })
 
   it('宽度相关的 matchMedia 只出现在 composables/useViewport.ts 一处', () => {
@@ -174,8 +187,11 @@ describe('守则 L3：浮层的「点外面关闭 / Esc 关闭」只有一处实
   it('正向护栏：基座自己确实实现了这两件事（否则下面两条会因为全仓没人做而假绿）', () => {
     const base = file(BASE).text
     expect(base).toContain("document.addEventListener('pointerdown'")
-    expect(base).toContain('el.contains(event.target as Node)')
+    expect(base).toContain('el.contains(target)')
     expect(base).toContain("event.key === 'Escape'")
+    // 「点自己的触发按钮不算外面」也在基座这一处：认的是 aria-controls 的反向链接。
+    // 少了它，两个抽屉会叠在一起（调用方各自豁免自己的话，别的浮层就看不见那一下了）。
+    expect(base).toContain("getAttribute('aria-controls')")
   })
 
   it('除基座外，任何组件都不许再自己写「点外面关闭」', () => {

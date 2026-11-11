@@ -76,7 +76,19 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.resume-workspace { display: grid; grid-template-columns: 340px minmax(420px, 1fr) 220px; align-items: start; gap: 32px; width: min(1440px, 100%); margin: 0 auto; padding: 32px 48px 72px; }
+/*
+ * 三列的宽度判据走**容器**而不是视口（批次 F3 第三片）：清单第 5 条给外框加了一列常驻简历栏，
+ * 内容区从此比视口窄 240px。继续按视口判，1280px 的屏幕会以为自己有 1280px 可用，
+ * 于是摆下三列，而实际只有 1025px。阈值仍是令牌表里那两个值（1100 / 760），
+ * 只是量的是 `app-content` 这一列的宽度。
+ *
+ * 纸面那一列的下限从 420px 改成 0：纸面自己用 ResizeObserver 量列宽再 `transform: scale`
+ * （`ResumePreview.vue`），硬下限不会让纸更可读，只会把网格撑破。
+ * 这不是推测——把旧规则注回去量过（反证探针，数值在本片 PR 里）：左栏在场时，
+ * `340px minmax(420px,1fr) 220px` 在 1120 档把文档撑到 1296px（溢出 176px）、
+ * 1280 档溢出 16px。改成容器查询 + 下限 0 之后，四档（375/1120/1280/1440）溢出都是 0。
+ */
+.resume-workspace { display: grid; grid-template-columns: 340px minmax(0, 1fr) 220px; align-items: start; gap: 32px; width: min(1440px, 100%); margin: 0 auto; padding: 32px 48px 72px; }
 .footer-hint { grid-column: 1 / -1; margin: 0; color: var(--ui-ink-faint); font-size: 12px; text-align: center; }
 .load-error, .load-hint { width: min(1440px, 100%); margin: 0 auto; padding: 12px 48px 0; font-size: 13px; }
 .load-error { color: var(--ui-danger); }
@@ -103,12 +115,12 @@ onUnmounted(() => {
 .draft-banner__discard { border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 8px 16px; color: var(--ui-ink-muted); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 13px; }
 .draft-banner__discard:hover { border-color: var(--ui-danger-border); color: var(--ui-danger); }
 .draft-banner__restore:focus-visible, .draft-banner__discard:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
-@media (max-width: 1100px) {
-  .resume-workspace { grid-template-columns: 300px minmax(380px, 1fr); gap: 24px; padding: 24px 28px 56px; }
+@container app-content (max-width: 1100px) {
+  .resume-workspace { grid-template-columns: 300px minmax(0, 1fr); gap: 24px; padding: 24px 28px 56px; }
   .style-panel { grid-column: 1 / -1; }
   .load-error, .load-hint, .draft-banner-shell { padding: 12px 28px 0; }
 }
-@media (max-width: 760px) {
+@container app-content (max-width: 760px) {
   .resume-workspace { grid-template-columns: 1fr; gap: 24px; padding: 20px 16px 48px; }
   .editor, .style-panel { grid-column: auto; }
   .footer-hint { grid-column: auto; }

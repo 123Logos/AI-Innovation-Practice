@@ -9,10 +9,10 @@
  *
  * 它只干三件事，而且这三件事只在这一处实现：
  *
- * 1. 点外面关闭：判定用 `root.contains(event.target)`，命中面板内部不算关闭；
- *    触发按钮自己不算「外面」这件事**归调用方**（在按钮上写 `@pointerdown.stop`，
- *    见 `AppTopBar.vue` 的两个 trigger）——基座若改用「activeElement 是不是打开它的人」
- *    来判，就依赖浏览器点按钮时到底给不给它聚焦，而 Safari 是不给的；
+ * 1. 点外面关闭：判定用 `root.contains(target)`，命中面板内部不算关闭，
+ *    命中**自己的触发按钮**（`aria-controls` 指向本面板的那个元素）同样不算——
+ *    那一下是调用方的开合。只豁免自己那一个面板，所以别的浮层仍把这一下判成「点外面」，
+ *    两个抽屉不会同时开着叠在一起（详见 `onPointerDown` 里为什么不用 `@pointerdown.stop`）；
  * 2. `Escape` 关闭：同样一处；
  * 3. 监听的生命周期：挂载即注册、卸载即注销——所以调用方用 `v-if` 收起浮层时，
  *    不会在 document 上留下一份空转的监听。
@@ -79,8 +79,23 @@ function restoreFocus(): void {
 function onPointerDown(event: PointerEvent): void {
   const el = root.value
   if (!el) return
+  const target = event.target as Node
   // 只认「点到了本面板之外」；点在面板里（含子节点）不算关闭。
-  if (!el.contains(event.target as Node)) emit('close')
+  if (el.contains(target)) return
+  // **自己的触发按钮**也不算「外面」：那一下是调用方的开合（再点一次该收起）。
+  // 认法是 `aria-controls` 的反向链接——谁声明了「我控制这个面板」，谁就是它的触发器。
+  // 为什么不在按钮上写 `@pointerdown.stop`：那样确实能豁免自己，但**别的浮层也看不见这一下**了，
+  // 于是「开账户抽屉时简历抽屉还开着」——两个贴右边的满高面板会叠在一起。
+  // 用反向链接只豁免自己那一个面板，其余浮层照常把这一下判成「点外面」，互斥因此是天然的。
+  // 不用 `querySelector('[aria-controls=…]')` 拼选择器：id 来自调用方，拼进去等于给它注入选择器的口子。
+  if (props.panelId) {
+    for (const candidate of document.querySelectorAll('[aria-controls]')) {
+      if (candidate.getAttribute('aria-controls') === props.panelId && candidate.contains(target)) {
+        return
+      }
+    }
+  }
+  emit('close')
 }
 
 function onKeydown(event: KeyboardEvent): void {

@@ -54,12 +54,18 @@ function makeRouter(): Router {
  * 内联表单的 keydown）要求组件真的挂进 `document.body`，否则从浮层元素上冒泡的事件到不了
  * `document`，「点外关闭」那条就会假绿。
  */
-async function mountTopBar() {
+async function mountTopBar(props: { resumesOpen?: boolean; showResumesTrigger?: boolean } = {}) {
   const router = makeRouter()
   await router.push('/jobs')
   const attachTo = document.createElement('div')
   document.body.appendChild(attachTo)
-  const wrapper = mount(AppTopBar, { attachTo, global: { plugins: [pinia, router] } })
+  const wrapper = mount(AppTopBar, {
+    attachTo,
+    // 批次 F3 第三片起这两个 prop 由外框给：窄屏才有简历触发按钮，开合状态在外框手里。
+    // 默认按窄屏摆，因为 jsdom 没有 matchMedia，`useViewport()` 在生产里的默认答案也是「不宽」。
+    props: { resumesOpen: false, showResumesTrigger: true, ...props },
+    global: { plugins: [pinia, router] },
+  })
   mounted.push(wrapper)
   return { wrapper, router }
 }
@@ -201,7 +207,7 @@ describe('右侧用户抽屉的开关（清单 4，批次 F3 第二片）', () =
     await trigger.trigger('click')
     expect(drawerEl()).not.toBeNull()
 
-    // 少了按钮上那句 `@pointerdown.stop`，这一步会让基座判为「点外面」先关，
+    // 少了基座里那句「`aria-controls` 指向我的按钮不算外面」，这一步会判为「点外面」先关，
     // 下一步 click 再被 toggle 打开——「再点一次收起」在真机上永远失效。
     // jsdom 的 `trigger('click')` 不带 pointerdown，所以这条要手工按真实顺序派发；
     // 这正是这个 bug 从旧的手写监听到现在一直没被测出来的原因。
@@ -213,40 +219,84 @@ describe('右侧用户抽屉的开关（清单 4，批次 F3 第二片）', () =
     expect(drawerEl()).toBeNull()
   })
 
-  it('两个浮层互斥：开抽屉会关简历切换器，反之亦然', async () => {
-    const { wrapper } = await mountTopBar()
-    const switcher = wrapper.find('.switcher-trigger')
-    const account = wrapper.find('.account-trigger')
-
-    await switcher.trigger('click')
-    expect(switcher.attributes('aria-expanded')).toBe('true')
-
-    await account.trigger('click')
-    expect(switcher.attributes('aria-expanded')).toBe('false')
-    expect(account.attributes('aria-expanded')).toBe('true')
-
-    await switcher.trigger('click')
-    expect(account.attributes('aria-expanded')).toBe('false')
-    expect(switcher.attributes('aria-expanded')).toBe('true')
-  })
 })
 
-describe('简历切换器的开合同样不被「点外面」抢跑', () => {
-  it('pointerdown 落在触发按钮上不关菜单，随后的 click 才收起', async () => {
+describe('简历入口（清单第 5 条：列表搬去左栏 / 抽屉，顶栏只留触发按钮）', () => {
+  /** 摆一份当前简历，好让触发按钮里那句「我在改哪一份」有真东西可显示。 */
+  function seedCurrent(): void {
+    const resume = useResumeStore()
+    resume.profiles = [
+      {
+        id: 'profile-under-test',
+        title: '投后端的那一版',
+        is_default: true,
+        full_name: '张三',
+        created_at: '2026-11-10T10:00:00+08:00',
+        updated_at: '2026-11-10T10:00:00+08:00',
+        deleted_at: null,
+      },
+    ] as typeof resume.profiles
+    resume.currentProfileId = 'profile-under-test'
+  }
+
+  it('窄屏渲染触发按钮并带当前简历名；宽屏整个不渲染（左栏常驻，不需要按钮）', async () => {
+    seedCurrent()
+    const narrow = await mountTopBar({ showResumesTrigger: true })
+    const trigger = narrow.wrapper.find('.resumes-trigger')
+
+    expect(trigger.exists()).toBe(true)
+    expect(trigger.find('.resumes-trigger__label').text()).toBe('简历')
+    expect(trigger.find('.resumes-trigger__title').text()).toBe('投后端的那一版')
+    expect(trigger.attributes('title')).toBe('当前简历：投后端的那一版')
+
+    const wide = await mountTopBar({ showResumesTrigger: false })
+    // 不是 `display: none` 藏起来，是根本不渲染：宽屏 Tab 不该停在一个没有作用的按钮上。
+    expect(wide.wrapper.find('.resumes-trigger').exists()).toBe(false)
+  })
+
+  it('点它只发 toggle-resumes 意图；开合状态与 aria 都跟着外框给的 prop 走', async () => {
+    const closed = await mountTopBar({ resumesOpen: false })
+    const trigger = closed.wrapper.find('.resumes-trigger')
+
+    expect(trigger.attributes('aria-expanded')).toBe('false')
+    // 收起态抽屉不在 DOM 里，指一个不存在的 id 是假声明。
+    expect(trigger.attributes('aria-controls')).toBeUndefined()
+    await trigger.trigger('click')
+    expect(closed.wrapper.emitted('toggle-resumes')).toHaveLength(1)
+    // 顶栏自己不持有开合：prop 没变，按钮就还是收起态（真正开抽屉的是外框）。
+    expect(trigger.attributes('aria-expanded')).toBe('false')
+    expect(document.body.querySelector('#resume-drawer')).toBeNull()
+
+    const open = await mountTopBar({ resumesOpen: true })
+    const openTrigger = open.wrapper.find('.resumes-trigger')
+    expect(openTrigger.attributes('aria-expanded')).toBe('true')
+    expect(openTrigger.attributes('aria-controls')).toBe('resume-drawer')
+    expect(openTrigger.find('.resumes-trigger__caret').classes()).toContain(
+      'resumes-trigger__caret--open',
+    )
+  })
+
+  it('触发按钮不吞掉 pointerdown：别的浮层要看得见这一下，两个抽屉才不会叠在一起', async () => {
     const { wrapper } = await mountTopBar()
-    const trigger = wrapper.find('.switcher-trigger')
+    const seen: Event[] = []
+    const onDocument = (event: Event): void => {
+      seen.push(event)
+    }
+    document.addEventListener('pointerdown', onDocument)
+    try {
+      wrapper.find('.resumes-trigger').element.dispatchEvent(
+        new MouseEvent('pointerdown', { bubbles: true }),
+      )
+      await flushPromises()
+      // 这里**不**写 `@pointerdown.stop`：吞掉它只能豁免自己，账户抽屉就看不见这一下，
+      // 于是「开简历抽屉时账户抽屉还开着」。豁免由基座按 `aria-controls` 精确到面板来做。
+      expect(seen).toHaveLength(1)
 
-    await trigger.trigger('click')
-    expect(wrapper.find('.switcher-menu').exists()).toBe(true)
-
-    // 与抽屉那一条同一个机制（按钮上的 `@pointerdown.stop`）。这个 bug 从旧的手写监听
-    // 就在，只是那时菜单恒在 DOM 里、只切一个 CSS 类，所以没人发现它「再点一次关不掉」。
-    trigger.element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
-    await flushPromises()
-    expect(wrapper.find('.switcher-menu').exists()).toBe(true)
-
-    await trigger.trigger('click')
-    expect(wrapper.find('.switcher-menu').exists()).toBe(false)
+      await wrapper.find('.resumes-trigger').trigger('click')
+      expect(wrapper.emitted('toggle-resumes')).toHaveLength(1)
+    } finally {
+      document.removeEventListener('pointerdown', onDocument)
+    }
   })
 })
 
@@ -271,36 +321,35 @@ describe('窄屏的入口组织（结构判据，不测像素）', () => {
     expect(drawerText()).not.toContain('岗位库')
   })
 
-  it('.user-area 的直接子项是三个一级项，两个动作按钮让位给抽屉', async () => {
-    const { wrapper } = await mountTopBar()
+  it('.user-area 的一级项：窄屏三个（岗位库 / 简历 / 账户），宽屏两个（左栏常驻，不需要简历按钮）', async () => {
     // RouterLink 会自带 `router-link-active` / `aria-current`，所以按「已知入口类名」取值，
     // 而不是照抄整个 class 列表。
-    const KNOWN = ['jobs-entry', 'profile-switcher', 'dirty-dot', 'account-trigger']
-    const topLevel = wrapper
-      .findAll('.user-area > *')
-      .map((node) => KNOWN.find((cls) => node.classes().includes(cls)) ?? '(未知)')
-
-    // 原来是 4 项（`user-name` 那个不说话的 span 单占一格），现在名字并进了账户按钮：
-    // 一级项 3 个 = 岗位库 / 简历切换器 / 账户。窄屏 CSS 再把名字换成「账户」二字。
-    expect(topLevel).toEqual(['jobs-entry', 'profile-switcher', 'account-trigger'])
-    // 触发按钮里两个标签恒在 DOM，显示谁由 CSS 决定（宽屏名字、窄屏「账户」）。
-    expect(wrapper.find('.account-trigger .account-name').text()).toBe('tester')
-    expect(wrapper.find('.account-trigger .account-word').text()).toBe('账户')
-
-    // 收起态抽屉整个不在 DOM 里（那两层 `display: contents` 的宽窄屏分叉随这一片删掉了）。
-    // 这里不再对 `.ai-settings-button` / `.logout-button` 断言「不是直接子项」——那两个类
-    // 已不存在，对不存在的类名断言 false 是一条恒绿的空检。
-    expect(drawerRootEl()).toBeNull()
-
-    await wrapper.find('.account-trigger').trigger('click')
-    // 展开后 `.user-area` 仍然只有那 3 个一级项：抽屉 Teleport 到 body，不占顶栏的一格。
-    expect(
+    const KNOWN = ['jobs-entry', 'resumes-trigger', 'dirty-dot', 'account-trigger']
+    const items = (wrapper: TopBarWrapper): string[] =>
       wrapper
         .findAll('.user-area > *')
-        .map((node) => KNOWN.find((cls) => node.classes().includes(cls)) ?? '(未知)'),
-    ).toEqual(['jobs-entry', 'profile-switcher', 'account-trigger'])
+        .map((node) => KNOWN.find((cls) => node.classes().includes(cls)) ?? '(未知)')
+
+    const narrow = await mountTopBar({ showResumesTrigger: true })
+    // 清单第 5 条之前这里是「岗位库 / 简历切换器 / 账户」，切换器自己带着一整个 Popover；
+    // 现在那一格只剩一个触发按钮，列表本体在左栏或抽屉里（`ResumeList.vue` 一份）。
+    expect(items(narrow.wrapper)).toEqual(['jobs-entry', 'resumes-trigger', 'account-trigger'])
+    // 账户按钮里两个标签恒在 DOM，显示谁由 CSS 决定（宽屏名字、窄屏「账户」）。
+    expect(narrow.wrapper.find('.account-trigger .account-name').text()).toBe('tester')
+    expect(narrow.wrapper.find('.account-trigger .account-word').text()).toBe('账户')
+
+    const wide = await mountTopBar({ showResumesTrigger: false })
+    expect(items(wide.wrapper)).toEqual(['jobs-entry', 'account-trigger'])
+
+    // 收起态抽屉整个不在 DOM 里。这里不再对 `.ai-settings-button` / `.logout-button`
+    // 断言「不是直接子项」——那两个类已不存在，对不存在的类名断言 false 是恒绿空检。
+    expect(drawerRootEl()).toBeNull()
+
+    await narrow.wrapper.find('.account-trigger').trigger('click')
+    // 展开后一级项不变：抽屉 Teleport 到 body，不占顶栏的一格。
+    expect(items(narrow.wrapper)).toEqual(['jobs-entry', 'resumes-trigger', 'account-trigger'])
     expect(drawerRootEl()?.parentElement).toBe(document.body)
-    expect(document.querySelectorAll('#user-drawer > button')).toHaveLength(2)
+    expect(document.querySelectorAll('#user-drawer .drawer-item')).toHaveLength(2)
 
     // 两个动作在整页里**只有一处**：抽屉里那两行。这一条防的是半迁移——
     // 新抽屉建好却忘了删掉旧的一级按钮，用户就会看到两个「退出登录」。
@@ -397,170 +446,7 @@ describe('登出清空岗位 store（handleLogout 的不变量）', () => {
 })
 
 /* ------------------------------------------------------------------ */
-/*  批次 F1b：六处原生弹层里的顶栏两处，走的是同一个页面内弹窗           */
+/*  批次 F1b 那五条（删除 / 去回收站走页面内弹窗）已整段搬到                */
+/*  `ResumeList.spec.ts`：清单第 5 条把列表搬出顶栏之后，那些行为的主语      */
+/*  不再是顶栏。断言逐条保留，只去掉「先展开 Popover」那一步仪式。           */
 /* ------------------------------------------------------------------ */
-
-describe('删除与去回收站走页面内弹层（批次 F1b，守则 C6）', () => {
-  // 以下三个 helper 留在 describe 作用域里：批次 F1b 当时的理由是 `docs/ROADMAP.md` §1
-  // 按行号引用了本文件的结构判据段，顶层多插十几行会把那条引用推到空行上。那条引用在
-  // F3 已改成符号式，理由随之消失；但这三个 helper 只服务这一块用例，挪上去没有收益，就不动。
-  /**
-   * `resume.save()` 的返回类型是 `ProfileRead`，但这几处调用点**只看它有没有被调用**、
-   * 不看返回内容（`goTrash` 成功就跳转、失败就提示）。所以给一个空对象而不是编造一份
-   * 完整档案：编出来的字段会诱使后来的用例去断言它们，而它们并不存在。
-   */
-  const SAVE_RESULT = {} as never
-
-  /** 弹窗 `Teleport` 到 body，所以查询走 document，而不是 wrapper（与 JobDetailView.spec 同法）。 */
-  function bodyText(selector: string): string {
-    return document.body.querySelector(selector)?.textContent ?? ''
-  }
-
-  async function bodyClick(selector: string): Promise<void> {
-    const el = document.body.querySelector(selector)
-    if (!el) throw new Error(`找不到弹窗按钮：${selector}`)
-    ;(el as HTMLElement).click()
-    await flushPromises()
-  }
-
-  /**
-   * `ConfirmDialog` 在生产里挂在 `App.vue`，测试这里按同一个 pinia 单独挂一份。
-   * 不这么做的话，本文件其实只在验 store 里那一格状态，屏幕上有没有真弹窗没人管。
-   */
-  async function mountDialogHost() {
-    const { default: ConfirmDialog } = await import('@/components/ConfirmDialog.vue')
-    const host = mount(ConfirmDialog, { global: { plugins: [pinia] } })
-    mounted.push(host)
-    return host
-  }
-
-  function seedProfiles() {
-    const resume = useResumeStore()
-    resume.profiles = [
-      {
-        id: 'profile-under-test',
-        title: '投后端的那一版',
-        is_default: true,
-        full_name: '张三',
-        created_at: '2026-11-10T10:00:00+08:00',
-        updated_at: '2026-11-10T10:00:00+08:00',
-        deleted_at: null,
-      },
-    ] as typeof resume.profiles
-    resume.currentProfileId = 'profile-under-test'
-    return resume
-  }
-
-  it('点「删除」只打开弹层，此刻一次删除请求都没发；点「确认删除」才删', async () => {
-    const resume = seedProfiles()
-    const deleteSpy = vi.spyOn(resume, 'deleteProfile').mockResolvedValue(undefined)
-    const { wrapper } = await mountTopBar()
-    await mountDialogHost()
-
-    await wrapper.find('.switcher-trigger').trigger('click')
-    await wrapper.find('.icon-button--danger').trigger('click')
-    await flushPromises()
-
-    expect(bodyText('[data-testid="app-dialog"]')).toContain('删除后它进回收站')
-    expect(bodyText('[data-testid="app-dialog"]')).toContain('投后端的那一版')
-    expect(deleteSpy).toHaveBeenCalledTimes(0)
-
-    await bodyClick('[data-testid="app-dialog-cancel"]')
-    expect(deleteSpy).toHaveBeenCalledTimes(0)
-
-    // 反面对照：确认这条路真的删得掉，否则上面那句「没删」只是因为按钮根本没接上。
-    await wrapper.find('.icon-button--danger').trigger('click')
-    await flushPromises()
-    await bodyClick('[data-testid="app-dialog-confirm"]')
-    expect(deleteSpy).toHaveBeenCalledTimes(1)
-    expect(deleteSpy).toHaveBeenCalledWith('profile-under-test')
-  })
-
-  it('有未保存修改时点「回收站」：先问，确认才保存并跳转', async () => {
-    const resume = seedProfiles()
-    const saveSpy = vi.spyOn(resume, 'save').mockResolvedValue(SAVE_RESULT)
-    const { wrapper, router } = await mountTopBar()
-    await mountDialogHost()
-    resume.dirty = true
-
-    await wrapper.find('.switcher-trigger').trigger('click')
-    await wrapper.find('.menu-action--ghost').trigger('click')
-    await flushPromises()
-
-    // 弹层出现的那一瞬间：既没保存也没跳转。
-    expect(bodyText('[data-testid="app-dialog"]')).toContain('上一次保存的那一版')
-    expect(saveSpy).toHaveBeenCalledTimes(0)
-    expect(router.currentRoute.value.name).toBe('job-board')
-
-    await bodyClick('[data-testid="app-dialog-confirm"]')
-    expect(saveSpy).toHaveBeenCalledTimes(1)
-    expect(router.currentRoute.value.name).toBe('recycle-bin')
-  })
-
-  it('这条路取消就不跳转；干净状态（没有未保存修改）直接跳转，不打扰用户', async () => {
-    const resume = seedProfiles()
-    const saveSpy = vi.spyOn(resume, 'save').mockResolvedValue(SAVE_RESULT)
-    const { wrapper, router } = await mountTopBar()
-    await mountDialogHost()
-    resume.dirty = true
-
-    await wrapper.find('.switcher-trigger').trigger('click')
-    await wrapper.find('.menu-action--ghost').trigger('click')
-    await flushPromises()
-    await bodyClick('[data-testid="app-dialog-cancel"]')
-
-    expect(saveSpy).toHaveBeenCalledTimes(0)
-    expect(router.currentRoute.value.name).toBe('job-board')
-
-    // 对照组：dirty 为 false 时这整个问答都不该发生。
-    // （`goTrash` 一进来就收菜单，所以这里要重新打开——不是测试的仪式，是它的行为。）
-    resume.dirty = false
-    await wrapper.find('.switcher-trigger').trigger('click')
-    await wrapper.find('.menu-action--ghost').trigger('click')
-    await flushPromises()
-    expect(bodyText('[data-testid="app-dialog"]')).toBe('')
-    expect(router.currentRoute.value.name).toBe('recycle-bin')
-  })
-
-  it('保存失败时不再弹原生 alert，而是当面说明并停在原页', async () => {
-    const resume = seedProfiles()
-    const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => undefined)
-    const { ApiError } = await import('@/api/client')
-    vi.spyOn(resume, 'save').mockRejectedValue(
-      new ApiError('保存被拒绝了。', 422, 'VALIDATION_ERROR'),
-    )
-    const { wrapper, router } = await mountTopBar()
-    await mountDialogHost()
-    resume.dirty = true
-
-    await wrapper.find('.switcher-trigger').trigger('click')
-    await wrapper.find('.menu-action--ghost').trigger('click')
-    await flushPromises()
-    await bodyClick('[data-testid="app-dialog-confirm"]')
-
-    expect(alertSpy).toHaveBeenCalledTimes(0)
-    expect(bodyText('[data-testid="app-dialog"]')).toContain('没保存成功，所以停在这一页')
-    expect(bodyText('[data-testid="app-dialog"]')).toContain('保存被拒绝了。')
-    expect(router.currentRoute.value.name).toBe('job-board')
-
-    await bodyClick('[data-testid="app-dialog-confirm"]')
-    alertSpy.mockRestore()
-  })
-
-  it('`window.confirm` 一次都没被调用（防的是「将来有人觉得原生省事又改回去」）', async () => {
-    const resume = seedProfiles()
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    vi.spyOn(resume, 'deleteProfile').mockResolvedValue(undefined)
-    vi.spyOn(resume, 'save').mockResolvedValue(SAVE_RESULT)
-    const { wrapper } = await mountTopBar()
-    await mountDialogHost()
-
-    await wrapper.find('.switcher-trigger').trigger('click')
-    await wrapper.find('.icon-button--danger').trigger('click')
-    await flushPromises()
-    await bodyClick('[data-testid="app-dialog-confirm"]')
-
-    expect(confirmSpy).toHaveBeenCalledTimes(0)
-    confirmSpy.mockRestore()
-  })
-})

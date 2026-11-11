@@ -10,7 +10,7 @@
  * 全部挂在真实 `document` 上（`attachTo: document.body`）：基座监听的是 document，
  * 用一个游离的 wrapper 触发不到它，那样的绿是假的。
  */
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { nextTick, ref } from 'vue'
 
@@ -221,9 +221,10 @@ describe('OverlayPanel：面板自己长得像它接管的那个壳', () => {
   })
 
   it('调用方直接写在组件上的 class 与 panelClass 合并，不互相覆盖', () => {
-    // 顶栏「更多」面板写的是 `class="user-actions"` + `:class="{ 'user-actions--open': moreOpen }"`，
-    // 宽屏那套 `display: contents` 与窄屏的 `display: flex` 全靠这两个类；
-    // 一旦基座的 `panelClass` 把 fallthrough 覆盖掉，宽屏就会看不见这两个按钮。
+    // 基座的能力判据：`panelClass` 是形态类，调用方写在组件上的 `class` 是它自己那一层，
+    // 两者必须并存。今天的两个抽屉走 `DrawerPanel` 传 `panel-class="drawer-panel ui-scroll"`，
+    // 没有调用方再写 attrs class；这条留着是因为一旦 fallthrough 被覆盖，
+    // 将来任何调用方加的状态类（`--open` 之类）都会静默失效。
     const wrapper = mount(OverlayPanel, {
       props: { label: '更多操作', panelClass: 'probe-menu' },
       attrs: { class: ['user-actions', 'user-actions--open'] },
@@ -232,5 +233,102 @@ describe('OverlayPanel：面板自己长得像它接管的那个壳', () => {
     expect(wrapper.classes()).toEqual(
       expect.arrayContaining(['overlay-panel', 'probe-menu', 'user-actions', 'user-actions--open']),
     )
+  })
+})
+
+describe('OverlayPanel：自己的触发按钮不算「外面」（aria-controls 反向链接）', () => {
+  /**
+   * 这一组自己收挂载：基座的监听挂在 document 上，不 unmount 就会留给下一条用例，
+   * 而 `document.querySelector('.trigger-a')` 取的是文档里第一个匹配——
+   * 上一条用例留下的同名按钮会让这一条量到别人的面板（绿得没有意义）。
+   */
+  const local: { unmount: () => void }[] = []
+  afterEach(() => {
+    while (local.length) local.pop()?.unmount()
+  })
+
+  /**
+   * 两个面板 + 两个触发按钮，摆成顶栏的真实形状：
+   * 点自己的触发按钮该由调用方开合（基座不关），点**别人的**触发按钮该关（互斥）。
+   * 这两条必须同时成立——只写 `@pointerdown.stop` 能满足前者，却会让后者失效，
+   * 于是两个贴右边的满高抽屉叠在一起。
+   */
+  function mountTwoPanels() {
+    const onCloseA = vi.fn()
+    const onCloseB = vi.fn()
+    const wrapper = mount(
+      {
+        components: { OverlayPanel },
+        setup() {
+          return { onCloseA, onCloseB }
+        },
+        template: `
+          <div>
+            <button class="trigger-a" type="button" aria-controls="panel-a">开 A</button>
+            <button class="trigger-b" type="button" aria-controls="panel-b">开 B</button>
+            <button class="plain" type="button">别处</button>
+            <OverlayPanel panel-id="panel-a" label="甲" @close="onCloseA">
+              <button type="button">A 里面</button>
+            </OverlayPanel>
+            <OverlayPanel panel-id="panel-b" label="乙" @close="onCloseB">
+              <button type="button">B 里面</button>
+            </OverlayPanel>
+          </div>
+        `,
+      },
+      { attachTo: document.body },
+    )
+    local.push(wrapper)
+    return { wrapper, onCloseA, onCloseB }
+  }
+
+  function press(selector: string): void {
+    document.querySelector(selector)?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+  }
+
+  it('点自己的触发按钮 → 不关（那一下是调用方的开合）', async () => {
+    const { onCloseA } = mountTwoPanels()
+    press('.trigger-a')
+    await nextTick()
+    expect(onCloseA).not.toHaveBeenCalled()
+  })
+
+  it('点别人的触发按钮 → 关（两个抽屉因此不会同时开着）', async () => {
+    const { onCloseA, onCloseB } = mountTwoPanels()
+    press('.trigger-b')
+    await nextTick()
+    expect(onCloseA).toHaveBeenCalledTimes(1)
+    expect(onCloseB).not.toHaveBeenCalled()
+  })
+
+  it('点与任何面板都无关的地方 → 两个都关', async () => {
+    const { onCloseA, onCloseB } = mountTwoPanels()
+    press('.plain')
+    await nextTick()
+    expect(onCloseA).toHaveBeenCalledTimes(1)
+    expect(onCloseB).toHaveBeenCalledTimes(1)
+  })
+
+  it('没有 panelId 的面板不认任何触发按钮：点外面照常关', async () => {
+    const onClose = vi.fn()
+    const wrapper = mount(
+      {
+        components: { OverlayPanel },
+        setup() {
+          return { onClose }
+        },
+        template: `
+          <div>
+            <button class="trigger-a" type="button" aria-controls="panel-a">开 A</button>
+            <OverlayPanel label="无 id" @close="onClose"><button type="button">里面</button></OverlayPanel>
+          </div>
+        `,
+      },
+      { attachTo: document.body },
+    )
+    local.push(wrapper)
+    press('.trigger-a')
+    await nextTick()
+    expect(onClose).toHaveBeenCalledTimes(1)
   })
 })

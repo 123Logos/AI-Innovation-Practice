@@ -57,9 +57,9 @@ describe('抽屉里有什么', () => {
     expect(panel).not.toBeNull()
     expect(panel?.getAttribute('role')).toBe('group')
     expect(panel?.getAttribute('aria-label')).toBe('账户')
-    // 基座的形态类与抽屉自己的形态类各管一层，两条都得在，否则 CSS 选择器落空。
+    // 形态类来自 `DrawerPanel`（两个抽屉共用一份尺寸与层级），基座自己的类也在。
     expect([...(panel?.classList ?? [])]).toEqual(
-      expect.arrayContaining(['overlay-panel', 'user-drawer']),
+      expect.arrayContaining(['overlay-panel', 'drawer-panel', 'ui-scroll']),
     )
     expect(bodyEl('.drawer-name')?.textContent).toBe('tester')
   })

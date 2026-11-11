@@ -292,3 +292,37 @@ button, input, textarea { font: inherit; }
   background: var(--ui-surface);
   box-shadow: var(--ui-shadow-dialog);
 }
+
+/*
+ * 自建弹窗的内容套件（标题 / 说明 / 字段 / 单选组 / 错误 / 行动区）。
+ *
+ * 批次 F3 第三片之前它只写在 `AppTopBar.vue` 的 scoped 块里，因为那时两个自建弹窗
+ * （AI 设置、新建简历）都在那一个文件里。「新建简历」随简历列表搬进 `ResumeCreateDialog.vue`
+ * 之后，同一套样式就有了第二个消费者——留在 scoped 里等于要抄一份，而抄出来的那一份
+ * 下次改字号时一定会漏。所以收进全局：它和上面的 `.ui-overlay` / `.ui-panel` 本来就是同一层东西。
+ * 全仓只有这一处定义 `.modal-*`（搬之前 grep 过：其余弹窗各用自己的类名，不冲突）。
+ */
+.modal-title { margin: 0; color: var(--ui-ink); font-size: 17px; font-weight: 650; }
+.modal-intro { margin: 8px 0 18px; color: var(--ui-ink-muted); font-size: 12px; line-height: 1.6; }
+.modal-intro code { padding: 1px 4px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); background: var(--ui-surface-soft); font-family: "SF Mono", Consolas, monospace; font-size: 11px; }
+.modal-field { display: grid; gap: 6px; }
+.modal-field span { color: var(--ui-ink-muted); font-size: 12px; }
+.modal-field input { width: 100%; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 10px 12px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: 14px; outline: 0; }
+.modal-field input:focus { border-color: var(--theme-rule); box-shadow: 0 0 0 2px var(--theme-fade); }
+.modal-modes { display: grid; gap: 8px; margin: 16px 0 0; border: 0; padding: 0; }
+.modal-modes legend { padding: 0 0 6px; color: var(--ui-ink-muted); font-size: 12px; }
+.modal-radio { display: inline-flex; align-items: center; gap: 8px; color: var(--ui-ink); font-size: 13px; cursor: pointer; }
+.modal-radio input { margin: 0; accent-color: var(--theme-primary); }
+.modal-radio--disabled { color: var(--el-text-color-disabled); cursor: not-allowed; }
+.modal-error { margin: 14px 0 0; color: var(--ui-danger); font-size: 12px; line-height: 1.5; }
+.modal-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+/*
+ * 主行动按钮 32px 高：与顶栏控件、`el-button` 同一档（议题 3.A）。
+ * 用 `height` 而不是 `padding` 推，字号变了也不会互相错开。
+ */
+.modal-button { flex: 0 0 auto; height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 16px; color: var(--ui-ink-muted); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: 13px; line-height: 1; white-space: nowrap; }
+.modal-button:hover:not(:disabled) { border-color: var(--theme-rule); color: var(--theme-primary-deep); }
+.modal-button--primary { border-color: var(--theme-primary); color: var(--theme-on-primary); background: var(--theme-primary); }
+.modal-button--primary:hover:not(:disabled) { background: var(--theme-primary-hover); }
+.modal-button:disabled { opacity: .6; cursor: progress; }
+.modal-button:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }

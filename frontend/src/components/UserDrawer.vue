@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 右侧用户抽屉（批次 F3 第二片，老板前端清单第 2 条「退出登录 / AI 设置收进右侧用户抽屉」）。
+ * 右侧用户抽屉（批次 F3 第二片，老板前端清单第 4 条「退出登录 / AI 设置收进右侧用户抽屉」）。
  *
  * 它替掉的是顶栏那个「更多」弹层——里面本来就只有这两项，改名成抽屉不是加一层：
  * 账户级动作（我要退出、我要换凭据）原本和「岗位库」「当前简历」混在同一排，
@@ -8,21 +8,15 @@
  *
  * 三个刻意：
  *
- * 1. **浮层的三件底层事（点外面 / Esc / 焦点归还）仍然由 `OverlayPanel` 一处实现**（L3）。
- *    本组件只写抽屉该有的形态：贴右边、满高、遮罩、窄屏不越过 86vw。
- *    换句话说，清单 4 是基座的第二个消费者，不是第三份手写监听。
- * 2. **Teleport 到 `body`**——这一条与基座相反，而且是被实测逼出来的：`.app-topbar` 上有
- *    `backdrop-filter`，而 `filter` / `backdrop-filter` 按规范给**所有后代**生成 fixed 定位的
- *    包含块。抽屉留在顶栏里时，`inset: 0` 量到的是顶栏那个 58px 高的盒子（375 与 1280 两档
- *    都一样，数值在本片 PR 描述里），抽屉和遮罩都只盖住顶栏那一条。挂到 `body` 后包含块
- *    回到视口。基座自己仍然不 Teleport，「位置与挂载点归调用方」这条没变。
- *    `z-index: 30`（L3 现阶梯里菜单那一档）在根层仍压在顶栏这个 `z-index: 10` 的
- *    stacking context 之上，AI 设置弹窗走 `.ui-overlay` 的 100 档，照样盖住抽屉。
- * 3. **不自带业务决定**：AI 设置怎么开、退出怎么调接口，全在调用方（`AppTopBar.vue`）
+ * 1. **浮层的三件底层事（点外面 / Esc / 焦点归还）由 `OverlayPanel` 一处实现**（L3），
+ *    抽屉这一形态的外壳（Teleport / 遮罩 / 贴右满高）由 `DrawerPanel` 一处实现。
+ *    本组件只写账户这一屏的内容与文案，所以它既不是第三份手写监听，也不是第二份遮罩。
+ * 2. **不自带业务决定**：AI 设置怎么开、退出怎么调接口，全在调用方（`AppTopBar.vue`）
  *    原来的 handler 里，本组件只发两个意图事件。所以这一片没有第二套退出逻辑，也没有
  *    「抽屉里再确认一次」那种分叉。
+ * 3. **名字只作身份确认**：这一屏不能改用户名，所以它是文字不是输入框。
  */
-import OverlayPanel from '@/components/OverlayPanel.vue'
+import DrawerPanel from '@/components/DrawerPanel.vue'
 
 const props = defineProps<{
   /** 当前登录名，只作身份确认用，不可在这一屏改。 */
@@ -39,24 +33,11 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <Teleport to="body">
-    <div class="drawer-root">
-    <!--
-      遮罩不写 `@click`：它在面板**之外**，基座的 pointerdown 判定天然把它算成「点外面」，
-      于是关闭只有一条路径。这里再挂一个 click 就是同一件事写两处——L3 判据针对的正是这种重复。
-    -->
-    <div class="drawer-mask" />
-
-    <OverlayPanel
-      panel-id="user-drawer"
-      panel-class="user-drawer"
-      role="group"
-      label="账户"
-      @close="emit('close')"
-    >
+  <DrawerPanel panel-id="user-drawer" label="账户" @close="emit('close')">
+    <div class="account-body">
       <div class="drawer-heading">
         <p class="drawer-eyebrow">已登录</p>
-        <p class="drawer-name">{{ username }}</p>
+        <p class="drawer-name">{{ props.username }}</p>
       </div>
 
       <button class="drawer-item" type="button" @click="emit('openAiSettings')">AI 设置</button>
@@ -69,40 +50,17 @@ const emit = defineEmits<{
       >
         {{ props.signingOut ? '退出中…' : '退出登录' }}
       </button>
-    </OverlayPanel>
     </div>
-  </Teleport>
+  </DrawerPanel>
 </template>
 
 <style scoped>
-/* 抽屉的层级只写一个数：`.drawer-root` 自己就是那个 fixed 盒子，遮罩与面板在它里面按
-   DOM 顺序叠，不各自再造一档。30 是 L3 现阶梯里菜单那一档；AI 设置弹窗走 `.ui-overlay`
-   的 100 档，所以它压在抽屉之上——退出确认也一样，那是本来就该在上面。 */
-.drawer-root {
-  position: fixed;
-  inset: 0;
-  z-index: 30;
-}
-
-.drawer-mask {
-  position: absolute;
-  inset: 0;
-  background: rgb(15 20 25 / 42%);
-}
-
-.user-drawer {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
+/* 内缩与行距归这一屏：外壳（DrawerPanel）只管贴右满高，不替内容决定留白。 */
+.account-body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  width: min(320px, 86vw);
   padding: 20px 20px 28px;
-  border-left: 1px solid var(--ui-border);
-  background: var(--ui-surface);
-  box-shadow: var(--ui-shadow-menu);
 }
 
 .drawer-heading {
