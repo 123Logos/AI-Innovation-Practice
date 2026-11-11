@@ -10,10 +10,18 @@
 指定用哪一份生成；不传则用默认简历（兼容只发 `title` 的旧前端）。
 
 `_sanitize_copy()` 的五条规则是这套架构的安全边界：模型无法新增技能、无法删段、
-无法改标题与时间，`expand` 的字数上限也由服务端而不是 Prompt 保证。
+无法改标题与时间。字数口径自 ADR-018 起是「目标 + 超限标注」：`expand` 的
+`max_words` 只进提示词与 `over_limit_by` 的账，**不再砍尾**；唯一的硬边是响应契约
+（1200/600），撞到时段级截断并标 `truncated=true`，不再整单 502。
+
+B8（ADR-015 §2.3）起新增 `get_current_resume()`：`resumes` 的第一条读路径，
+「当前简历」只读版本指针，指针落空显式报错，绝不按 `created_at` 猜。
 """
 
-from app.core.document_style import normalize_theme, resolve_layout
+from collections.abc import Sequence
+
+from app.core.document_style import LAYOUT_VERSION, normalize_theme, resolve_layout
+from app.core.error_messages import ErrorMessage
 from app.integrations.copy_writer import (
     CopyAuthError,
     CopyUnavailableError,
@@ -22,7 +30,7 @@ from app.integrations.copy_writer import (
 from app.integrations.resume_generator import ResumeGenerator
 from app.repositories.resume_repository import ResumeRepository
 from app.repositories.student_profile_repository import StudentProfile, StudentProfileRepository
-from app.schemas.profile import EducationInput
+from app.schemas.profile import CertificateInput, EducationInput, PortfolioLinkInput
 from app.schemas.resume import (
     ExperienceInput,
     PolishedExperience,
@@ -36,12 +44,38 @@ from app.schemas.resume import (
     ResumePrivacyCheckRequest,
     ResumeRead,
     SkillInput,
+    clamp_to_polish_contract,
 )
 from app.services.profile_service import ProfileNotFoundError
+
+#: 生成侧拦旧布局的文案（ADR-015 §2.2）：必须是一句**修得动**的话。
+#: 静默回落会把用户排好的顺序换成默认顺序而他看不出来——这比报错更糟。
+#: 句子本身住在 `app/core/error_messages.py`（批次 F1c 起所有上屏文案只有一个来源），
+#: 这里只留一个同义名字给服务层与路由层共用，避免两处各写一遍再慢慢漂移。
+LAYOUT_VERSION_MISMATCH_MESSAGE = ErrorMessage.LAYOUT_VERSION
 
 
 class ProfileIncompleteError(Exception):
     """当前用户还没有可用于生成简历的档案（或缺技能/经历）。"""
+
+
+class ResumeLayoutVersionError(Exception):
+    """档案里存的排版配置不是当前版本，生成新简历前必须重新保存一次（ADR-015 §2.2）。
+
+    只拦「要产出新数据」这一刻：读侧照旧静默回落，已存在简历的快照永不受影响。
+    """
+
+
+class ResumeNotFoundError(Exception):
+    """这份档案还没有生成过任何简历（`resumes` 一行都没有）。"""
+
+
+class ResumePointerBrokenError(Exception):
+    """有简历行但链头指针落空（链头被物理删除，ON DELETE SET NULL 置空了其余行）。
+
+    ADR-015 §2.3：此时必须显式报错，**不许回落到「挑一条看起来最新的」**——
+    回落就是把这条 ADR 作废。用户动作是重新生成一份。
+    """
 
 
 class ResumeApiKeyMissingError(Exception):
@@ -71,7 +105,7 @@ def _skill_key(name: str) -> str:
 
 def _sanitize_copy(copy: ResumeCopy, request: ResumePolishRequest) -> ResumeCopy:
     """把模型输出洗成「可以放心交给用户确认」的结果。五条规则缺一不可
-    （前四条继承自 ADR-009，第五条是 ADR-010 为 `expand` 新增的服务端硬保证）。
+    （前四条继承自 ADR-009，第五条自 ADR-018 起是「目标 + 超限标注」）。
 
     1. **技能不新增也不丢**：模型给的每个名字都必须能对上输入里的技能（否则丢弃），
        模型漏掉的按原顺序补在后面，回给前端的永远是用户自己写过的那个名字。
@@ -80,8 +114,10 @@ def _sanitize_copy(copy: ResumeCopy, request: ResumePolishRequest) -> ResumeCopy
        否则视为上游不合契约——静默少一段就等于悄悄改了用户的事实。
     3. **只替换文案**：标题与时间是既有事实，`index` 就是前后端对齐的唯一锚点。
     4. **空文本回落原值**：模型给出纯空白时保留用户原文，不制造空洞。
-    5. **`expand` 的字数上限由服务端兜**：Prompt 里的要求只是建议，
-       模型超了就必须截——用户要的是「不超过」，不是「尽量不超过」。
+    5. **字数是目标不是命令**（ADR-018 §2）：`expand` 不再按 `max_words` 砍尾，
+       超出目标的部分用 `target_words` + `over_limit_by` 报数，让用户自己减字；
+       只有撞到响应契约（1200/600）才段级截断并标 `truncated=true`，
+       其余段照常返回——「坏的那段坏，好的那段能用」，两端都不许静默。
     """
     catalog: dict[str, SkillInput] = {}
     for skill in request.skills:
@@ -107,60 +143,37 @@ def _sanitize_copy(copy: ResumeCopy, request: ResumePolishRequest) -> ResumeCopy
     ):
         raise ResumeCopyUnavailableError("AI 返回的经历与输入不一致。")
 
+    # `max_words` 只对 expand 生效（校验层已把其它档置空）；它是目标，不是截断线。
+    target_words = request.max_words if request.mode == "expand" else None
+
     polished_items = sorted(copy.experiences, key=lambda item: item.index)
     experiences: list[PolishedExperience] = []
     for item in polished_items:
         original = originals[item.index]
         description = item.description.strip() or original.description
         responsibility = item.responsibility.strip() or original.responsibility
-        if request.mode == "expand" and request.max_words is not None:
-            description, responsibility = _cap_pair(description, responsibility, request.max_words)
+        # 契约级截断（ADR-018 §2.4 / §6）：适配器已对模型原文截过一次，
+        # 这里兜的是「空文本回落原值」那一支——用户原文最长 2000，也可能超契约。
+        description, responsibility, contract_truncated = clamp_to_polish_contract(
+            description, responsibility
+        )
+        # 超目标必须有数：len(返回文字) − target_words，不超为 0（ADR-018 §6 机械判据）。
+        over_limit_by = (
+            max(0, len(description) + len(responsibility) - target_words)
+            if target_words is not None
+            else 0
+        )
         experiences.append(
             PolishedExperience(
                 index=item.index,
                 description=description,
                 responsibility=responsibility,
+                target_words=target_words,
+                over_limit_by=over_limit_by,
+                truncated=item.truncated or contract_truncated,
             )
         )
     return ResumeCopy(skills=ordered, experiences=experiences)
-
-
-#: 截断时给 `responsibility` 留的最小空间：再短就会把一句职责切成分号前面的半个词。
-_RESPONSIBILITY_FLOOR = 10
-_SENTENCE_ENDS = ("。", "！", "？", "；", "\n")
-
-
-def _cap_text(text: str, limit: int) -> str:
-    """把文本截到 `limit` 个字符：优先在句末边界收刀，边界太靠后（不足半程）才硬切。"""
-    if len(text) <= limit:
-        return text
-    window = text[:limit]
-    for mark in _SENTENCE_ENDS:
-        position = window.rfind(mark)
-        if position >= limit // 2:
-            return window[: position + 1]
-    return window.rstrip()
-
-
-def _cap_pair(description: str, responsibility: str, max_words: int) -> tuple[str, str]:
-    """让**一段**（描述 + 职责合计）不超过 `max_words` 字。
-
-    先给职责留一份预算（不超过其自身长度、且不少于下限），剩下的给描述；
-    描述截短之后，再把省下来的额度还给职责。两个字段都保有不小于
-    `_RESPONSIBILITY_FLOOR` 的空间，避免截成空串撞上 `min_length=1`。
-    """
-    if len(description) + len(responsibility) <= max_words:
-        return description, responsibility
-
-    responsibility_budget = max(_RESPONSIBILITY_FLOOR, min(len(responsibility), max_words // 3))
-    capped_description = _cap_text(
-        description, max(_RESPONSIBILITY_FLOOR, max_words - responsibility_budget)
-    )
-    capped_responsibility = _cap_text(
-        responsibility,
-        max(_RESPONSIBILITY_FLOOR, max_words - len(capped_description)),
-    )
-    return capped_description, capped_responsibility
 
 
 class ResumeService:
@@ -180,9 +193,15 @@ class ResumeService:
 
     def generate(self, user_id: str, payload: ResumeGenerateRequest) -> ResumeRead:
         profile = self._resolve_profile(user_id, payload.profile_id)
+        # ADR-015 §2.2：版本失配只在「要产出新数据」时拦人。旧布局生成新简历 → 422，
+        # 文案必须修得动；读侧照旧静默回落，已存在简历的快照永不受影响。
+        self._ensure_current_layout(profile)
         skills = self._profile_repository.list_skills(profile.id)
         experiences = self._profile_repository.list_experiences(profile.id)
         educations = self._profile_repository.list_educations(profile.id)
+        certificates = self._profile_repository.list_certificates(profile.id)
+        portfolio_links = self._profile_repository.list_portfolio_links(profile.id)
+        # 期望城市**不读**：它不是简历区块（ADR-015 §5 ③），不进 content_html。
         # 保存是草稿式的（`ProfileUpsertRequest.full_name` / `contact` 都允许空），
         # 所以「基本信息填全了没有」必须在这里判，否则 pydantic 会在下面抛
         # ValidationError，冒到接口层变成 500 —— 而它其实是一个「档案不完整」的 400。
@@ -229,9 +248,20 @@ class ResumeService:
             # 导出 / 分享出去也带着配色，不依赖页面样式表。
             theme=normalize_theme(profile.theme),
             # 顺序与标题同样跟着这份简历走（D5.3）。`resolve_layout()` 是唯一入口：
-            # 库里是 NULL 或脏数据时它一律给出「3 段、合法 id、标题非空」的顺序，
+            # 库里是 NULL 或脏数据时它一律给出「5 段、合法 id、标题非空」的顺序，
             # 所以生成器拿到的永远是可渲染的列表，不需要自己判空。
             layout=resolve_layout(profile.layout_config),
+            certificates=[
+                CertificateInput(
+                    name=certificate.name,
+                    issuer=certificate.issuer,
+                    issued_on=certificate.issued_on,
+                )
+                for certificate in certificates
+            ],
+            portfolio=[
+                PortfolioLinkInput(label=link.label, url=link.url) for link in portfolio_links
+            ],
         )
         resume = self._resume_repository.create_resume(
             student_profile_id=profile.id,
@@ -243,7 +273,49 @@ class ResumeService:
             title=resume.title,
             content_html=resume.content_html,
             created_at=resume.created_at,
+            version_no=resume.version_no,
         )
+
+    def get_current_resume(self, user_id: str, profile_id: str | None = None) -> ResumeRead:
+        """「当前简历」读路径（B8 / ADR-015 §2.3）：**只准读版本指针**。
+
+        三种状态分开报，绝不合并成「挑一条看起来最新的」：
+
+        - 链头在 → 返回它（`is_head = 1` 的那条，自指即链头）；
+        - 一行都没有 → `ResumeNotFoundError`（还没生成过，404）；
+        - 有行但无链头 → `ResumePointerBrokenError`（链头被删、指针落空，显式报错）。
+          回落到 `ORDER BY created_at DESC LIMIT 1` 从此不许出现在任何地方。
+        """
+        profile = self._resolve_profile(user_id, profile_id)
+        head = self._resume_repository.get_head(profile.id)
+        if head is None:
+            if self._resume_repository.count_by_profile(profile.id) > 0:
+                raise ResumePointerBrokenError(profile.id)
+            raise ResumeNotFoundError(profile.id)
+        return ResumeRead(
+            resume_id=head.id,
+            title=head.title,
+            content_html=head.content_html,
+            created_at=head.created_at,
+            version_no=head.version_no,
+        )
+
+    @staticmethod
+    def _ensure_current_layout(profile: StudentProfile) -> None:
+        """生成前的排版版本闸（ADR-015 §2.2 的「生成」那一格）。
+
+        `NULL` = 从未自定义，按默认顺序生成，不拦；只要存过配置而版本不是当前值
+        （含旧版本、未知版本、手工改库改坏的非对象），一律 422 让用户去排版面板
+        重新保存——静默回落会把他排好的顺序换成默认顺序，而他看不出来。
+        版本相符但 sections 脏的，仍由 `resolve_layout()` 宽松降级（那是数据状态，
+        不是「旧版本」）。
+        """
+        config = profile.layout_config
+        if config is None:
+            return
+        version = config.get("version") if isinstance(config, dict) else None
+        if version != LAYOUT_VERSION:
+            raise ResumeLayoutVersionError(LAYOUT_VERSION_MISMATCH_MESSAGE)
 
     def polish(self, request: ResumePolishRequest) -> ResumeCopy:
         """ADR-010：纯润色。不读库、不写库，结果只回给前端草稿态。
@@ -276,11 +348,15 @@ class ResumeService:
         （`generate()` 走同一个 `_resolve_profile`、同一批 `list_*`）。两头各判一次，
         检查结果就会对着一份不存在的简历说话，那比不检查更坏。
 
-        FR-06 点名的四类里今天真能核对的只有两类：作品链接与授权范围在数据模型里没有任何
-        对应的列或表（取证与措辞见下面那两条常量），这两格如实返回 `not_available`，
-        不为了让清单看起来更满而造字段或建表。
+        FR-06 点名的四类里，**批次 B4 之前**只有两类真能核对：作品链接与授权范围在数据模型里
+        没有任何对应的列或表，那两格如实返回 `not_available`。B4 把
+        `portfolio_links` / `profile_certificates` 建起来之后，「作品链接」这一格第一次
+        真的可核（见 `_build_privacy_check`），**只剩授权范围仍是 `not_available`**——
+        它要等 B5 的组织与角色。这条判断跟着 ADR-019 §3 的口径走：能核就核，核不了就说核不了，
+        绝不为让清单看起来更满而造字段。
         """
         profile = self._resolve_profile(user_id, payload.profile_id)
+        portfolio_links = self._profile_repository.list_portfolio_links(profile.id)
         return _build_privacy_check(
             profile_id=profile.id,
             full_name=profile.full_name,
@@ -290,6 +366,8 @@ class ResumeService:
             skill_count=len(self._profile_repository.list_skills(profile.id)),
             experience_count=len(self._profile_repository.list_experiences(profile.id)),
             education_count=len(self._profile_repository.list_educations(profile.id)),
+            certificate_count=len(self._profile_repository.list_certificates(profile.id)),
+            portfolio_links=[(link.label, link.url) for link in portfolio_links],
         )
 
     def _resolve_profile(self, user_id: str, profile_id: str | None) -> StudentProfile:
@@ -321,11 +399,13 @@ class ResumeService:
 # 由调用处（`ResumeService.privacy_check`）用同一个 `_resolve_profile` 定位同一份简历。
 # 两处各判一次「这一格有没有」就会对出一份不存在的简历，那比不检查更坏。
 #
-# FR-06 点名的四类里，今天真能核对的只有两类。「作品链接」与「授权范围」在数据模型里
-# 没有任何对应的列或表（取证：`student_profiles` 全部列 = id/user_id/title/is_default/
-# deleted_at/paper_size/theme/layout_config/full_name/email/grade/contact/target_role/
-# created_at/updated_at；全仓 `consent`/`authoriz`/`visibility`/`is_public` 零命中）。
-# 这两格如实返回 `not_available`，不为了让清单看起来更满而造字段或建表。
+# FR-06 点名的四类里，「作品链接」自批次 B4 起**真的可核**（`portfolio_links` 表已存在，
+# 生成物里也是真实的 `<a href>`），所以它不再返回 `not_available`。「授权范围」仍然
+# `not_available`：数据模型里没有任何对应的列或表（取证：`student_profiles` 全部列 =
+# id/user_id/title/is_default/deleted_at/paper_size/theme/layout_config/full_name/
+# email/grade/contact/target_role/resume_version_seq/created_at/updated_at；
+# 全仓 `consent`/`authoriz`/`visibility`/`is_public` 零命中），要等批次 B5 的组织与角色。
+# 如实返回，不为了让清单看起来更满而造字段或建表。
 # --------------------------------------------------------------------------- #
 
 
@@ -339,6 +419,8 @@ def _build_privacy_check(
     skill_count: int,
     experience_count: int,
     education_count: int,
+    certificate_count: int,
+    portfolio_links: Sequence[tuple[str, str]],
 ) -> ResumePrivacyCheck:
     """把「会被带出去什么」组装成四类清单。纯计算，不写任何东西。"""
 
@@ -403,6 +485,17 @@ def _build_privacy_check(
             ),
         ),
         PrivacyItem(
+            key="certificates",
+            label=f"证书（{certificate_count} 条）",
+            present=certificate_count > 0,
+            included=certificate_count > 0,
+            note=(
+                None
+                if certificate_count > 0
+                else "一条证书都没填：这一节整节不渲染，不会留一个空标题。"
+            ),
+        ),
+        PrivacyItem(
             key="target_role",
             label="目标岗位偏好",
             present=bool(target_role and target_role.strip()),
@@ -419,9 +512,24 @@ def _build_privacy_check(
             PrivacyCategory(
                 key="portfolio",
                 label="作品链接",
-                status="not_available",
-                note="这份产品今天还没有「作品链接」这一栏（档案里没有这一列），所以它不会被带进简历；等这一栏能填了，这里才会真的检查。",
-                items=[],
+                # 批次 B4 起这一格真能核：`portfolio_links` 是真实存在的表，生成物里
+                # 每条都是可点的 `<a href>`——「会被带出去」在这里是字面意思。
+                status="present" if portfolio_links else "missing",
+                note=(
+                    None
+                    if portfolio_links
+                    else "还没填作品链接：简历上这一节整节不渲染，看简历的人也就点不进去。"
+                ),
+                items=[
+                    PrivacyItem(
+                        key=f"portfolio-{index}",
+                        label=label,
+                        present=True,
+                        included=True,
+                        note=f"会被带出去：{url}",
+                    )
+                    for index, (label, url) in enumerate(portfolio_links)
+                ],
             ),
             PrivacyCategory(
                 key="personal",
