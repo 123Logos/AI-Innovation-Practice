@@ -39,17 +39,21 @@ import ResumeList from '@/components/ResumeList.vue'
 import { useViewport } from '@/composables/useViewport'
 
 /**
- * 简历列表住哪：宽屏（≥1100）常驻左栏，其余宽度折叠成右侧抽屉（清单第 5 条）。
+ * 简历列表住哪：≥1440 常驻左栏，其余宽度折叠成右侧抽屉（清单第 5 条）。
  *
  * 这是全站第一处「按宽度换组件」，所以它必须问 `useViewport()`——守则 L2 只允许
  * `composables/useViewport.ts` 发出宽度 `matchMedia`，别处自己写一份就是第二套断点。
- * 中间那段（761–1099）归抽屉：常驻栏要吃掉 240px，而简历工作区在这个宽度本来就已经
- * 退成两列，再塞一列会把纸面挤到不可读。
+ *
+ * **阈值为什么不是 `wide: 1100`**（老板 2026-11-11 裁定的第二次落地，`ROADMAP.md` §6b 第 3 条）：
+ * 左栏要吃掉 240px，跟着 1100 登场时纸面从 629px（1024）掉到 485px（1120）——
+ * 「屏幕更宽、简历更小」。收窄左栏救不了（要保住 629px 只剩 96px 可用，放不下简历行），
+ * 所以抬到纸面已经封顶 A4 原大的那一档：≥1440 时有无左栏纸面都是 794px，登场不缩水。
+ * 1100–1439 这段不是「没有列表」，是改用下面那个**已经存在的**抽屉。
  *
  * 开合状态放在这里而不是顶栏：触发按钮在顶栏、抽屉在外框，两者的共同父级只有这一层。
  * 顶栏只发 `toggle-resumes`，它不知道也不关心当前是常驻还是抽屉。
  */
-const { isWide } = useViewport()
+const { isSidebar } = useViewport()
 const resumesOpen = ref(false)
 const createVisible = ref(false)
 
@@ -71,13 +75,13 @@ function openCreate(): void {
   <div class="app-shell">
     <AppTopBar
       :resumes-open="resumesOpen"
-      :show-resumes-trigger="!isWide"
+      :show-resumes-trigger="!isSidebar"
       @toggle-resumes="toggleResumes"
     />
 
     <div class="app-body">
-      <!-- 宽屏：常驻左栏。它是内容（用户自己的简历），不是模块导航，所以不进模块表（L4）。 -->
-      <aside v-if="isWide" class="resume-sidebar" aria-label="我的简历">
+      <!-- ≥1440：常驻左栏。它是内容（用户自己的简历），不是模块导航，所以不进模块表（L4）。 -->
+      <aside v-if="isSidebar" class="resume-sidebar" aria-label="我的简历">
         <ResumeList @create="openCreate" />
       </aside>
 
@@ -97,7 +101,7 @@ function openCreate(): void {
 
     <Transition name="ui-fade">
       <ResumeDrawer
-        v-if="!isWide && resumesOpen"
+        v-if="!isSidebar && resumesOpen"
         @close="resumesOpen = false"
         @create="openCreate"
       />
@@ -123,7 +127,7 @@ function openCreate(): void {
 /*
  * 常驻左栏。`top` 那个 63px 是顶栏的高度，由内容算出来而不是令牌：
  * 品牌方块 34 + 上下内缩 14×2 + 下边框 1 = 63（≥1100 档实测 63px，375 档 59px，
- * 但左栏只在 ≥1100 出现，所以只需要宽屏那一档）。顶栏是 sticky 的，左栏若不跟着
+ * 但左栏只在 ≥1440 出现，所以只需要那一档）。顶栏是 sticky 的，左栏若不跟着
  * sticky 就会滚走——「常驻」的意思是不用点一下才出现，也不是滚两屏就没了。
  * 这个数没有令牌可取，所以它被 R2 的两档实测钉住：改顶栏内缩或品牌方块尺寸时要一起改。
  */
