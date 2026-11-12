@@ -108,6 +108,10 @@ B5 实际落库的是下面三张，迁移文件 `alembic/versions/20261112_0018
 > 2026-11-12 批次 B11a（FR-07，ADR-022）落地**纯文本**面试，只建两张关系表。
 > 旧版领域图里的 `media_rooms`、`interview_reports` 本期**未建**，留待 B11b（音视频 + 评估报告）。
 > 迁移：`alembic/versions/20261112_0019_interview_sessions.py`，`down_revision="20261111_0017"`，upgrade 建表 / downgrade 删表（先删子表 `interview_turns` 再删父表 `interview_sessions`）。
+> 它与批次 B5 的 `0018` 是两条并行分支（同以 `0017` 为父），合入 master 时由
+> `alembic/versions/20261112_0020_merge_b5_b11a_heads.py` 收敛成单一 head；
+> `upgrade head` / `downgrade 20261111_0017` / `upgrade head` 已在干净测试库双向实测
+> （merge point 上 `downgrade -1` 会 `Ambiguous walk`，必须指定明确 revision）。
 
 ### 7.1 `interview_sessions`（会话元信息）
 

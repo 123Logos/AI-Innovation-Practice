@@ -183,7 +183,7 @@ api/ → services/ → repositories/ → integrations/
 | 并行上限 | 同时 2 条线开工，第 3 条排队。每条线一个 `git worktree` + 一条分支，**不共用工作树**（切分支会把另一条线的文件换掉） |
 | 归属 | 主代理持有**改动面最大、会影响全站鉴权或共享契约**的那一条（例如 B5 的角色与 `RegisterRequest`）；子 agent 只拿**文件族不相交**的批次 |
 | 共享注册文件 | `app/api/v1/__init__.py`、`app/repositories/*` 里的 `Base` 复用、`frontend/src/router/*`、`frontend/src/config/modules.ts`、`docs/ROADMAP.md`、`docs/API.md`：**子线只允许各加自己那一行，且必须在交付说明里列出行号**，由主代理在合并时统一排序与去重 |
-| 迁移 | 各线独立 revision，`down_revision` **一律指向合入 master 时的当前 head**（不各自串成链）。合并后由主代理跑一次 `alembic merge` 生成 merge revision，并验证 `upgrade head` / `downgrade -1` 双向 |
+| 迁移 | 各线独立 revision，`down_revision` **一律指向合入 master 时的当前 head**（不各自串成链）。合并后由主代理跑一次 `alembic merge` 生成 merge revision，并验证 `upgrade head` / `downgrade <分叉点 revision>` / `upgrade head` 双向。**merge point 上 `downgrade -1` 必然报 `Ambiguous walk`**（Alembic 无法在两个父之间选），降级只能指定明确目标；2026-11-12 B5×B11a 实测确认 |
 | 数据库 | 每条子线一个独立测试库（`resume_mvp_test_<线名>`），跑测试时用环境变量覆盖 `TEST_DATABASE_URL`（`tests/conftest.py` 里环境变量优先于 `.env`）；**绝不共用 `resume_mvp_test`**，用例会清空业务表 |
 | 依赖 | worktree 里不为前端装第二份 `node_modules`：用 `mklink /J` 指回主工作树那份；装不上就**只跑后端测试**并在交付里写明前端未验 |
 | 推送 | **子线不推远端、不开 PR**。它在本地提交，主代理合并时统一推，避免两条线并发改同一个远端引用 |

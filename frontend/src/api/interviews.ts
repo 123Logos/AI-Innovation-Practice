@@ -15,7 +15,7 @@
  */
 
 import { http, unwrap } from './client'
-import type { ApiMeta, ApiSuccess } from './types'
+import type { ApiSuccess } from './types'
 
 /* --------------------------------- 枚举与常量 --------------------------------- */
 
@@ -183,11 +183,4 @@ export async function endInterview(id: string): Promise<InterviewSessionRead> {
     `/interviews/${id}/end`,
   )
   return unwrap(response).session
-}
-
-/** 列表 `meta` 在信封外层 `request_id` 之外多三个分页字段。 */
-interface InterviewListMeta extends ApiMeta {
-  page: number
-  page_size: number
-  total: number
 }

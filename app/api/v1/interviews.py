@@ -15,6 +15,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from app.core.error_messages import ErrorMessage
 from app.core.responses import success_response
 from app.schemas.auth import UserRead
 from app.schemas.interview import (
@@ -41,7 +42,9 @@ CurrentUserDep = Annotated[UserRead, Depends(get_current_user)]
 
 def _not_found() -> HTTPException:
     """越权与不存在共用同一个 404（T6 错误模型：404 的 message 由全局处理器统一）。"""
-    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="面试会话不存在。")
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND, detail=ErrorMessage.INTERVIEW_NOT_FOUND
+    )
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -132,7 +135,7 @@ def send_interview_message(
         raise _not_found() from error
     except InterviewSessionEndedError as error:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="该面试会话已结束。"
+            status_code=status.HTTP_400_BAD_REQUEST, detail=ErrorMessage.INTERVIEW_ENDED
         ) from error
     result = InterviewMessageResult(
         candidate_turn=InterviewTurnRead.model_validate(candidate_turn),
