@@ -164,6 +164,37 @@ describe('详情页：降级必须可见（守则 C4）', () => {
     expect(combined).not.toContain('DeepSeek')
   })
 
+  it('开场轮的内置题库与「用户没填凭据」分开说，不误报未配置凭据', async () => {
+    interviewsApi.getInterview.mockResolvedValue({
+      session: {
+        id: 's1',
+        user_id: 'u1',
+        job_id: null,
+        status: 'active',
+        target_role: null,
+        created_at: '2026-11-10T10:00:00+08:00',
+        updated_at: '2026-11-10T10:00:00+08:00',
+        ended_at: null,
+      },
+      turns: [
+        {
+          id: 't1',
+          session_id: 's1',
+          sequence: 1,
+          speaker: 'interviewer',
+          content: '你好，请做自我介绍。',
+          ai_degrade_reason: 'key_missing',
+          created_at: '2026-11-10T10:00:00+08:00',
+        },
+      ],
+    })
+    const { wrapper } = await mountDetail()
+
+    const combined = wrapper.findAll('[role="alert"]').map((node) => node.text()).join(' ')
+    expect(combined).toContain('开场用内置题库，下一轮起由 AI 接手。')
+    expect(combined).not.toContain('还没填写 AI 使用凭据')
+  })
+
   it('详情读取失败时同样给出可见提示', async () => {
     interviewsApi.getInterview.mockRejectedValue(new Error('网络断了'))
     const { wrapper } = await mountDetail()

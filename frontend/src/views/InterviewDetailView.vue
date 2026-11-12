@@ -79,7 +79,9 @@ async function endInterview(): Promise<void> {
 
 /** 一个轮次的降级提示（非空才展示）。 */
 function turnHint(turn: InterviewTurnRead): string | null {
-  return interviewDegradeHint(turn.ai_degrade_reason)
+  // 开场轮（sequence=1）走的是「不带凭据的刻意内置题库」，与「用户没填凭据」不是
+  // 同一件事，话术必须分开；非开场轮仍按后端给的降级键逐字翻译（守则 C4）。
+  return interviewDegradeHint(turn.ai_degrade_reason, turn.sequence === 1)
 }
 
 onMounted(load)

@@ -419,8 +419,11 @@ describe('401 分流：登录过期 vs Key 无效', () => {
  *
  * 面试官的下一段由 AI 生成，所以 `POST /interviews/{id}/messages` 必须带 `X-DeepSeek-Key`；
  * 而 `GET /interviews/{id}`（详情，纯数据库）与 `POST /interviews`（建会话）则**不**带——
- * 后者也会调 AI，但用的是我们自己的服务端逻辑、不消耗用户的凭据额度，按「每扩一个 URL
- * 都要能回答会不会转发给 DeepSeek」的纪律，它不在白名单里。
+ * 后者也会产出一道开场题，但**服务端并没有另一套自己的 AI**：`get_interview_service`
+ * 拿不到 `X-DeepSeek-Key` 时装配 `coach=None`，`InterviewService._generate` 直接回落
+ * 内置题库并打 `key_missing`。所以「建会话不带 Key」是白名单口径下的刻意决定
+ * （开场题不消耗用户凭据额度），不是「服务端另有 AI 通道」；前端因此对开场轮单独给
+ * 话术「开场用内置题库，下一轮起由 AI 接手」，见 `interviewDegradeHint`。
  */
 describe('Key 注入：模拟面试只让「发消息」这一个 URL 带 Key', () => {
   let sentHeaders: Array<{ url: string; key: string | undefined }>
