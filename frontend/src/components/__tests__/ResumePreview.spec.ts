@@ -40,7 +40,7 @@ import type { ApiErrorBody } from '@/api/types'
 import ResumeEditor from '@/components/ResumeEditor.vue'
 import ResumePreview from '@/components/ResumePreview.vue'
 import { useAuthStore } from '@/stores/auth'
-import { useResumeStore } from '@/stores/resume'
+import { useResumeStore, PX_PER_MM } from '@/stores/resume'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 const PROFILE_ID = 'profile-under-test'
@@ -581,5 +581,80 @@ describe('证书与作品：实时预览必须与生成物同构', () => {
     const wrapper = await mountWorkspace()
     expect(wrapper.find('.certificate-name').exists()).toBe(false)
     expect(wrapper.find('.portfolio-label').exists()).toBe(false)
+  })
+})
+
+/**
+ * 一页边界预警（第 15 轮裁定，`docs/ROADMAP.md` §6 第 5 条）。
+ *
+ * 裁定的原文是「在预览区高度等于一页 A4 的位置画一条明显的虚线，旁边写上
+ * 『建议单页，此处后内容可能被 HR 忽略』」——**不截断、不缩字**。
+ * 所以本组用例要钉住的不是「线好看不好看」，而是三件会被做坏的事：
+ *
+ * 1. 内容只有一页时**别画**：那时线和纸张底边重合，是一条没有信息量的边线；
+ * 2. 真的超过一页时**必须画**，且文案逐字来自裁定（改成「超过一页」就等于把
+ *    「HR 可能不看」这个真正该权衡的理由弄丢了）；
+ * 3. 它挂在 stage 上而不是纸面内部——进了 `.paper` 会进 `scrollHeight`（页数算歪），
+ *    也会混进 contenteditable 与 `v-html` 生成物里。
+ *
+ * 这里量高度靠临时改写 `HTMLElement.prototype.scrollHeight`：jsdom 没有布局引擎，
+ * `scrollHeight` 恒为 0，不垫这一刀组件永远只会算出「1 页」，用例会对着一个
+ * 从不出现的元素断言 `toBe(false)` 而假绿。
+ */
+describe('一页边界预警', () => {
+  /** A4 一页的真实高度（px）。纸面按 mm 排版，量出来的高度也是这个坐标系。 */
+  const A4_ONE_PAGE_PX = 297 * PX_PER_MM
+
+  /**
+   * 让 `.paper` 量到指定高度；传 `null` 恢复 jsdom 的默认（恒 0）。
+   *
+   * 只拦 `.paper` 自己的 `scrollHeight`：其它元素一概返回 0，
+   * 免得顺手把某个看不见的容器也「量」成一个假高度。
+   */
+  function stubPaperHeight(px: number | null): void {
+    if (px === null) {
+      Reflect.deleteProperty(HTMLElement.prototype, 'scrollHeight')
+      return
+    }
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get(this: HTMLElement): number {
+        return this.classList?.contains('paper') ? px : 0
+      },
+    })
+  }
+
+  afterEach(() => stubPaperHeight(null))
+
+  it('内容在一页以内：不画线、不写提示（不制造没信息量的焦虑）', async () => {
+    stubPaperHeight(A4_ONE_PAGE_PX * 0.6)
+    const wrapper = await mountWorkspace()
+
+    expect(wrapper.find('.paper-page-guard').exists()).toBe(false)
+    // 反向护栏：纸面确实渲染了，不是「整个组件没出来」才找不到这条线。
+    expect(paperDescription(wrapper).text()).toBe(ORIGINAL_DESCRIPTION)
+    expect(wrapper.get('.page-count').text()).toContain('1 页')
+  })
+
+  it('超过一页：画一条线，提示逐字来自裁定，纸面内容一个字都没被裁掉', async () => {
+    stubPaperHeight(A4_ONE_PAGE_PX * 1.3)
+    const wrapper = await mountWorkspace()
+
+    const guard = wrapper.get('.paper-page-guard')
+    expect(guard.text()).toBe('建议单页，此处后内容可能被 HR 忽略')
+    // 它得能被读屏读到，否则这句话只对看得见颜色的人成立。
+    expect(guard.attributes('role')).toBe('note')
+    expect(wrapper.get('.page-count').text()).toContain('2 页')
+
+    // 裁定是「纸可以拉长成两页」，所以内容必须原样在纸上，没有被截掉半句。
+    expect(paperDescription(wrapper).text()).toBe(ORIGINAL_DESCRIPTION)
+  })
+
+  it('线挂在 stage 上、不挂在纸面里（否则会进 scrollHeight，也会混进可编辑区）', async () => {
+    stubPaperHeight(A4_ONE_PAGE_PX * 1.3)
+    const wrapper = await mountWorkspace()
+
+    expect(wrapper.find('.paper-stage > .paper-page-guard').exists()).toBe(true)
+    expect(wrapper.find('.paper .paper-page-guard').exists()).toBe(false)
   })
 })

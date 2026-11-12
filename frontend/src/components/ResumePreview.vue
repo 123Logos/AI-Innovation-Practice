@@ -82,6 +82,23 @@ const stageStyle = computed<Record<string, string>>(() => ({
 
 const paperMeta = computed(() => `${store.paperSpec.label} · ${pageCount.value} 页`)
 
+/* ------------------------- 一页边界预警（第 15 轮裁定） ------------------------- */
+
+/**
+ * 纸面允许自然拉长成两页，但必须把「第二页的代价」摆到用户眼前（`docs/ROADMAP.md` §6 第 5 条）：
+ * 在**一页高度**处画一条虚线与一句提示，把「要不要删」的选择权交回用户。
+ *
+ * 三条刻意的取舍：
+ *
+ * 1. **不截断、不缩字**：`.paper` 用的是 `min-height`，这条线不碰任何高度/溢出规则。
+ * 2. **只在一页装不下时出现**：内容刚好一页时，这条线会和纸张底边重合，
+ *    变成一条莫名其妙的边线；它对用户的唯一价值是「你已经超了」。
+ * 3. **文案逐字来自裁定**，不改写成「超过一页」——「HR 可能不看」才是他真正该权衡的东西。
+ */
+const OVERFLOW_HINT = '建议单页，此处后内容可能被 HR 忽略'
+
+const showPageGuard = computed(() => pageCount.value > 1)
+
 /**
  * 主题色下发（D5.2）。
  *
@@ -732,6 +749,16 @@ function updateExpDate(
           </template>
         </article>
 
+        <!--
+          一页边界预警：挂在 stage 上而**不是纸面内部**——
+          放进 `.paper` 会进 `scrollHeight`（把页数算歪），也会混进 contenteditable
+          与 `v-html` 的生成物里。位置由变量算，不写死像素。
+        -->
+        <div v-if="showPageGuard" class="paper-page-guard" role="note">
+          <span class="paper-page-guard__rule" aria-hidden="true"></span>
+          <span class="paper-page-guard__hint">{{ OVERFLOW_HINT }}</span>
+        </div>
+
         <!-- 水印：绝对定位在纸张右下角，pointer-events:none 不干扰纸面编辑。 -->
         <span class="paper-watermark" aria-hidden="true">职途AI</span>
       </div>
@@ -891,6 +918,47 @@ function updateExpDate(
   box-shadow: 0 14px 36px #2633301c;
 }
 
+/*
+ * 一页边界预警（第 15 轮裁定，`docs/ROADMAP.md` §6 第 5 条）。
+ *
+ * 位置一律由 `--paper-height`（真实 mm）× `--paper-zoom` 算出，**不写死像素**：
+ * 换成 Letter（279.4mm）或改缩放，线跟着走，没有第二处要同步。
+ * 字号与粗细也乘了 zoom —— 它是预览层的一部分，纸缩小了它不能保持原尺寸。
+ *
+ * 颜色走 UI 令牌而不是 `--paper-*`：这条线是**界面在提示**，不是简历内容，
+ * 它要跟着换肤/暗色走；纸面那一套固定色只属于打印出去的东西。
+ */
+.paper-page-guard {
+  position: absolute;
+  top: calc(var(--paper-height, 297mm) * var(--paper-zoom, 1));
+  left: 0;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  justify-content: flex-end;
+  /* 浮在纸面上但不挡编辑：用户看到的每一处文字都必须还能点。 */
+  pointer-events: none;
+}
+.paper-page-guard__rule {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  border-top: calc(2px * var(--paper-zoom, 1)) dashed var(--ui-warning);
+  opacity: .85;
+}
+.paper-page-guard__hint {
+  margin-top: calc(6px * var(--paper-zoom, 1));
+  border-radius: var(--ui-radius);
+  padding: calc(2px * var(--paper-zoom, 1)) calc(8px * var(--paper-zoom, 1));
+  color: var(--ui-warning);
+  background: var(--ui-warning-soft);
+  font-size: calc(var(--text-xs) * var(--paper-zoom, 1));
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
 /* 窄屏：按钮变宽后单行放不下，工具栏改为两行，按钮独占整行（仍满足「撑满」）。 */
 @media (max-width: 720px) {
   .preview-toolbar { flex-wrap: wrap; row-gap: 10px; }
@@ -905,6 +973,11 @@ function updateExpDate(
 
 @media print {
   .preview-toolbar { display: none; }
+  /*
+   * 预警线只在屏幕上说话：纸上那条虚线打印出来会被 HR 当成简历的一部分，
+   * 分页由 `@page` 与下面那条 `page-break-inside: avoid` 负责。
+   */
+  .paper-page-guard { display: none; }
   /*
    * 打印必须**取消缩放**：stage 上的 width/height 是屏幕像素（内联样式），
    * 不覆盖就会把整页塞进一个固定像素盒子里。`!important` 是覆盖内联值的唯一办法。
@@ -982,5 +1055,37 @@ function updateExpDate(
   content: attr(data-placeholder);
   color: var(--paper-line);
   pointer-events: none;
+}
+
+/*
+ * 打印/导出的分页规则（第 15 轮裁定，`docs/ROADMAP.md` §6 第 5 条）。
+ *
+ * 为什么写在**非 scoped** 块里：`v-html` 的生成物没有 `data-v-*` 属性，
+ * scoped 选择器对它一条都不生效——「实时预览不被腰斩、导出稿照样腰斩」
+ * 正是只写一半会得到的结果。两者共用这里的规则。
+ *
+ * 为什么不给 `.paper-section` 整节设 avoid：一节本身可能就超过一页，
+ * 浏览器会忽略这条限制、把整节推到下一页，第一页留一大片空白——比腰斩更难看。
+ * 所以只钉到「一条经历 / 项目 / 证书 / 作品」这一级：后两段复用了
+ * `.paper-experience` 容器类，一条选择器覆盖四段（见模板里那两段 `v-for`）。
+ *
+ * `break-inside` 与 `page-break-inside` 都写：前者是 CSS 分页的标准属性，
+ * 后者是浏览器仍普遍认的别名，只写一个会在某一边静默失效。
+ */
+@media print {
+  .paper .paper-experience,
+  .paper .paper-experience p,
+  .paper .skill-list,
+  .paper .paper-header {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  /* 段标题不许独自留在上一页末尾（「标题在页尾、内容在下一页」是最常见的那种丑）。 */
+  .paper .paper-section > h2 {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+  /* 一段正文真被切开时，两半各至少留两行，别留一条孤行。 */
+  .paper { orphans: 2; widows: 2; }
 }
 </style>
