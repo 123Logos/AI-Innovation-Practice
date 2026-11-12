@@ -54,7 +54,7 @@ student_profiles ─ interview_sessions ─ interview_turns
 | 测评 | `assessments`, `assessment_questions`, `assessment_attempts`, `assessment_answers` | 题库版本、原始答案和评分 |
 | 匹配成长 | `match_runs`, `match_results`, `match_result_items`, `growth_plans`, `growth_tasks` | 版本化权重、解释项、缺口和行动任务 |
 | 简历 | `resumes`, `resume_versions`, `resume_shares` | 可编辑版本、岗位定制和字段白名单分享 |
-| 面试 | `interview_sessions`, `interview_turns`, `media_rooms`, `interview_reports` | 文本/音视频适配层及证据化复盘 |
+| 面试 | `interview_sessions`, `interview_turns`（B11a 已建）；`media_rooms`, `interview_reports`（B11b，本期未建） | 文本/音视频适配层及证据化复盘 |
 | 隐私治理 | `consents`, `files`, `audit_logs` | 授权、对象存储元数据和不可变审计 |
 
 ### 3.1 已落库的组织三表（批次 B5，2026-11-12，`ADR-021` §2.1）
@@ -102,3 +102,42 @@ B5 实际落库的是下面三张，迁移文件 `alembic/versions/20261112_0018
 - 备份加密，至少保留日备份和恢复演练记录；
 - 生产账号只授予应用所需权限，迁移账号与运行账号分离；
 - 数据库连接使用 TLS，密码、连接串和密钥只通过环境变量/密钥管理服务注入。
+
+## 7. 面试表（B11a 已实现）
+
+> 2026-11-12 批次 B11a（FR-07，ADR-022）落地**纯文本**面试，只建两张关系表。
+> 旧版领域图里的 `media_rooms`、`interview_reports` 本期**未建**，留待 B11b（音视频 + 评估报告）。
+> 迁移：`alembic/versions/20261112_0019_interview_sessions.py`，`down_revision="20261111_0017"`，upgrade 建表 / downgrade 删表（先删子表 `interview_turns` 再删父表 `interview_sessions`）。
+> 它与批次 B5 的 `0018` 是两条并行分支（同以 `0017` 为父），合入 master 时由
+> `alembic/versions/20261112_0020_merge_b5_b11a_heads.py` 收敛成单一 head；
+> `upgrade head` / `downgrade 20261111_0017` / `upgrade head` 已在干净测试库双向实测
+> （merge point 上 `downgrade -1` 会 `Ambiguous walk`，必须指定明确 revision）。
+
+### 7.1 `interview_sessions`（会话元信息）
+
+| 列 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `id` | `CHAR(36)` | PK | UUID 字符串 |
+| `user_id` | `CHAR(36)` | NOT NULL, FK→`users.id` ON DELETE RESTRICT | 会话归属用户；删账号不带走面试历史 |
+| `job_id` | `CHAR(36)` | NULL, FK→`jobs.id` ON DELETE RESTRICT | 可选绑定的岗位；删岗位不带走面试历史 |
+| `status` | `VARCHAR(16)` | NOT NULL, 默认 `active`, CHECK IN (`active`,`ended`) | 会话状态；加取值只改代码不改表 |
+| `target_role` | `VARCHAR(200)` | NULL | 用户填写/从岗位标题派生的目标方向 |
+| `created_at` | `DATETIME(6)` | NOT NULL | 应用层写 UTC |
+| `updated_at` | `DATETIME(6)` | NOT NULL | 每次收发消息 `touch` 更新，用于列表排序 |
+| `ended_at` | `DATETIME(6)` | NULL | 结束时刻；未结束为 NULL |
+| `ix_interview_sessions_user_status` | 索引 | (`user_id`, `status`, `updated_at`) | 列表查询优先索引 |
+
+### 7.2 `interview_turns`（逐轮问答，有序事件流）
+
+| 列 | 类型 | 约束 | 说明 |
+|---|---|---|---|
+| `id` | `CHAR(36)` | PK | UUID 字符串 |
+| `session_id` | `CHAR(36)` | NOT NULL, FK→`interview_sessions.id` ON DELETE RESTRICT | 所属会话 |
+| `sequence` | `INT` | NOT NULL | 轮次序号，从 1 递增，按它回放 |
+| `speaker` | `VARCHAR(16)` | NOT NULL, CHECK IN (`interviewer`,`candidate`) | 发言方；加取值只改代码不改表 |
+| `content` | `TEXT` | NOT NULL | 该轮文本（提问或作答） |
+| `ai_degrade_reason` | `TEXT` | NULL | **可见降级数据层证据**：非空即代表该轮面试官内容由本地离线模板产出、非真 AI（取值 `key_missing`/`key_invalid`/`timeout`/`upstream`/`bad_output`） |
+| `created_at` | `DATETIME(6)` | NOT NULL | 应用层写 UTC |
+| `ix_interview_turns_session_sequence` | 索引 | (`session_id`, `sequence`) | 回放 / 取最近 N 轮 |
+
+设计要点（ADR-022）：① 两表而非单 JSON 字段——`turns` 是可审计、可增量写入、可按 `sequence` 回放的有序事件流；② 降级可追踪——`ai_degrade_reason` 是非空即降级，前端据此给出可见提示、绝不静默；③ 外键 RESTRICT——删账号/删岗位都不该带走面试历史；④ 状态/发言方用 VARCHAR + CHECK 而非 MySQL ENUM，新增取值不需改表；⑤ 时间用 `DATETIME(6)`（与 jobs / student_profiles 一致）。

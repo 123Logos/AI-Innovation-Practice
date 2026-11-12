@@ -50,6 +50,8 @@ function makeRouter(): Router {
     { path: '/jobs', name: 'job-board', component: BLANK },
     { path: '/trash', name: 'recycle-bin', component: BLANK },
     { path: '/organization', name: 'organization', component: BLANK },
+    { path: '/interviews', name: 'interview-list', component: BLANK },
+    { path: '/interviews/:id', name: 'interview-detail', component: BLANK },
     { path: '/login', name: 'login', component: BLANK },
   ]
   return createRouter({ history: createMemoryHistory(), routes })

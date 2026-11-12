@@ -764,25 +764,83 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 
 ## 7. 模拟面试
 
-### POST `/interviews`
+> **本节 2026-11-12 由批次 B11a（FR-07）按实际代码重写。** 旧版写的是「`resume_version_id` + `mode` + `round` + `question_count` + `/turns` + `/finish` + `/report` + `/media-room`」的全形态设计意图（音视频 + 评估报告 + WebRTC），**那一整套本期都没有实现**，且其中 `resume_version_id` 依赖的列本轮 `resumes` 表根本不存在（B8 只落地了版本指针，无 `resume_version_id`），`mode` / `round` / `question_count` 也从未进库。
+> 本期 B11a 只落**纯文本**单项：`interview_sessions` + `interview_turns` 两张关系表、五个端点、AI 可见降级（ADR-022）。音视频、评估报告、媒体房间在 `docs/ROADMAP.md` 的 B11b 才排期。
+> 读到本节的姿势：下面五条端点是今天能调的契约；凡是「finish / report / media-room / 单独的 turns 路径 / resume_version_id / mode / round / question_count」都是未实现的旧设计意图，**不要照着写客户端**（前端 `interviews.ts` 也未声明这些字段）。
 
-请求：`{"job_id":"uuid","resume_version_id":"uuid","mode":"text","round":"technical","question_count":8}`。返回 `interview_id`。
+链路：`app/api/v1/interviews.py` → `app/services/interview_service.py` → `app/repositories/interview_repository.py`；AI 适配器复用 `app/integrations/interview_coach.py`（走现有 DeepSeek 客户端 + BYOK，`X-DeepSeek-Key` 由前端 `client.ts` 白名单对「发消息」这一条 URL 注入，见 §7.4）；题源优先级与上下文截断见 ADR-022 §3/§4；表结构 `alembic/versions/20261112_0019_interview_sessions.py`（与 B5 的 `0018` 并行，合入 master 时由 `20261112_0020` merge revision 收敛成单一 head）。
 
-### POST `/interviews/{interview_id}/turns`
+### 7.1 身份、归属与可见性（权限矩阵）
 
-文本模式请求 `{"answer":"..."}`；返回下一问题或结束状态。音视频模式仅提交转写片段和时间戳。
+身份只来自 JWT（`CurrentUserDep`）。`users` 表无 `role` 列（ADR-011 1.A）——批次 B5 起角色挂在 `organization_members`（ADR-021 §2.1），面试端点本期不按角色分级，只按会话归属判，与岗位同口径：
 
-### POST `/interviews/{interview_id}/finish`
+| # | 操作 | 允许的调用者 | 非所有者结果 | 状态码 | 代码位置 |
+|---|---|---|---|---|---|
+| 1 | `GET /interviews` | 当前登录用户 | 只返回**自己的**会话（SQL 按 `user_id` 过滤） | 200 | `app/api/v1/interviews.py::list_interviews`、`interview_repository.list_owned` / `count_owned` |
+| 2 | `POST /interviews` | 当前登录用户 | — | 201 / 401 / 422 | `app/api/v1/interviews.py::create_interview` |
+| 3 | `GET /interviews/{id}` | 仅所有者 | 404（他人会话与「不存在」同义，不暴露 id 是否存在） | 200 / 401 / 404 | `app/api/v1/interviews.py::read_interview` |
+| 4 | `POST /interviews/{id}/messages` | 仅所有者 | 404；已结束 → 400 | 200 / 401 / 404 / 400 / 422 | `app/api/v1/interviews.py::send_interview_message` |
+| 5 | `POST /interviews/{id}/end` | 仅所有者 | 404 | 200 / 401 / 404 | `app/api/v1/interviews.py::end_interview` |
 
-结束会话并创建反馈 AI 任务；返回 `202`。
+两条实现约束（都有代码兜住）：
+- 越权 / 不存在在 service 层收敛成同一个 `InterviewNotFoundError`，api 层只有一句 `raise _not_found()`（`app/api/v1/interviews.py::_not_found`）；`app/services/` 下不出现 `HTTPException`。
+- 归属校验写在 SQL 谓词里（`get_owned` 按 `user_id` 过滤），不是「先查出来再在服务层比一次」。
 
-### GET `/interviews/{interview_id}/report`
+### 7.2 请求体与字段
 
-只对本人或获授权教师返回，包含回答证据、建议和待练习技能，不输出录用保证。
+`POST /interviews` 请求体（`InterviewSessionCreate`，`app/schemas/interview.py::InterviewSessionCreate`）只有两格，且都可选：
 
-### POST `/interviews/{interview_id}/media-room`
+| 字段 | 类型 / 约束 | 必填 | 代码位置 |
+|---|---|---|---|
+| `job_id` | string（UUID），可空 | ❌ | `app/schemas/interview.py::InterviewSessionCreate` |
+| `target_role` | string ≤200，可空 | ❌ | `app/schemas/interview.py::InterviewSessionCreate`、`app/schemas/interview.py::TARGET_ROLE_MAX_LEN` |
 
-返回短时 WebRTC 房间 token、ICE 配置引用和过期时间。业务 API 不接收长期媒体密钥；媒体供应商通过适配器实现。
+`job_id` 若提供但不可见（不存在 / 未发布 / 回收站）→ 404（`app/services/interview_service.py::InterviewService.create_session`）。`target_role` 与 `resume_version_id` / `mode` / `round` / `question_count` **没有关系**——后四者本期不收、不存、不入路由。
+`POST /interviews/{id}/messages` 请求体（`InterviewMessageCreate`，`app/schemas/interview.py::InterviewMessageCreate`）只有一格：`content`（`str`，**1–5000**，应用层第一道闸，超长 422 不进库，上限常量 `ANSWER_MAX_LEN`）。
+
+### 7.3 响应对象
+
+- `InterviewSessionRead`（`app/schemas/interview.py::InterviewSessionRead`）：`id` / `user_id` / `job_id`(可空) / `status`(`active`|`ended`) / `target_role`(可空) / `created_at` / `updated_at` / `ended_at`(可空)。
+- `InterviewTurnRead`（`app/schemas/interview.py::InterviewTurnRead`，按 `sequence` 回放）：`id` / `session_id` / `sequence` / `speaker`(`interviewer`|`candidate`) / `content` / `ai_degrade_reason`(可空) / `created_at`。**`ai_degrade_reason` 非空即代表该轮内容由本地离线模板产出、不是真 AI**——这是「可见降级、绝不静默」的数据层证据（ADR-022 (b)）。
+- `InterviewMessageResult`（`app/schemas/interview.py::InterviewMessageResult`）：`candidate_turn` + `interviewer_turn` + `ai_degrade_reason`（本轮降级键，见 7.5）。
+- `InterviewListResult`（`app/schemas/interview.py::InterviewListResult`）：`sessions[]` + `page` + `page_size` + `total`。
+
+### 7.4 五个端点
+
+| 端点 | 方法 | 返回 | 说明 |
+|---|---|---|---|
+| `/interviews` | POST | **201** + `data.{session, opening_turn, ai_degrade_reason}` | 创建会话并立刻拿开场问题（sequence=1）；开场 AI 失败也不中断，改走离线模板并带 `ai_degrade_reason` |
+| `/interviews` | GET | 200 + `data.{sessions[], page, page_size, total}` | 自己的会话列表，按 `updated_at DESC` 倒序，分页参数 `page`(≥1) / `page_size`(1–50，默认 20) |
+| `/interviews/{id}` | GET | 200 + `data.{session, turns[]}` | 详情：元信息 + 全部轮次（按 sequence 顺序回放） |
+| `/interviews/{id}/messages` | POST | 200 + `data.{candidate_turn, interviewer_turn, ai_degrade_reason}` | 发一条候选人作答 → 拿面试官下一轮（真 AI 或降级）；已结束 → 400；这条 URL 进 BYOK 白名单、转发 `X-DeepSeek-Key` |
+| `/interviews/{id}/end` | POST | 200 + `data.{session}` | 结束会话，`status`→`ended`、`ended_at`→now |
+
+**没有**独立的「提交单轮答案」`/turns` 端点（旧版设计意图），也没有 `/finish` / `/report` / `/media-room`——发送与接收都走 `/messages` 一个端点（候选人的轮次与面试官的轮次在同一个响应里成对返回），评估报告与媒体房间在 B11b。
+
+### 7.5 AI 可见降级（本期核心红线）
+
+面试**绝不**因 AI 失败返回 4xx/5xx：`InterviewService._generate` 把 AI 异常就地翻译成 `ai_degrade_reason` 并继续用本地题库（`_OFFLINE_QUESTIONS`）产出面试官发言（`app/services/interview_service.py::InterviewService._generate`），端点保持 200。降级键与界面话术的映射（`app/services/interview_service.py::_DEGRADE_TEXT`，前端 `frontend/src/api/interviews.ts::interviewDegradeHint`）：
+
+| `ai_degrade_reason` | 含义 | 用户看到的文案（作用域中性，不出现「DeepSeek」） |
+|---|---|---|
+| `key_missing` | 没传 AI Key（BYOK 未填凭据） | 未配置 AI 密钥，已切换到离线模拟。 |
+| `key_invalid` | Key 被上游拒绝 | AI 密钥无效，已切换到离线模拟。 |
+| `timeout` | 上游超时 | AI 服务超时，已切换到离线模拟。 |
+| `upstream` | 上游不可用 | AI 服务暂时不可用，已切换到离线模拟。 |
+| `bad_output` | 输出不可解析 / 截断 / 空 | AI 返回异常，已切换到离线模拟。 |
+| `null` | 真 AI 参与 | （无提示，正常） |
+
+异常→键的判定次序有讲究：`EvidenceScoreTimeoutError` 与 `…EmptyContent` / `…BadOutput` 是 `…UnavailableError` 的子类，必须先判子类再判父类，否则超时会被 `upstream` 吃掉、写错原因（`app/services/interview_service.py::InterviewService._generate`）。这条由 `tests/test_interviews.py` 钉住（「AI 失败时用户看到什么」用例）。三个 `AI_*` 错误码（`app/main.py` 的 `resume_*` 处理器）在面试端点**永不命中**——本端点失败也返回 200（与 §4.10 的匹配端点同理，但匹配端点不进 BYOK、面试的发消息端点进 BYOK）。
+
+### 7.6 本章未接通 / 不存在的接口
+
+以下都是**旧版设计意图或 B11b 排期项**，本期不实现、不排期，标注 `# PHASE-2: not wired`（沿用 §4.11 口径）：
+
+- `POST /interviews/{id}/turns`（旧版「单独提交一轮答案」）：**不存在**，收发合并进 `/messages`。
+- `POST /interviews/{id}/finish` + `GET /interviews/{id}/report`：**不存在**，评估报告（含回答证据、建议、待练习技能）在 B11b / `interview_reports` 表，本期不建。
+- `POST /interviews/{id}/media-room`：**不存在**，WebRTC 房间与 `media_rooms` 表在 B11b，音视频模式本期不做。
+- 请求体里的 `resume_version_id` / `mode` / `round` / `question_count`：**都不收、不存、不入路由**；`resume_version_id` 依赖的列本轮 `resumes` 表根本没有。
+- 教师端查看他人报告：`/teacher/...` 全局未接通（§8），面试报告授权同理冻结。
 
 ## 8. 教师与学校
 

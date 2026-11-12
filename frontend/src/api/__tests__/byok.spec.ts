@@ -413,3 +413,54 @@ describe('401 分流：登录过期 vs Key 无效', () => {
     expect(requestedUrls.filter((url) => url.includes('/resumes/polish'))).toHaveLength(2)
   })
 })
+
+/**
+ * FR-07 / B11a 的 BYOK 扩张：模拟面试发消息是唯一新增的、会转发 DeepSeek 凭据的端点。
+ *
+ * 面试官的下一段由 AI 生成，所以 `POST /interviews/{id}/messages` 必须带 `X-DeepSeek-Key`；
+ * 而 `GET /interviews/{id}`（详情，纯数据库）与 `POST /interviews`（建会话）则**不**带——
+ * 后者也会调 AI，但用的是我们自己的服务端逻辑、不消耗用户的凭据额度，按「每扩一个 URL
+ * 都要能回答会不会转发给 DeepSeek」的纪律，它不在白名单里。
+ */
+describe('Key 注入：模拟面试只让「发消息」这一个 URL 带 Key', () => {
+  let sentHeaders: Array<{ url: string; key: string | undefined }>
+
+  beforeEach(() => {
+    sentHeaders = []
+    http.defaults.adapter = async (config) => {
+      sentHeaders.push({
+        url: config.url ?? '',
+        key: config.headers['X-DeepSeek-Key'] as string | undefined,
+      })
+      return response(config, { data: null, meta: { request_id: 'r' } })
+    }
+    setDeepSeekKey(TEST_KEY)
+  })
+
+  it('POST /interviews/{id}/messages 带 Key（这一条会转发 AI）', async () => {
+    await http.post('/interviews/11111111-1111-1111-1111-111111111111/messages', { content: '你好' })
+
+    expect(sentHeaders).toHaveLength(1)
+    expect(sentHeaders[0]).toMatchObject({
+      url: '/interviews/11111111-1111-1111-1111-111111111111/messages',
+      key: TEST_KEY,
+    })
+  })
+
+  it('建会话与读详情都不带 Key（不消耗用户额度）', async () => {
+    await http.post('/interviews', { target_role: null })
+    await http.get('/interviews/s1')
+
+    for (const item of sentHeaders) {
+      expect(item.key, `${item.url} 不该携带 DeepSeek Key`).toBeUndefined()
+    }
+    expect(sentHeaders.map((item) => item.url)).toEqual(['/interviews', '/interviews/s1'])
+  })
+
+  it('近似路径也不带：/interviews/{id}/end、/interviews/extra/messages', async () => {
+    await http.post('/interviews/s1/end')
+    await http.post('/interviews/extra/messages', { content: 'x' })
+
+    expect(sentHeaders.map((item) => item.key)).toEqual([undefined, undefined])
+  })
+})

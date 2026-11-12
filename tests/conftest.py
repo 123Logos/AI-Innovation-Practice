@@ -123,6 +123,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 #: 但它**必须**在这一栏里：别名行会改变判定结果，残留一行就等于「后面所有用例都跑在
 #: 一张非空词表上」，而 §5.1 那条「空表 = 纯词面行为」的验收会静默失去意义。
 APP_TABLES = (
+    # FR-07 / B11a：面试两张表。`interview_turns` 外键指向 `interview_sessions`（子表在前），
+    # `interview_sessions` 外键指向 `jobs` / `users`，因此两张都插在最前，保证 DELETE 顺序
+    # 是子表 → 父表（见上方删除顺序的说明）。
+    "interview_turns",
+    "interview_sessions",
     "skill_aliases",
     "job_skills",
     "jobs",

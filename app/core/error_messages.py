@@ -34,6 +34,9 @@ class ErrorMessage(StrEnum):
     SELF_ROLE_CHANGE = "不能修改自己的角色，请让另一位管理员操作。"
     ROLE_NOT_ASSIGNABLE = "这个角色不能在这里授予。"
     ORGANIZATION_ACTION_FAILED = "组织操作没有完成，请稍后重试。"
+    # ---- 批次 B11a（ADR-022）：面试会话。 ----
+    INTERVIEW_NOT_FOUND = "面试会话不存在或无法访问，请返回面试列表重新选择。"
+    INTERVIEW_ENDED = "这场面试已经结束，请新建一场继续练习。"
     # ui-copy:allow 此处名称用于定位用户必须配置的凭据，不展示凭据内容。
     AI_KEY_MISSING = "请先在「AI 设置」中配置 DeepSeek API Key。"
     # ui-copy:allow 此处名称用于定位用户必须检查的凭据，不展示凭据内容。

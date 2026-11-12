@@ -20,6 +20,8 @@ from alembic import command
 EXPECTED_TABLES = {
     "educations",
     "experiences",
+    "interview_sessions",
+    "interview_turns",
     "job_skills",
     "jobs",
     "portfolio_links",
@@ -119,6 +121,11 @@ def _assert_schema_after_upgrade(engine: Engine) -> None:
             "fk_profile_certificates_student_profile_id",
             "fk_portfolio_links_student_profile_id",
             "fk_profile_city_preferences_student_profile_id",
+            # FR-07 / B11a：会话归属用户、可选绑定岗位，删账号/删岗位都不该带走面试历史 → RESTRICT；
+            # turns 是会话的组成部分，不独立存在 → RESTRICT。
+            "fk_interview_sessions_user_id",
+            "fk_interview_sessions_job_id",
+            "fk_interview_turns_session_id",
             # B8（ADR-015 §2.3）：全仓唯一非 RESTRICT 的外键——链头行本身可能被删，
             # RESTRICT 会变成「有指针就删不掉行」的死锁；SET NULL 让指针落空，
             # 读侧必须显式报错而不是回落猜一条。
