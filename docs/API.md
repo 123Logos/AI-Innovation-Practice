@@ -614,40 +614,117 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 
 ## 6. 简历
 
+> **本节的状态口径（2026-11-12 补）**：第 6 章长期混着「已实现」与「产品设计意图」两种东西，
+> 读起来分不出哪一条能调。今天的实际路由只有四个——`POST /resumes/generate`、
+> `GET /resumes/current`、`POST /resumes/polish`、`POST /resumes/privacy-check`
+> （`app/api/v1/resumes.py`）。其余小节（`GET /resumes`、`GET /resumes/{id}`、
+> `PATCH …/versions/{id}`、`POST …/export`、`POST …/share`）**都没有实现**，
+> 标题已标「未实现 · 设计意图」，不要照着它们写客户端。
+
 ### POST `/resumes/generate`
 
-请求：`{"student_id":"uuid","job_id":"uuid","template":"clean_white","max_pages":1.5}`。只能使用学生已确认资料；**同步返回 `200` 与生成结果，不返回 `202`、不创建 `ai_job_id`**（`app/api/v1/resumes.py:51-71` 直接 `success_response(..., resume.model_dump(...))`；`POST /api/v1/resumes/generate` 的 OpenAPI `responses` 实测为 `200`、`422`）。
-<!-- 本行的请求体示例仍是旧口径：实际模型是 `app/schemas/resume.py:79-91` 的 `{title, profile_id}`。该差异属 §6 简历章节，不在本轮「岗位 + 错误码」范围内，已列入交付说明的未解决问题。 -->
+请求：`{"title": "投后端", "profile_id": "uuid 可省略"}`（`app/schemas/resume.py::ResumeGenerateRequest`）。
 
-### GET `/resumes` / GET `/resumes/{resume_id}`
+> **旧口径已作废**：本节早前写的是 `{student_id, job_id, template, max_pages}`，那个请求体
+> **从来没有实现过**，只是设计草案。`profile_id` 省略时取默认简历，与 `GET /resumes/current`、
+> `POST /resumes/privacy-check` 共用同一个 `_resolve_profile`。
+
+这是**纯模板**生成（ADR-010）：不调 AI、不需要 `X-DeepSeek-Key`、同步返回 `200` 与生成结果，
+**不返回 `202`、不创建 `ai_job_id`**。返回体是 `ResumeRead`（`resume_id` / `title` /
+`content_html` / `created_at` / `version_no`）。
+
+失败三档，都走统一错误模型：
+
+| 情况 | 状态码 / code | 说明 |
+|---|---|---|
+| `profile_id` 不存在 / 别人的 / 在回收站 | `404` `NOT_FOUND` | 三种原因**不区分**，避免暴露别人档案是否存在 |
+| 档案不完整（缺基本信息 / 技能 / 经历） | `400` `CLIENT_ERROR` | 文案要说清缺什么（守则 C3） |
+| 排版版本是旧的（`layout_config.version != LAYOUT_VERSION`） | `422` **`CLIENT_ERROR`** | 注意 code 不是 `VALIDATION_ERROR`：它不是字段校验失败。文案必须**修得动**（「在排版面板重新保存一次再生成」），**绝不静默回退默认顺序**（ADR-015 §2.2） |
+
+### GET `/resumes/current` — 当前简历（批次 B8，已实现）
+
+请求：`GET /resumes/current?profile_id=uuid`（query，可省略；省略时取默认简历）。
+
+响应 `200`：`data = {resume_id, title, content_html, created_at, version_no}`（`app/schemas/resume.py::ResumeRead`）；
+`created_at` 与档案接口同口径，是东八区 ISO 串；`version_no` 是这份简历在**该档案内**的版本号，从 1 递增。
+
+**它只读版本指针，不按 `created_at` 挑「最新一份」**（ADR-015 §2.3 明令禁止那种隐性契约）。
+四种失败分开报：
+
+| 情况 | 状态码 | 文案要点 |
+|---|---|---|
+| 档案不存在 / 别人的 / 在回收站 | `404` `NOT_FOUND` | 「简历不存在。」 |
+| 这个用户一份档案都没有 | `400` `CLIENT_ERROR` | 「还没有可用的档案，请先完善并保存个人档案。」 |
+| **从未生成过简历**（一行记录都没有） | `404` `NOT_FOUND` | 「还没有生成过简历，请先生成一份。」 |
+| **有简历但链头指针落空**（链头行被物理删除） | `400` `CLIENT_ERROR` | 「当前简历的版本指针已失效，请重新生成一份。」——**不回落、不猜** |
+
+「没生成过」与「指针坏了」必须分得开：两者的用户动作完全不同（一个是「去生成」，一个是「重新生成」），
+而库里都能读成「没有当前简历」。区分靠的是「该档案简历行数 > 0」（`ResumeRepository.count_by_profile`）。
+
+### GET `/resumes` / GET `/resumes/{resume_id}`（未实现 · 设计意图）
 
 返回版本、来源、确认状态和授权状态。
 
-### PATCH `/resumes/{resume_id}/versions/{version_id}`
+### PATCH `/resumes/{resume_id}/versions/{version_id}`（未实现 · 设计意图）
 
 更新编辑后的区块。保存新版本，禁止覆盖审计历史。
 
-### POST `/resumes/{resume_id}/export`
+### POST `/resumes/{resume_id}/export`（未实现 · 设计意图）
 
 请求 `{"version_id":"uuid","format":"pdf"}`；返回异步任务。完成后返回短时下载 URL。
+
+### POST `/resumes/polish` — 润色（同步、纯计算、BYOK）
+
+请求体（`app/schemas/resume.py::ResumePolishRequest`）：
+
+| 字段 | 约束 | 备注 |
+|---|---|---|
+| `profile` | `{full_name?, contact?, email?}`，全部可选、**宽松校验** | 只用来给模型一点上下文，不参与任何权限或落库判断 |
+| `skills` | `list[{name}]`，**1–50** | 上限既是 Prompt 体积兜底，也是「别把这个端点当开放 AI 代理」的第一道闸（第二道是限流） |
+| `experiences` | `list[{title?, description, responsibility}]`，**1–20** | 每段 `description`/`responsibility` ≤2000；`title` 只给模型看上下文，**不校验日期**（草稿里没填时间的经历同样值得润色） |
+| `mode` | `detail` / `medium` / `heavy` / `expand` | |
+| `max_words` | `40–800`，**只对 `expand` 有意义** | 缺省补 200；其它档位在校验层被置空（ADR-018） |
+
+响应 `200`：`data = {skills: [str], experiences: [PolishedExperience]}`（`ResumeCopy`）。
+`PolishedExperience` 有五个字段——前两个是老契约，后三个是 ADR-018 加的（**加字段，不改语义**）：
+
+| 字段 | 含义 |
+|---|---|
+| `index` | 输入经历列表里的**下标**（不是数据库 id）：回贴时不错位 |
+| `description` / `responsibility` | 改写后的文字，**≤1200 / ≤600** |
+| `target_words` | 本次生效的目标字数，**只有 `expand` 有**，其它档 `null` |
+| `over_limit_by` | 返回文字合计**超出目标多少字**，不超为 `0`。它必须是**数**（`len(返回文字) - target_words`），用户据此自己减字 |
+| `truncated` | 是否撞到**响应契约**（1200/600）被段级截断 |
+
+**三道边的职责必须分开读**（ADR-018 §6）：
+
+1. **目标**（`max_words`）：进提示词，**不砍尾**——超了只报 `over_limit_by`，减字动作交回用户；
+2. **契约**（1200/600）：模型写飞越这道边时**段级**截断并标 `truncated=true`，其余段照常返回，
+   **不再整单 502**；也不报「截掉了多少字」（`truncated_from_words` 一类字段被明确否掉）；
+3. **失败**：`400 AI_KEY_MISSING`（没配 Key 或 Key 格式不对）、`401 AI_KEY_INVALID`（Key 无效/欠费）、
+   `502 AI_SERVICE_UNAVAILABLE`（超时或上游异常，`retryable=true`）、`429 RATE_LIMITED`。
+
+**纯计算、不落库**：不写任何表，结果回显给用户逐条确认，用户点保存才由 `PUT /profiles/me` 落库
+（ADR-010 §5）。Key 走请求头 `X-DeepSeek-Key`，不落库、不进日志（ADR-009）。
 
 ### POST `/resumes/privacy-check` — 导出前隐私检查（批次 B2，已实现）
 
 请求：`{"profile_id":"uuid 可省略"}`。省略时按登录用户取默认简历，与 `/resumes/generate` 用**同一个** `_resolve_profile`。
 响应：`data = {"profile_id": ..., "categories": [四类，顺序固定为 联系方式 / 作品链接 / 个人信息 / 授权范围]}`；每类是
 `{key, label, status, note, items[]}`，每格 item 是 `{key, label, present, included, note}`。
+批次 B4 起「作品链接」不再是一句 `not_available`：`items[]` 里逐条列出 `{name, url}`，`note` 直接写「会被带出去：<url>」；「个人信息」里也多了 `证书（N 条）` 一格。
 
 三条口径必须连着读：
 
 1. **纯计算、不落库**：不写任何表、不加列、不建表，与 `/resumes/polish`、`/jobs/extract-skills` 同一条路子（`tests/test_resume_privacy_check.py::test_privacy_check_is_pure_computation` 钉的就是「调用一次 `resumes` 行数不变」）。
-2. **`present` 与 `included` 是两个问题**，不许合并：`目标岗位偏好` 是 `present=true, included=false`（确实存在，但不写进简历）。反过来，没填的邮箱两边都是 `false`，而那一句「HR 无法用邮箱联系你」只能在这里说——纸面上**故意不给可选项打「待补充」标记**（见第 3 条与 `app/integrations/resume_generator.py` 的调用处注释）。
-3. **两类今天核不了就说核不了**：`作品链接` 与 `授权范围` 的 `status` 是 `not_available`（数据模型里没有对应的列或表；`not_available` 时 `note` 必给）。把它们写成「用户没填」是假话，把它们从清单里省掉则是把 FR-06 点名的两格悄悄删了。实现在 B4（作品/证书）与 B5（组织与授权）时才出现。
+2. **`present` 与 `included` 是两个问题**，不许合并：`目标岗位偏好` 是 `present=true, included=false`（确实存在，但不写进简历）；反过来 `技能 / 项目经历 / 教育经历 / 证书` 是 `present === included`——它们真的会印在纸上。**期望城市刻意不在这个清单里**：它不是简历区块（`ADR-015` §5 ③），列进来会让用户以为 HR 会看到。反过来，没填的邮箱两边都是 `false`，而那一句「HR 无法用邮箱联系你」只能在这里说——纸面上**故意不给可选项打「待补充」标记**（见第 3 条与 `app/integrations/resume_generator.py` 的调用处注释）。
+3. **核不了就说核不了，能核了就必须真核**：今天只剩 **`授权范围`** 一类是 `not_available`（没有「授权给谁看」这一层，属 B5），它的 `note` 必给。`作品链接` 自批次 B4 起**已转正**——`portfolio_links` 是真实存在的表，生成物里每条都是可点的 `<a href>`，所以它现在按 `present` / `missing` 如实报，不再是「本产品还没有这一栏」。把能核的说成「核不了」与把核不了的说成「用户没填」，是同一种假话。
 
 错误口径与 `/generate` 逐字对齐：`profile_id` 是别人的 / 不存在的 / 在回收站的 → `404 NOT_FOUND`；这个用户一份档案都没有 → `400 CLIENT_ERROR`；`profile_id` 超长 → `422 VALIDATION_ERROR`。
 
 **与上面那张「设计意图」表的关系**：`POST /resumes/{resume_id}/export` 至今**未实现**（`app/` 里 `export`/`pdf` 零命中，也没有任何 PDF 依赖），所以「导出前显示」这一格今天没有挂载点。B2 因此把检查做成一个**读同一份档案的纯计算端点**，等导出真落地时它才有地方挂——这不是把两件事做完了，是把其中可核的两格做完、把不可核的两格如实标出来。
 
-### POST `/resumes/{resume_id}/share`
+### POST `/resumes/{resume_id}/share`（未实现 · 设计意图）
 
 请求 `{"version_id":"uuid","target_type":"enterprise","target_id":"uuid","fields":["contact","skills","projects"],"expires_at":"..."}`。
 
