@@ -31,6 +31,11 @@ EXPECTED_TABLES = {
     "skills",
     "student_profiles",
     "users",
+    # 批次 B5（ADR-021）：组织、成员关系、审计日志。三张表一起进清单，
+    # 漏一张就会在下一次「新表建了但没人知道」时才发现。
+    "organizations",
+    "organization_members",
+    "audit_logs",
 }
 
 
@@ -118,11 +123,29 @@ def _assert_schema_after_upgrade(engine: Engine) -> None:
             # RESTRICT 会变成「有指针就删不掉行」的死锁；SET NULL 让指针落空，
             # 读侧必须显式报错而不是回落猜一条。
             "fk_resumes_current_version_id",
+            # B5（ADR-021 §2.1）：组织与成员关系。
+            # 组织被删时成员关系挡住（RESTRICT）；用户被删时成员关系跟着走（CASCADE）——
+            # 留一条指向不存在用户的成员行，会让「这个组织有几人」永远算不准。
+            "fk_org_members_organization",
+            "fk_org_members_user",
+            # B5（ADR-021 §2.5）：审计表两条都是 SET NULL——记录本身要活下来，
+            # 但操作者/组织被删后不该连带删掉「他做过什么」的证据。
+            "fk_audit_logs_actor",
+            "fk_audit_logs_organization",
         }
-        # 「附属数据跟着删」的两张表；其余外键一律 RESTRICT（挡住删除）。
-        for cascade_fk in ("fk_refresh_tokens_user_id", "fk_job_skills_job_id"):
+        # 「附属数据跟着删」的外键；其余外键一律 RESTRICT 或 SET NULL（挡住删除）。
+        for cascade_fk in (
+            "fk_refresh_tokens_user_id",
+            "fk_job_skills_job_id",
+            "fk_org_members_user",
+        ):
             assert foreign_keys.pop(cascade_fk) == "CASCADE"
-        assert foreign_keys.pop("fk_resumes_current_version_id") == "SET NULL"
+        for set_null_fk in (
+            "fk_resumes_current_version_id",
+            "fk_audit_logs_actor",
+            "fk_audit_logs_organization",
+        ):
+            assert foreign_keys.pop(set_null_fk) == "SET NULL"
         assert set(foreign_keys.values()) == {"RESTRICT"}
         assert foreign_keys["fk_jobs_created_by_user_id"] == "RESTRICT"
 

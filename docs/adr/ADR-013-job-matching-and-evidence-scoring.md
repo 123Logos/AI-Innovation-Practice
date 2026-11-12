@@ -767,7 +767,7 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
      才能让 `upstream` 与 `timeout` 分得开，见 §6.5 那条实现偏离说明。
    - **7c 编排层** `app/services/match_service.py` + **一个** `get_match_service(request)`：同一个 `session_scope()` 里装
      `JobRepository` + `StudentProfileRepository` + scorer。🚩 复核定的结构约束：**不许**复用 `get_job_service()` + `get_profile_service()`
-     拼两个 session（`app/services/dependencies.py:65-84` 的先例是一 service 一 session；两个 session 等于同一次请求占两条连接，
+     拼两个 session（`app/services/dependencies.py::get_job_service` 的先例是一 service 一 session；两个 session 等于同一次请求占两条连接，
      且两侧读到的是两个快照）。
      → **已实现**。这条约束的测试第一版用 `inspect.getsource` 数字符串，被自己的 docstring 骗过（docstring 里就写着那两个函数名），
      已改成行为断言：`service._jobs._session is service._profiles._session`。
@@ -930,7 +930,7 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
 | 5 | §6 的白名单自证不成立：正则也命中**不存在**的路径，那些请求不转发 DeepSeek | `client.ts` 现在是 `BYOK_KEY_PATHS.includes(path)` 整段相等，模式机制今天不存在；`:229` 只做查询串与尾斜杠归一化 | §6.1 换成路由表论证 + 三条断言（正向 / 不扩张 / 已注册路由闭合），并进 `byok.spec.ts` 现有注入矩阵 |
 | 6 | §8 故意不做计数闭合，等于把一条漏计写进设计 | 少一个「模型没回这条」的通道，等式必然不闭合 | 新增 `dropped_missing_output` + 四桶互斥次序 + **要求写成断言**；同时更正我引用的 ADR-011 「先例」其实是已知缺陷 |
 | 7 | 「请求体为空 ⇒ 用哪份档案」是隐式选择，用户会以为分数算错 | `student_profiles.is_default`（`app/repositories/student_profile_repository.py:76`）；岗位页与编辑页无共享档案上下文 | §3 响应新增 `profile_id` / `profile_title` / `job_id` 回显 |
-| 8 | 编排层若复用两个既有 DI 会开两个 session、两个快照 | `app/services/dependencies.py:65-84`：每个 `get_*_service` 各自 `session_scope()` | §10 第 7c 条：一个新 DI、一个 session、两个仓储 |
+| 8 | 编排层若复用两个既有 DI 会开两个 session、两个快照 | `app/services/dependencies.py::get_job_service`：每个 `get_*_service` 各自 `session_scope()` | §10 第 7c 条：一个新 DI、一个 session、两个仓储 |
 
 **复核没有改的东西**（写下来是为了让「改了什么」有边界）：五项权重数值与 PRD 出处、`score` 只做解释不做排序、
 分数不落库、v1 只支持默认档案、404-not-403、`deepseek-flash` + BYOK + 非流式 + `max_retries=0`、模型不被问「匹不匹配」。

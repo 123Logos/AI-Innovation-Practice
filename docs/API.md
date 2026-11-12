@@ -33,7 +33,7 @@
 
 实际由代码发出的错误码（以 `app/` 全量 grep 这些字面量为准，不含测试）：`VALIDATION_ERROR`（`app/main.py::validation_exception`）、`RATE_LIMITED`（`app/main.py::rate_limit_exceeded`）、`NOT_FOUND`（`app/main.py::http_exception`）、`CLIENT_ERROR`（同上，`http_exception` 的兜底档）、`INTERNAL_ERROR`（`app/main.py::unhandled_exception`，以及 `::http_exception` 的 5xx 档）、`AI_KEY_MISSING`（`app/main.py::resume_api_key_missing`）、`AI_KEY_INVALID`（`app/main.py::resume_copy_rejected`）、`AI_SERVICE_UNAVAILABLE`（`app/main.py::resume_copy_unavailable`、`app/api/v1/jobs.py` 的提取端点）。三个 `AI_*` 码只在 `/resumes/polish` 与 `/jobs/extract-skills` 上可达（`app/main.py:239-240` 的注释写明这一沿革；`POST /jobs/{job_id}/match` **不在这个集合里**——它 AI 失败也返回 `200`，见 §4.10；`GET /jobs/{job_id}/requirement-match` 同样不在——它按定义不调 AI，见 §4.10.1），且处理器文案要求作用域中性——不得出现「润色」或「简历」（`docs/adr/ADR-011-job-board-and-skill-extraction.md` 2.F）。
 
-以下码目前**只是本文件的设计意图**，`app/` 下没有任何一处产生它们：`AUTH_REQUIRED`、`AUTH_INVALID_CREDENTIALS`、`AUTH_FORBIDDEN`、`RESOURCE_NOT_FOUND`、`CONSENT_REQUIRED`、`CONFLICT`。未登录与令牌失效实际走 `HTTPException(401)`（`app/services/dependencies.py:53`、`:138`），被通用 4xx 处理器压成 `CLIENT_ERROR`（`app/main.py:192-194`），message 取 `UNAUTHORIZED_MESSAGE`（`app/services/dependencies.py:35`）。
+以下码目前**只是本文件的设计意图**，`app/` 下没有任何一处产生它们：`AUTH_REQUIRED`、`AUTH_INVALID_CREDENTIALS`、`AUTH_FORBIDDEN`、`RESOURCE_NOT_FOUND`、`CONSENT_REQUIRED`、`CONFLICT`。未登录与令牌失效实际走 `HTTPException(401)`（`app/services/dependencies.py::_context_from_request`、`app/services/dependencies.py::_bearer_token`），被通用 4xx 处理器压成 `CLIENT_ERROR`（`app/main.py:192-194`），message 取 `UNAUTHORIZED_MESSAGE`（`app/services/dependencies.py::UNAUTHORIZED_MESSAGE`）。
 
 `MEDIA_UNAVAILABLE` 属模拟面试，仍在冻结清单（AGENTS.md §3.2），未启用、无代码位置。
 
@@ -43,36 +43,70 @@
 
 ## 2. 认证与用户
 
-> **本节是目标契约，不是今天的读数**（老板 2026-11-09 定性：「register 收 email+role+organization_code、`GET /me` 返回「组织、角色和可用权限」是没问题的，后续的角色、组织、权限部分必须用」）。
-> 今天实际存在的是：`POST /auth/register` 收 `username`（必填，3–100）+ `password` + 可选 `email`（`app/schemas/auth.py:15-17`），**没有 `role`、没有 `organization_code`**；
-> `GET /me` 只回 `{user: {id, username, email, created_at}}`（`app/api/v1/auth.py:87-88`），组织 / 角色 / 权限三格在 `app/` 下零命中；
-> 登录标识今天的唯一入口是 `username`，且已做大小写归一（`app/services/auth_service.py:72` 的 `strip().lower()`）。
-> 差距由批次 **B5**（组织 + 角色 + 审计日志）与 **B6**（审核流 + 邮箱/手机号登录 + 改密）补齐——**那两批要实现本节，不是反过来把本节改成现状**。
-> 读这段的姿势：`role` / `organization_code` 现在**不是** 422，而是被 Pydantic 静默丢掉——实测（`RegisterRequest(username=..., password=..., role="student", organization_code="AI2026")`）`model_dump()` 只剩 `['email','password','username']`，因为 `app/schemas/auth.py:14` 没有 `extra="forbid"`。
-> **所以别把「客户端能提交」读成「服务端认了」**：今天任何人都注册成同一种身份，而声称自己是教师的那个请求会被无声降级。B5/B6 落 `role`/`organization` 时必须同时决定这一格走 `forbid` 还是显式校验，不能继续静默。
+> **本节的状态（2026-11-12 批次 B5 之后）**：`role` / `organization_code` **已经落地**，不再是「客户端能提交、服务端静默丢掉」。
+> 口径写在 `docs/adr/ADR-021` §2.2 / §2.4，四句话能说完：
+>
+> 1. `POST /auth/register` 收 `username`（必填，3–100）+ `password` + 可选 `email`，另加 `role`（`student` / `teacher` / `school_admin`，缺省 `student`）与 `organization_code`；
+> 2. `RegisterRequest` 是 `extra="forbid"`：**多塞一个字段就 422**，不再静默忽略（这条是行为变更，旧客户端若发多余字段会当场失败）；
+> 3. 声称 `teacher` / `school_admin` **必须**带有效的组织码，否则 400 —— 不允许悄悄降级成学生；码无效时文案不区分「不存在」与「已停用」，避免枚举；
+> 4. `platform_admin` **不接受自助注册**（它只能由运维在库里授予），`GET /me` 的 `role` 只会是前三种之一。
+>
+> **仍未实现的部分**：「账号必须绑定组织」的强制力（学生可以暂不绑定，邀请制属 B6）、院系 / 班级层级、成员邀请流程。
+> 这些不是遗漏，是 `ADR-021` §2.4 / §3.3 明确划到 B6 的范围——用注册表单上一个可以随便填的组织码假装实现「必须绑定」，比不做更危险。
+>
+> 登录标识今天的唯一入口仍是 `username`（大小写归一在 `app/services/auth_service.py::AuthService.login`）；邮箱登录属 B6。
 
-
-### POST `/auth/register`
+### POST `/auth/register`（批次 B5 起收角色与组织码）
 
 请求：
 
 ```json
-{"email":"student@example.com","password":"Strong-password-1","role":"student","organization_code":"AI2026"}
+{"username":"zhangsan","password":"Strong-password-1","email":"student@example.com",
+ "role":"teacher","organization_code":"AI2026"}
 ```
 
-返回 `201`：`{"data":{"user_id":"uuid","access_token":"...","refresh_token":"...","expires_in":900}}`
+返回 `201`：`{"data":{"user":{"id":"uuid","username":"zhangsan","email":"…","created_at":"…"},"role":"teacher"}}`
+
+字段与错误（与 `docs/adr/ADR-021` §2.2 / §2.4 一一对应）：
+
+| 情形 | 结果 |
+|---|---|
+| `role` 缺省 | 按 `student` 处理 |
+| `role="student"` + 无组织码 | 201，`GET /me` 的 `organization` 为 `null` |
+| `role="student"` + 有效组织码 | 201，并绑定该组织 |
+| `role="teacher"` / `"school_admin"` + 无组织码 | **400**「教师或管理员账号需要填写组织码，请向学校管理员获取。」 |
+| 组织码不存在 / 已停用 | **400**「组织码无效，请向学校管理员确认后再试。」（两种情形同一句，避免枚举） |
+| `role="platform_admin"` | **422**（不在可自助注册的枚举里） |
+| 请求体里有任何未知字段（含拼错的字段名） | **422**（`extra="forbid"`；这是 B5 的行为变更） |
+
+`role` 在响应里回显，是「不静默」的另一半：用户当场能看到自己被授予了什么身份，而不是注册完还要猜。
+
+**注册不发令牌**（响应里没有 `access_token`）：本仓今天的流程是「注册成功 → 回登录页登录」，令牌签发只有 `/auth/login` 一个入口。
+`docs/adr/ADR-004` 之后这一格没变过，B5 也没有改它。
 
 ### POST `/auth/login`
 
-请求 `{"email":"student@example.com","password":"..."}`；返回同注册。登录失败统一返回 `AUTH_INVALID_CREDENTIALS`，不暴露账号是否存在。
+请求 `{"username":"zhangsan","password":"..."}`；返回同注册的令牌结构。
+登录失败统一返回 `AUTH_INVALID_CREDENTIALS`，不暴露账号是否存在。登录成功写一条 `user.login` 审计（`ADR-021` §2.5）。
 
 ### POST `/auth/refresh` / POST `/auth/logout`
 
 刷新令牌轮换；注销使当前 refresh token 失效，返回 `204`。
 
-### GET `/me`
+### GET `/me`（批次 B5 起返回组织与权限）
 
-返回当前用户、组织、角色和可用权限。
+返回：
+
+```json
+{"data":{"user":{"id":"…","username":"zhangsan","email":null,"created_at":"…"},
+         "role":"teacher",
+         "organization":{"id":"…","code":"AI2026","name":"示例大学","kind":"school"},
+         "permissions":["interview:own","job:read","job:write","org:member:read","profile:read","profile:write","resume:read","resume:write"]}}
+```
+
+- `role` / `organization` / `permissions` 在 **`data` 顶层**，不塞进 `user`（`ADR-021` §2.6）：`user` 是「这个人是谁」，角色与组织是「他和某个组织的关系」；
+- 没有组织的账号 `organization` 为 `null`，`role` 为 `student`；
+- `permissions` 与后端判定**同源**（都读 `app/core/permissions.py` 的 `ROLE_PERMISSIONS`），前端据此决定菜单，但它**不是**权限边界。
 
 ## 3. 学生档案与技能
 
@@ -168,7 +202,7 @@
 | 触发条件 | HTTP | `error.code` | 代码位置 |
 |---|---|---|---|
 | 请求体或查询参数不合模型 | 422 | `VALIDATION_ERROR` | `app/main.py:203-215` |
-| 无 `Authorization` 头 / 令牌无效或过期 | 401 | `CLIENT_ERROR`，message 为 `UNAUTHORIZED_MESSAGE` | 抛出 `app/services/dependencies.py:53`、`:138`；映射 `app/main.py:192-194` |
+| 无 `Authorization` 头 / 令牌无效或过期 | 401 | `CLIENT_ERROR`，message 为 `UNAUTHORIZED_MESSAGE` | 抛出 `app/services/dependencies.py::_context_from_request`、`app/services/dependencies.py::_bearer_token`；映射 `app/main.py:192-194` |
 | 岗位不存在 / 不属于当前用户 / 已在回收站 | 404 | `NOT_FOUND`（处理器的固定文案「资源不存在。」） | 抛出 `app/api/v1/jobs.py:68-70`；映射 `app/main.py::http_exception` |
 | 提取请求缺 `X-DeepSeek-Key` | 400 | `AI_KEY_MISSING`，`retryable: false` | `app/services/job_service.py:204-205` → `app/main.py:259-264` |
 | DeepSeek 拒绝该 Key（鉴权失败） | 401 | `AI_KEY_INVALID` | `app/integrations/skill_extractor.py:294-298` → `app/services/job_service.py:208-209` → `app/main.py:266-275` |
@@ -751,6 +785,25 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 返回短时 WebRTC 房间 token、ICE 配置引用和过期时间。业务 API 不接收长期媒体密钥；媒体供应商通过适配器实现。
 
 ## 8. 教师与学校
+
+### 组织与成员（批次 B5 已实现，前缀 `/organizations`）
+
+四个端点，全部需要登录；权限分工见 `docs/adr/ADR-021` §2.3
+（**路由层判「你有没有这个权限」，服务层判「这条记录是不是你这个组织的」**，两者缺一都是漏洞）。
+
+| 端点 | 需要的权限 | 说明 |
+|---|---|---|
+| `GET /organizations/me` | 只需登录 | 当前账号的组织概览：`{organization:{id,code,name,kind}, role, member_count}`。没有组织时 **404**（不是空对象——空对象会让前端画出「组织：（空）」） |
+| `GET /organizations/{id}/members` | `org:member:read` | 成员列表：`{items:[{user_id,username,email,role,joined_at}]}`，按用户名排序。目标组织不是自己的 → 403 |
+| `PATCH /organizations/{id}/members/{user_id}` | `org:member:manage` | 改角色，body `{"role":"student"\|"teacher"\|"school_admin"}`。改自己 → 400（防自锁：校长把自己降级后没人能改回来）；`platform_admin` → 422 |
+| `GET /organizations/{id}/audit-logs` | `audit:read` | `{items:[{id,action,actor_user_id,target_type,target_id,result,detail,ip,created_at}], total}`，`limit` 1–200 默认 50、`offset` ≥0。跨组织 → 403 |
+
+审计的 `action` 是白名单枚举（`user.register` / `user.login` / `organization.create` / `member.join` / `member.role_change`），
+`result` 为 `ok` / `denied`——**被拒绝的越权尝试也记**，那是「谁在什么时候试图做什么」的唯一证据。
+
+**组织的建立不走 HTTP**：本批不开放自助建校端点（能自己造组织的人可以立刻给自己
+`school_admin`，组织码还是他自己起的，等于没有角色边界）。建组织用
+`scripts/seed_organization.py`，见 `docs/adr/ADR-021` §3.3。
 
 ### GET `/teacher/classes/{class_id}/dashboard`
 

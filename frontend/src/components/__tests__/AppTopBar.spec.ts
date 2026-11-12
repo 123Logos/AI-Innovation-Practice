@@ -28,6 +28,7 @@ import { authApi } from '@/api'
 import { REFRESH_TOKEN_STORAGE_KEY, TOKEN_STORAGE_KEY } from '@/api/client'
 import type { jobsApi as JobsContract } from '@/api'
 import AppTopBar from '@/components/AppTopBar.vue'
+import { TOP_BAR_MODULES } from '@/config/modules'
 import { useAuthStore } from '@/stores/auth'
 import { useJobStore } from '@/stores/job'
 import { useResumeStore } from '@/stores/resume'
@@ -48,6 +49,7 @@ function makeRouter(): Router {
     { path: '/', name: 'resume-editor', component: BLANK },
     { path: '/jobs', name: 'job-board', component: BLANK },
     { path: '/trash', name: 'recycle-bin', component: BLANK },
+    { path: '/organization', name: 'organization', component: BLANK },
     { path: '/login', name: 'login', component: BLANK },
   ]
   return createRouter({ history: createMemoryHistory(), routes })
@@ -331,7 +333,7 @@ describe('窄屏的入口组织（结构判据，不测像素）', () => {
     expect(drawerText()).not.toContain('岗位库')
   })
 
-  it('.user-area 的一级项：窄屏三个（岗位库 / 简历 / 账户），宽屏两个（左栏常驻，不需要简历按钮）', async () => {
+  it('.user-area 的一级项：窄屏 = 顶栏项 + 简历触发 + 账户；宽屏 = 顶栏项 + 账户（左栏常驻，不需要简历按钮）', async () => {
     // RouterLink 会自带 `router-link-active` / `aria-current`，所以按「已知入口类名」取值，
     // 而不是照抄整个 class 列表。
     const KNOWN = ['jobs-entry', 'resumes-trigger', 'dirty-dot', 'account-trigger']
@@ -343,13 +345,15 @@ describe('窄屏的入口组织（结构判据，不测像素）', () => {
     const narrow = await mountTopBar({ showResumesTrigger: true })
     // 清单第 5 条之前这里是「岗位库 / 简历切换器 / 账户」，切换器自己带着一整个 Popover；
     // 现在那一格只剩一个触发按钮，列表本体在左栏或抽屉里（`ResumeList.vue` 一份）。
-    expect(items(narrow.wrapper)).toEqual(['jobs-entry', 'resumes-trigger', 'account-trigger'])
+    // 顶栏一级项的数量与内容跟着模块表走（B5 加进「组织管理」后是两项），不在这里写死。
+    const topBarEntries = TOP_BAR_MODULES.map(() => 'jobs-entry')
+    expect(items(narrow.wrapper)).toEqual([...topBarEntries, 'resumes-trigger', 'account-trigger'])
     // 账户按钮里两个标签恒在 DOM，显示谁由 CSS 决定（宽屏名字、窄屏「账户」）。
     expect(narrow.wrapper.find('.account-trigger .account-name').text()).toBe('tester')
     expect(narrow.wrapper.find('.account-trigger .account-word').text()).toBe('账户')
 
     const wide = await mountTopBar({ showResumesTrigger: false })
-    expect(items(wide.wrapper)).toEqual(['jobs-entry', 'account-trigger'])
+    expect(items(wide.wrapper)).toEqual([...topBarEntries, 'account-trigger'])
 
     // 收起态抽屉整个不在 DOM 里。这里不再对 `.ai-settings-button` / `.logout-button`
     // 断言「不是直接子项」——那两个类已不存在，对不存在的类名断言 false 是恒绿空检。
@@ -357,7 +361,7 @@ describe('窄屏的入口组织（结构判据，不测像素）', () => {
 
     await narrow.wrapper.find('.account-trigger').trigger('click')
     // 展开后一级项不变：抽屉 Teleport 到 body，不占顶栏的一格。
-    expect(items(narrow.wrapper)).toEqual(['jobs-entry', 'resumes-trigger', 'account-trigger'])
+    expect(items(narrow.wrapper)).toEqual([...topBarEntries, 'resumes-trigger', 'account-trigger'])
     expect(drawerRootEl()?.parentElement).toBe(document.body)
     expect(document.querySelectorAll('#user-drawer .drawer-item')).toHaveLength(2)
 

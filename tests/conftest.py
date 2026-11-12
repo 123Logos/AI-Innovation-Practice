@@ -128,6 +128,11 @@ APP_TABLES = (
     "jobs",
     "refresh_tokens",
     "resumes",
+    # B5（ADR-021）：审计表与成员表都外键指向 users / organizations，
+    # 清理顺序必须排在它们前面；`organizations.code` 有唯一键，漏清会撞 1062。
+    "audit_logs",
+    "organization_members",
+    "organizations",
     # B4（ADR-015）：三张多值子表，外键 RESTRICT 指向 student_profiles，
     # 必须排在它前面清；软删除的历史行也一并 DELETE（清理不区分 deleted_at）。
     "profile_certificates",

@@ -90,7 +90,14 @@ class UserRepository:
         username: str,
         password_hash: str,
         email: str | None = None,
+        *,
+        commit: bool = True,
     ) -> User:
+        """建用户。
+
+        `commit=False` 供注册那一笔用（`ADR-021` §2.5）：注册要「用户 + 成员关系 + 审计」
+        三件事同生共死，提交点必须由服务层掌握。默认 `True` 保持其它调用方的老行为。
+        """
         now = utc_now()
         user = User(
             id=str(uuid4()),
@@ -101,8 +108,11 @@ class UserRepository:
             updated_at=now,
         )
         self._session.add(user)
-        self._session.commit()
-        self._session.refresh(user)
+        if commit:
+            self._session.commit()
+            self._session.refresh(user)
+        else:
+            self._session.flush()
         return user
 
     def get_by_username(self, username: str) -> User | None:

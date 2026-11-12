@@ -108,10 +108,11 @@ describe('守则 L1：一个布局，一处定义', () => {
 
   it('被路由引用的 8 个视图里既不摆顶栏，也不自带 app-shell 外框', () => {
     const views = [...new Set(routedViewFiles())]
-    // 反向护栏：路由表读空了上面几条也会绿，所以先确认真的读到了 8 个视图
-    // （6 个带外框的 + 登录 + 注册；`job-create` 与 `job-edit` 共用一个组件，所以是 8 不是 9）。
-    expect(views).toHaveLength(8)
-    // DashboardView 不在这 8 个里，正是本用例**不**扫它的原因（它是 G5 的豁免项，批次 F7 才对齐）。
+    // 反向护栏：路由表读空了上面几条也会绿，所以先确认真的读到了 9 个视图
+    // （7 个带外框的 + 登录 + 注册；`job-create` 与 `job-edit` 共用一个组件，
+    //  所以是 9 不是 10）。B5 加进「组织管理」时这里红过一次，数字就是那次改的。
+    expect(views).toHaveLength(9)
+    // DashboardView 不在这 9 个里，正是本用例**不**扫它的原因（它是 G5 的豁免项，批次 F7 才对齐）。
     expect(views).not.toContain('views/DashboardView.vue')
 
     for (const rel of views) {

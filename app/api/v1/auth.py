@@ -18,31 +18,43 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
+from app.core.error_messages import ErrorMessage
 from app.core.rate_limit import AUTH_RATE_LIMIT, limiter
 from app.core.responses import success_response
 from app.schemas.auth import (
     LoginRequest,
     RefreshTokenRequest,
     RegisterRequest,
-    UserRead,
 )
 from app.services.auth_service import (
     AuthService,
+    CurrentUserContext,
     EmailAlreadyExistsError,
     InvalidCredentialsError,
+    InvalidOrganizationCodeError,
     InvalidTokenError,
+    OrganizationRequiredError,
     UsernameAlreadyExistsError,
 )
-from app.services.dependencies import get_auth_service, get_current_user
+from app.services.dependencies import (
+    client_ip,
+    get_auth_service,
+    get_current_context,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
-CurrentUserDep = Annotated[UserRead, Depends(get_current_user)]
+CurrentContextDep = Annotated[CurrentUserContext, Depends(get_current_context)]
 
 #: 刷新/登出失败对外只说这一句：不区分「不存在 / 已撤销 / 类型不符 / 已过期」，
 #: 否则这几句差异本身就是一枚「这个令牌是否真实存在过」的探测针。
 REFRESH_REJECTED_MESSAGE = "无效或已过期的刷新令牌，请重新登录。"
+
+#: 组织码相关两句（`ADR-021` §2.4）：缺什么就说缺什么，且不区分「不存在 / 已停用」。
+#: 文案在 `ErrorMessage` 受信目录里，`detail` 直接引用枚举——本仓的 4xx 文案只允许
+#: 来自那张表：路由里写字面量会被 `app/main.py` 的处理器替换成通用兜底文案（实测），
+#: 而 `scripts/check_error_copy.py`（G3）也会当场判红。
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
@@ -53,7 +65,7 @@ def register(
     service: AuthServiceDep,
 ) -> dict[str, Any]:
     try:
-        user = service.register(payload)
+        user = service.register(payload, ip=client_ip(request))
     except UsernameAlreadyExistsError as error:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -64,7 +76,22 @@ def register(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="邮箱已被注册。",
         ) from error
-    return success_response(request, {"user": user.model_dump(mode="json")})
+    except OrganizationRequiredError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ErrorMessage.ORGANIZATION_REQUIRED,
+        ) from error
+    except InvalidOrganizationCodeError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ErrorMessage.ORGANIZATION_CODE_INVALID,
+        ) from error
+    # `role` 回显是「不静默」的另一半：用户能当场看到自己被授予了什么身份，
+    # 而不是注册完还要去猜「我那个 teacher 到底生效了没有」。
+    return success_response(
+        request,
+        {"user": user.model_dump(mode="json"), "role": payload.role},
+    )
 
 
 @router.post("/login")
@@ -75,7 +102,7 @@ def login(
     service: AuthServiceDep,
 ) -> dict[str, Any]:
     try:
-        token = service.login(payload)
+        token = service.login(payload, ip=client_ip(request))
     except InvalidCredentialsError as error:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -85,8 +112,13 @@ def login(
 
 
 @router.get("/me")
-def read_current_user(request: Request, current_user: CurrentUserDep) -> dict[str, Any]:
-    return success_response(request, {"user": current_user.model_dump(mode="json")})
+def read_current_user(request: Request, context: CurrentContextDep) -> dict[str, Any]:
+    """当前用户 + 组织 + 角色 + 可用权限（`docs/API.md` §2 的目标契约）。
+
+    这三格**放在 `data` 顶层**，不塞进 `user`：`user` 是「这个人是谁」，
+    角色与组织是「他和某个组织的关系」，换组织不改用户（`ADR-021` §2.6）。
+    """
+    return success_response(request, context.to_response_data().model_dump(mode="json"))
 
 
 @router.post("/refresh")

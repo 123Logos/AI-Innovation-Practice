@@ -66,10 +66,63 @@ export interface LoginRequest {
 
 export interface RegisterResponse {
   user: UserRead
+  /** 批次 B5：注册时被授予的角色，后端回显（`ADR-021` §2.2「不静默」的另一半）。 */
+  role?: UserRole
 }
 
+/** 账号在组织里的角色（后端 `app/core/permissions.py::UserRole`）。 */
+export type UserRole = 'student' | 'teacher' | 'school_admin' | 'platform_admin'
+
+/** 后端 `OrganizationBrief`：只给「我是谁的下属」必须的三格。 */
+export interface OrganizationBrief {
+  id: string
+  code: string
+  name: string
+  kind: string
+}
+
+/**
+ * `GET /auth/me` 的 `data`（批次 B5 起）。
+ *
+ * `role` / `organization` / `permissions` 在顶层，不塞进 `user`：
+ * `user` 是「这个人是谁」，角色与组织是「他和某个组织的关系」（`ADR-021` §2.6）。
+ * 这三个字段都可缺省——旧后端（或注册后的那次响应）不会有它们，
+ * 前端据此回落成「学生 + 无组织」，而不是假设一定有。
+ */
 export interface MeResponse {
   user: UserRead
+  role?: UserRole
+  organization?: OrganizationBrief | null
+  permissions?: string[]
+}
+
+/** `GET /organizations/me` 的 `data`。 */
+export interface OrganizationOverview {
+  organization: OrganizationBrief
+  role: UserRole
+  member_count: number
+}
+
+/** 组织成员一行（后端 `MemberRead`）。 */
+export interface OrganizationMember {
+  user_id: string
+  username: string
+  email: string | null
+  role: UserRole
+  joined_at: string
+}
+
+/** 审计日志一行（后端 `AuditLogRead`）。`detail` 是原始 JSON 字符串。 */
+export interface AuditLogEntry {
+  id: number
+  action: string
+  actor_user_id: string | null
+  target_type: string | null
+  target_id: string | null
+  result: string
+  detail: string | null
+  ip: string | null
+  created_at: string
 }
 
 /* ---------------------------------- 档案 ---------------------------------- */
