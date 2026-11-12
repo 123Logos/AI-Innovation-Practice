@@ -22,10 +22,15 @@ import { computed, onMounted, ref } from 'vue'
 import { isApiError } from '@/api'
 import {
   changeMemberRole,
+  createInvitation,
   fetchAuditLogs,
+  fetchInvitations,
   fetchMyOrganization,
   fetchOrganizationMembers,
+  redeemInvitation,
+  revokeInvitation,
   type AssignableRole,
+  type OrganizationInvitation,
 } from '@/api/organizations'
 import type { AuditLogEntry, OrganizationMember, OrganizationOverview, UserRole } from '@/api/types'
 import { formatDateTime } from '@/utils/datetime'
@@ -63,6 +68,9 @@ const ACTION_LABELS: Record<string, string> = {
   'organization.create': '创建组织',
   'member.join': '加入组织',
   'member.role_change': '调整角色',
+  'invitation.create': '生成邀请码',
+  'invitation.redeem': '凭邀请码加入组织',
+  'invitation.revoke': '撤回邀请码',
 }
 
 const canManage = computed(() => overview.value?.role === 'school_admin')
@@ -104,6 +112,78 @@ async function loadAuditLogs(organizationId: string): Promise<void> {
   }
 }
 
+/* --------------------------- 邀请成员（B6 / ADR-023） --------------------------- */
+
+const invitations = ref<OrganizationInvitation[]>([])
+const invitationError = ref('')
+const inviteRole = ref<'student' | 'teacher'>('student')
+const inviteMaxUses = ref(1)
+const inviteTtlDays = ref(7)
+const creatingInvitation = ref(false)
+
+const redeemCode = ref('')
+const redeemError = ref('')
+const redeemNotice = ref('')
+const redeeming = ref(false)
+
+async function loadInvitations(organizationId: string): Promise<void> {
+  // 只有学校管理员能读邀请列表；学生/教师连请求都不发，后端也不该收到。
+  if (!canManage.value) return
+  invitationError.value = ''
+  try {
+    invitations.value = await fetchInvitations(organizationId)
+  } catch (error) {
+    invitationError.value = messageOf(error, '邀请记录暂时无法读取，请稍后重试。')
+  }
+}
+
+async function handleCreateInvitation(): Promise<void> {
+  if (!overview.value || creatingInvitation.value) return
+  creatingInvitation.value = true
+  invitationError.value = ''
+  try {
+    await createInvitation(overview.value.organization.id, {
+      role: inviteRole.value,
+      max_uses: inviteMaxUses.value,
+      ttl_days: inviteTtlDays.value,
+    })
+    await loadInvitations(overview.value.organization.id)
+  } catch (error) {
+    invitationError.value = messageOf(error, '邀请码没有生成，请稍后重试。')
+  } finally {
+    creatingInvitation.value = false
+  }
+}
+
+async function handleRevoke(invitation: OrganizationInvitation): Promise<void> {
+  if (!overview.value) return
+  invitationError.value = ''
+  try {
+    await revokeInvitation(overview.value.organization.id, invitation.id)
+    await loadInvitations(overview.value.organization.id)
+  } catch (error) {
+    invitationError.value = messageOf(error, '邀请码没有撤回，请稍后重试。')
+  }
+}
+
+async function handleRedeem(): Promise<void> {
+  const code = redeemCode.value.trim()
+  if (!code || redeeming.value) return
+  redeeming.value = true
+  redeemError.value = ''
+  redeemNotice.value = ''
+  try {
+    const result = await redeemInvitation(code)
+    redeemNotice.value = `已加入「${result.organization.name}」，正在刷新…`
+    await load()
+  } catch (error) {
+    // 失败要说人话、且必须上屏（守则 C3）；后端四种不可用给的是同一句话。
+    redeemError.value = messageOf(error, '邀请码没有生效，请核对后重试。')
+  } finally {
+    redeeming.value = false
+  }
+}
+
 async function load(): Promise<void> {
   loading.value = true
   errorMessage.value = ''
@@ -112,6 +192,7 @@ async function load(): Promise<void> {
     const data = await fetchMyOrganization()
     overview.value = data
     await Promise.all([loadMembers(data.organization.id), loadAuditLogs(data.organization.id)])
+    await loadInvitations(data.organization.id)
   } catch (error) {
     if (isApiError(error) && error.status === 404) {
       hasNoOrganization.value = true
@@ -215,6 +296,53 @@ onMounted(load)
         <p v-else class="empty">这个组织还没有成员。</p>
       </section>
 
+      <section v-if="canManage" class="card">
+        <div class="card-head">
+          <h2>邀请成员</h2>
+          <span class="hint">邀请码可设有效期与可用次数，可随时撤回。</span>
+        </div>
+        <p v-if="invitationError" class="notice notice--error" role="alert">{{ invitationError }}</p>
+        <div class="invite-form">
+          <label class="field">
+            <span>加入后的角色</span>
+            <select v-model="inviteRole" class="input">
+              <option value="student">学生</option>
+              <option value="teacher">教师</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>可用次数</span>
+            <input v-model.number="inviteMaxUses" class="input" type="number" min="1" max="100" />
+          </label>
+          <label class="field">
+            <span>有效天数</span>
+            <input v-model.number="inviteTtlDays" class="input" type="number" min="1" max="30" />
+          </label>
+          <button
+            class="button"
+            type="button"
+            :disabled="creatingInvitation"
+            @click="handleCreateInvitation"
+          >
+            {{ creatingInvitation ? '正在生成…' : '生成邀请码' }}
+          </button>
+        </div>
+        <ul v-if="invitations.length" class="invite-list">
+          <li v-for="item in invitations" :key="item.id" class="invite-item">
+            <span class="invite-code mono">{{ item.code }}</span>
+            <span class="hint">
+              {{ roleLabel(item.role) }} · 已用 {{ item.used_count }}/{{ item.max_uses }} 次 ·
+              {{ formatDateTime(item.expires_at) }} 前有效
+            </span>
+            <span v-if="item.revoked_at" class="tag">已撤回</span>
+            <button v-else class="button button--quiet" type="button" @click="handleRevoke(item)">
+              撤回
+            </button>
+          </li>
+        </ul>
+        <p v-else class="empty">还没有生成过邀请码。</p>
+      </section>
+
       <section v-if="canReadAudit" class="card">
         <div class="card-head">
           <h2>操作记录</h2>
@@ -235,8 +363,25 @@ onMounted(load)
     <div v-else-if="hasNoOrganization" class="empty-state">
       <p class="empty-title">你的账号还没有加入任何组织</p>
       <p class="empty-body">
-        向学校管理员索取组织码后，用组织码重新注册即可加入；加入后这一页会显示成员与操作记录。
+        向学校管理员索取邀请码，填在下面即可加入；加入后这一页会显示成员与操作记录。
       </p>
+      <form class="redeem-form" @submit.prevent="handleRedeem">
+        <label class="field">
+          <span>邀请码</span>
+          <input
+            v-model="redeemCode"
+            class="input"
+            type="text"
+            maxlength="64"
+            placeholder="粘贴学校管理员给你的邀请码"
+          />
+        </label>
+        <button class="button" type="submit" :disabled="redeeming || !redeemCode.trim()">
+          {{ redeeming ? '正在加入…' : '加入组织' }}
+        </button>
+      </form>
+      <p v-if="redeemError" class="notice notice--error" role="alert">{{ redeemError }}</p>
+      <p v-if="redeemNotice" class="notice" role="status">{{ redeemNotice }}</p>
     </div>
   </section>
 </template>
@@ -314,4 +459,39 @@ onMounted(load)
 .log-action { color: var(--ui-ink); font-weight: 600; }
 .log-time { margin-left: auto; }
 .log-result { border: 1px solid var(--ui-warning-border); border-radius: var(--ui-radius); padding: 1px 8px; color: var(--ui-warning); font-size: var(--text-xs); }
+
+.invite-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin-top: 14px; }
+.redeem-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin-top: 14px; }
+.field { display: flex; flex-direction: column; gap: 4px; color: var(--ui-ink-faint); font-size: var(--text-xs); }
+.input {
+  border: 1px solid var(--ui-border-strong);
+  border-radius: var(--ui-radius);
+  padding: 6px 9px;
+  color: var(--ui-ink);
+  background: var(--ui-surface);
+  font: inherit;
+  font-size: var(--text-base);
+}
+.button {
+  border: 1px solid var(--theme-primary);
+  border-radius: var(--ui-radius);
+  padding: 7px 14px;
+  color: var(--ui-surface);
+  background: var(--theme-primary);
+  font: inherit;
+  font-size: var(--text-base);
+  cursor: pointer;
+}
+.button:disabled { opacity: 0.6; cursor: not-allowed; }
+.button--quiet {
+  color: var(--theme-primary-strong);
+  background: var(--theme-bg-light);
+  border-color: var(--theme-rule-soft);
+}
+.invite-list { list-style: none; margin: 14px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.invite-item {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  border-bottom: 1px solid var(--ui-border); padding-bottom: 8px;
+}
+.invite-code { color: var(--ui-ink); font-size: var(--text-base); font-weight: 600; }
 </style>

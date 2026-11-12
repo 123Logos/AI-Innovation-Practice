@@ -112,7 +112,13 @@ export interface CreateInterviewResult {
  *
  * 返回 `null` 表示这一轮是真 AI，不展示降级条。
  */
-export function interviewDegradeHint(reason: string | null): string | null {
+export function interviewDegradeHint(reason: string | null, isOpening = false): string | null {
+  // 开场轮次刻意不带 BYOK 凭据：白名单只覆盖「发消息」（见 `client.ts`），
+  // 所以这里的 `key_missing` 不是「用户没填凭据」，而是设计上的内置题库开场。
+  // 沿用「还没填写 AI 使用凭据」会让填了凭据的用户看到一句与事实相反的提示。
+  if (isOpening && reason === 'key_missing') {
+    return '开场用内置题库，下一轮起由 AI 接手。'
+  }
   switch (reason) {
     case 'key_missing':
       return '还没填写 AI 使用凭据，这一轮用了内置题库。完成当前回答后，去「AI 设置」粘贴你的凭据，后续会更贴合你的简历。'

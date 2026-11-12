@@ -883,6 +883,32 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 
 学校管理员可查看脱敏的技能趋势、岗位-课程覆盖和专业缺口。
 
+### 组织邀请（批次 B6 已实现，`ADR-023`）
+
+> 与上面「组织与成员」那张表连着读：`organizations.code` 是长期、不限次、不可撤销的
+> 组织标识；这一节管的是**带过期时间、可用次数、可撤销**的邀请码，建在
+> `alembic/versions/20261112_0021_organization_invitations.py`。两者不是同一个东西，
+> 本批也不删 B5 注册时那个组织码入口——兼容性代价写在 `ADR-023` §3。
+
+链路：`app/api/v1/invitations.py` → `app/services/invitation_service.py::InvitationService`
+→ `app/repositories/invitation_repository.py::InvitationRepository`；
+审计动作白名单见 `app/repositories/audit_log_repository.py::AuditAction`。
+
+| 端点 | 需要的权限 | 说明 |
+|---|---|---|
+| `POST /organizations/{id}/invitations` | `org:member:manage` + 同组织 | 生成邀请码，201 返回 `data.invitation`。body `{"role":"student"\|"teacher","max_uses":1..100,"ttl_days":1..30}`，`extra="forbid"`；**不含 `school_admin`**——一张可转发的码不该能造出第二个校长 |
+| `GET /organizations/{id}/invitations` | `org:member:manage` + 同组织 | `data.items[]`，按创建时间倒序；撤销过的仍在列表里（`revoked_at` 非空） |
+| `DELETE /organizations/{id}/invitations/{invitation_id}` | `org:member:manage` + 同组织 | 撤销（打标，不物理删）。重复撤销是幂等成功，不写第二条审计 |
+| `POST /invitations/redeem` | 只需登录 | 凭码加入组织，body `{"code":"..."}`，返回 `data.{organization, role}` |
+
+三条实现约束：
+
+1. **两级判断**：路由层判权限，服务层判「这条邀请是不是你这个组织的」；被拒绝的跨组织尝试留 `result=denied` 审计，且绝不落到别人组织的审计列表里。兑换端点**不要求组织权限**——还没加入组织的人按定义不可能有。
+2. **兑换是一次事务**：`SELECT ... FOR UPDATE` 锁邀请行 → 校验 → 加成员 → 占次数 → 写审计 → 一次提交。`organization_members.user_id` 唯一，一个账号只能属于一个组织。
+3. **四种不可用对外同一句**：不存在 / 已撤销 / 已过期 / 已用尽都返回同一条 400 文案，不给「猜邀请码是否存在」的探针。已有组织的账号重复兑换另给一句明确文案。
+
+**FR-01 仍未完全达成**：本批把「绑定」变成可审计、可撤销、有时效的管理员动作，但**没有**强制「所有账号必须属于某个组织」（存量账号全无组织，迁移方案需产品裁定）。`ADR-021` §2.4 那句「跨组织不可见只在有组织的账号之间成立」继续有效，不许在 ROADMAP 记成已达成。
+
 ## 9. AI 任务与实时状态
 
 `# PHASE-2: not wired` — 本章全部端点未接通：`app/api/v1/` 下没有任何 `/ai-jobs` 路由，`app/` 全量 grep `ai-jobs` 与 `ai_job` **零命中**（`app/api/router.py` 只挂了 v1 聚合路由与 `/health`）；队列依赖（Redis / ARQ / Celery）仍在 AGENTS.md §3.2 冻结清单内。**岗位 JD 技能提取不走本章的异步模型**——它是 `POST /jobs/extract-skills` 的 200 同步返回（见 §4.8，异步 + `ai_job_id` 的岗位分析形态被 ADR-011 2.A 否决）。

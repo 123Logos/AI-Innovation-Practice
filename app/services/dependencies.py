@@ -24,6 +24,7 @@ from app.integrations.resume_generator import TemplateResumeGenerator
 from app.integrations.skill_extractor import DeepSeekJobSkillExtractor
 from app.repositories.audit_log_repository import AuditLogRepository
 from app.repositories.interview_repository import InterviewRepository
+from app.repositories.invitation_repository import InvitationRepository
 from app.repositories.job_repository import JobRepository
 from app.repositories.organization_repository import OrganizationRepository
 from app.repositories.refresh_token_repository import RefreshTokenRepository
@@ -38,6 +39,7 @@ from app.services.auth_service import (
     CurrentUserContext,
 )
 from app.services.interview_service import InterviewService
+from app.services.invitation_service import InvitationService
 from app.services.job_service import JobService
 from app.services.match_service import MatchService
 from app.services.organization_service import OrganizationService
@@ -139,6 +141,20 @@ def get_organization_service() -> Iterator[OrganizationService]:
     """
     with session_scope() as session:
         yield OrganizationService(OrganizationRepository(session), AuditLogRepository(session))
+
+
+def get_invitation_service() -> Iterator[InvitationService]:
+    """装配邀请服务（B6 / ADR-023）。
+
+    三个仓储必须共享同一个 session：兑换要「加成员 + 占用次数 + 写审计」
+    在一次提交里生效，分三个 session 就会出现「人进来了、次数没扣」的窗口。
+    """
+    with session_scope() as session:
+        yield InvitationService(
+            InvitationRepository(session),
+            OrganizationRepository(session),
+            AuditLogRepository(session),
+        )
 
 
 def get_job_service(request: Request) -> Iterator[JobService]:
