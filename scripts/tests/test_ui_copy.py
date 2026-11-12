@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from scripts.check_ui_copy import collect  # noqa: E402
+from scripts.check_ui_copy import collect
 
 
 def run(*lines: str) -> tuple[list[str], int]:
@@ -29,18 +29,20 @@ class BareStatusCodeTest(unittest.TestCase):
 
     def test_flags_limit_number_in_copy(self) -> None:
         """「最长 500 个字符」会被判成状态码——PR #30 的 CI 红就是这一条。"""
-        problems, _ = run('      if (url.length > 500) return `${label}的网址最长 500 个字符。`')
+        problems, _ = run("      if (url.length > 500) return `${label}的网址最长 500 个字符。`")
         self.assertEqual(len(problems), 1)
         self.assertIn("裸状态码 `500`", problems[0])
 
     def test_same_limit_without_number_passes(self) -> None:
         """改说法（不写数字）之后同一行不再违约——修的是文案，不是闸。"""
-        problems, _ = run('      if (url.length > 500) return `${label}的网址太长了，请换一个更短的链接。`')
+        problems, _ = run(
+            "      if (url.length > 500) return `${label}的网址太长了，请换一个更短的链接。`"
+        )
         self.assertEqual(problems, [])
 
     def test_four_digit_number_is_not_a_status_code(self) -> None:
         """2000 这类四位上限不该被误判：正则刻意只认三位。"""
-        problems, _ = run('      return `${label}的描述最长 2000 个字符。`')
+        problems, _ = run("      return `${label}的描述最长 2000 个字符。`")
         self.assertEqual(problems, [])
 
 
