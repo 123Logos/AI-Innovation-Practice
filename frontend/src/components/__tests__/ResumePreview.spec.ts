@@ -529,3 +529,57 @@ describe('「刷新页面后仍在」', () => {
     expect(saveButton(rebuilt).text()).toBe('已保存')
   })
 })
+
+/**
+ * 证书与作品（B4 / ADR-015 §2.1、§5 ②）。
+ *
+ * 这两段是 2026-11-12 补的：**后端生成器早就会渲染，实时预览一句都没有**。
+ * 用户填了证书、点保存也成功了（库里真有那一行），纸面上却一格都没有——
+ * 他唯一的结论只能是「没保存上」，而不是「预览没实现」。
+ *
+ * 所以这组用例的判据不是「store 里有没有数据」，而是**纸面 DOM 上有没有那几格**：
+ * 库 → draft 这一段一直是通的，断的恰恰是 draft → 纸面。
+ */
+describe('证书与作品：实时预览必须与生成物同构', () => {
+  beforeEach(() => {
+    serverProfile = {
+      ...freshServerProfile(),
+      certificates: [
+        { id: 'cert-1', name: '大学英语六级', issuer: '教育部教育考试院', issued_on: '2024-06-01' },
+      ],
+      portfolio_links: [{ id: 'link-1', label: '技术博客', url: 'https://example.com/blog' }],
+    }
+  })
+
+  it('档案里有几格，纸面上就逐格画出来（含月份格式与链接 href）', async () => {
+    const wrapper = await mountWorkspace()
+
+    expect(wrapper.get('.certificate-name').text()).toBe('大学英语六级')
+    expect(wrapper.get('.certificate-issuer').text()).toBe('教育部教育考试院')
+    // 纸面只到月：与后端 `_format_month` / 教育经历同一格式，不是 `2024-06-01`。
+    expect(wrapper.get('.certificate-date').text()).toBe('2024.06')
+
+    expect(wrapper.get('.portfolio-label').text()).toBe('技术博客')
+    const anchor = wrapper.get('.portfolio-url')
+    expect(anchor.text()).toBe('https://example.com/blog')
+    expect(anchor.attributes('href')).toBe('https://example.com/blog')
+  })
+
+  it('两个段都受排版顺序控制：改顺序纸面跟着变', async () => {
+    const wrapper = await mountWorkspace()
+    const store = useResumeStore()
+    // 把作品挪到证书前面——顺序来自 `layout_config`，不是模板里写死的位置。
+    store.moveSectionUp('portfolio')
+    await flushPromises()
+
+    const headings = wrapper.findAll('.paper-section > h2').map((node) => node.text())
+    expect(headings.indexOf('作品链接')).toBeLessThan(headings.indexOf('证书'))
+  })
+
+  it('没填证书时不画一个空标题（空模块不占纸面）', async () => {
+    serverProfile = freshServerProfile()
+    const wrapper = await mountWorkspace()
+    expect(wrapper.find('.certificate-name').exists()).toBe(false)
+    expect(wrapper.find('.portfolio-label').exists()).toBe(false)
+  })
+})

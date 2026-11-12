@@ -297,6 +297,39 @@ function commitEducationMonth(
 }
 
 /**
+ * 证书的颁发日期（失焦回写）。
+ *
+ * 纸面只到月（与生成器 `_format_month` 同口径，`2023.12`），而库里是完整 DATE：
+ * 用户敲 `2023.12` 时补成当月 1 号写入，与表单 `type="date"` 的取值格式一致。
+ * 识别不了就还原成原值——**不猜**用户的意图，也不把半截输入写进库。
+ */
+function commitCertificateDate(index: number, event: Event): void {
+  const certificate = store.draft.certificates[index]
+  if (!certificate) return
+  const current = displayMonth(certificate.issued_on) || '颁发日期'
+  commitText(event, current, (value) => {
+    if (value === '') {
+      store.updateCertificate(index, 'issued_on', '')
+      return '颁发日期'
+    }
+    const parsed = parseMonthInput(value)
+    if (parsed === null) return current
+    store.updateCertificate(index, 'issued_on', `${parsed}-01`)
+    return displayMonth(`${parsed}-01`)
+  })
+}
+
+/**
+ * 作品链接的 `href` 兜底：只放行 http/https，其余返回 `undefined`（渲染成无 `href` 的 `<a>`）。
+ *
+ * 写侧 `validateForSave()` 与后端 `PortfolioLinkInput` 都会拦，这里是第三道——
+ * 因为纸面是 `v-html` 之外唯一把用户输入直接塞进属性名的地方，草稿可能停在任何半截状态。
+ */
+function safeHref(url: string): string | undefined {
+  return /^https?:\/\//i.test(url.trim()) ? url.trim() : undefined
+}
+
+/**
  * 纸面上编辑项目经历的起止时间（失焦回写）。
  *
  * 纸面按「年.月.日」展示（与后端生成器 `_format_day` 同口径），store 里也是
@@ -427,16 +460,29 @@ function updateExpDate(
           </header>
 
           <!--
-            排版（D5.3）：三个 `<section>` 不再按模板位置固定顺序，而是按
+            排版（D5.3）：五个 `<section>` 不再按模板位置固定顺序，而是按
             `store.layoutSections`（= 后端解析后的 `layout_config`）逐个匹配渲染。
             标题取 layout 里的自定义标题，空标题回落默认值。
 
-            为什么用 `v-for` + `v-if` 三连而不是「动态组件」：
+            为什么用 `v-for` + `v-if` 五连而不是「动态组件」：
             每段内部有十几处 `contenteditable` 与失焦回写，拆成子组件会多一层
             props/emit，也容易把「纸面编辑」的原始下标搞错（教育经历还要按入学时间排序）。
             这里只是把「外层顺序」交出去，内部保持原样。
 
-            `v-else-if` 链必须紧邻（中间不能插注释），否则 Vue 编译报错。
+            `v-else-if` 链必须紧邻（中间不能插注释），否则 Vue 编译报错——所以两段新模块的
+            说明都写在这里，链内一个字都不插。
+
+            证书 / 作品（B4 / ADR-015 §2.1、§5 ②）是 2026-11-12 补上的两段。缺它们的后果
+            正是老板报的那个 bug：表单里填了证书、保存也成功了（库里真有那一行），但纸面上一格
+            都没有——实时预览当时只认 educations / skills / experiences 三段，而后端生成器
+            早就渲染了五段。DOM 与 `TemplateResumeGenerator` 逐字对应（`.certificate-name` /
+            `.certificate-meta` / `.portfolio-label` / `.portfolio-url`，连
+            `<span class="certificate-divider"> ｜ </span>` 的位置都一样），否则「实时预览」与
+            「已生成简历」会长得不一样。
+
+            作品那枚链接在预览里点不动（`@click.prevent`）：纸面是用来看的，点一下就离开编辑器
+            还得重新等加载；真正导出/投递的那份 HTML 里它照常可点。`href` 走 `safeHref()`，
+            写侧虽然只认 http/https，草稿可能停在半截输入上，这里再挡一道。
           -->
           <template v-for="section in store.layoutSections" :key="section.id">
             <section
@@ -585,6 +631,102 @@ function updateExpDate(
                     })
                   "
                 >{{ experience.responsibility }}</p>
+              </article>
+            </section>
+
+            <section
+              v-else-if="section.id === 'certificates' && store.draft.certificates.length"
+              class="paper-section"
+            >
+              <h2>{{ store.sectionTitle(section) }}</h2>
+              <article
+                v-for="(certificate, index) in store.draft.certificates"
+                :key="`certificate-${index}`"
+                class="paper-experience"
+              >
+                <h3
+                  class="certificate-name"
+                  contenteditable="true"
+                  spellcheck="false"
+                  data-placeholder="证书名称"
+                  @blur="
+                    commitText($event, certificate.name, (value) => {
+                      store.updateCertificate(index, 'name', value)
+                      return value
+                    })
+                  "
+                >{{ certificate.name }}</h3>
+                <p
+                  v-if="certificate.issuer.trim() || certificate.issued_on"
+                  class="certificate-meta"
+                >
+                  <span
+                    v-if="certificate.issuer.trim()"
+                    class="certificate-issuer"
+                    contenteditable="true"
+                    spellcheck="false"
+                    @blur="
+                      commitText($event, certificate.issuer, (value) => {
+                        store.updateCertificate(index, 'issuer', value)
+                        return value
+                      })
+                    "
+                  >{{ certificate.issuer }}</span>
+                  <span
+                    v-if="certificate.issuer.trim() && certificate.issued_on"
+                    class="certificate-divider"
+                  > ｜ </span>
+                  <span
+                    v-if="certificate.issued_on"
+                    class="certificate-date"
+                    contenteditable="true"
+                    spellcheck="false"
+                    @blur="commitCertificateDate(index, $event)"
+                  >{{ displayMonth(certificate.issued_on) }}</span>
+                </p>
+              </article>
+            </section>
+
+            <section
+              v-else-if="section.id === 'portfolio' && store.draft.portfolio_links.length"
+              class="paper-section"
+            >
+              <h2>{{ store.sectionTitle(section) }}</h2>
+              <article
+                v-for="(link, index) in store.draft.portfolio_links"
+                :key="`portfolio-${index}`"
+                class="paper-experience"
+              >
+                <h3
+                  class="portfolio-label"
+                  contenteditable="true"
+                  spellcheck="false"
+                  data-placeholder="作品名称"
+                  @blur="
+                    commitText($event, link.label, (value) => {
+                      store.updatePortfolioLink(index, 'label', value)
+                      return value
+                    })
+                  "
+                >{{ link.label }}</h3>
+                <p class="portfolio-meta">
+                  <a
+                    class="portfolio-url"
+                    :href="safeHref(link.url)"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    contenteditable="true"
+                    spellcheck="false"
+                    data-placeholder="链接地址"
+                    @click.prevent
+                    @blur="
+                      commitText($event, link.url, (value) => {
+                        store.updatePortfolioLink(index, 'url', value)
+                        return value
+                      })
+                    "
+                  >{{ link.url }}</a>
+                </p>
               </article>
             </section>
           </template>
@@ -812,6 +954,18 @@ function updateExpDate(
 .paper .paper-experience:last-child { margin-bottom: 0; }
 .paper .education-school,
 .paper .experience-title { margin: 0; font-size: 15px; font-weight: 650; }
+/*
+ * 证书 / 作品（B4）：h3 的字号只对教育、项目两格定过，这两格不补会掉回浏览器默认的
+ * 大号 h3 + 外边距，同一张纸上两种标题大小。分隔符与网址的色值也在这里给，
+ * 否则网址会变成默认的蓝色下划线链接，和整页的墨绿配色打架。
+ */
+.paper .certificate-name,
+.paper .portfolio-label { margin: 0; font-size: 15px; font-weight: 650; }
+.paper .certificate-meta,
+.paper .portfolio-meta { margin: 6px 0 0; color: var(--paper-body); font-size: 12px; line-height: 1.6; }
+.paper .certificate-divider { color: var(--paper-faint); }
+/* 长网址在窄纸上必须能折行，否则一条 URL 会把整页撑出横向滚动条。 */
+.paper .portfolio-url { color: var(--paper-accent); text-decoration: none; word-break: break-all; }
 .paper .education-meta { margin: 6px 0 0; color: var(--paper-body); font-size: 12px; line-height: 1.6; }
 .paper .experience-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .paper .date { color: var(--paper-muted); font-family: "SF Mono", Consolas, monospace; font-size: 11px; white-space: nowrap; }

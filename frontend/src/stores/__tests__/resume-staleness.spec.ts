@@ -318,3 +318,88 @@ describe('ADR-018：超限是可见信息，不是损失', () => {
     expect(store.needsRegenerate).toBe(false)
   })
 })
+
+/**
+ * 保存前的作品 / 证书自检（2026-11-12 补）。
+ *
+ * 起因是一句用户能看见、但**照着无法动手**的报错：
+ * 「保存失败：字段「portfolio_links.0」未通过后端校验，请检查后重试。」
+ * 根因是网址没写 `http://`（后端 `PortfolioLinkInput` 只收 http/https，防 `<a href>` 的
+ * `javascript:` 通道），而当时前端一个字都没拦、422 的文案又只剩字段路径。
+ *
+ * 所以这组用例的判据有三条，缺一条都算没修好：
+ * 1. **不发请求**——前端能拦的错不该靠一次往返去发现；
+ * 2. 文案**指到第几条、缺什么**（C3：用户修得动）；
+ * 3. 合法的网址必须放行（只加闸不开路等于把作品功能关掉）。
+ */
+describe('作品 / 证书：保存前就把「缺 http://」说成一句人话', () => {
+  it('网址没写协议：拦住、不发 PUT、文案指到第 1 条并说清缺什么', async () => {
+    const store = await seedSaved()
+    store.addPortfolioLink()
+    store.updatePortfolioLink(0, 'label', '技术博客')
+    store.updatePortfolioLink(0, 'url', 'example.com/blog')
+
+    await expect(store.save()).rejects.toThrow(
+      '第 1 条作品链接的网址要以 http:// 或 https:// 开头（如 https://example.com）。',
+    )
+    expect(profilesApi.updateProfile).not.toHaveBeenCalled()
+  })
+
+  it('网址写全了就放行——闸不能顺手把功能关掉', async () => {
+    const store = await seedSaved()
+    store.addPortfolioLink()
+    store.updatePortfolioLink(0, 'label', '技术博客')
+    store.updatePortfolioLink(0, 'url', 'https://example.com/blog')
+    profilesApi.updateProfile.mockResolvedValue(serverProfile())
+
+    await store.save()
+    expect(profilesApi.updateProfile).toHaveBeenCalledTimes(1)
+  })
+
+  it('两条作品填同一个网址：说「合并成一条」，而不是抛一个唯一键 422', async () => {
+    const store = await seedSaved()
+    store.addPortfolioLink()
+    store.updatePortfolioLink(0, 'label', '博客')
+    store.updatePortfolioLink(0, 'url', 'https://example.com')
+    store.addPortfolioLink()
+    store.updatePortfolioLink(1, 'label', '主页')
+    store.updatePortfolioLink(1, 'url', 'https://Example.com')
+
+    await expect(store.save()).rejects.toThrow('两条作品链接填了同一个网址，请先合并成一条。')
+    expect(profilesApi.updateProfile).not.toHaveBeenCalled()
+  })
+
+  it('证书名称重复也在前端拦下（后端那条 422 同样只剩字段路径）', async () => {
+    const store = await seedSaved()
+    store.addCertificate()
+    store.updateCertificate(0, 'name', '大学英语六级')
+    store.addCertificate()
+    store.updateCertificate(1, 'name', '大学英语六级')
+
+    await expect(store.save()).rejects.toThrow('证书名称不能重复，请先合并同名证书。')
+    expect(profilesApi.updateProfile).not.toHaveBeenCalled()
+  })
+
+  /**
+   * 网址长度这条边（后端 `max_length=500`）此前**一条用例都没有**，是 G1 红出来才发现的。
+   *
+   * 判据两层：① 超长要拦、不能发请求；② 文案里**不许出现三位数字**——这条不是形式主义，
+   * 那个上限正好是 `500`，写进文案会被 G1 当成裸状态码（C2）判红。守则禁止用豁免标记换绿，
+   * 所以真正的修法是「不改上限、改说法」：上限留着，数字不出现在用户眼前。
+   */
+  it('网址超过上限：拦住、不发 PUT，且文案不把上限数字写出来', async () => {
+    const store = await seedSaved()
+    store.addPortfolioLink()
+    store.updatePortfolioLink(0, 'label', '技术博客')
+    store.updatePortfolioLink(0, 'url', `https://example.com/${'a'.repeat(500)}`)
+
+    await expect(store.save()).rejects.toThrow(
+      '第 1 条作品链接的网址太长了，请换一个更短的链接后再保存。',
+    )
+    expect(profilesApi.updateProfile).not.toHaveBeenCalled()
+
+    const message = await store.save().catch((error: Error) => error.message)
+    // 三位数一出现就会被 G1 读成状态码；这里把那条口径钉在用例里，防止下次有人「顺手补个数字」。
+    expect(message).not.toMatch(/(?<![\w.])(?:4\d{2}|5\d{2})(?![\w.])/)
+  })
+})
