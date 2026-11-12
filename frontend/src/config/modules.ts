@@ -6,9 +6,10 @@
  *
  * 三条刻意的取舍：
  *
- * 1. **这里只有真的能点到的模块**（守则 L5）。模拟面试、测评、组织管理一类未实现的模块
+ * 1. **这里只有真的能点到的模块**（守则 L5）。模拟面试、测评一类未实现的模块
  *    不进表、不给禁用态——禁用态会让用户以为「快有了」，而我们对它没有排期承诺；
- *    它们落地当天才是第一次可见的时刻。「组织管理」等批次 B5、模拟面试等批次 B11a。
+ *    它们落地当天才是第一次可见的时刻。「组织管理」已于批次 B5 落地（2026-11-12），
+ *    模拟面试（B11a）仍在排队。
  *    `src/__tests__/layoutGuards.spec.ts` 用 `router.hasRoute()` 逐条钉住这一格。
  *
  * 2. **`name` 是用户可见文案**，归批次 F1a 的文案清扫管；本批一个字都不改，
@@ -25,7 +26,7 @@
  */
 
 /** 模块的稳定 id：给消费方当 key 用，不随文案变化，所以与 `routeName` 分开两个名字。 */
-export type AppModuleKey = 'resume-editor' | 'job-board'
+export type AppModuleKey = 'resume-editor' | 'job-board' | 'organization'
 
 export interface AppModule {
   /** 稳定 id（见 `AppModuleKey`）。 */
@@ -66,6 +67,19 @@ export const APP_MODULES: readonly AppModule[] = [
     requiresAuth: true,
     inTopBar: true,
     iconPaths: ['M3 8h18v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z', 'M9 8V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v3'],
+  },
+  /*
+   * 批次 B5（ADR-021）起可见。**对所有登录用户开放**，不按角色隐藏：
+   * 学生进来看到的是「我在哪个组织」与「你没有查看成员名单的权限」，
+   * 这比一个凭空消失的入口更容易解释——而真正的拦截在后端（403），不靠这里少画一个入口。
+   */
+  {
+    key: 'organization',
+    name: '组织管理',
+    routeName: 'organization',
+    requiresAuth: true,
+    inTopBar: true,
+    iconPaths: ['M3 21h18', 'M5 21V7l7-4 7 4v14', 'M9 21v-6h6v6'],
   },
 ]
 

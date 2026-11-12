@@ -8,6 +8,7 @@ import JobCreateView from '@/views/JobCreateView.vue'
 import JobDetailView from '@/views/JobDetailView.vue'
 import JobTrashView from '@/views/JobTrashView.vue'
 import LoginView from '@/views/LoginView.vue'
+import OrganizationView from '@/views/OrganizationView.vue'
 import RecycleBinView from '@/views/RecycleBinView.vue'
 import RegisterView from '@/views/RegisterView.vue'
 import ResumeEditorView from '@/views/ResumeEditorView.vue'
@@ -93,6 +94,17 @@ const routes: RouteRecordRaw[] = [
         path: 'jobs/:id',
         name: 'job-detail',
         component: JobDetailView,
+        meta: { requiresAuth: true },
+      },
+      /*
+       * 组织管理（批次 B5）。路径是静态段、不与 `jobs/:id` 同级，所以没有排序陷阱。
+       * 模块表 `config/modules.ts` 里那一项的 `routeName` 必须与这里逐字一致，
+       * `src/__tests__/layoutGuards.spec.ts` 用 `router.hasRoute()` 钉住它（守则 L5）。
+       */
+      {
+        path: 'organization',
+        name: 'organization',
+        component: OrganizationView,
         meta: { requiresAuth: true },
       },
     ],

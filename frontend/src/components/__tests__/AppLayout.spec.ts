@@ -33,6 +33,7 @@ import App from '@/App.vue'
 import { http } from '@/api/client'
 import type { ApiErrorBody } from '@/api/types'
 import router from '@/router'
+import { TOP_BAR_MODULES } from '@/config/modules'
 import { useAuthStore } from '@/stores/auth'
 import { settled } from '@/__tests__/setup'
 
@@ -286,10 +287,13 @@ describe('顶栏的一级导航来自模块表（守则 L4）', () => {
     const wrapper = await visit('/jobs')
     const entries = wrapper.findAll('.app-shell > .app-topbar .jobs-entry')
 
-    // 表里 `inTopBar` 为真的目前只有一条；F3 加条目时改的是表，不是这里。
-    expect(entries).toHaveLength(1)
-    expect(entries[0]?.element.tagName).toBe('A')
-    expect(entries[0]?.text()).toBe('岗位库')
+    // 期望值从模块表推导：加一条 `inTopBar` 模块时改的是表，不是这里。
+    // （原来这里写死「只有一条」，B5 加进「组织管理」时它红了一次——红得对，
+    //  但正确的修法是把判据改成跟表走，而不是再加一个数字。）
+    expect(entries.map((entry) => entry.text())).toEqual(
+      TOP_BAR_MODULES.map((module) => module.name),
+    )
+    expect(entries.every((entry) => entry.element.tagName === 'A')).toBe(true)
     expect(entries[0]?.attributes('href')).toBe('/jobs')
     // 判据要真的把抽屉打开再看：它 Teleport 到 body 且收起态根本不存在，
     // 不收时 `closest` 必然为 null，那是空检。

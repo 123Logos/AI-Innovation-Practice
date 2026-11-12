@@ -10,25 +10,34 @@ T7.2 起 `get_resume_service` 装配真实 MySQL 仓储；`FakeResumeRepository`
 `app/repositories/fake_resume_repository.py` 供历史参考，但不再被正式路由引用。
 """
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
+from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 
+from app.core.error_messages import ErrorMessage
 from app.integrations.copy_writer import DeepSeekCopyWriter
 from app.integrations.evidence_scorer import DeepSeekEvidenceScorer
 from app.integrations.resume_generator import TemplateResumeGenerator
 from app.integrations.skill_extractor import DeepSeekJobSkillExtractor
+from app.repositories.audit_log_repository import AuditLogRepository
 from app.repositories.job_repository import JobRepository
+from app.repositories.organization_repository import OrganizationRepository
 from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.resume_repository import ResumeRepository
 from app.repositories.skill_alias_repository import SkillAliasRepository
 from app.repositories.student_profile_repository import StudentProfileRepository
 from app.repositories.user_repository import UserRepository, session_scope
 from app.schemas.auth import UserRead
-from app.services.auth_service import AuthError, AuthService
+from app.services.auth_service import (
+    AuthError,
+    AuthService,
+    CurrentUserContext,
+)
 from app.services.job_service import JobService
 from app.services.match_service import MatchService
+from app.services.organization_service import OrganizationService
 from app.services.profile_service import ProfileService
 from app.services.resume_service import ResumeService
 
@@ -40,26 +49,93 @@ DEEPSEEK_KEY_HEADER = "X-DeepSeek-Key"
 
 def get_auth_service() -> Iterator[AuthService]:
     with session_scope() as session:
-        yield AuthService(UserRepository(session), RefreshTokenRepository(session))
+        yield _build_auth_service(session)
+
+
+def _build_auth_service(session: Session) -> AuthService:
+    """一处装配，两个入口共用（`get_auth_service` 与 `_context_from_request`）。
+
+    注入口径必须只有一个：注册那笔要「用户 + 成员关系 + 审计」同事务，
+    任何一处漏装一个仓储，都会变成一个静默的「没有记审计」。
+    """
+    return AuthService(
+        UserRepository(session),
+        RefreshTokenRepository(session),
+        OrganizationRepository(session),
+        AuditLogRepository(session),
+    )
 
 
 def get_current_user(request: Request) -> UserRead:
+    return _context_from_request(request).user
+
+
+def get_current_context(request: Request) -> CurrentUserContext:
+    """「我是谁 + 我在哪个组织 + 我能做什么」。供 `/me` 与权限依赖使用。"""
+    return _context_from_request(request)
+
+
+def require_permission(permission: str) -> Callable[[Request], CurrentUserContext]:
+    """端点级权限闸（`ADR-021` §2.3）。
+
+    前端拿到的 `permissions` 与这里判的同源，所以不会出现「前端给了按钮、后端 403」。
+    但**前端那份不是边界**：每个需要权限的端点必须自己挂一次这个依赖。
+    """
+
+    def guard(request: Request) -> CurrentUserContext:
+        context = _context_from_request(request)
+        if permission not in context.permissions:
+            raise HTTPException(status_code=403, detail=ErrorMessage.FORBIDDEN)
+        return context
+
+    return guard
+
+
+def _context_from_request(request: Request) -> CurrentUserContext:
+    """一次请求只查一次库：结果挂在 `request.state` 上，后面的依赖直接复用。
+
+    没有这层缓存，`/me` 与每个带权限的端点都会查两遍「用户 + 成员关系」。
+    """
+    cached = getattr(request.state, "current_user_context", None)
+    if isinstance(cached, CurrentUserContext):
+        return cached
     token = _bearer_token(request)
     with session_scope() as session:
-        service = AuthService(UserRepository(session), RefreshTokenRepository(session))
+        service = _build_auth_service(session)
         try:
-            user = service.get_current_user(token)
+            context = service.get_current_context(token)
         except AuthError as error:
             raise HTTPException(status_code=401, detail=UNAUTHORIZED_MESSAGE) from error
     # 给限流用的一次性标记（ADR-013 §3）：`/jobs/{id}/match` 的键按用户而不是 IP。
     # 写在依赖里而不是在路由里，是为了让「谁都能改这个请求的限流归属」这件事不可能发生。
-    request.state.rate_limit_user_id = user.id
-    return user
+    request.state.rate_limit_user_id = context.user.id
+    request.state.current_user_context = context
+    return context
+
+
+def client_ip(request: Request) -> str | None:
+    """审计里的来源 IP。
+
+    只取 `request.client`（直连对端），**不信任** `X-Forwarded-For`：本仓还没有任何
+    反向代理配置（`Dockerfile.*` 里是 uvicorn 直出），此时采信那个头等于允许客户端
+    在审计日志里伪造自己的来源。真上了代理再写 ADR 加白名单。
+    """
+    return request.client.host if request.client is not None else None
 
 
 def get_profile_service() -> Iterator[ProfileService]:
     with session_scope() as session:
         yield ProfileService(StudentProfileRepository(session))
+
+
+def get_organization_service() -> Iterator[OrganizationService]:
+    """组织服务：组织仓储 + 审计仓储共享同一个 session。
+
+    两者必须同 session：改角色与写审计要在一次提交里（`ADR-021` §2.5），
+    分两个 session 就会出现「角色改了、审计没写」的窗口。
+    """
+    with session_scope() as session:
+        yield OrganizationService(OrganizationRepository(session), AuditLogRepository(session))
 
 
 def get_job_service(request: Request) -> Iterator[JobService]:

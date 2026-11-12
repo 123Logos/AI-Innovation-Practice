@@ -129,6 +129,10 @@ def resolve_bare(name: str) -> str | None:
         and "node_modules" not in path.parts
         and ".qoder" not in path.parts
         and "dist" not in path.parts
+        # `.workbuddy/worktrees/**` 是同一份代码的另一个检出（多线并行时各线一个
+        # worktree）。不排除它，全仓每个裸文件名都会变成"两个同名文件"→ 歧义 → 全红。
+        # 这不是放行：判据仍是"在本仓唯一"，只是不把复制品算成第二个定义。
+        and ".workbuddy" not in path.parts
     ]
     _index[name] = hits[0] if len(hits) == 1 else None
     return _index[name]

@@ -57,6 +57,25 @@ student_profiles ─ interview_sessions ─ interview_turns
 | 面试 | `interview_sessions`, `interview_turns`, `media_rooms`, `interview_reports` | 文本/音视频适配层及证据化复盘 |
 | 隐私治理 | `consents`, `files`, `audit_logs` | 授权、对象存储元数据和不可变审计 |
 
+### 3.1 已落库的组织三表（批次 B5，2026-11-12，`ADR-021` §2.1）
+
+上面 §3 那张表是**领域规划**（含 `memberships` / `roles` / `departments` 等尚未建的名称）。
+B5 实际落库的是下面三张，迁移文件 `alembic/versions/20261112_0018_organizations_roles_audit.py`：
+
+| 表 | 关键列 | 与规划名的差异（为什么） |
+|---|---|---|
+| `organizations` | `id`(VARCHAR36 PK) / `code`(VARCHAR50 唯一) / `name` / `kind`(school/college/company) / `created_at` / `updated_at` | `code` 同时是邀请码，唯一键建在库上；落库前 `strip().upper()` |
+| `organization_members` | `id` / `organization_id`(FK→organizations, RESTRICT) / `user_id`(FK→users, CASCADE, **唯一**) / `role`(VARCHAR20) / `created_at` / `updated_at`；索引 `(organization_id, role)` | 规划里把「成员关系」与「角色」分成 `memberships` + `roles` 两张表；实际合并成一张，因为本批只有「一个人在一个组织里一个角色」，拆两张再加连接表是为一格还不存在的泛化付三次迁移成本。放宽成多组织只需把 `user_id` 唯一键改成 `(user_id, organization_id)` |
+| `audit_logs` | `id`(BIGINT 自增) / `actor_user_id`(FK→users, SET NULL, 可空) / `organization_id`(FK→organizations, SET NULL, 可空) / `action` / `target_type` / `target_id` / `result`(ok/denied) / `detail`(TEXT) / `ip` / `created_at` | **没有 `updated_at`**：只追加表，可改的审计日志不是审计日志。`detail` 存 JSON 字符串而不是 JSON 列——本批不按 detail 内部字段查询 |
+
+三条一致性约定：
+
+1. **角色挂成员关系、不挂 `users`**：一个人将来既是 A 校教师又是 B 企业导师时不用改表；
+2. **审计与业务同事务**：审计写失败 → 业务回滚（`ADR-021` §2.5）；`result=denied` 的越权尝试**也记**；
+3. **刻意没有 `(created_at)` 单列索引**：本批没有跨组织的「全平台最近操作」查询，索引只有
+   `(organization_id, created_at)` 与 `(actor_user_id, created_at)` 两条复合索引
+   （`tests/test_migrations.py` 那条「不许有单列 created_at 索引」判据同时挡着它）。
+
 ## 4. 状态与一致性约束
 
 - 岗位：`draft -> pending_review -> approved -> published -> closed/expired/rejected`。

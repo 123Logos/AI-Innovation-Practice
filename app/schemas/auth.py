@@ -5,16 +5,36 @@
 """
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.core.permissions import UserRole
 
 BCRYPT_MAX_PASSWORD_BYTES = 72
 
 
 class RegisterRequest(BaseModel):
+    """注册请求体。
+
+    **`extra="forbid"` 是批次 B5 的行为变更**（`docs/adr/ADR-021` §2.2）：在这之前，
+    客户端多塞的任何字段（拼错的 `organiztion_code`、自以为能提权的 `is_admin`）
+    都被 Pydantic 静默丢掉，而响应是成功——「静默降级比明确拒绝更坏」。
+    现在这类请求直接 422，错误位置精确到字段名。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
     username: str = Field(min_length=3, max_length=100)
     password: str = Field(min_length=8, max_length=128)
     email: str | None = Field(default=None, max_length=254)
+    #: 自助注册只认这三种角色。**不含** `platform_admin`：能自己注册成平台管理员就是提权漏洞。
+    #: 用 Literal 而不是 `UserRole`：后者会把 `platform_admin` 也当成合法输入，
+    #: 而它在自助注册里根本不该被接受。
+    role: Literal["student", "teacher", "school_admin"] = "student"
+    #: 组织码 = 邀请码。教师/管理员必须带（业务校验在 `AuthService.register`，
+    #: 那里能给出 400 + 人话；schema 只负责「形状」）。
+    organization_code: str | None = Field(default=None, max_length=50)
 
     @field_validator("username")
     @classmethod
@@ -94,3 +114,35 @@ class TokenResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     expires_in: int
+
+
+class OrganizationBrief(BaseModel):
+    """`GET /me` 里的组织摘要（`docs/adr/ADR-021` §2.6）。
+
+    只给「我是谁的下属」必须的三格：`code` 是邀请码（管理页要展示给用户转发），
+    `name` 是显示名，`kind` 决定前端文案（学校 / 学院 / 企业）。
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    code: str
+    name: str
+    kind: str
+
+
+class CurrentUserData(BaseModel):
+    """`GET /me` 的 `data`。
+
+    **角色与组织放在顶层、不塞进 `user`**（ADR-021 §2.6）：`user` 是「这个人是谁」，
+    角色/组织是「他和某个组织的关系」，两者生命周期不同（换组织不改用户）。
+    塞在一起会让 `UserRead` 同时承担两种来源的数据，`model_validate(orm_user)` 就再也对不上。
+
+    `permissions` 与后端判定同源（都读 `app/core/permissions.py::ROLE_PERMISSIONS`），
+    前端据此决定菜单；但它**不是**权限边界，每个端点自己再判一次。
+    """
+
+    user: UserRead
+    role: UserRole
+    organization: OrganizationBrief | None = None
+    permissions: list[str]

@@ -14,6 +14,7 @@
 这样一条 refresh token 只能用一次，被截获后重放会在第二次直接 401。
 """
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import NoReturn
 
@@ -21,6 +22,11 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.config import get_settings
 from app.core.datetime_display import utc_now
+from app.core.permissions import (
+    ROLES_REQUIRING_ORGANIZATION,
+    UserRole,
+    permissions_for,
+)
 from app.core.security import (
     REFRESH_TOKEN_TYPE,
     TokenError,
@@ -32,9 +38,18 @@ from app.core.security import (
     token_hash,
     verify_password,
 )
+from app.repositories.audit_log_repository import AuditAction, AuditLogRepository
+from app.repositories.organization_repository import Organization, OrganizationRepository
 from app.repositories.refresh_token_repository import RefreshToken, RefreshTokenRepository
 from app.repositories.user_repository import User, UserRepository
-from app.schemas.auth import LoginRequest, RegisterRequest, TokenResponse, UserRead
+from app.schemas.auth import (
+    CurrentUserData,
+    LoginRequest,
+    OrganizationBrief,
+    RegisterRequest,
+    TokenResponse,
+    UserRead,
+)
 
 
 class AuthError(Exception):
@@ -57,39 +72,137 @@ class InvalidTokenError(AuthError):
     """令牌无效、已过期、类型不符、已被撤销或指向不存在的用户。"""
 
 
+class OrganizationRequiredError(AuthError):
+    """声明了教师/管理员角色却没给组织码（`ADR-021` §2.4）。
+
+    这是本批最关键的一条：以前的实现会把这个字段**静默丢掉**，用户以为自己
+    注册成了教师，实际是学生。现在显式失败，并告诉他缺什么。
+    """
+
+
+class InvalidOrganizationCodeError(AuthError):
+    """组织码不存在。对外文案不区分「不存在」与「已停用」，避免枚举组织码。"""
+
+
+@dataclass(frozen=True)
+class CurrentUserContext:
+    """一次请求里的「我是谁 + 我在哪个组织 + 我能做什么」。
+
+    单独成型而不是塞进 `UserRead`：`user` 只来自 `users` 表，角色与组织来自
+    `organization_members`——两种来源合成一个可校验的模型，`model_validate(orm_user)`
+    就再也对不上了（`ADR-021` §2.6）。
+    """
+
+    user: UserRead
+    role: UserRole
+    organization: OrganizationBrief | None
+    permissions: list[str]
+
+    def to_response_data(self) -> CurrentUserData:
+        return CurrentUserData(
+            user=self.user,
+            role=self.role,
+            organization=self.organization,
+            permissions=self.permissions,
+        )
+
+
 class AuthService:
     def __init__(
         self,
         repository: UserRepository,
         refresh_tokens: RefreshTokenRepository,
+        organizations: OrganizationRepository,
+        audit: AuditLogRepository,
     ) -> None:
         self._repository = repository
         self._refresh_tokens = refresh_tokens
+        self._organizations = organizations
+        self._audit = audit
 
-    def register(self, payload: RegisterRequest) -> UserRead:
+    def register(self, payload: RegisterRequest, *, ip: str | None = None) -> UserRead:
         # 归一化必须发生在任何读写之前：查重和落库都用同一个值，
         # 否则会先按原样查不到、再按原样插进一条大写记录。
         username = payload.username.strip().lower()
+        # 组织解析放在查重之前：一个连组织码都是错的请求，不该先去占用用户名。
+        role = UserRole(payload.role)
+        organization = self._resolve_organization(role, payload.organization_code)
         if self._repository.get_by_username(username) is not None:
             raise UsernameAlreadyExistsError(username)
         password_hash = hash_password(payload.password)
         try:
+            # `commit=False`：注册这一笔要「用户 + 成员关系 + 审计」三件事同生共死
+            # （ADR-021 §2.5）。任何一步抛异常，`session_scope` 会整体回滚。
             user = self._repository.create_user(
                 username=username,
                 password_hash=password_hash,
                 email=payload.email,
+                commit=False,
             )
+            if organization is not None:
+                self._organizations.add_member(
+                    organization_id=organization.id,
+                    user_id=user.id,
+                    role=str(role),
+                )
+                self._audit.record(
+                    action=AuditAction.MEMBER_JOIN,
+                    actor_user_id=user.id,
+                    organization_id=organization.id,
+                    target_type="user",
+                    target_id=user.id,
+                    detail=f'{{"role":"{role}","code":"{organization.code}"}}',
+                    ip=ip,
+                )
+            self._audit.record(
+                action=AuditAction.USER_REGISTER,
+                actor_user_id=user.id,
+                organization_id=organization.id if organization is not None else None,
+                target_type="user",
+                target_id=user.id,
+                detail=f'{{"role":"{role}"}}',
+                ip=ip,
+            )
+            self._organizations.commit()
         except IntegrityError as error:
             self._raise_conflict(error)
         return UserRead.model_validate(user)
 
-    def login(self, payload: LoginRequest) -> TokenResponse:
+    def _resolve_organization(self, role: UserRole, code: str | None) -> Organization | None:
+        """按角色决定「组织码是否必填、是否必须有效」（`ADR-021` §2.4）。
+
+        三件事按顺序判，错误文案各说各的：
+        1. 教师/管理员没给码 → `OrganizationRequiredError`（缺什么就说缺什么）；
+        2. 给了码但查不到 → `InvalidOrganizationCodeError`（不区分不存在/停用）；
+        3. 学生没给码 → 允许，`None`（邀请制由 B6 补齐，本批不假装已实现强制绑定）。
+        """
+        normalized = (code or "").strip()
+        if not normalized:
+            if role in ROLES_REQUIRING_ORGANIZATION:
+                raise OrganizationRequiredError(role)
+            return None
+        organization = self._organizations.get_by_code(normalized)
+        if organization is None:
+            raise InvalidOrganizationCodeError(normalized)
+        return organization
+
+    def login(self, payload: LoginRequest, *, ip: str | None = None) -> TokenResponse:
         # 与 `register` 同口径：老的大写记录由迁移回填成小写，
         # 这里再归一一次，用户敲大写/小写都能命中同一行。
         username = payload.username.strip().lower()
         user = self._repository.get_by_username(username)
         if user is None or not verify_password(payload.password, user.password_hash):
             raise InvalidCredentialsError(username)
+        self._audit.record(
+            action=AuditAction.USER_LOGIN,
+            actor_user_id=user.id,
+            organization_id=self._organization_id_of(user.id),
+            target_type="user",
+            target_id=user.id,
+            ip=ip,
+        )
+        # 登录本身没有别的业务写入，所以这一次提交只提交审计。
+        self._organizations.commit()
         return self._issue_token_pair(user.id)
 
     def refresh(self, refresh_token: str) -> TokenResponse:
@@ -142,6 +255,30 @@ class AuthService:
         self._refresh_tokens.revoke(record)
 
     def get_current_user(self, token: str) -> UserRead:
+        return UserRead.model_validate(self._load_user(token))
+
+    def get_current_context(self, token: str) -> CurrentUserContext:
+        """「我是谁 + 我在哪个组织 + 我能做什么」，一次请求只算一次。
+
+        角色来自 `organization_members`；**没有成员关系时按 `student` 处理**，
+        而不是报错——学生可以暂不绑定组织（`ADR-021` §2.4 的边界）。
+        """
+        user = self._load_user(token)
+        member = self._organizations.get_member(user.id)
+        role = UserRole(member.role) if member is not None else UserRole.STUDENT
+        organization = (
+            self._organizations.get_by_id(member.organization_id) if member is not None else None
+        )
+        return CurrentUserContext(
+            user=UserRead.model_validate(user),
+            role=role,
+            organization=(
+                OrganizationBrief.model_validate(organization) if organization is not None else None
+            ),
+            permissions=permissions_for(role),
+        )
+
+    def _load_user(self, token: str) -> User:
         try:
             payload = decode_token(token)
         except TokenError as error:
@@ -149,7 +286,11 @@ class AuthService:
         user: User | None = self._repository.get_by_id(str(payload["sub"]))
         if user is None:
             raise InvalidTokenError("token subject does not exist")
-        return UserRead.model_validate(user)
+        return user
+
+    def _organization_id_of(self, user_id: str) -> str | None:
+        member = self._organizations.get_member(user_id)
+        return member.organization_id if member is not None else None
 
     def _issue_token_pair(self, user_id: str, now: datetime | None = None) -> TokenResponse:
         """签发一对令牌，并把 refresh 的哈希落库。"""

@@ -26,6 +26,14 @@ class ErrorMessage(StrEnum):
     RESUME_POINTER_BROKEN = "当前简历暂时无法读取，请重新生成一份简历。"
     LAYOUT_VERSION = "你的排版设置是旧版本，请在排版面板重新保存一次再生成"
     RATE_LIMITED = "请求过于频繁，请稍后再试。"
+    # ---- 批次 B5（ADR-021）：组织与角色。文案集中在目录里，路由只引用枚举文案。 ----
+    ORGANIZATION_REQUIRED = "教师或管理员账号需要填写组织码，请向学校管理员获取。"
+    ORGANIZATION_CODE_INVALID = "组织码无效，请向学校管理员确认后再试。"
+    ORGANIZATION_FORBIDDEN = "这个组织不属于你的账号。"
+    ORGANIZATION_MEMBER_NOT_FOUND = "这个用户不在本组织的成员名单里。"
+    SELF_ROLE_CHANGE = "不能修改自己的角色，请让另一位管理员操作。"
+    ROLE_NOT_ASSIGNABLE = "这个角色不能在这里授予。"
+    ORGANIZATION_ACTION_FAILED = "组织操作没有完成，请稍后重试。"
     # ui-copy:allow 此处名称用于定位用户必须配置的凭据，不展示凭据内容。
     AI_KEY_MISSING = "请先在「AI 设置」中配置 DeepSeek API Key。"
     # ui-copy:allow 此处名称用于定位用户必须检查的凭据，不展示凭据内容。
