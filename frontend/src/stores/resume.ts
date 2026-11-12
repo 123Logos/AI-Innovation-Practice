@@ -152,7 +152,13 @@ export const DEFAULT_LAYOUT_SECTIONS: readonly LayoutSection[] = [
   { id: 'portfolio', title: '作品链接' },
 ]
 
-/** 后端 `LAYOUT_VERSION` 的同源常量；版本不匹配时后端会整份回退默认顺序。 */
+/**
+ * 后端 `LAYOUT_VERSION` 的同源常量。
+ *
+ * 注意与直觉相反：版本不匹配时后端**不会**回退默认顺序，而是 422 拦下、要求用户
+ * 回排版面板重新保存一次（`ADR-015` §2.2 / `app/services/resume_service.py::_ensure_current_layout`）。
+ * 静默回落会把用户排好的顺序换成默认顺序而他看不出来——这比报错更糟。
+ */
 export const LAYOUT_VERSION = 2
 
 /**
