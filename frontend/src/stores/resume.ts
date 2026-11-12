@@ -280,6 +280,15 @@ export const DEGREE_OPTIONS: readonly Degree[] = ['专科', '本科', '硕士', 
  */
 export const PHONE_PATTERN = /^1[3-9]\d{9}$/
 
+/**
+ * 作品链接的 scheme 白名单；与后端 `PortfolioLinkInput.normalize_link` 同源。
+ *
+ * 只认 `http` / `https`：纸面上这一格是 `<a href>`，放开 `javascript:` 就是一条
+ * 存储型 XSS 通道。**不做「自动补 https://」**——用户写的可能是内网地址或邮箱，
+ * 替他改数据比报错更坏；这里只负责把「缺什么」说成一句他能动手的话。
+ */
+export const PORTFOLIO_URL_PATTERN = /^https?:\/\//i
+
 const DRAFT_STORAGE_PREFIX = 'resume_draft:'
 const DRAFT_VERSION = 1
 /** 输入停顿多久后落本地草稿（毫秒）。 */
@@ -1456,6 +1465,60 @@ export const useResumeStore = defineStore('resume', () => {
         return `${label}的结束日期不能早于开始日期。`
       }
       if (experience.title.trim().length > 200) return `${label}的项目名称最长 200 个字符。`
+    }
+
+    /*
+     * 证书 / 作品 / 期望城市（ADR-015 §5 ②③）：这三格是 B4 加的，长度与格式边界
+     * 一直只有后端 `CertificateInput` / `PortfolioLinkInput` / `CityPreferenceInput` 在守。
+     * 漏在这里的代价不是「多一次往返」，而是 422 之后前端只拿得到字段路径——
+     * 用户看到「字段 portfolio_links.0 未通过后端校验」，不知道该往哪儿改。
+     * 2026-11-12 报的那次保存失败就是这么来的：网址没写 `http://`。
+     */
+    const certificates = meaningfulCertificates(draft)
+    if (certificates.length > MULTIVALUE_LIMIT.max) {
+      return `证书最多 ${MULTIVALUE_LIMIT.max} 条。`
+    }
+    for (const [index, certificate] of certificates.entries()) {
+      const label = `第 ${index + 1} 条证书`
+      if (certificate.name.trim().length > 100) return `${label}的名称最长 100 个字符。`
+      if (certificate.issuer.trim().length > 100) return `${label}的颁发机构最长 100 个字符。`
+    }
+    const certificateNames = certificates.map((certificate) => certificate.name.trim().toLowerCase())
+    if (new Set(certificateNames).size !== certificateNames.length) {
+      return '证书名称不能重复，请先合并同名证书。'
+    }
+
+    const links = meaningfulPortfolioLinks(draft)
+    if (links.length > MULTIVALUE_LIMIT.max) {
+      return `作品链接最多 ${MULTIVALUE_LIMIT.max} 条。`
+    }
+    for (const [index, link] of links.entries()) {
+      const label = `第 ${index + 1} 条作品链接`
+      const url = link.url.trim()
+      if (link.label.trim().length > 100) return `${label}的名称最长 100 个字符。`
+      if (url.length > 500) return `${label}的网址最长 500 个字符。`
+      // 与后端 `PortfolioLinkInput.normalize_link` 同口径：纸面上它是 `<a href>`，
+      // 放开 scheme 等于开一条 `javascript:` 的 XSS 通道，所以这里**不替用户补 `https://`**，
+      // 只把「缺什么」说清楚——补协议等于替用户改数据，改完他也不知道自己原本写的是什么。
+      if (!PORTFOLIO_URL_PATTERN.test(url)) {
+        return `${label}的网址要以 http:// 或 https:// 开头（如 https://example.com）。`
+      }
+    }
+    const urls = links.map((link) => link.url.trim().toLowerCase())
+    if (new Set(urls).size !== urls.length) {
+      return '两条作品链接填了同一个网址，请先合并成一条。'
+    }
+
+    const cities = meaningfulCityPreferences(draft)
+    if (cities.length > MULTIVALUE_LIMIT.max) {
+      return `期望城市最多 ${MULTIVALUE_LIMIT.max} 个。`
+    }
+    for (const city of cities) {
+      if (city.city.trim().length > 50) return '城市名称最长 50 个字符。'
+    }
+    const cityKeys = cities.map((city) => city.city.trim().toLowerCase())
+    if (new Set(cityKeys).size !== cityKeys.length) {
+      return '期望城市不能重复。'
     }
 
     return null
