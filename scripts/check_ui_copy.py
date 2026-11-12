@@ -107,6 +107,13 @@ JARGON_RE = re.compile(
 STATUS_CODE_RE = re.compile(r"(?<![\w.])(?:4\d{2}|5\d{2})(?![\w.])")
 CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 ALLOW_MARKER = "ui-copy:allow"
+#: 豁免必须是**注释开头的指令**，而不是句子里顺嘴提到的那串字。
+#:
+#: 2026-11-12 反证时撞出来的假证书：一条普通注释里写了「不要用 `ui-copy:allow` 绕闸」，
+#: 于是它下面三行全被豁免、闸照样绿——**测出 12 处豁免而不是 11**。这跟 G4 那次
+#: 「注释能关闸」是同一类病：闸可以被一句散文说服，那它发的就是假证书。
+#: 收紧到行首指令后，11 处既有豁免逐条照旧生效（它们本来就写在注释最前面）。
+MARKER_RE = re.compile(r"^\s*(?://+|/\*+|<!--|#|\*+)\s*" + re.escape(ALLOW_MARKER) + r"\b")
 COMMENT_LINE = re.compile(r"^\s*(?://|/\*|\*+\s|\*/|#|<!--)")
 NON_DISPLAY_LINE = re.compile(r"console\.|throw new Error|window\.(?:local|session)Storage")
 #: 模板里这些属性的值是给用户看的（占位符、悬浮提示、读屏文本）。
@@ -236,8 +243,9 @@ def collect(lines: list[str], is_vue: bool) -> tuple[list[str], int]:
         if not hits:
             continue
         window = lines[max(0, index - 3) : index]
-        if any(ALLOW_MARKER in row for row in window):
-            marker_row = next(row for row in reversed(window) if ALLOW_MARKER in row)
+        markers = [row for row in window if MARKER_RE.match(row)]
+        if markers:
+            marker_row = markers[-1]
             reason = marker_row.split(ALLOW_MARKER, 1)[1].strip(" :：-*—>").rstrip("-").strip()
             if len(reason) >= 6:
                 exempted += 1

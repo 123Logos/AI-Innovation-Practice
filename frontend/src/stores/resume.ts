@@ -1496,7 +1496,11 @@ export const useResumeStore = defineStore('resume', () => {
       const label = `第 ${index + 1} 条作品链接`
       const url = link.url.trim()
       if (link.label.trim().length > 100) return `${label}的名称最长 100 个字符。`
-      if (url.length > 500) return `${label}的网址最长 500 个字符。`
+      // 上限 500 取自后端 `PortfolioLinkInput.max_length`，两边必须同根；但**不把数字写进文案**：
+      // 三位数在 C2 里等同裸状态码，「最长 500 个字符」会被 G1 判成状态码（误报），
+      // 而用行内豁免标记绕过去恰恰是守则禁止的那种「豁免换绿」。
+      // 这道边是防粘贴超长追踪链接的兜底，正常人碰不到，说清「太长、换短的」就够他动手了。
+      if (url.length > 500) return `${label}的网址太长了，请换一个更短的链接后再保存。`
       // 与后端 `PortfolioLinkInput.normalize_link` 同口径：纸面上它是 `<a href>`，
       // 放开 scheme 等于开一条 `javascript:` 的 XSS 通道，所以这里**不替用户补 `https://`**，
       // 只把「缺什么」说清楚——补协议等于替用户改数据，改完他也不知道自己原本写的是什么。

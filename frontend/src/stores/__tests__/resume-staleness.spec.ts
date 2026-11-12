@@ -379,4 +379,27 @@ describe('作品 / 证书：保存前就把「缺 http://」说成一句人话',
     await expect(store.save()).rejects.toThrow('证书名称不能重复，请先合并同名证书。')
     expect(profilesApi.updateProfile).not.toHaveBeenCalled()
   })
+
+  /**
+   * 网址长度这条边（后端 `max_length=500`）此前**一条用例都没有**，是 G1 红出来才发现的。
+   *
+   * 判据两层：① 超长要拦、不能发请求；② 文案里**不许出现三位数字**——这条不是形式主义，
+   * 那个上限正好是 `500`，写进文案会被 G1 当成裸状态码（C2）判红。守则禁止用豁免标记换绿，
+   * 所以真正的修法是「不改上限、改说法」：上限留着，数字不出现在用户眼前。
+   */
+  it('网址超过上限：拦住、不发 PUT，且文案不把上限数字写出来', async () => {
+    const store = await seedSaved()
+    store.addPortfolioLink()
+    store.updatePortfolioLink(0, 'label', '技术博客')
+    store.updatePortfolioLink(0, 'url', `https://example.com/${'a'.repeat(500)}`)
+
+    await expect(store.save()).rejects.toThrow(
+      '第 1 条作品链接的网址太长了，请换一个更短的链接后再保存。',
+    )
+    expect(profilesApi.updateProfile).not.toHaveBeenCalled()
+
+    const message = await store.save().catch((error: Error) => error.message)
+    // 三位数一出现就会被 G1 读成状态码；这里把那条口径钉在用例里，防止下次有人「顺手补个数字」。
+    expect(message).not.toMatch(/(?<![\w.])(?:4\d{2}|5\d{2})(?![\w.])/)
+  })
 })
