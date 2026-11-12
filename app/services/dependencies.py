@@ -19,9 +19,11 @@ from starlette.requests import Request
 from app.core.error_messages import ErrorMessage
 from app.integrations.copy_writer import DeepSeekCopyWriter
 from app.integrations.evidence_scorer import DeepSeekEvidenceScorer
+from app.integrations.interview_coach import DeepSeekInterviewCoach
 from app.integrations.resume_generator import TemplateResumeGenerator
 from app.integrations.skill_extractor import DeepSeekJobSkillExtractor
 from app.repositories.audit_log_repository import AuditLogRepository
+from app.repositories.interview_repository import InterviewRepository
 from app.repositories.job_repository import JobRepository
 from app.repositories.organization_repository import OrganizationRepository
 from app.repositories.refresh_token_repository import RefreshTokenRepository
@@ -35,6 +37,7 @@ from app.services.auth_service import (
     AuthService,
     CurrentUserContext,
 )
+from app.services.interview_service import InterviewService
 from app.services.job_service import JobService
 from app.services.match_service import MatchService
 from app.services.organization_service import OrganizationService
@@ -182,6 +185,27 @@ def get_match_service(request: Request) -> Iterator[MatchService]:
             profile_repository=StudentProfileRepository(session),
             alias_repository=SkillAliasRepository(session),
             scorer=DeepSeekEvidenceScorer(api_key) if api_key else None,
+        )
+
+
+def get_interview_service(request: Request) -> Iterator[InterviewService]:
+    """装配面试服务（FR-07 / B11a，ADR-022）。
+
+    一个 session、**三个**仓储（会话 / 岗位 / 档案）、一个 coach，必须在同一次
+    `session_scope()` 里装好：复用别的 `get_*_service()` 会开多条连接、拿到多个快照，
+    而「这条面试基于的简历/岗位是同一时刻的状态」是出题可被复现的前提。
+
+    Key 的取法与 `get_match_service` 完全同构：空 Key 时 coach 装 `None`，
+    由服务层翻译成 `ai_degrade_reason="key_missing"`，**不在这里 4xx**——
+    面试没有 Key 也要能进行（离线降级），这是它与润色/提取的唯一语义差别。
+    """
+    api_key = request.headers.get(DEEPSEEK_KEY_HEADER, "").strip()
+    with session_scope() as session:
+        yield InterviewService(
+            session_repository=InterviewRepository(session),
+            job_repository=JobRepository(session),
+            profile_repository=StudentProfileRepository(session),
+            coach=DeepSeekInterviewCoach(api_key) if api_key else None,
         )
 
 

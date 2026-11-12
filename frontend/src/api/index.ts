@@ -6,6 +6,7 @@
  */
 
 export * as authApi from './auth'
+export * as interviewsApi from './interviews'
 export * as jobsApi from './jobs'
 export * as profilesApi from './profiles'
 export * as resumesApi from './resumes'

@@ -208,10 +208,12 @@ export function hasDeepSeekKey(): boolean {
  * 哪些请求携带 `X-DeepSeek-Key`（BYOK）。
  *
  * 判据是一份**白名单**而不是模式匹配，且只列真正消耗用户 AI 额度的端点。
- * 今天两条精确路径 + 一条模式：
+ * 今天两条精确路径 + 两条模式：
  * - `/resumes/polish`（ADR-010）
  * - `POST /jobs/extract-skills`（ADR-011 2.A）
- * - `POST /jobs/{id}/match`（ADR-013 §6，**唯一一条模式**）
+ * - `POST /jobs/{id}/match`（ADR-013 §6）
+ * - `POST /interviews/{id}/messages`（FR-07 / B11a）：面试官的下一段由 AI 生成，
+ *   带凭据时转发 DeepSeek；和岗位匹配同族——没有凭据不会报错，而是走内置题库的可见降级。
  *
  * 为什么岗位侧只扩这三条：`/jobs` 下其余端点（列表 / 创建 / 详情 / 更新 / publish /
  * unpublish / trash / restore / 删除）全部走我们自己的数据库，一个字节都不发往 DeepSeek。
@@ -231,11 +233,20 @@ export function hasDeepSeekKey(): boolean {
  *
  * 另外这条模式**绑方法**：只有 POST 才注入。GET `/jobs/{id}/match` 不存在，
  * 但「模式不看方法」这种写法一旦落地，任何路径拼错的 GET 都会带着 Key 出门。
+ *
+ * 面试那条模式同理要求 `{id}` 是 UUID 形状（后端 `interview_sessions.id` 即 CHAR(36) UUID）：
+ * 这样既不会误中 `/interviews/extra/messages` 这种「看起来像、但没有路由」的路径
+ * （它返回 404，一个字节都不发往 DeepSeek），也和「命中即转发」的路线表论证一致。
  */
 const BYOK_KEY_PATHS = ['/resumes/polish', '/jobs/extract-skills'] as const
 
+const UUID_SEGMENT = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+
 const BYOK_KEY_PATTERNS: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   { method: 'post', pattern: /^\/jobs\/[^/]+\/match$/ },
+  // FR-07 / B11a：面试发消息会转发 AI 凭据（用户填了凭据时）。
+  // `{id}` 必须是 UUID 形状：排掉 `/interviews/extra/messages` 这类无路由的近似路径。
+  { method: 'post', pattern: new RegExp(`^\\/interviews\\/${UUID_SEGMENT}\\/messages$`) },
 ]
 
 function isDeepSeekKeyRequest(url: string | undefined, method?: string): boolean {

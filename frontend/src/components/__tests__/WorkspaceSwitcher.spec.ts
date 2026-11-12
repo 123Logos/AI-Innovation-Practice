@@ -139,15 +139,15 @@ describe('展开态：横向卡片来自模块表', () => {
     }
   })
 
-  it('已经能到的「组织管理」在卡片里；未实现的模块连禁用态都没有', async () => {
+  it('已经能到的模块都在卡片里；未实现的模块连禁用态都没有', async () => {
     const wrapper = await mountSwitcher()
     await tap(wrapper, '.workspace-trigger')
 
-    // 批次 B5（2026-11-12）落地后「组织管理」已能到达，所以它必须在表里、可点、且不是灰的。
-    // 这条断言原来写的是「不该有组织管理」——那是在它还不可达时成立的判据（守则 L5），
-    // 现在它可达了，判据随之翻转；「模拟面试」仍然不可达，所以那半边不变。
+    // 批次 B5 落地「组织管理」、批次 B11a 落地「模拟面试」之后，**两者**都已能到达，
+    // 所以都必须出现在卡片里。两边各自的版本只翻转了自己那一半（另一半仍写
+    // `not.toContain`），合并后必须一起翻过来——否则就是「文档说已交付、判据说没实现」。
     expect(cardNames(wrapper)).toContain('组织管理')
-    expect(cardNames(wrapper)).not.toContain('模拟面试')
+    expect(cardNames(wrapper)).toContain('模拟面试')
     expect(wrapper.findAll('.workspace-card[aria-disabled="true"]')).toHaveLength(0)
     expect(wrapper.findAll('.workspace-card--disabled')).toHaveLength(0)
   })

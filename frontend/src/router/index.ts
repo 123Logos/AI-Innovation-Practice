@@ -12,6 +12,8 @@ import OrganizationView from '@/views/OrganizationView.vue'
 import RecycleBinView from '@/views/RecycleBinView.vue'
 import RegisterView from '@/views/RegisterView.vue'
 import ResumeEditorView from '@/views/ResumeEditorView.vue'
+import InterviewListView from '@/views/InterviewListView.vue'
+import InterviewDetailView from '@/views/InterviewDetailView.vue'
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -105,6 +107,27 @@ const routes: RouteRecordRaw[] = [
         path: 'organization',
         name: 'organization',
         component: OrganizationView,
+        meta: { requiresAuth: true },
+      },
+      /*
+       * 模拟面试两条路由（FR-07 / B11a，ADR-022）。
+       *
+       * 声明顺序与岗位库同一硬要求：`interviews` 静态段排在 `interviews/:id` 之前。
+       * 两条都挂在 `AppLayout` 下、都带 `requiresAuth`，与模块表里的 `interview`
+       * 那一项（routeName=`interview-list`、requiresAuth=true）由 `layoutGuards.spec.ts`
+       * 逐条核对一致（L4/L5）。`interview-detail` 是 `interview-list` 的下钻页，
+       * 不进模块表的 routeName（详情不需要一级入口）。
+       */
+      {
+        path: 'interviews',
+        name: 'interview-list',
+        component: InterviewListView,
+        meta: { requiresAuth: true },
+      },
+      {
+        path: 'interviews/:id',
+        name: 'interview-detail',
+        component: InterviewDetailView,
         meta: { requiresAuth: true },
       },
     ],

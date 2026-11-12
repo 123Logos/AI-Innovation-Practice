@@ -157,8 +157,9 @@ describe('守则 M2：加载点先占位后填充', () => {
         else textOnly.push(`${source.rel} → ${line.trim()}`)
       }
     }
-    // 正向护栏：真的接上了六处，否则「没有纯文字提示」会因为全仓没人写加载提示而假绿。
-    expect(skeletonLabels).toBe(6)
+    // 正向护栏：真的接上了加载骨架，否则「没有纯文字提示」会因为全仓没人写加载提示而假绿。
+    // 批次 B11a（FR-07）新增两张面试页（列表 / 详情）的加载骨架，故从 6 增至 8。
+    expect(skeletonLabels).toBe(8)
     expect(textOnly).toEqual([])
   })
 })
