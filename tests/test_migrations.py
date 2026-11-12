@@ -38,6 +38,8 @@ EXPECTED_TABLES = {
     "organizations",
     "organization_members",
     "audit_logs",
+    # B6（ADR-023）：组织邀请码。
+    "organization_invitations",
 }
 
 
@@ -139,6 +141,9 @@ def _assert_schema_after_upgrade(engine: Engine) -> None:
             # 但操作者/组织被删后不该连带删掉「他做过什么」的证据。
             "fk_audit_logs_actor",
             "fk_audit_logs_organization",
+            # B6（ADR-023）：邀请归属组织、发起人可追溯，删任一方都不该带走邀请记录。
+            "fk_organization_invitations_organization",
+            "fk_organization_invitations_creator",
         }
         # 「附属数据跟着删」的外键；其余外键一律 RESTRICT 或 SET NULL（挡住删除）。
         for cascade_fk in (

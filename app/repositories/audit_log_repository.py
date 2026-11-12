@@ -31,6 +31,10 @@ class AuditAction(StrEnum):
     ORGANIZATION_CREATE = "organization.create"
     MEMBER_JOIN = "member.join"
     MEMBER_ROLE_CHANGE = "member.role_change"
+    # 批次 B6（ADR-023）：邀请的发码 / 兑换 / 撤销。
+    INVITATION_CREATE = "invitation.create"
+    INVITATION_REDEEM = "invitation.redeem"
+    INVITATION_REVOKE = "invitation.revoke"
 
 
 class AuditResult(StrEnum):

@@ -61,3 +61,65 @@ export async function fetchAuditLogs(
   )
   return unwrap(response)
 }
+
+
+/* ------------------------- 邀请成员（B6 / ADR-023） ------------------------- */
+
+/** 后端 `InvitationRead`：一张邀请码的当前状态。 */
+export interface OrganizationInvitation {
+  id: string
+  organization_id: string
+  code: string
+  role: 'student' | 'teacher'
+  max_uses: number
+  used_count: number
+  expires_at: string
+  revoked_at: string | null
+  created_at: string
+}
+
+export interface InvitationCreatePayload {
+  role: 'student' | 'teacher'
+  max_uses: number
+  ttl_days: number
+}
+
+export interface InvitationRedeemResult {
+  organization: { id: string; code: string; name: string; kind: string }
+  role: UserRole
+}
+
+export async function fetchInvitations(
+  organizationId: string,
+): Promise<OrganizationInvitation[]> {
+  const response = await http.get<ApiSuccess<{ items: OrganizationInvitation[] }>>(
+    `/organizations/${organizationId}/invitations`,
+  )
+  return unwrap(response).items
+}
+
+export async function createInvitation(
+  organizationId: string,
+  payload: InvitationCreatePayload,
+): Promise<OrganizationInvitation> {
+  const response = await http.post<ApiSuccess<{ invitation: OrganizationInvitation }>>(
+    `/organizations/${organizationId}/invitations`,
+    payload,
+  )
+  return unwrap(response).invitation
+}
+
+export async function revokeInvitation(
+  organizationId: string,
+  invitationId: string,
+): Promise<void> {
+  await http.delete(`/organizations/${organizationId}/invitations/${invitationId}`)
+}
+
+/** 凭码加入组织。这是「还没有组织」的账号唯一需要调用的邀请端点。 */
+export async function redeemInvitation(code: string): Promise<InvitationRedeemResult> {
+  const response = await http.post<ApiSuccess<InvitationRedeemResult>>('/invitations/redeem', {
+    code,
+  })
+  return unwrap(response)
+}

@@ -141,3 +141,28 @@ B5 实际落库的是下面三张，迁移文件 `alembic/versions/20261112_0018
 | `ix_interview_turns_session_sequence` | 索引 | (`session_id`, `sequence`) | 回放 / 取最近 N 轮 |
 
 设计要点（ADR-022）：① 两表而非单 JSON 字段——`turns` 是可审计、可增量写入、可按 `sequence` 回放的有序事件流；② 降级可追踪——`ai_degrade_reason` 是非空即降级，前端据此给出可见提示、绝不静默；③ 外键 RESTRICT——删账号/删岗位都不该带走面试历史；④ 状态/发言方用 VARCHAR + CHECK 而非 MySQL ENUM，新增取值不需改表；⑤ 时间用 `DATETIME(6)`（与 jobs / student_profiles 一致）。
+
+## 8. 组织邀请表（批次 B6 已实现，`ADR-023`）
+
+> 迁移 `alembic/versions/20261112_0021_organization_invitations.py`，`down_revision="20261112_0020"`，
+> `upgrade` 建表 / `downgrade` 删表（MySQL 删表时一并回收索引，不显式 DROP INDEX）。
+
+### 8.1 `organization_invitations`
+
+| 列 / 索引 | 类型 / 约束 | 说明 |
+|---|---|---|
+| `id` | `CHAR(36)` PK | UUID 字符串 |
+| `organization_id` | `CHAR(36)` FK→`organizations.id` RESTRICT | 删组织前必须先把邀请清干净 |
+| `code` | `VARCHAR(64)` UNIQUE | `secrets.token_urlsafe` 生成，落库前 `upper()`；与 `organizations.code` 是两套码 |
+| `role` | `VARCHAR(20)` CHECK IN (`student`,`teacher`) | **刻意不含 `school_admin`**：提权要经改角色端点并留审计 |
+| `max_uses` / `used_count` | `INT` NOT NULL | 默认 1 次，上限 100；兑换时在同一行锁事务里 `used_count + 1` |
+| `expires_at` | `DATETIME(6)` NOT NULL | 默认 7 天；`utc_now()` 是 naive UTC，比较同口径 |
+| `created_by` | `CHAR(36)` FK→`users.id` RESTRICT | 谁发的要能追溯 |
+| `revoked_at` | `DATETIME(6)` NULL | 撤销是打标不是删行，否则查不出「曾经发过这张码」 |
+| `created_at` | `DATETIME(6)` NOT NULL | 应用层写 UTC |
+| `ix_organization_invitations_organization_created` | 复合索引 (`organization_id`, `created_at`) | 只服务「按组织倒序列邀请」这一个真实查询 |
+
+三条一致性约定：① **刻意没有 `(created_at)` 单列索引**，本批没有跨组织的全平台邀请查询；
+② 兑换用 `FOR UPDATE` 行锁，防「最后一张码被两个请求同时用掉」；
+③ 审计动作 `invitation.create` / `invitation.redeem` / `invitation.revoke` 与业务**同事务**，
+被拒绝的尝试单独记 `denied`。

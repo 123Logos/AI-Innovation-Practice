@@ -126,6 +126,8 @@ APP_TABLES = (
     # FR-07 / B11a：面试两张表。`interview_turns` 外键指向 `interview_sessions`（子表在前），
     # `interview_sessions` 外键指向 `jobs` / `users`，因此两张都插在最前，保证 DELETE 顺序
     # 是子表 → 父表（见上方删除顺序的说明）。
+    # B6（ADR-023）：邀请表外键指向 organizations / users，必须排在两者之前清。
+    "organization_invitations",
     "interview_turns",
     "interview_sessions",
     "skill_aliases",

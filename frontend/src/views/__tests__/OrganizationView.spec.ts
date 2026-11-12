@@ -64,6 +64,19 @@ const AUDIT = {
   total: 1,
 }
 
+const INVITATIONS = [
+  {
+    id: 'invite-1',
+    organization_id: ORGANIZATION_ID,
+    code: 'ABCD1234EFGH',
+    role: 'teacher',
+    max_uses: 3,
+    used_count: 1,
+    expires_at: '2026-11-19T09:00:00+08:00',
+    revoked_at: null,
+    created_at: '2026-11-12T09:00:00+08:00',
+  },
+]
 let calls: string[] = []
 let savedAdapters: Array<[AxiosInstance, AxiosInstance['defaults']['adapter']]> = []
 let overviewResponse: unknown = OVERVIEW
@@ -101,6 +114,9 @@ function fakeAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse>
   }
   if (method === 'get' && url === `/organizations/${ORGANIZATION_ID}/audit-logs`) {
     return Promise.resolve(envelope(config, { data: AUDIT, meta: { request_id: 'r' } }))
+  }
+  if (method === 'get' && url === `/organizations/${ORGANIZATION_ID}/invitations`) {
+    return Promise.resolve(envelope(config, { data: { items: INVITATIONS }, meta: { request_id: 'r' } }))
   }
   return Promise.reject(failure(config, 404, `未桩住的请求：${method.toUpperCase()} ${url}`))
 }
@@ -181,4 +197,28 @@ describe('组织管理页', () => {
     expect(wrapper.text()).toContain('调整角色')
     expect(wrapper.text()).not.toContain('member.role_change')
   })
+
+  it('学校管理员看到邀请成员区与已发出的邀请码', async () => {
+    const wrapper = await mountView()
+
+    expect(wrapper.findAll('h2').map((heading) => heading.text())).toContain('邀请成员')
+    expect(wrapper.find('.invite-code').text()).toBe('ABCD1234EFGH')
+    expect(wrapper.find('.invite-form .button').text()).toBe('生成邀请码')
+  })
+
+  it('还没有组织时给的是邀请码输入框，失败提示必须上屏', async () => {
+    meStatus = 404
+    const wrapper = await mountView()
+
+    const input = wrapper.find('.redeem-form input')
+    expect(input.exists()).toBe(true)
+    await input.setValue('BAD-CODE')
+    await wrapper.find('.redeem-form').trigger('submit')
+    await flushPromises()
+
+    const alert = wrapper.find('[role="alert"]')
+    expect(alert.exists()).toBe(true)
+    expect(alert.text()).toContain('未桩住的请求')
+  })
+
 })
