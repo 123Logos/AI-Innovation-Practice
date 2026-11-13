@@ -128,10 +128,15 @@ def _assert_schema_after_upgrade(engine: Engine) -> None:
             "fk_interview_sessions_user_id",
             "fk_interview_sessions_job_id",
             "fk_interview_turns_session_id",
-            # B8（ADR-015 §2.3）：全仓唯一非 RESTRICT 的外键——链头行本身可能被删，
-            # RESTRICT 会变成「有指针就删不掉行」的死锁；SET NULL 让指针落空，
+            # B8（ADR-015 §2.3）：链头行本身可能被删，RESTRICT 会变成
+            # 「有指针就删不掉行」的死锁；SET NULL 让指针落空，
             # 读侧必须显式报错而不是回落猜一条。
             "fk_resumes_current_version_id",
+            # B8 剩余（ADR-026 §2.7）：定制版指向的岗位被删时，**简历行必须活下来**
+            # ——它是用户手上的历史版本，不能因为岗位下架而消失；指向落空即可
+            # （列表里那条定制版仍然读得到，只是 `target_job_id` 变 NULL）。
+            # 全仓第二个 SET NULL，ADR-015 当时写的「唯一」由 ADR-026 显式改账。
+            "fk_resumes_target_job",
             # B5（ADR-021 §2.1）：组织与成员关系。
             # 组织被删时成员关系挡住（RESTRICT）；用户被删时成员关系跟着走（CASCADE）——
             # 留一条指向不存在用户的成员行，会让「这个组织有几人」永远算不准。
@@ -158,6 +163,7 @@ def _assert_schema_after_upgrade(engine: Engine) -> None:
             assert foreign_keys.pop(cascade_fk) == "CASCADE"
         for set_null_fk in (
             "fk_resumes_current_version_id",
+            "fk_resumes_target_job",
             "fk_audit_logs_actor",
             "fk_audit_logs_organization",
         ):
@@ -468,6 +474,36 @@ def _assert_schema_after_upgrade(engine: Engine) -> None:
             assert [row.COLUMN_NAME for row in rows] == expected, f"{table}.{index} 列序不对"
             assert all(int(row.NON_UNIQUE) == 0 for row in rows), f"{table}.{index} 不是唯一索引"
 
+        # B6 收口（`ADR-025` §2.5）：手机号是登录标识之一，唯一性必须**在库上**——
+        # 只靠应用层「先查再插」，并发下是一个必然被踩穿的窗口。规范化（去 `+86`、
+        # 去空格）留在应用层，所以这一列**没有 CHECK**：把两种写法当两个手机号
+        # 是应用层的判断，不是库的。
+        phone_index = connection.execute(
+            text(
+                "SELECT COLUMN_NAME, NON_UNIQUE FROM information_schema.STATISTICS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' "
+                "  AND INDEX_NAME = 'uq_users_phone' ORDER BY SEQ_IN_INDEX"
+            )
+        ).all()
+        assert [row.COLUMN_NAME for row in phone_index] == ["phone"]
+        assert all(int(row.NON_UNIQUE) == 0 for row in phone_index)
+
+        # B8 剩余（`ADR-026` §2.1）：`origin` 的取值域在库上是 CHECK，不是应用层约定——
+        # 「多一个 origin 值」必须是一次迁移，而不是某处随手写的字符串。
+        resume_checks = set(
+            connection.execute(
+                text(
+                    "SELECT cc.CONSTRAINT_NAME FROM information_schema.CHECK_CONSTRAINTS AS cc "
+                    "JOIN information_schema.TABLE_CONSTRAINTS AS tc "
+                    "  ON tc.CONSTRAINT_SCHEMA = cc.CONSTRAINT_SCHEMA "
+                    " AND tc.CONSTRAINT_NAME = cc.CONSTRAINT_NAME "
+                    "WHERE cc.CONSTRAINT_SCHEMA = DATABASE() "
+                    "  AND tc.TABLE_NAME = 'resumes' AND tc.CONSTRAINT_TYPE = 'CHECK'"
+                )
+            ).scalars()
+        )
+        assert resume_checks == {"ck_resumes_origin"}
+
         # 三张新子表的列名即契约（ADR-015 §2.1 / §5 ③ 逐字）。
         for table, expected_columns in (
             (
@@ -535,6 +571,13 @@ def _assert_schema_after_upgrade(engine: Engine) -> None:
         assert resume_columns["version_no"].IS_NULLABLE == "NO"
         assert str(resume_columns["version_no"].COLUMN_DEFAULT) == "1"
         assert resume_columns["current_version_id"].IS_NULLABLE == "YES"
+        # B8 剩余（`ADR-026` §2.1 / §2.7）：来源与目标岗位两列。`origin` 非空且有默认值
+        # （存量行按 `generated` 回填，不写一个「未知」值让读侧去猜）；
+        # `target_job_id` 可空——只有定制版才有，且岗位被删时由 SET NULL 落空。
+        assert {"origin", "target_job_id"} <= set(resume_columns)
+        assert resume_columns["origin"].IS_NULLABLE == "NO"
+        assert str(resume_columns["origin"].COLUMN_DEFAULT).strip("'") == "generated"
+        assert resume_columns["target_job_id"].IS_NULLABLE == "YES"
         # is_head 是 VIRTUAL 生成列（不是 ADR 字面的 STORED）：MySQL 禁止 STORED
         # 生成列的基列挂 ON DELETE SET NULL 外键（1215，实测），而 SET NULL 是
         # ADR-015 §2.3 的硬契约。偏离理由见迁移 20261110_0016 的 docstring。

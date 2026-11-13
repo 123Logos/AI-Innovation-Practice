@@ -418,6 +418,7 @@ beforeEach(() => {
     id: OWN_USER_ID,
     username: 'tester',
     email: null,
+    phone: null,
     created_at: '2026-11-05T10:00:00+08:00',
   }
 })
@@ -555,6 +556,7 @@ describe('详情页的编辑入口（议题 3.B v9 补的那一条）', () => {
       id: 'someone-else',
       username: 'other',
       email: null,
+      phone: null,
       created_at: '2026-11-05T10:00:00+08:00',
     }
     const { wrapper } = await mountDetail()

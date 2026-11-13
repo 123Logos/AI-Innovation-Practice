@@ -17,6 +17,7 @@ const router = useRouter()
 
 const username = ref('')
 const email = ref('')
+const phone = ref('')
 const password = ref('')
 const confirmPassword = ref('')
 const errorMessage = ref('')
@@ -31,10 +32,28 @@ const errorMessage = ref('')
 const passwordVisible = ref(false)
 const confirmVisible = ref(false)
 
+/**
+ * 手机号的**前端预归一**（与后端 `app/schemas/auth.py::normalize_phone` 同一规则）。
+ *
+ * 只用来「早点告诉用户写错了」，不做权威判定：真正的归一与唯一性都在后端。
+ * 前端若比后端宽松，用户会在提交后吃一个 422；若比后端严格，用户会被自己的页面
+ * 拦住一个后端本来接受的输入。所以这里刻意只剥 `+86` / `86`、空格与横线，
+ * 然后套同一个 `1[3-9]` + 9 位的规则。
+ */
+function normalizePhone(raw: string): string | null {
+  let candidate = raw.replace(/[\s-]/g, '')
+  if (candidate.startsWith('+86')) candidate = candidate.slice(3)
+  else if (candidate.startsWith('86')) candidate = candidate.slice(2)
+  return /^1[3-9]\d{9}$/.test(candidate) ? candidate : null
+}
+
 function localValidate(): string | null {
   const name = username.value.trim()
   if (name.length < USERNAME_MIN) return `用户名至少 ${USERNAME_MIN} 个字符。`
   if (/\s/.test(name)) return '用户名不能包含空格。'
+  if (phone.value.trim() && !normalizePhone(phone.value.trim())) {
+    return '手机号格式不正确，请填写中国大陆 11 位手机号，或留空。'
+  }
   if (password.value.length < PASSWORD_MIN) return `密码至少 ${PASSWORD_MIN} 位。`
   if (new TextEncoder().encode(password.value).length > PASSWORD_MAX_BYTES) {
     return '密码过长（UTF-8 编码后不得超过 72 字节）。'
@@ -53,13 +72,17 @@ async function submit(): Promise<void> {
 
   try {
     resume.reset()
+    const trimmedPhone = phone.value.trim()
     await auth.register({
       username: username.value.trim(),
       password: password.value,
       email: email.value.trim() ? email.value.trim() : null,
+      // 留空就发 `null` 而不是 `''`：空串与「没填」在后端是同一件事，
+      // 但发空串会让日志里出现一个看起来像「填过但被清空」的值。
+      phone: trimmedPhone ? normalizePhone(trimmedPhone) : null,
     })
     // 注册接口只返回用户，不签发 Token；这里直接登录，避免让用户再输一次密码。
-    await auth.login({ username: username.value.trim(), password: password.value })
+    await auth.login({ identifier: username.value.trim(), password: password.value })
     await router.replace({ name: 'resume-editor' })
   } catch (error) {
     errorMessage.value = isApiError(error) ? error.message : '注册失败，请稍后重试。'
@@ -84,6 +107,18 @@ async function submit(): Promise<void> {
         <label class="field">
           <span>邮箱（选填）</span>
           <input v-model="email" type="email" autocomplete="email" placeholder="用于找回账号" />
+        </label>
+        <label class="field">
+          <!-- 手机号成为登录标识之一（`ADR-025` §2.1），而不只是档案里的联系方式。 -->
+          <span>手机号（选填）</span>
+          <input
+            v-model="phone"
+            type="tel"
+            inputmode="tel"
+            autocomplete="tel"
+            placeholder="填了就可以用手机号登录"
+          />
+          <small class="field-hint">提示：可留空；填写后请用 11 位手机号，无需带 +86。</small>
         </label>
         <label class="field">
           <span>密码</span>

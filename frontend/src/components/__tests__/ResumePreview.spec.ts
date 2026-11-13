@@ -325,6 +325,7 @@ beforeEach(() => {
     id: OWNER_ID,
     username: 'tester',
     email: null,
+    phone: null,
     created_at: '2026-11-01T10:00:00+08:00',
   }
 })
@@ -511,6 +512,7 @@ describe('「刷新页面后仍在」', () => {
       id: OWNER_ID,
       username: 'tester',
       email: null,
+      phone: null,
       created_at: '2026-11-01T10:00:00+08:00',
     }
 

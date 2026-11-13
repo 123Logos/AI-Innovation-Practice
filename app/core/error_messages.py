@@ -15,7 +15,11 @@ class ErrorMessage(StrEnum):
     REFRESH_REJECTED = "登录已过期，请重新登录。"
     USERNAME_EXISTS = "用户名已被注册，请更换用户名或直接登录。"
     EMAIL_EXISTS = "邮箱已被注册，请更换邮箱或使用原账号登录。"
+    PHONE_EXISTS = "这个手机号已被注册，请更换手机号或直接用手机号登录。"
     INVALID_CREDENTIALS = "用户名或密码错误，请检查输入后重新登录。"
+    # ---- 批次 B6 收口（ADR-025 §2.4）：改密。三句都要求用户「做什么」，不描述内部状态。 ----
+    PASSWORD_CURRENT_WRONG = "当前密码不正确，请重新输入后再改。"
+    PASSWORD_UNCHANGED = "新密码与当前密码相同，请换一个没在用的密码。"
     PROFILE_TITLE_CONFLICT = "该简历名称已存在，请换一个名称。"
     PROFILE_LIMIT = "最多只能保存 20 份简历，请先删除不再需要的简历。"
     PROFILE_NOT_TRASHED = "只能彻底删除回收站中的简历，请先删除再彻底删除。"
@@ -24,11 +28,15 @@ class ErrorMessage(StrEnum):
     PRIVACY_PROFILE_REQUIRED = "还没有可检查的简历：请先完善并保存个人档案。"
     RESUME_NOT_GENERATED = "还没有生成过简历，请先生成一份。"
     RESUME_POINTER_BROKEN = "当前简历暂时无法读取，请重新生成一份简历。"
+    # ---- 批次 B8 剩余（ADR-026）：版本对比与按岗位定制。 ----
+    # 版本 id 不存在 / 不属于自己 / 与另一版不同档案：三句合一，不区分原因。
+    RESUME_VERSION_NOT_FOUND = "这一版简历不存在或无法访问，请返回版本列表重新选择。"
     LAYOUT_VERSION = "你的排版设置是旧版本，请在排版面板重新保存一次再生成"
     RATE_LIMITED = "请求过于频繁，请稍后再试。"
     # ---- 批次 B5（ADR-021）：组织与角色。文案集中在目录里，路由只引用枚举文案。 ----
-    ORGANIZATION_REQUIRED = "教师或管理员账号需要填写组织码，请向学校管理员获取。"
-    ORGANIZATION_CODE_INVALID = "组织码无效，请向学校管理员确认后再试。"
+    # 注：`ORGANIZATION_REQUIRED` / `ORGANIZATION_CODE_INVALID` 已随注册入口收口删除
+    # （ADR-025 §1.1）——注册不再接受 `organization_code`，这两句没有调用点了，
+    # 留着只会让人以为还有一条「带码注册」的路。
     ORGANIZATION_FORBIDDEN = "这个组织不属于你的账号。"
     ORGANIZATION_MEMBER_NOT_FOUND = "这个用户不在本组织的成员名单里。"
     SELF_ROLE_CHANGE = "不能修改自己的角色，请让另一位管理员操作。"
@@ -78,6 +86,12 @@ class ErrorMessage(StrEnum):
     JSON_INVALID = "提交内容格式损坏，请刷新页面后重新填写并提交。"
     MAX_WORDS = "目标字数须为 40–800 的整数，请修改目标字数后再开始润色。"
     USERNAME_FORMAT = "用户名须为 3–100 个字符且不能含空白，请修改用户名。"
+    # ADR-025 §2.3：用户名不许长得像邮箱/手机号。**必须有独立一句**——归到
+    # `USERNAME_FORMAT` 会让用户填了 11 位手机号却被告知「长度或空白不对」，
+    # 照着改十次也过不去（实测：这正是收口后第一版的行为）。
+    USERNAME_NOT_AN_IDENTIFIER = (
+        "用户名不能是邮箱或手机号：邮箱请填在「邮箱」一栏，手机号请填在「手机号」一栏。"
+    )
     PASSWORD_BYTES = "密码过长，请缩短至 72 字节以内（中文通常每字占 3 字节）。"
     EMAIL_FORMAT = "邮箱格式不正确，请填写如 name@example.com 的地址。"
     CONTACT_FORMAT = "手机号格式不正确，请填写中国大陆 11 位手机号。"
@@ -109,6 +123,11 @@ FIELD_LABELS = {
     "username": "用户名",
     "password": "密码",
     "email": "邮箱",
+    "phone": "手机号",
+    # ADR-025 §2.1 / §2.4：登录标识与改密两格。
+    "identifier": "登录账号",
+    "current_password": "当前密码",
+    "new_password": "新密码",
     "refresh_token": "登录凭据",
     "title": "标题",
     "profile_id": "简历",
@@ -183,8 +202,14 @@ HTTP_DETAIL_ALIASES = {
 VALIDATOR_MESSAGES = {
     "username must contain between 3 and 100 characters": ErrorMessage.USERNAME_FORMAT,
     "username must not contain whitespace": ErrorMessage.USERNAME_FORMAT,
+    # ADR-025 §2.3：用户名不许长得像邮箱或手机号（否则登录优先级会截胡别人的标识）。
+    # 单列一句而不是并进 `USERNAME_FORMAT`，见该枚举成员的注释。
+    "username must not look like an email or a mobile number": (
+        ErrorMessage.USERNAME_NOT_AN_IDENTIFIER
+    ),
     "password must not exceed 72 bytes when encoded as UTF-8": ErrorMessage.PASSWORD_BYTES,
     "email format is invalid": ErrorMessage.EMAIL_FORMAT,
+    "phone must be a mainland China mobile number": ErrorMessage.CONTACT_FORMAT,
     "contact must be a mainland China mobile number": ErrorMessage.CONTACT_FORMAT,
     "skill name must not be blank": ErrorMessage.SKILL_BLANK,
     "skill names must be unique": ErrorMessage.SKILL_DUPLICATE,

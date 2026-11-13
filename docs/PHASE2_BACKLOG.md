@@ -26,8 +26,8 @@
   - 需求：在应用层显式归一，不依赖数据库隐式行为。二选一：注册时 `.lower()` 后存储，或登录校验时忽略大小写（如 `Username.lower()`）。
   - 动机：避免用户因误开 CapsLock 而登录失败，这类失败无法自我诊断且会直接流失；也让行为可测、可移植。
   - 注意：改动需处理**存量数据**（已有含大写的用户名如何兼容/是否需要回填），并同步调整唯一性冲突的错误提示。
-  - 现状（2026-11-07 复核）：应用层归一在 `app/schemas/auth.py:28`（`strip().lower()`）与
-    `app/services/auth_service.py:72`（注册）、`:89`（登录）两处都做了，不是「二选一」而是两边同一口径；
+  - 现状（2026-11-07 复核，2026-11-13 改符号引用）：应用层归一在 `app/schemas/auth.py::RegisterRequest.validate_username`（`strip().lower()`）与
+    `app/services/auth_service.py::AuthService.register`（注册）、`::AuthService._resolve_identifier`（登录）两处都做了，不是「二选一」而是两边同一口径；
     用例 `tests/test_auth.py::test_register_lowercases_username`（含入库值断言）与
     `::test_login_is_case_insensitive`（`.lower()` / `.upper()` / `.swapcase()` 三种输入都能登录）；
     存量回填见 `alembic/versions/20261103_0005_backfill_lowercase_usernames.py`，

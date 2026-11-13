@@ -30,6 +30,7 @@ from app.repositories.organization_repository import OrganizationRepository
 from app.repositories.user_repository import get_engine, session_scope
 from app.services.dependencies import get_job_service
 from app.services.job_service import JobNotFoundError, JobService
+from tests.accounts import add_member, organization_id
 
 JOBS_BASE = "/api/v1/jobs"
 REGISTER_URL = "/api/v1/auth/register"
@@ -135,16 +136,11 @@ def _membership(client: TestClient, token: str) -> tuple[str, dict[str, str]]:
         _ORGANIZATION_OF[user_id] = code
     reviewer = f"teacher_{code.lower()}"
     if client.post(LOGIN_URL, json={"username": reviewer, "password": PASSWORD}).status_code != 200:
-        created = client.post(
-            REGISTER_URL,
-            json={
-                "username": reviewer,
-                "password": PASSWORD,
-                "role": "teacher",
-                "organization_code": code,
-            },
-        )
+        # 审核人同样是「先注册再入组织」：注册不再接受 `role` / `organization_code`
+        # （B6 收口，`ADR-025` §1.1）。
+        created = client.post(REGISTER_URL, json={"username": reviewer, "password": PASSWORD})
         assert created.status_code == 201, created.text
+        add_member(reviewer, organization_id(code), "teacher")
     return code, _login(client, reviewer)
 
 

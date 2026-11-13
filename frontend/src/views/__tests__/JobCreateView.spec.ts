@@ -203,6 +203,7 @@ beforeEach(() => {
     id: OWN_USER_ID,
     username: 'tester',
     email: null,
+    phone: null,
     created_at: '2026-11-05T10:00:00+08:00',
   }
 })

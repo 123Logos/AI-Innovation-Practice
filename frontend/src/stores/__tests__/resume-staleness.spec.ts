@@ -145,6 +145,7 @@ beforeEach(() => {
     id: 'user-under-test',
     username: 'tester',
     email: null,
+    phone: null,
     created_at: '2026-11-10T10:00:00+08:00',
   }
 })
@@ -247,6 +248,7 @@ describe('S1 / S5：任何让生成物过期的动作都点亮同一个主行动
       title: '投后端的那一版',
       content_html: '<div>生成物</div>',
       created_at: '2026-11-11T10:00:00+08:00',
+      version_no: 1,
     })
     store.updateProfileField('full_name', '张三丰')
     expect(store.needsRegenerate).toBe(true)
@@ -264,6 +266,7 @@ describe('S1 / S5：任何让生成物过期的动作都点亮同一个主行动
       title: '投后端的那一版',
       content_html: '<div>旧快照</div>',
       created_at: '2026-11-11T10:00:00+08:00',
+      version_no: 1,
     })
     await store.generate()
     expect(store.isGeneratingResultVisible).toBe(true)

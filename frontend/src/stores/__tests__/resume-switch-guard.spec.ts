@@ -40,6 +40,7 @@ beforeEach(() => {
     id: 'user-under-test',
     username: 'tester',
     email: null,
+    phone: null,
     created_at: '2026-11-10T10:00:00+08:00',
   }
 })

@@ -2,16 +2,65 @@
 
 对外模型 `UserRead` 刻意不包含 `password_hash`，
 映射在 service 层完成，避免任何调用方误把哈希返回给客户端。
+
+**批次 B6 收口（`ADR-025`）后有两条结构性变化**，都在本文件里看得见：
+
+1. `RegisterRequest` 只剩「用户名 / 密码 / 邮箱 / 手机号」。`organization_code` 与
+   `role` 一起下线——注册不再是一条「加入组织」的路，统一成「注册当散人」，
+   角色只能由邀请码在加入组织时给定（`ADR-023` §2.1）。`extra="forbid"` 让还在发
+   这两个字段的客户端当场 422，而不是让它静默降级（`ADR-021` §2.2 的同一条理由）。
+2. `LoginRequest` 从一个字段变成三种标识共用一个字段 `identifier`（邮箱 / 手机号 /
+   用户名），优先级与归一化规则写在 `ADR-025` §2.2–§2.3。
 """
 
 from datetime import datetime
-from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from app.core.permissions import UserRole
 
 BCRYPT_MAX_PASSWORD_BYTES = 72
+
+#: 中国大陆手机号。与 `app/schemas/profile.py::PHONE_PATTERN` **同一个正则**：
+#: 档案里展示的手机号与账号登录手机号如果口径不同，用户会在两个地方被两种规则拦住。
+PHONE_PATTERN = r"^1[3-9]\d{9}$"
+
+#: 手机号归一化时要剥掉的前缀。顺序即优先级：先试长的，再试短的。
+_PHONE_PREFIXES = ("+86", "86")
+
+
+def normalize_phone(value: str) -> str:
+    """把用户可能敲出的各种写法收敛成 11 位数字，或抛 `ValueError`。
+
+    接受：`13800000000` / `138 0000 0000` / `138-0000-0000` / `+8613800000000` / `8613800000000`。
+    拒绝：其它一切（空串、座机、国际号码、少一位多一位）。
+
+    三条口径写死：
+
+    1. **只存 11 位数字**（`ADR-025` §2.2）：存两种写法等于让唯一键只挡住一半的重复；
+    2. 剥离前缀只做一次，`+8686138…` 这种明显错拼不该被「多剥几次」救活；
+    3. 剥完必须重新匹配 `PHONE_PATTERN`，不做「长度到了就放过」的宽松判断。
+    """
+    candidate = "".join(value.split()).replace("-", "")
+    for prefix in _PHONE_PREFIXES:
+        if candidate.startswith(prefix):
+            candidate = candidate[len(prefix) :]
+            break
+    if not _phone_matches(candidate):
+        raise ValueError("phone must be a mainland China mobile number")
+    return candidate
+
+
+def _phone_matches(value: str) -> bool:
+    """不引 `re` 的等价判定：`1` + `3-9` + 9 位数字，共 11 位。
+
+    手写而不是 `re.fullmatch`：本模块被每个注册 / 登录请求调用一次，
+    而这条规则只有两个条件（首位与第二位范围）。正则版本在 `app/schemas/profile.py`
+    里仍保留一份作为档案侧的对照，两处的**规则**必须一致，实现可以不同。
+    """
+    if len(value) != 11 or not value.isdigit():
+        return False
+    return value[0] == "1" and "3" <= value[1] <= "9"
 
 
 class RegisterRequest(BaseModel):
@@ -21,6 +70,10 @@ class RegisterRequest(BaseModel):
     客户端多塞的任何字段（拼错的 `organiztion_code`、自以为能提权的 `is_admin`）
     都被 Pydantic 静默丢掉，而响应是成功——「静默降级比明确拒绝更坏」。
     现在这类请求直接 422，错误位置精确到字段名。
+
+    **B6 收口（`ADR-025` §1.1）后 `extra="forbid"` 多守一件事**：还在发 `role` 或
+    `organization_code` 的客户端会 422。这是刻意的——留着它们、只允许 `student`，
+    会让「我注册成了教师」变成一句用户在 `/auth/me` 里才发现的谎话。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -28,13 +81,9 @@ class RegisterRequest(BaseModel):
     username: str = Field(min_length=3, max_length=100)
     password: str = Field(min_length=8, max_length=128)
     email: str | None = Field(default=None, max_length=254)
-    #: 自助注册只认这三种角色。**不含** `platform_admin`：能自己注册成平台管理员就是提权漏洞。
-    #: 用 Literal 而不是 `UserRole`：后者会把 `platform_admin` 也当成合法输入，
-    #: 而它在自助注册里根本不该被接受。
-    role: Literal["student", "teacher", "school_admin"] = "student"
-    #: 组织码 = 邀请码。教师/管理员必须带（业务校验在 `AuthService.register`，
-    #: 那里能给出 400 + 人话；schema 只负责「形状」）。
-    organization_code: str | None = Field(default=None, max_length=50)
+    #: 账号手机号（≠ 简历上展示的 `student_profiles.contact`），可空。
+    #: 一旦填了就**默认**是登录标识之一（`ADR-025` §2.1）。
+    phone: str | None = Field(default=None, max_length=20)
 
     @field_validator("username")
     @classmethod
@@ -52,15 +101,17 @@ class RegisterRequest(BaseModel):
             raise ValueError("username must contain between 3 and 100 characters")
         if any(character.isspace() for character in candidate):
             raise ValueError("username must not contain whitespace")
+        # B6 收口（ADR-025 §2.3）：用户名长得像邮箱或手机号时，登录时的
+        # 「用户名 > 邮箱 > 手机号」优先级会让**别人**登不进来（他的标识被截胡）。
+        # 存量无法约束，新数据从这里起不再制造新的碰撞。
+        if _looks_like_email(candidate) or _phone_matches(_strip_phone_prefix(candidate)):
+            raise ValueError("username must not look like an email or a mobile number")
         return candidate
 
     @field_validator("password")
     @classmethod
     def validate_password(cls, value: str) -> str:
-        # bcrypt 只处理前 72 字节；超过就拒绝，绝不静默截断。
-        if len(value.encode("utf-8")) > BCRYPT_MAX_PASSWORD_BYTES:
-            raise ValueError("password must not exceed 72 bytes when encoded as UTF-8")
-        return value
+        return validate_password_bytes(value)
 
     @field_validator("email")
     @classmethod
@@ -75,10 +126,80 @@ class RegisterRequest(BaseModel):
             raise ValueError("email format is invalid")
         return candidate
 
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, value: str | None) -> str | None:
+        """空串与 `None` 同等（= 没填），其余必须能归一成 11 位数字。"""
+        if value is None:
+            return None
+        candidate = value.strip()
+        if not candidate:
+            return None
+        return normalize_phone(candidate)
+
+
+def validate_password_bytes(value: str) -> str:
+    """注册与改密**共用**的一条密码规则（`ADR-025` §2.4）。
+
+    单独成函数而不是复制两遍校验器：改密如果放宽了上限，用户就能把密码改成一个
+    注册时根本不可能设置的值，而下次登录照样能过——这类「两个入口两套规则」的
+    漏洞只会被运气发现。
+    """
+    # bcrypt 只处理前 72 字节；超过就拒绝，绝不静默截断。
+    if len(value.encode("utf-8")) > BCRYPT_MAX_PASSWORD_BYTES:
+        raise ValueError("password must not exceed 72 bytes when encoded as UTF-8")
+    return value
+
+
+def _looks_like_email(value: str) -> bool:
+    """与 `RegisterRequest.validate_email` 同一形状判定，但不做归一。
+
+    只作为「用户名不许长得像邮箱」的判据使用：`a@b` 这种没有点号的也会命中，
+    而它正是历史库里真实存在过的形态（`ADR-025` §2.3 讲的存量碰撞）。
+    """
+    local_part, separator, domain = value.partition("@")
+    return bool(separator) and bool(local_part) and bool(domain) and "@" not in domain
+
+
+def _strip_phone_prefix(value: str) -> str:
+    for prefix in _PHONE_PREFIXES:
+        if value.startswith(prefix):
+            return value[len(prefix) :]
+    return value
+
 
 class LoginRequest(BaseModel):
-    username: str = Field(min_length=1, max_length=100)
+    """登录请求体：一个 `identifier`，三种形状（`ADR-025` §2.1）。
+
+    `validation_alias` 让旧客户端继续发 `{"username": …}`：这是**输入别名**，
+    不是第二套语义——两者进同一个解析流程，行为完全一致。等旧客户端清零后
+    删掉别名即可，服务层一行都不用改。
+    """
+
+    identifier: str = Field(
+        min_length=1,
+        max_length=254,
+        validation_alias=AliasChoices("identifier", "username"),
+    )
     password: str = Field(min_length=1, max_length=128)
+
+
+class ChangePasswordRequest(BaseModel):
+    """`POST /auth/password` 的请求体（`ADR-025` §2.4）。
+
+    `extra="forbid"`：改密是安全动作，多塞一个 `user_id` 之类的字段不该被静默忽略——
+    虽然服务层只认 JWT 里的用户，但「发了什么就处理什么」比「悄悄丢掉」更容易排障。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, value: str) -> str:
+        return validate_password_bytes(value)
 
 
 class RefreshTokenRequest(BaseModel):
@@ -99,6 +220,8 @@ class UserRead(BaseModel):
     id: str
     username: str
     email: str | None = None
+    #: 登录标识之一的手机号（`ADR-025` §2.1）。可空：存量账号都没有。
+    phone: str | None = None
     created_at: datetime
 
 

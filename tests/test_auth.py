@@ -127,7 +127,10 @@ def test_register_persists_user_in_database(client: TestClient) -> None:
 
     assert user["username"] == username
     assert user["email"] == email
-    assert sorted(user) == ["created_at", "email", "id", "username"]
+    # 读模型的字段集是**精确**契约（`phone` 是 ADR-025 新加的登录标识之一）：
+    # 只断言「有 username」会让漏字段/多字段都静默通过。
+    assert sorted(user) == ["created_at", "email", "id", "phone", "username"]
+    assert user["phone"] is None
     assert _count_users(username) == 1
 
     with get_engine().connect() as connection:

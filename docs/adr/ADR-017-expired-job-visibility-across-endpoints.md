@@ -37,8 +37,8 @@
 
 老板那句「必须走同一个过期过滤函数」按字面做会出事，取证两条：
 
-1. `get_readable` 是详情/match/requirement-match **共用**的读入口（`job_repository.py:198-206` + `_visibility_clause:456-461`），一旦往里加 deadline 谓词，**写完回读也会中招**：`_reload` 走的就是 `get_readable`（`app/services/job_service.py:404-410`）。于是一个「创建时就填了过去的截止日期」的岗位会**保存成功然后立刻 404**——用户刚存的东西自己看不见，而 POST 的响应体也没了。
-2. `tests/test_jobs.py:1042` 锁的正是「陌生人读过期详情 = 200 + `is_expired=True`」。这条是 `ADR-011` 2.G 的原意（过期是**状态**，不是**删除**）。
+1. `get_readable` 是详情/match/requirement-match **共用**的读入口（`job_repository.py:198-206` + `_visibility_clause:456-461`），一旦往里加 deadline 谓词，**写完回读也会中招**：`_reload` 走的就是 `get_readable`（`app/services/job_service.py::JobService._reload`）。于是一个「创建时就填了过去的截止日期」的岗位会**保存成功然后立刻 404**——用户刚存的东西自己看不见，而 POST 的响应体也没了。
+2. `tests/test_jobs.py::test_expired_jobs_are_hidden_by_default_on_the_app_clock` 锁的正是「陌生人读过期详情 = 200 + `is_expired=True`」。这条是 `ADR-011` 2.G 的原意（过期是**状态**，不是**删除**）。
 
 所以：**过滤 = 列表的职责（它决定「现在还有什么可投」）；标注 = 其余读端点的职责（它们决定「这一条本身是什么样子」）**。判据同一个，动作不同，这不是双口径——双口径指的是同一个问题有两个答案，而这里四个端点回答的是四个不同问题。
 

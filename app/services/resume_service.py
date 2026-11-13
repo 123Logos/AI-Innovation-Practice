@@ -16,20 +16,33 @@
 
 B8（ADR-015 §2.3）起新增 `get_current_resume()`：`resumes` 的第一条读路径，
 「当前简历」只读版本指针，指针落空显式报错，绝不按 `created_at` 猜。
+
+B8 剩余（`ADR-026`）起新增三条：`list_versions()` / `diff_versions()` /
+`customize_for_job()`。三者共守一条不变式——**除了 `generate()`，没有任何路径
+允许移动链头**：定制版插进历史但不改写 `current_version_id`（§2.2）。
 """
 
 from collections.abc import Sequence
+from datetime import date
 
+from app.core import deadline
 from app.core.document_style import LAYOUT_VERSION, normalize_theme, resolve_layout
 from app.core.error_messages import ErrorMessage
+from app.core.skill_names import skill_name_key
 from app.integrations.copy_writer import (
     CopyAuthError,
     CopyUnavailableError,
     ResumeCopyWriter,
 )
 from app.integrations.resume_generator import ResumeGenerator
-from app.repositories.resume_repository import ResumeRepository
-from app.repositories.student_profile_repository import StudentProfile, StudentProfileRepository
+from app.repositories.job_repository import STATUS_PUBLISHED, Job, JobRepository, JobSkill
+from app.repositories.resume_repository import ORIGIN_CUSTOMIZED, Resume, ResumeRepository
+from app.repositories.student_profile_repository import (
+    Experience,
+    Skill,
+    StudentProfile,
+    StudentProfileRepository,
+)
 from app.schemas.profile import CertificateInput, EducationInput, PortfolioLinkInput
 from app.schemas.resume import (
     ExperienceInput,
@@ -38,15 +51,27 @@ from app.schemas.resume import (
     PrivacyItem,
     ProfileInput,
     ResumeCopy,
+    ResumeCustomizeFocus,
+    ResumeCustomizeRequest,
+    ResumeCustomizeResult,
+    ResumeDiff,
+    ResumeDiffField,
+    ResumeDiffItem,
+    ResumeDiffSection,
+    ResumeDiffSummary,
     ResumeGenerateRequest,
     ResumePolishRequest,
     ResumePrivacyCheck,
     ResumePrivacyCheckRequest,
     ResumeRead,
+    ResumeVersionList,
+    ResumeVersionOrigin,
+    ResumeVersionSummary,
     SkillInput,
     clamp_to_polish_contract,
 )
 from app.services.profile_service import ProfileNotFoundError
+from app.services.resume_diff import DocumentDiff, diff_documents, parse_snapshot
 
 #: 生成侧拦旧布局的文案（ADR-015 §2.2）：必须是一句**修得动**的话。
 #: 静默回落会把用户排好的顺序换成默认顺序而他看不出来——这比报错更糟。
@@ -75,6 +100,30 @@ class ResumePointerBrokenError(Exception):
 
     ADR-015 §2.3：此时必须显式报错，**不许回落到「挑一条看起来最新的」**——
     回落就是把这条 ADR 作废。用户动作是重新生成一份。
+    """
+
+
+class ResumeVersionNotFoundError(Exception):
+    """要对比的版本不存在、不属于当前用户，或两个 id 不属于同一份档案（`ADR-026` §2.6）。
+
+    四种情形共用同一句 404：区分「不存在」与「不是你的」等于送出一个
+    「这个版本 id 存不存在」的探针（与 `_resolve_profile` 同一口径）。
+    """
+
+
+class ResumeCustomizeJobNotFoundError(Exception):
+    """定制的目标岗位不可读（不存在 / 非创建者且未发布 / 已删）。
+
+    与 `jobs` 域的 `JOB_NOT_FOUND` 同一句文案：定制本质上是一次「按这条岗位渲染」，
+    岗位看不见就没有定制的依据。
+    """
+
+
+class ResumeCustomizeJobExpiredError(Exception):
+    """目标岗位已过截止时间（`ADR-026` §2.6，动作层 `is_expired`）。
+
+    「为一条已经截止的岗位定制简历」是能省则省的无效劳动，而它会**落一行新版本**，
+    属于动作层而不是读侧——所以它必须过同一个 `app/core/deadline.is_expired`。
     """
 
 
@@ -183,6 +232,7 @@ class ResumeService:
         resume_repository: ResumeRepository,
         generator: ResumeGenerator,
         copy_writer: ResumeCopyWriter | None = None,
+        job_repository: JobRepository | None = None,
     ) -> None:
         self._profile_repository = profile_repository
         self._resume_repository = resume_repository
@@ -190,6 +240,10 @@ class ResumeService:
         # `None` = 这次请求没有可用的 DeepSeek Key。用它而不是「有没有 writer」来判
         # 断，比在依赖层塞一个抛 NotImplementedError 的占位实现更诚实。
         self._copy_writer = copy_writer
+        # `None` = 没有装配岗位仓储（历史单测的裸构图）。只有
+        # `customize_for_job()` 需要它，缺了就在那一刻报「配置错了」，
+        # 而不是让生成/润色这些不需要它的路径跟着装不上。
+        self._job_repository = job_repository
 
     def generate(self, user_id: str, payload: ResumeGenerateRequest) -> ResumeRead:
         profile = self._resolve_profile(user_id, payload.profile_id)
@@ -198,9 +252,6 @@ class ResumeService:
         self._ensure_current_layout(profile)
         skills = self._profile_repository.list_skills(profile.id)
         experiences = self._profile_repository.list_experiences(profile.id)
-        educations = self._profile_repository.list_educations(profile.id)
-        certificates = self._profile_repository.list_certificates(profile.id)
-        portfolio_links = self._profile_repository.list_portfolio_links(profile.id)
         # 期望城市**不读**：它不是简历区块（ADR-015 §5 ③），不进 content_html。
         # 保存是草稿式的（`ProfileUpsertRequest.full_name` / `contact` 都允许空），
         # 所以「基本信息填全了没有」必须在这里判，否则 pydantic 会在下面抛
@@ -210,6 +261,157 @@ class ResumeService:
         if not skills or not experiences:
             raise ProfileIncompleteError(user_id)
 
+        content_html = self._render(
+            profile,
+            title=payload.title,
+            skills=skills,
+            experiences=experiences,
+        )
+        resume = self._resume_repository.create_resume(
+            student_profile_id=profile.id,
+            title=payload.title,
+            content_html=content_html,
+        )
+        return _read_resume(resume)
+
+    def get_current_resume(self, user_id: str, profile_id: str | None = None) -> ResumeRead:
+        """「当前简历」读路径（B8 / ADR-015 §2.3）：**只准读版本指针**。
+
+        三种状态分开报，绝不合并成「挑一条看起来最新的」：
+
+        - 链头在 → 返回它（`is_head = 1` 的那条，自指即链头）；
+        - 一行都没有 → `ResumeNotFoundError`（还没生成过，404）；
+        - 有行但无链头 → `ResumePointerBrokenError`（链头被删、指针落空，显式报错）。
+          回落到 `ORDER BY created_at DESC LIMIT 1` 从此不许出现在任何地方。
+        """
+        profile = self._resolve_profile(user_id, profile_id)
+        head = self._resume_repository.get_head(profile.id)
+        if head is None:
+            if self._resume_repository.count_by_profile(profile.id) > 0:
+                raise ResumePointerBrokenError(profile.id)
+            raise ResumeNotFoundError(profile.id)
+        return _read_resume(head)
+
+    # ------------------------------------------------------------------ B8 剩余
+    # 版本列表 / 两版差异 / 按岗位定制（`ADR-026`）。三条路径里只有第三条写库，
+    # 而它写的那一行**不移动链头**——除了 `generate()`，没有第二个动作能改变
+    # 「当前简历」是哪一版（§2.2）。
+
+    def list_versions(self, user_id: str, profile_id: str | None = None) -> ResumeVersionList:
+        """该档案的全部版本，按 `version_no` 倒序（`ADR-026` §2.6）。
+
+        一份都没生成过时返回**空列表**而不是 404：那个判断属于 `GET /resumes/current`
+        （「还没有简历」是它的错误口径），而本端点回答的是「历史上有哪些版本」，
+        空历史是一个合法答案。档案本身不存在/越权仍然 404（`_resolve_profile`）。
+        """
+        profile = self._resolve_profile(user_id, profile_id)
+        versions = self._resume_repository.list_versions(profile.id)
+        head = next((version for version in versions if version.is_head == 1), None)
+        return ResumeVersionList(
+            profile_id=profile.id,
+            current_version_id=head.id if head is not None else None,
+            versions=[_version_summary(version) for version in versions],
+        )
+
+    def diff_versions(self, user_id: str, from_version_id: str, to_version_id: str) -> ResumeDiff:
+        """两版的结构级差异（`ADR-026` §2.4）。
+
+        两个 id 都必须属于**当前用户的同一份档案**：任一落空或跨档案 → 同一个 404。
+        不接受 `profile_id` 参数——那会引入「id 说是 A 档案、参数说是 B 档案」的
+        两义输入，而这类输入的最后一次处理一定是在某个 if 里猜。
+        """
+        old = self._resume_repository.get_version_for_user(from_version_id, user_id)
+        new = self._resume_repository.get_version_for_user(to_version_id, user_id)
+        if old is None or new is None or old.student_profile_id != new.student_profile_id:
+            raise ResumeVersionNotFoundError(from_version_id)
+        result = diff_documents(parse_snapshot(old.content_html), parse_snapshot(new.content_html))
+        return _to_diff(_version_summary(old), _version_summary(new), result)
+
+    def customize_for_job(
+        self, user_id: str, payload: ResumeCustomizeRequest
+    ) -> ResumeCustomizeResult:
+        """按岗位定制：**只重排，一个字都不改**（`ADR-026` §2.5）。
+
+        五道闸门按顺序过，每一步都对应一个能修得动的错误：
+
+        1. 档案完整 + 排版是当前版本（与 `/generate` 逐字相同）；
+        2. 链头必须存在——定制要「基于某一版」，没有就 `ResumeNotFoundError`
+           （一行都没有）或 `ResumePointerBrokenError`（有行但指针落空）；
+        3. 岗位必须可读且已发布（未发布的岗位只有创建者看得到，拿它定制没有意义）；
+        4. 岗位未过期（动作层 `is_expired`，`ADR-017` §5）；
+        5. 渲染 → 插一行 `origin='customized'`，`current_version_id` 指向**原链头**。
+        """
+        profile = self._resolve_profile(user_id, payload.profile_id)
+        self._ensure_current_layout(profile)
+        skills = self._profile_repository.list_skills(profile.id)
+        experiences = self._profile_repository.list_experiences(profile.id)
+        if not profile.full_name.strip() or not profile.contact.strip():
+            raise ProfileIncompleteError(user_id)
+        if not skills or not experiences:
+            raise ProfileIncompleteError(user_id)
+
+        head = self._resume_repository.get_head(profile.id)
+        if head is None:
+            if self._resume_repository.count_by_profile(profile.id) > 0:
+                raise ResumePointerBrokenError(profile.id)
+            raise ResumeNotFoundError(profile.id)
+
+        job, job_skills = self._load_customize_job(user_id, payload.job_id)
+        keys, matched, missing = _focus(job_skills, skills)
+        title = _customized_title(profile.title, job.title)
+        content_html = self._render(
+            profile,
+            title=title,
+            skills=_order_skills(skills, keys),
+            experiences=_order_experiences(experiences, keys),
+        )
+        resume = self._resume_repository.create_customized_resume(
+            profile.id,
+            title=title,
+            content_html=content_html,
+            target_job_id=job.id,
+            head_id=head.id,
+        )
+        return ResumeCustomizeResult(
+            resume=_read_resume(resume),
+            based_on_version_no=head.version_no,
+            focus=ResumeCustomizeFocus(
+                job_id=job.id,
+                job_title=job.title,
+                matched=matched,
+                missing=missing,
+            ),
+        )
+
+    def _load_customize_job(self, user_id: str, job_id: str) -> tuple[Job, list[JobSkill]]:
+        """取一条「可以拿来定制」的岗位：已发布、未删、未过期（`ADR-026` §2.6）。"""
+        if self._job_repository is None:  # pragma: no cover - 只有裸构图的服务才会走到
+            raise RuntimeError("customize_for_job requires a job repository")
+        job = self._job_repository.get_readable(job_id, user_id)
+        if job is None or job.status != STATUS_PUBLISHED:
+            raise ResumeCustomizeJobNotFoundError(job_id)
+        # 动作层的唯一过期判据：本文件没有第二处 `deadline < today`。
+        if deadline.is_expired(job.deadline, date.today()):
+            raise ResumeCustomizeJobExpiredError(job_id)
+        return job, self._job_repository.list_skills(job.id)
+
+    def _render(
+        self,
+        profile: StudentProfile,
+        *,
+        title: str,
+        skills: Sequence[Skill],
+        experiences: Sequence[Experience],
+    ) -> str:
+        """把档案事实渲染成 `content_html`——生成与定制的**唯一**渲染出口。
+
+        参数收的是 ORM 行而不是生成器契约：定制版要先把技能/经历**重排**再渲染，
+        若这里收 `SkillInput`，重排逻辑就得同时构造一遍 `SkillInput` 列表，
+        两处各写一份「哪些字段参与渲染」的清单，迟早有一处漏字段（例如新加的证书）。
+
+        教育 / 证书 / 作品在内部读，因为它们**不参与定制排序**（`ADR-026` §2.5 第 3 条），
+        调用方传进来只会让两个入口各自读一遍同样的三张子表。
+        """
         profile_input = ProfileInput(
             full_name=profile.full_name,
             contact=profile.contact,
@@ -226,14 +428,18 @@ class ResumeService:
             )
             for experience in experiences
         ]
+        educations = self._profile_repository.list_educations(profile.id)
+        certificates = self._profile_repository.list_certificates(profile.id)
+        portfolio_links = self._profile_repository.list_portfolio_links(profile.id)
 
         # ADR-010：生成路径**不再调用 AI**。文案就是库里的事实，
         # 想润色要走 `POST /resumes/polish`，由用户确认后写进表单再保存。
-        content_html = self._generator.generate(
+        # 定制路径同理：它只改顺序，不碰一个字（`ADR-026` §2.5）。
+        return self._generator.generate(
             profile=profile_input,
             skills=skill_inputs,
             experiences=experience_inputs,
-            title=payload.title,
+            title=title,
             educations=[
                 EducationInput(
                     school=education.school,
@@ -262,42 +468,6 @@ class ResumeService:
             portfolio=[
                 PortfolioLinkInput(label=link.label, url=link.url) for link in portfolio_links
             ],
-        )
-        resume = self._resume_repository.create_resume(
-            student_profile_id=profile.id,
-            title=payload.title,
-            content_html=content_html,
-        )
-        return ResumeRead(
-            resume_id=resume.id,
-            title=resume.title,
-            content_html=resume.content_html,
-            created_at=resume.created_at,
-            version_no=resume.version_no,
-        )
-
-    def get_current_resume(self, user_id: str, profile_id: str | None = None) -> ResumeRead:
-        """「当前简历」读路径（B8 / ADR-015 §2.3）：**只准读版本指针**。
-
-        三种状态分开报，绝不合并成「挑一条看起来最新的」：
-
-        - 链头在 → 返回它（`is_head = 1` 的那条，自指即链头）；
-        - 一行都没有 → `ResumeNotFoundError`（还没生成过，404）；
-        - 有行但无链头 → `ResumePointerBrokenError`（链头被删、指针落空，显式报错）。
-          回落到 `ORDER BY created_at DESC LIMIT 1` 从此不许出现在任何地方。
-        """
-        profile = self._resolve_profile(user_id, profile_id)
-        head = self._resume_repository.get_head(profile.id)
-        if head is None:
-            if self._resume_repository.count_by_profile(profile.id) > 0:
-                raise ResumePointerBrokenError(profile.id)
-            raise ResumeNotFoundError(profile.id)
-        return ResumeRead(
-            resume_id=head.id,
-            title=head.title,
-            content_html=head.content_html,
-            created_at=head.created_at,
-            version_no=head.version_no,
         )
 
     @staticmethod
@@ -546,3 +716,183 @@ def _build_privacy_check(
             ),
         ],
     )
+
+
+# --------------------------------------------------------------------------- #
+# B8 剩余（`ADR-026`）：版本摘要、差异装配、按岗位定制的纯函数。
+#
+# 追加在文件**末尾**是位置约束：本文件上部有多处被文档按行号引用
+# （`ADR-013` 引三个异常类所在行、`ADR-018` 引 `_sanitize_copy` 的区间），
+# 在它们上面插行会把指针推到别的代码上。
+#
+# 这一批的函数全部是纯的：不读库、不写库、不认识 `Session`。
+# 服务层负责取行与落库，这里只负责「怎么排列」「怎么描述」——
+# 于是顺序规则可以单测，而不必先造一个 MySQL。
+# --------------------------------------------------------------------------- #
+
+
+def _read_resume(resume: Resume) -> ResumeRead:
+    """ORM 行 → 对外读模型（生成、当前版、定制版三处共用这一份映射）。"""
+    return ResumeRead(
+        resume_id=resume.id,
+        title=resume.title,
+        content_html=resume.content_html,
+        created_at=resume.created_at,
+        version_no=resume.version_no,
+    )
+
+
+def _version_summary(resume: Resume) -> ResumeVersionSummary:
+    """ORM 行 → 版本摘要（不含正文，`ADR-026` §2.6）。
+
+    `is_head` 是数据库生成列，值是 `1` / `None`；这里只做布尔折叠，
+    再算一次「哪条是链头」就是第二份真相。
+    """
+    origin: ResumeVersionOrigin = (
+        "customized" if resume.origin == ORIGIN_CUSTOMIZED else "generated"
+    )
+    return ResumeVersionSummary(
+        resume_id=resume.id,
+        version_no=resume.version_no,
+        title=resume.title,
+        origin=origin,
+        is_head=resume.is_head == 1,
+        target_job_id=resume.target_job_id,
+        created_at=resume.created_at,
+    )
+
+
+def _to_diff(
+    old: ResumeVersionSummary,
+    new: ResumeVersionSummary,
+    result: DocumentDiff,
+) -> ResumeDiff:
+    """把 `resume_diff.DocumentDiff` 装进响应模型（`ADR-026` §2.4）。
+
+    两层的字段一一对应，刻意不做「顺手补一句自然语言总结」：总结一旦由代码生成，
+    就会在规则变化时变成一句过期的谎话；界面要一句话时应当由计数自己拼。
+    """
+    sections = [
+        ResumeDiffSection(
+            key=section.key,  # type: ignore[arg-type]
+            label=section.label,
+            change=section.change,  # type: ignore[arg-type]
+            title_before=section.title_before,
+            title_after=section.title_after,
+            order_changed=section.order_changed,
+            items=[
+                ResumeDiffItem(
+                    kind=item.kind,  # type: ignore[arg-type]
+                    label=item.label,
+                    before=item.before,
+                    after=item.after,
+                    fields=[
+                        ResumeDiffField(field=diff.field, before=diff.before, after=diff.after)
+                        for diff in item.fields
+                    ],
+                )
+                for item in section.items
+            ],
+        )
+        for section in result.sections
+    ]
+    return ResumeDiff(
+        from_version=old,
+        to_version=new,
+        comparable=result.comparable,
+        note=result.note,
+        summary=ResumeDiffSummary(
+            added=result.added,
+            removed=result.removed,
+            changed=result.changed,
+            sections_changed=sum(1 for section in result.sections if section.change != "unchanged"),
+            section_order_changed=result.section_order_changed,
+            item_order_changed=result.item_order_changed,
+        ),
+        sections=sections,
+    )
+
+
+def _job_skill_keys(job_skills: Sequence[JobSkill]) -> list[str]:
+    """岗位技能 → 判定键（去空、去重、保序）。
+
+    用 `skill_name_key`（NFKC + casefold）而不是别名层：别名层是**评分**的输入
+    （`ADR-016` §3），把它拉进「排序」会让「为什么这段经历排在前面」无法解释——
+    用户看不到那张词表，只看得到顺序变了。
+    """
+    keys: list[str] = []
+    for job_skill in job_skills:
+        key = skill_name_key(job_skill.name)
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def _focus(
+    job_skills: Sequence[JobSkill],
+    skills: Sequence[Skill],
+) -> tuple[list[str], list[str], list[str]]:
+    """算出 `(判定键, 命中, 缺失)`，三者的顺序都跟着「来源」走（`ADR-026` §2.5）。
+
+    - 判定键：岗位技能顺序（第一个出现的写法胜出）；
+    - 命中：**档案**里的技能顺序（因为它是给用户看「你的哪几条中了」）；
+    - 缺失：**岗位**里的技能顺序（因为它是给用户看「JD 要什么」）。
+    """
+    keys = _job_skill_keys(job_skills)
+    key_set = set(keys)
+    profile_keys = {skill_name_key(skill.name) for skill in skills}
+    matched = [skill.name for skill in skills if skill_name_key(skill.name) in key_set]
+    missing: list[str] = []
+    for job_skill in job_skills:
+        key = skill_name_key(job_skill.name)
+        if key in key_set and key not in profile_keys and job_skill.name not in missing:
+            missing.append(job_skill.name)
+    return keys, matched, missing
+
+
+def _order_skills(skills: Sequence[Skill], keys: Sequence[str]) -> list[Skill]:
+    """命中的技能排前面，两组内部保持档案原顺序（稳定排序，`ADR-026` §2.5 第 1 条）。
+
+    稳定是产品要求而不是实现巧合：用户按自己熟悉的顺序填过技能，
+    定制版只该把「与这条岗位相关的」提上来，不该顺手把他排好的其余顺序打乱。
+    """
+    key_set = set(keys)
+    matched = [skill for skill in skills if skill_name_key(skill.name) in key_set]
+    rest = [skill for skill in skills if skill_name_key(skill.name) not in key_set]
+    return matched + rest
+
+
+def _hit_count(experience: Experience, keys: Sequence[str]) -> int:
+    """这段经历的正文里出现了几个岗位技能（**近似**，只用于排序）。
+
+    近似是刻意的：真正的证据打分在 `app/integrations/evidence_scorer.py` 与
+    `app/services/match_scoring.py`（`ADR-013`），那套要 Key、要别名层、要可解释的
+    分数。这里只需要一个「谁更相关」的序，任何复杂化都会让定制版变成一个
+    用户没法理解的排序。
+    """
+    haystack = (
+        f"{experience.title} {experience.description} {experience.responsibility}"
+    ).casefold()
+    return sum(1 for key in keys if key and key in haystack)
+
+
+def _order_experiences(experiences: Sequence[Experience], keys: Sequence[str]) -> list[Experience]:
+    """按命中条数降序，同分保持原序（`ADR-026` §2.5 第 2 条）。
+
+    `sorted` 是稳定的，但这里仍然显式带下标：`(... , index)` 让「同分保持原序」
+    成为一条**可读的规则**而不是一条依赖实现细节的假设。
+    """
+    indexed = [(index, experience) for index, experience in enumerate(experiences)]
+    indexed.sort(key=lambda pair: (-_hit_count(pair[1], keys), pair[0]))
+    return [experience for _, experience in indexed]
+
+
+def _customized_title(profile_title: str, job_title: str) -> str:
+    """定制版的标题 = 简历名 + 面向的岗位（`ADR-026` §2.1）。
+
+    标题落进 `resumes.title`（200 字上限）而不是新开一列存岗位标题：
+    它是**快照**语义——岗位后来改名，手上这份简历的名字不该跟着变。
+    超长时按码点截断（Python 的 `str[:n]` 就是码点级），不切出半个代理对。
+    """
+    base = profile_title.strip() or "我的简历"
+    return f"{base} · 面向「{job_title.strip()}」"[:200]

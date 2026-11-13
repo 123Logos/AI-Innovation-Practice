@@ -238,6 +238,10 @@ def get_resume_service(request: Request) -> Iterator[ResumeService]:
     ADR-010 起「有没有 Key」只决定 `copy_writer` 装不装：`/generate` 走纯模板，
     不看这个头；`/polish` 拿不到 Key 时由服务层抛 `ResumeApiKeyMissingError`（400）。
     在这里不提前 4xx，是为了让「不需要 Key 的生成路径」保持零成本。
+
+    B8 剩余（`ADR-026`）起多装一个 `JobRepository`：`/resumes/customize` 要读目标岗位
+    与它的技能。必须与档案/简历仓储共用**同一个 session**——「档案是这一版、
+    岗位是这一版」是同一次读数的前提（与 `get_match_service` 那段同一个理由）。
     """
     api_key = request.headers.get(DEEPSEEK_KEY_HEADER, "").strip()
     with session_scope() as session:
@@ -246,6 +250,7 @@ def get_resume_service(request: Request) -> Iterator[ResumeService]:
             resume_repository=ResumeRepository(session),
             generator=TemplateResumeGenerator(),
             copy_writer=DeepSeekCopyWriter(api_key) if api_key else None,
+            job_repository=JobRepository(session),
         )
 
 
