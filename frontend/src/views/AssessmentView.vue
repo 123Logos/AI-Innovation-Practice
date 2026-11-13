@@ -6,7 +6,9 @@
  *
  * 1. `catalog`：能测哪些技能 + 已有画像。没有进行中的会话时就是这一屏。
  * 2. `answering`：题目与选项。每点一个选项就立刻存一次（后端是「覆盖这几题」，
- *    不是清空整张卷），所以中途刷新不丢已答。
+ *    不是清空整张卷）；进行中的会话 id 记在 sessionStorage，刷新后靠 `getSession`
+ *    连题目与已选答案一起恢复。今天没有「列出进行中的会话」这个端点，所以只能恢复
+ *    **本浏览器这一场**——换设备就回目录态，这是已知边界，不是「不丢」。
  * 3. `result`：分数 + 标签三态 + 可选的一段概述。
  *
  * 两条与后端契约绑死的显示规则：
@@ -34,6 +36,9 @@ import { SUMMARY_HEADINGS, TAG_STATUS_LABELS } from '@/api/assessments'
 import SkeletonList from '@/components/SkeletonList.vue'
 
 type Phase = 'loading' | 'catalog' | 'answering' | 'result'
+
+/** 只存 id，不存答案：答案的真相在库里，本地这份只是「刷新时该去问哪一场」。 */
+const PENDING_SESSION_KEY = 'ai-career.assessment-session-id'
 
 interface SummaryView {
   text: string
@@ -66,6 +71,11 @@ function describeError(caught: unknown, fallback: string): string {
   return fallback
 }
 
+function rememberSession(id: string | null): void {
+  if (id) sessionStorage.setItem(PENDING_SESSION_KEY, id)
+  else sessionStorage.removeItem(PENDING_SESSION_KEY)
+}
+
 async function load(): Promise<void> {
   phase.value = 'loading'
   error.value = ''
@@ -81,6 +91,36 @@ async function load(): Promise<void> {
     error.value = describeError(caught, '读取测评内容失败，请刷新页面重试。')
     phase.value = 'catalog'
   }
+  await restorePendingSession()
+}
+
+/**
+ * 刷新后恢复「这一场」：只有 `in_progress` 才回答题态。
+ *
+ * 读不到（会话被删、换了账号 → 后端 404）就**清掉标记、安静回目录**：这不是用户
+ * 做错了什么，弹一句红字只会让他以为自己的作答丢了。终态也清标记——提交/放弃时
+ * 本就会清，这里是防止上一次写标记失败留下的残值。
+ */
+async function restorePendingSession(): Promise<void> {
+  const pendingId = sessionStorage.getItem(PENDING_SESSION_KEY)
+  if (!pendingId) return
+  try {
+    const detail = await assessmentsApi.getSession(pendingId)
+    if (detail.session.status !== 'in_progress') {
+      rememberSession(null)
+      return
+    }
+    session.value = detail.session
+    questions.value = detail.questions
+    chosen.value = Object.fromEntries(
+      detail.answers.map((answer) => [answer.question_id, answer.chosen_key]),
+    )
+    tags.value = []
+    summary.value = null
+    phase.value = 'answering'
+  } catch {
+    rememberSession(null)
+  }
 }
 
 async function start(): Promise<void> {
@@ -93,6 +133,7 @@ async function start(): Promise<void> {
     chosen.value = {}
     tags.value = []
     summary.value = null
+    rememberSession(started.session.id)
     phase.value = 'answering'
   } catch (caught) {
     error.value = describeError(caught, '没能开始这次测评，请稍后再试。')
@@ -131,6 +172,7 @@ async function submit(): Promise<void> {
     const result = await assessmentsApi.submitSession(session.value.id)
     session.value = result.session
     tags.value = result.tags
+    rememberSession(null)
     phase.value = 'result'
   } catch (caught) {
     error.value = describeError(caught, '提交没能完成，请稍后再试。')
@@ -145,6 +187,7 @@ async function abandon(): Promise<void> {
   busy.value = true
   try {
     await assessmentsApi.abandonSession(session.value.id)
+    rememberSession(null)
     session.value = null
     questions.value = []
     chosen.value = {}

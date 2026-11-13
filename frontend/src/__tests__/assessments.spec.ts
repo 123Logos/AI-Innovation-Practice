@@ -95,6 +95,9 @@ async function mountAnswering() {
 beforeEach(() => {
   vi.clearAllMocks()
   document.body.innerHTML = ''
+  // `start()` 会把进行中的会话 id 写进 sessionStorage，用例之间必须清掉，
+  // 否则下一个用例的 `load()` 会去恢复上一场，红在完全无关的断言上。
+  sessionStorage.clear()
   assessmentsApi.getCatalog.mockResolvedValue(CATALOG)
   assessmentsApi.getProfile.mockResolvedValue({
     student_profile_id: 'p-1',
@@ -130,6 +133,33 @@ describe('目录态', () => {
     expect(alert.exists()).toBe(true)
     expect(alert.text()).toContain('读取测评内容失败')
   })
+
+  it('刷新后恢复进行中的这一场：题目与已选答案都回来', async () => {
+    sessionStorage.setItem('ai-career.assessment-session-id', SESSION.id)
+    assessmentsApi.getSession.mockResolvedValue({
+      session: SESSION,
+      questions: QUESTIONS,
+      answers: [{ question_id: 'q-1', chosen_key: 'B', is_correct: null }],
+    })
+
+    const wrapper = await mountView()
+
+    expect(assessmentsApi.getSession).toHaveBeenCalledWith(SESSION.id)
+    expect(wrapper.text()).toContain('已答 1 / 1 题')
+    const selected = wrapper.findAll('input[type="radio"]')[1].element as HTMLInputElement
+    expect(selected.checked).toBe(true)
+  })
+
+  it('会话读不到时清掉标记并安静回目录，不弹红字', async () => {
+    sessionStorage.setItem('ai-career.assessment-session-id', SESSION.id)
+    assessmentsApi.getSession.mockRejectedValueOnce(new Error('404'))
+
+    const wrapper = await mountView()
+
+    expect(wrapper.text()).toContain('开始测评')
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(sessionStorage.getItem('ai-career.assessment-session-id')).toBeNull()
+  })
 })
 
 describe('答题态', () => {
@@ -138,6 +168,7 @@ describe('答题态', () => {
 
     expect(wrapper.text()).toContain('tuple 创建后还能改吗？')
     expect(wrapper.text()).toContain('已答 0 / 1 题')
+    expect(sessionStorage.getItem('ai-career.assessment-session-id')).toBe(SESSION.id)
   })
 
   it('点一个选项就立刻发一次覆盖写，进度跟着走', async () => {
@@ -191,7 +222,8 @@ describe('结果态', () => {
     expect(assessmentsApi.saveAnswers).toHaveBeenLastCalledWith(SESSION.id, [
       { question_id: 'q-1', chosen_key: 'B' },
     ])
-    const saveOrder = assessmentsApi.saveAnswers.mock.invocationCallOrder.at(-1) ?? 0
+    const saveOrders = assessmentsApi.saveAnswers.mock.invocationCallOrder
+    const saveOrder = saveOrders[saveOrders.length - 1] ?? 0
     const submitOrder = assessmentsApi.submitSession.mock.invocationCallOrder[0] ?? 0
     expect(saveOrder).toBeLessThan(submitOrder)
   })
