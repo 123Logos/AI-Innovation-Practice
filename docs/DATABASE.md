@@ -165,4 +165,6 @@ B5 实际落库的是下面三张，迁移文件 `alembic/versions/20261112_0018
 三条一致性约定：① **刻意没有 `(created_at)` 单列索引**，本批没有跨组织的全平台邀请查询；
 ② 兑换用 `FOR UPDATE` 行锁，防「最后一张码被两个请求同时用掉」；
 ③ 审计动作 `invitation.create` / `invitation.redeem` / `invitation.revoke` 与业务**同事务**，
-被拒绝的尝试单独记 `denied`。
+被拒绝的尝试单独记 `denied`；④ **刻意不加「兑换者」列**（第 18 轮裁定 ④）：一张码可 `max_uses > 1`，
+兑换者天然一对多，写进一列只能记住最后一个人。列表里的 `redeemed_by` 由 `invitation.redeem`
+审计行 join `users` 拼出，`result=denied` 的尝试不算兑换、不展示。

@@ -42,6 +42,8 @@ class InvitationRead(BaseModel):
     expires_at: datetime
     revoked_at: datetime | None = None
     created_at: datetime
+    #: 兑换过这张码的用户名；来自 `invitation.redeem` 审计，不是表列。
+    redeemed_by: list[str] = Field(default_factory=list)
 
 
 class InvitationListData(BaseModel):
