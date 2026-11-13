@@ -49,9 +49,12 @@ import { formatDate, formatDateTime } from '@/utils/datetime'
 import SkeletonList from '@/components/SkeletonList.vue'
 import AutoTextarea from '@/components/AutoTextarea.vue'
 import { useAuthStore } from '@/stores/auth'
+import { useResumeStore } from '@/stores/resume'
+import type { ResumeCustomizeResult } from '@/api/types'
 
 const store = useJobStore()
 const auth = useAuthStore()
+const resume = useResumeStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -60,6 +63,10 @@ const actionError = ref('')
 const actionNotice = ref('')
 /** 正在执行提交审核/下架/删除/审核时锁住这一组按钮。 */
 const actionBusy = ref<'submit' | 'unpublish' | 'delete' | 'approve' | 'reject' | null>(null)
+
+/** 按岗位定制（`ADR-026` §2.5）：一次请求落一行 customized 版本，**不移动链头**。 */
+const customizeError = ref('')
+const customizeResult = ref<ResumeCustomizeResult | null>(null)
 
 /** 驳回理由草稿；通过时后端会丢掉它，所以切换按钮不需要清空输入框。 */
 const reviewNote = ref('')
@@ -296,6 +303,25 @@ async function handleMatch(): Promise<void> {
     await store.runMatch(current.id)
   } catch (error) {
     matchError.value = matchFailureText(error)
+  }
+}
+
+/**
+ * 按岗位定制一份简历（`ADR-026` §2.5）。
+ *
+ * 失败口径与服务端一一对应，全都由 `describeError` 直接透出：
+ * 档案不完整 400、还没生成过 404、岗位不可读 404、岗位过期 409。
+ * 不在这里加兜底文案覆盖——后端那几句已经写明「下一步做什么」。
+ */
+async function handleCustomize(): Promise<void> {
+  const current = job.value
+  if (!current || resume.customizing) return
+  customizeError.value = ''
+  customizeResult.value = null
+  try {
+    customizeResult.value = await resume.customizeForJob(current.id)
+  } catch (error) {
+    customizeError.value = describeError(error, '定制失败，请稍后重试。')
   }
 }
 
@@ -601,6 +627,46 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
+      <!--
+        按岗位定制简历（`ADR-026` §2.5）：入口放在岗位详情而不是简历编辑器里，
+        因为「面向哪条岗位」这个信息只有在这里是显式可见的。
+      -->
+      <section class="detail-block customize-block" data-testid="customize-block">
+        <h2 class="block-title">用这条岗位定制简历</h2>
+        <p class="block-hint">
+          定制<b>只调整顺序</b>：把这条岗位要的技能与相关经历提到前面，文字一个字都不改。
+          生成的版本会进版本历史，但<b>不会</b>取代你当前的简历——想用它导出时去版本历史里选。
+        </p>
+        <button
+          class="row-button row-button--primary"
+          type="button"
+          data-testid="customize-run"
+          :aria-busy="resume.customizing"
+          :disabled="resume.customizing"
+          @click="handleCustomize"
+        >
+          {{ resume.customizing ? '正在定制…' : '定制一份投这条岗位的简历' }}
+        </button>
+        <p v-if="customizeError" class="feedback feedback--error" role="alert">{{ customizeError }}</p>
+
+        <div v-if="customizeResult" class="customize-result" data-testid="customize-result">
+          <p class="customize-result__line">
+            已生成 <b>v{{ customizeResult.resume.version_no }}</b>
+            <span class="customize-result__title">{{ customizeResult.resume.title }}</span>
+          </p>
+          <p v-if="customizeResult.focus.matched.length" class="customize-result__line">
+            已提前：{{ customizeResult.focus.matched.join('、') }}
+          </p>
+          <p v-else class="customize-result__line">
+            这条岗位要求的技能与你的技能名都对不上，所以只按经历里的关键词排了序。
+          </p>
+          <p v-if="customizeResult.focus.missing.length" class="customize-result__gap">
+            岗位还要求：{{ customizeResult.focus.missing.join('、') }}——你的档案里没有这些，
+            这不影响定制版生成，补上之后下一次会更贴合。
+          </p>
+        </div>
+      </section>
+
       <section class="detail-block">
         <h2 class="block-title">岗位描述（JD 原文）</h2>
         <p class="description">{{ descriptionText }}</p>
@@ -711,7 +777,11 @@ onBeforeUnmount(() => {
 .text-link:hover { text-decoration: underline; }
 
 .feedback { margin: 0 0 12px; color: var(--ui-ink-faint); font-size: var(--text-base); line-height: 1.5; }
-.feedback--error { color: var(--ui-danger); }
+/* 定制结果：一段结论 + 一段提示。命中/缺失都只是顺序与提示，不写成「录用概率」那类判断。 */
+.customize-result { margin-top: 12px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 12px; }
+.customize-result__line { margin: 0 0 6px; color: var(--ui-ink); font-size: var(--text-base); line-height: 1.6; }
+.customize-result__title { margin-left: 6px; color: var(--ui-ink-muted); }
+.customize-result__gap { margin: 0; color: var(--ui-ink-muted); font-size: var(--text-sm); line-height: 1.6; }.feedback--error { color: var(--ui-danger); }
 .feedback--ok { color: var(--theme-primary-deep); }
 
 .detail-card { display: grid; gap: 12px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 20px 22px; background: var(--ui-surface); }

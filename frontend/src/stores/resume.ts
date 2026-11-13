@@ -77,7 +77,10 @@ import type {
   ProfileSummary,
   ProfileUpsertRequest,
   ResumeCopy,
+  ResumeCustomizeResult,
+  ResumeDiff,
   ResumeRead,
+  ResumeVersionSummary,
   SectionId,
   ThemeId,
 } from '@/api/types'
@@ -1839,6 +1842,70 @@ export const useResumeStore = defineStore('resume', () => {
     }
   }
 
+  /* ------------------ 版本历史 / 两版差异 / 按岗位定制（ADR-026） ------------------ */
+
+  /**
+   * 历史版本（倒序，**不含正文**）。
+   *
+   * 空数组是一个合法答案（还没生成过任何一版）；「还没有简历」那件事由
+   * `GET /resumes/current` 报错，两处口径刻意不同。
+   */
+  const versions = ref<ResumeVersionSummary[]>([])
+  const versionsLoading = ref(false)
+  /** 两版差异。`null` = 还没比过，与「比了两版一样」是两件事，不能合成一个空对象。 */
+  const versionDiff = ref<ResumeDiff | null>(null)
+  const diffing = ref(false)
+  const customizing = ref(false)
+  /**
+   * 最近一次定制的结果。
+   *
+   * 单独留一份而不是从历史列表里反查：`matched` / `missing` 是这次操作的产物
+   * （「你的哪几条中了」），历史列表里只有标题与版本号，查不出来。
+   */
+  const lastCustomize = ref<ResumeCustomizeResult | null>(null)
+
+  /** 拉取当前档案的历史版本。 */
+  async function loadVersions(): Promise<void> {
+    versionsLoading.value = true
+    try {
+      const result = await resumesApi.listResumeVersions(currentProfileId.value)
+      versions.value = result.versions
+    } finally {
+      versionsLoading.value = false
+    }
+  }
+
+  /** 对比两版。服务端返回结构级差异；`comparable === false` 时界面要显示 `note`。 */
+  async function compareVersions(fromVersionId: string, toVersionId: string): Promise<void> {
+    diffing.value = true
+    try {
+      versionDiff.value = await resumesApi.diffResumeVersions(fromVersionId, toVersionId)
+    } finally {
+      diffing.value = false
+    }
+  }
+
+  /**
+   * 按岗位定制：**只重排，一个字都不改**，且**不移动链头**（`ADR-026` §2.5）。
+   *
+   * 这里刻意不顺手刷新历史列表：定制成功了、列表刷新失败时，用户会看到一条
+   * 「定制失败」而实际上版本已经落库——那比列表晚一拍显示更难排查。
+   * 需要历史的调用方自己再调一次 `loadVersions()`。
+   */
+  async function customizeForJob(jobId: string): Promise<ResumeCustomizeResult> {
+    customizing.value = true
+    try {
+      const result = await resumesApi.customizeResume({
+        job_id: jobId,
+        profile_id: currentProfileId.value,
+      })
+      lastCustomize.value = result
+      return result
+    } finally {
+      customizing.value = false
+    }
+  }
+
   /**
    * AI 润色：把**草稿态**的经历文案交给后端，拿回一份候选文案。
    *
@@ -2138,6 +2205,10 @@ export const useResumeStore = defineStore('resume', () => {
     lastSavedAt.value = null
     // 待确认的候选文案属于上一个人的账号，登出后绝不能还挂在弹窗里。
     polishResult.value = null
+    // 版本历史与差异同样是「上一个人」的数据，登出后不能留在内存里。
+    versions.value = []
+    versionDiff.value = null
+    lastCustomize.value = null
     showLivePreview()
   }
 
@@ -2153,6 +2224,13 @@ export const useResumeStore = defineStore('resume', () => {
     generatedHtml,
     generatedResumeId,
     generatedTitle,
+    /* 版本历史 / 差异 / 定制（ADR-026） */
+    versions,
+    versionsLoading,
+    versionDiff,
+    diffing,
+    customizing,
+    lastCustomize,
     polishResult,
     polishNoteFor,
     pendingDraft,
@@ -2235,6 +2313,9 @@ export const useResumeStore = defineStore('resume', () => {
     loadFromServer,
     save,
     generate,
+    loadVersions,
+    compareVersions,
+    customizeForJob,
     polish,
     applyPolish,
     discardPolish,

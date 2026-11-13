@@ -38,6 +38,7 @@ from app.core.rate_limit import POLISH_RATE_LIMIT, limiter
 from app.core.responses import success_response
 from app.schemas.auth import UserRead
 from app.schemas.resume import (
+    ResumeCustomizeRequest,
     ResumeGenerateRequest,
     ResumePolishRequest,
     ResumePrivacyCheckRequest,
@@ -46,10 +47,13 @@ from app.services.dependencies import get_current_user, get_resume_service
 from app.services.profile_service import ProfileNotFoundError
 from app.services.resume_service import (
     ProfileIncompleteError,
+    ResumeCustomizeJobExpiredError,
+    ResumeCustomizeJobNotFoundError,
     ResumeLayoutVersionError,
     ResumeNotFoundError,
     ResumePointerBrokenError,
     ResumeService,
+    ResumeVersionNotFoundError,
 )
 
 router = APIRouter(prefix="/resumes", tags=["resumes"])
@@ -176,3 +180,121 @@ def polish_resume(
     """
     copy = service.polish(payload)
     return success_response(request, copy.model_dump(mode="json"))
+
+
+# --------------------------------------------------------------------------- #
+# 版本列表 / 两版差异 / 按岗位定制（批次 B8 剩余，`ADR-026`）。
+#
+# 三条路由都挂在 `/resumes` 下，但语义分两类：
+# - `/versions` 与 `/versions/diff` 是**纯读**（GET，不写任何一张表）；
+# - `/customize` 会**落一行新版本**，所以它必须过 `is_expired`（动作层）。
+#
+# 错误口径逐条对齐既有三条路由：档案不存在/越权 → 404「简历不存在」；
+# 档案不完整 → 400；还没生成过 → 404；链头指针落空 → 400。
+# 同一个事实不在这里发明第二句话（`docs/API.md` §3 的既有约定）。
+# --------------------------------------------------------------------------- #
+
+
+@router.get("/versions")
+def list_resume_versions(
+    request: Request,
+    service: ResumeServiceDep,
+    current_user: CurrentUserDep,
+    profile_id: Annotated[str | None, Query(max_length=36)] = None,
+) -> dict[str, Any]:
+    """该档案的全部版本，按版本号倒序（`ADR-026` §2.6）。
+
+    一份都没生成过时返回**空列表**：本端点回答的是「历史上有哪些版本」，
+    空历史是合法答案；「还没有简历」那件事由 `GET /resumes/current` 报。
+    """
+    try:
+        versions = service.list_versions(current_user.id, profile_id)
+    except ProfileNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorMessage.PROFILE_NOT_FOUND,
+        ) from error
+    except ProfileIncompleteError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ErrorMessage.PROFILE_REQUIRED,
+        ) from error
+    return success_response(request, versions.model_dump(mode="json"))
+
+
+@router.get("/versions/diff")
+def diff_resume_versions(
+    request: Request,
+    service: ResumeServiceDep,
+    current_user: CurrentUserDep,
+    from_version_id: Annotated[str, Query(min_length=1, max_length=36)],
+    to_version_id: Annotated[str, Query(min_length=1, max_length=36)],
+) -> dict[str, Any]:
+    """两版的结构级差异（`ADR-026` §2.4）。
+
+    参数写在 URL 里而不是请求体：它是纯读，可以被浏览器刷新/前进后退安全重放。
+    两版必须属于**同一份档案且都属于当前用户**，否则统一 404——
+    区分「不存在」与「不是你的」等于送出一个版本 id 的探测器。
+    """
+    try:
+        diff = service.diff_versions(current_user.id, from_version_id, to_version_id)
+    except ResumeVersionNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorMessage.RESUME_VERSION_NOT_FOUND,
+        ) from error
+    return success_response(request, diff.model_dump(mode="json"))
+
+
+@router.post("/customize")
+def customize_resume(
+    payload: ResumeCustomizeRequest,
+    request: Request,
+    service: ResumeServiceDep,
+    current_user: CurrentUserDep,
+) -> dict[str, Any]:
+    """按岗位定制一份简历（`ADR-026` §2.5）：**只重排，一个字都不改**，且不移动链头。
+
+    五道闸门在服务层（档案完整 → 链头存在 → 岗位可读且已发布 → 未过期 → 渲染落库），
+    路由只负责把每一种失败翻成一句能动手的话。过期用 409 而不是 400：
+    它不是「你填错了」，而是「这条岗位的状态变了，请换一条」——
+    与岗位审核流对过期动作的口径一致（`ADR-024` §2.4）。
+    """
+    try:
+        result = service.customize_for_job(current_user.id, payload)
+    except ProfileNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorMessage.PROFILE_NOT_FOUND,
+        ) from error
+    except ProfileIncompleteError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ErrorMessage.PROFILE_INCOMPLETE,
+        ) from error
+    except ResumeLayoutVersionError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=ErrorMessage.LAYOUT_VERSION,
+        ) from error
+    except ResumeNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorMessage.RESUME_NOT_GENERATED,
+        ) from error
+    except ResumePointerBrokenError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ErrorMessage.RESUME_POINTER_BROKEN,
+        ) from error
+    except ResumeCustomizeJobNotFoundError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorMessage.JOB_NOT_FOUND,
+        ) from error
+    except ResumeCustomizeJobExpiredError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=ErrorMessage.JOB_EXPIRED,
+        ) from error
+    return success_response(request, result.model_dump(mode="json"))

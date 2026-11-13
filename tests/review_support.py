@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 
 from app.repositories.organization_repository import OrganizationRepository
 from app.repositories.user_repository import session_scope
+from tests.accounts import add_member, organization_id
 
 JOBS_BASE = "/api/v1/jobs"
 REGISTER_URL = "/api/v1/auth/register"
@@ -64,21 +65,19 @@ def _create_organization_with_member(client: TestClient, auth: dict[str, str]) -
 
 
 def reviewer_headers(client: TestClient, code: str) -> dict[str, str]:
-    """拿到该组织的审核人请求头：先登录，登录不上再按 `role=teacher` + 组织码注册。"""
+    """拿到该组织的审核人请求头：先登录，登录不上就注册**再入组织**。
+
+    `role=teacher` + `organization_code` 这两个注册参数在 B6 收口时删除
+    （`ADR-025` §1.1：注册不声明身份），所以「造一个审核人」现在是两件事：
+    注册（散人）→ 入组织（角色在这里给定，与真实链路上邀请码决定角色同形）。
+    """
     username = f"teacher_{code.lower()}"
     existing = _login(client, username)
     if existing is not None:
         return existing
-    created = client.post(
-        REGISTER_URL,
-        json={
-            "username": username,
-            "password": PASSWORD,
-            "role": "teacher",
-            "organization_code": code,
-        },
-    )
+    created = client.post(REGISTER_URL, json={"username": username, "password": PASSWORD})
     assert created.status_code == 201, created.text
+    add_member(username, organization_id(code), "teacher")
     signed_in = _login(client, username)
     assert signed_in is not None, "刚注册的审核人登录失败"
     return signed_in

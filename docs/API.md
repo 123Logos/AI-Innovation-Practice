@@ -43,62 +43,122 @@
 
 ## 2. 认证与用户
 
-> **本节的状态（2026-11-12 批次 B5 之后）**：`role` / `organization_code` **已经落地**，不再是「客户端能提交、服务端静默丢掉」。
-> 口径写在 `docs/adr/ADR-021` §2.2 / §2.4，四句话能说完：
+> **本节的状态（2026-11-13 批次 B6 收口之后）**：注册**不再收角色与组织码**，登录标识从一个字段变成三种。
+> 口径写在 `docs/adr/ADR-025`，四句话能说完：
 >
-> 1. `POST /auth/register` 收 `username`（必填，3–100）+ `password` + 可选 `email`，另加 `role`（`student` / `teacher` / `school_admin`，缺省 `student`）与 `organization_code`；
-> 2. `RegisterRequest` 是 `extra="forbid"`：**多塞一个字段就 422**，不再静默忽略（这条是行为变更，旧客户端若发多余字段会当场失败）；
-> 3. 声称 `teacher` / `school_admin` **必须**带有效的组织码，否则 400 —— 不允许悄悄降级成学生；码无效时文案不区分「不存在」与「已停用」，避免枚举；
-> 4. `platform_admin` **不接受自助注册**（它只能由运维在库里授予），`GET /me` 的 `role` 只会是前三种之一。
+> 1. `POST /auth/register` 只剩 `username`（必填，3–100）+ `password` + 可选 `email` + 可选 `phone`。**注册就是建一个「散人」账号**，不授予任何角色——角色只能由邀请码在加入组织时给定（`ADR-023` §2.1）；
+> 2. `role` / `organization_code` 两个字段**已下线**。`RegisterRequest` 仍是 `extra="forbid"`：还在发这两个字段的客户端当场 **422**，而不是被静默降级成学生（`ADR-025` §1.1）；
+> 3. `POST /auth/login` 收一个 `identifier`，可以是用户名 / 邮箱 / 手机号；优先级 **用户名 > 邮箱 > 手机号**（`ADR-025` §2.3）；
+> 4. `POST /auth/password` 是新增的**改密**端点：成功返回 `204`，并作废该账号**全部** refresh token（`ADR-025` §2.4）。
 >
-> **仍未实现的部分**：「账号必须绑定组织」的强制力（学生可以暂不绑定，邀请制属 B6）、院系 / 班级层级、成员邀请流程。
-> 这些不是遗漏，是 `ADR-021` §2.4 / §3.3 明确划到 B6 的范围——用注册表单上一个可以随便填的组织码假装实现「必须绑定」，比不做更危险。
+> **仍未实现的部分**：「账号必须绑定组织」的**全局**强制力、院系 / 班级层级。
+> 组织只在「必须依托组织的动作」上拦截——今天只有「把岗位提交审核」一处（§4.7），
+> 个人功能（档案、草稿、简历、面试）对没有组织的账号**完全可用**。
+> 这是 `ADR-025` §2.7 的「渐进式强制」，不是遗漏：用户可以在没有组织的情况下用完整产品，
+> 只有在他要做「代表某个组织」的事情时才被要求先绑定。
 >
-> 登录标识今天的唯一入口仍是 `username`（大小写归一在 `app/services/auth_service.py::AuthService.login`）；邮箱登录属 B6。
+> 已删除的错误码：`ORGANIZATION_REQUIRED` / `ORGANIZATION_CODE_INVALID`——触发它们的路由分支随旧注册入口一起下线了，
+> 留着只会让下一个人以为还有一条「带码注册」的路（`app/api/v1/auth.py` 模块注释）。
 
-### POST `/auth/register`（批次 B5 起收角色与组织码）
+### POST `/auth/register`（批次 B6 收口：只建账号）
 
-请求：
+请求（`app/schemas/auth.py::RegisterRequest`）：
 
 ```json
 {"username":"zhangsan","password":"Strong-password-1","email":"student@example.com",
- "role":"teacher","organization_code":"AI2026"}
+ "phone":"+86 138 0000 0000"}
 ```
 
-返回 `201`：`{"data":{"user":{"id":"uuid","username":"zhangsan","email":"…","created_at":"…"},"role":"teacher"}}`
+返回 `201`：`{"data":{"user":{"id":"uuid","username":"zhangsan","email":"student@example.com","phone":"13800000000","created_at":"…"}}}`
 
-字段与错误（与 `docs/adr/ADR-021` §2.2 / §2.4 一一对应）：
+字段与错误（**`error.code` 只有 `CLIENT_ERROR` / `VALIDATION_ERROR` 两种**；具体原因在 `details.reason`，见 §1.1）：
 
 | 情形 | 结果 |
 |---|---|
-| `role` 缺省 | 按 `student` 处理 |
-| `role="student"` + 无组织码 | 201，`GET /me` 的 `organization` 为 `null` |
-| `role="student"` + 有效组织码 | 201，并绑定该组织 |
-| `role="teacher"` / `"school_admin"` + 无组织码 | **400**「教师或管理员账号需要填写组织码，请向学校管理员获取。」 |
-| 组织码不存在 / 已停用 | **400**「组织码无效，请向学校管理员确认后再试。」（两种情形同一句，避免枚举） |
-| `role="platform_admin"` | **422**（不在可自助注册的枚举里） |
-| 请求体里有任何未知字段（含拼错的字段名） | **422**（`extra="forbid"`；这是 B5 的行为变更） |
+| `email` / `phone` 都不填 | 201，之后只能用用户名登录 |
+| `phone` 写成 `+86 138 0000 0000` / `138-0000-0000` / `13800000000` | 201，库里**只存 11 位数字** `13800000000` |
+| `phone` 不是大陆手机号（座机、国际号、位数不对） | `422 VALIDATION_ERROR`「手机号格式不正确，请填写中国大陆 11 位手机号。」（`ErrorMessage.CONTACT_FORMAT`，与档案里的 `contact` **同一个正则**） |
+| 用户名已被占用 | `400 CLIENT_ERROR`，`details.reason="USERNAME_EXISTS"`，文案「用户名已被注册，请更换用户名或直接登录。」 |
+| 邮箱已被占用 | `400 CLIENT_ERROR`，`details.reason="EMAIL_EXISTS"`，文案「邮箱已被注册，请更换邮箱或使用原账号登录。」 |
+| 手机号已被占用（含同一号码的不同写法） | `400 CLIENT_ERROR`，`details.reason="PHONE_EXISTS"`，文案「这个手机号已被注册，请更换手机号或直接用手机号登录。」 |
+| 用户名长得像邮箱（`a@b`）或手机号（11 位数字） | `422 VALIDATION_ERROR`，字段级 `message` 取自 `USERNAME_NOT_AN_IDENTIFIER`：「用户名不能是邮箱或手机号：邮箱请填在「邮箱」一栏，手机号请填在「手机号」一栏。」 |
+| 请求体里有 `role` / `organization_code`，或任何未知字段 | `422 VALIDATION_ERROR`（`extra="forbid"`） |
 
-`role` 在响应里回显，是「不静默」的另一半：用户当场能看到自己被授予了什么身份，而不是注册完还要猜。
+**手机号归一化是口径，不是格式偏好**（`ADR-025` §2.2）：`normalize_phone` 剥掉空白与短横、剥掉一次 `+86` / `86` 前缀、
+再按 `^1[3-9]\d{9}$` 重新判定。只存一种写法，唯一键才挡得住重复——存两种写法等于让同一个人能用两个号注册两次。
+档案里展示的 `contact` 与这个账号手机号是**两件事**，前者在 `student_profiles`，后者是登录凭据。
 
-**注册不发令牌**（响应里没有 `access_token`）：本仓今天的流程是「注册成功 → 回登录页登录」，令牌签发只有 `/auth/login` 一个入口。
-`docs/adr/ADR-004` 之后这一格没变过，B5 也没有改它。
+**用户名不许长得像邮箱或手机号**，是登录优先级的直接后果（`ADR-025` §2.3）：登录时用户名优先匹配，
+若允许新账号叫 `13800000000`，那个手机号的真实主人就再也登不进来（标识被截胡）。
+存量账号无法约束（`a@b` 这种历史用户名真实存在），所以规则只对新数据生效，且登录侧用「用户名优先」保护它们。
+
+**注册不发令牌**（响应里没有 `access_token`）：流程仍是「注册成功 → 回登录页登录」，
+令牌签发只有 `/auth/login` 一个入口（`docs/adr/ADR-004`）。响应里也**没有 `role`**：
+注册不授予任何角色，回显一个恒为 `student` 的字段只会让「我注册的是教师」这个误解活到下一次登录。
 
 ### POST `/auth/login`
 
-请求 `{"username":"zhangsan","password":"..."}`；返回同注册的令牌结构。
-登录失败统一返回 `AUTH_INVALID_CREDENTIALS`，不暴露账号是否存在。登录成功写一条 `user.login` 审计（`ADR-021` §2.5）。
+请求（`app/schemas/auth.py::LoginRequest`）：
+
+```json
+{"identifier":"student@example.com","password":"..."}
+```
+
+`identifier` 可以是**用户名 / 邮箱 / 手机号**，三种形状走同一条解析路径。匹配优先级（`ADR-025` §2.3）：
+
+1. **先按用户名**（大小写归一：`strip().lower()`）；
+2. 用户名没命中，再按 `email` 精确匹配（邮箱在注册时已归一为小写）；
+3. 最后按归一化后的 `phone` 匹配。
+
+**用户名优先是为了保护存量**：历史库里有 `a@b` 形状的用户名，先按邮箱匹配会让这类账号永久登不进来。
+新注册的用户名已经不允许长得像邮箱或手机号，所以这条优先级只会影响存量，不会影响新数据。
+
+`{"username":"zhangsan","password":"..."}` 仍然可用：`LoginRequest.identifier` 上挂了
+`validation_alias=AliasChoices("identifier","username")`，它是**输入别名**而非第二套语义——
+两者进同一个解析流程，行为完全一致。旧客户端清零后删掉别名即可，服务层一行都不用改。
+
+登录失败统一 `401`（`error.code` 是 `CLIENT_ERROR`），文案恒为 `ErrorMessage.INVALID_CREDENTIALS`「用户名或密码错误，请检查输入后重新登录。」，
+**三种标识共用同一句话**：否则「这个邮箱注册过吗」就变成一次免费探测。
+登录成功写一条 `user.login` 审计（`ADR-021` §2.5）。返回 `TokenResponse`（`access_token` / `refresh_token` / `token_type` / `expires_in`）。
+
+### POST `/auth/password` — 改密（批次 B6 收口新增）
+
+请求（`app/schemas/auth.py::ChangePasswordRequest`，`extra="forbid"`）：
+
+```json
+{"current_password":"old-password","new_password":"new-password-1"}
+```
+
+需要登录（Bearer access token）。成功返回 **`204`，无响应体**。失败：
+
+| 情形 | 状态码（`error.code` + `details.reason`） | 文案 |
+|---|---|---|
+| 当前密码不正确 | `400` `CLIENT_ERROR`，`PASSWORD_CURRENT_WRONG` | 「当前密码不正确，请重新输入后再改。」 |
+| 新密码与当前密码相同 | `400` `CLIENT_ERROR`，`PASSWORD_UNCHANGED` | 「新密码与当前密码相同，请换一个没在用的密码。」 |
+| 未登录 / 令牌失效 | `401` `CLIENT_ERROR`，`UNAUTHORIZED` | 「登录已失效，请重新登录。」 |
+| 新密码超过 72 字节（bcrypt 上限） | `422` `VALIDATION_ERROR`，字段级 `message` 取自 `PASSWORD_BYTES` | 与注册**同一条规则**（`validate_password_bytes`），不会出现「注册设不进去、改密能设进去」 |
+| 多塞任何字段 | `422` `VALIDATION_ERROR` | `extra="forbid"` |
+
+三条口径必须连着读（`ADR-025` §2.4）：
+
+1. **改密不是登录，所以不发令牌**。返回一对新令牌等于说「只要拿到过一条 access token，就能把账号永久接管」——
+   而改密恰恰是用户发现「别处有人」时按的那个按钮。客户端收到 `204` 后应**清本地会话、跳登录页、用新密码登录**。
+2. **作废全部 refresh token**，不只是当前会话。被换手的旧会话必须当场失效，否则改密只挡住了「下次登录」，挡不住「已经登录的人」。
+3. **挂与 `/register`、`/login` 同一条 IP 限流**（5 次/分钟）：这是全仓第二处「有人可以反复猜密码」的地方，
+   不限流等于把这道门敞开。用 IP 作键而不是用户 id，因为威胁模型正是「令牌已被换手」。
 
 ### POST `/auth/refresh` / POST `/auth/logout`
 
 刷新令牌轮换；注销使当前 refresh token 失效，返回 `204`。
+两者都不挂限流：`/refresh` 的凭据是 7 天期、每次使用即轮换的随机令牌，猜不出来；
+`/logout` 是幂等撤销动作，本来就允许重复调用。
 
 ### GET `/me`（批次 B5 起返回组织与权限）
 
 返回：
 
 ```json
-{"data":{"user":{"id":"…","username":"zhangsan","email":null,"created_at":"…"},
+{"data":{"user":{"id":"…","username":"zhangsan","email":null,"phone":null,"created_at":"…"},
          "role":"teacher",
          "organization":{"id":"…","code":"AI2026","name":"示例大学","kind":"school"},
          "permissions":["interview:own","job:read","job:write","org:member:read","profile:read","profile:write","resume:read","resume:write"]}}
@@ -106,6 +166,10 @@
 
 - `role` / `organization` / `permissions` 在 **`data` 顶层**，不塞进 `user`（`ADR-021` §2.6）：`user` 是「这个人是谁」，角色与组织是「他和某个组织的关系」；
 - 没有组织的账号 `organization` 为 `null`，`role` 为 `student`；
+- **`role` 的唯一来源是 `organization_members`**（批次 B6 收口后注册不再授予角色）：注册拿到的账号在 `/me` 里一定是 `student` + `organization: null`，
+  直到用邀请码加入某个组织（§8 组织邀请）才变成 `teacher` / `school_admin`。`platform_admin` 只能由运维在库里授予，API 不可达（`test_platform_admin_cannot_be_granted_through_the_api`）；
+- `user.phone` 是登录标识之一（`ADR-025`），与档案里的 `contact` 不是同一格——前者是凭据，后者是要印在纸上的联系方式。
+  存量账号 `phone` 为 `null`（`alembic/versions/20261113_0023_user_phone.py` 加列时未回填）；
 - `permissions` 与后端判定**同源**（都读 `app/core/permissions.py` 的 `ROLE_PERMISSIONS`），前端据此决定菜单，但它**不是**权限边界。
 
 ## 3. 学生档案与技能
@@ -210,7 +274,7 @@
 | 岗位不存在 / 不属于当前用户 / 已在回收站 | 404 | `NOT_FOUND`（处理器的固定文案「资源不存在。」） | 抛出 `app/api/v1/jobs.py:116-118`；映射 `app/main.py::http_exception` |
 | 有登录但缺 `job:review`（只出现在 `GET /jobs/review-queue` 与 `POST /jobs/{job_id}/review`） | 403 | `CLIENT_ERROR`，`details.reason = "FORBIDDEN"` | `app/services/dependencies.py:83`；映射 `app/main.py:210-233` |
 | 提取请求缺 `X-DeepSeek-Key` | 400 | `AI_KEY_MISSING`，`retryable: false` | `app/services/job_service.py:281-282` → `app/main.py:259-264` |
-| DeepSeek 拒绝该 Key（鉴权失败） | 401 | `AI_KEY_INVALID` | `app/integrations/skill_extractor.py:294-298` → `app/services/job_service.py:208-209` → `app/main.py:266-275` |
+| DeepSeek 拒绝该 Key（鉴权失败） | 401 | `AI_KEY_INVALID` | `app/integrations/skill_extractor.py:294-298` → `app/services/job_service.py::JobService.extract_skills` → `app/main.py:266-275` |
 | 上游不可用 / 输出不是可解析 JSON / 内容为空 / 无一可回溯 | 502 | `AI_SERVICE_UNAVAILABLE`，`retryable: true` | `app/main.py:277-290`（异常族 `app/services/job_service.py:281-290`、`:270-281`） |
 | 输出被服务端 `max_tokens` 切断（`finish_reason == "length"`） | 502 | `AI_SERVICE_UNAVAILABLE`，`retryable: true`，**并在外层 `meta.finish_reason` 回显 `"length"`** | 就地组装 `app/api/v1/jobs.py:151-160`，文案 `EXTRACT_TRUNCATED_MESSAGE` `app/api/v1/jobs.py:62-65` |
 | 提取超过 `EXTRACT_RATE_LIMIT`（`10/minute`，按客户端 IP） | 429 | `RATE_LIMITED`，`retryable: true`，响应头 `Retry-After: 60` | 常量 `app/core/rate_limit.py:39`；装饰器 `app/api/v1/jobs.py:122`；映射 `app/main.py:217-237` |
@@ -218,14 +282,14 @@
 | 未捕获异常 | 500 | `INTERNAL_ERROR` | `app/main.py:173-182` |
 | 提交审核时账号还没有组织归属（`ADR-024` §2.3，第 18 轮裁定 ①） | 400 | `CLIENT_ERROR`，`details.reason = "JOB_ORGANIZATION_REQUIRED"`，文案「发布岗位需要先绑定组织，请用邀请码加入学校组织后再提交审核。」 | 抛出 `app/api/v1/jobs.py:91-113`（`_review_translate`）← `app/services/job_service.py:624-639` |
 | 审核/提交时岗位状态已经不是你以为的那个 | 409 | `CLIENT_ERROR`，`details.reason = "JOB_STATE_CONFLICT"` | 同上；状态机见 §4.2 |
-| 审核/提交时岗位已过截止时间（`ADR-017` §5 的动作层判据） | 409 | `CLIENT_ERROR`，`details.reason = "JOB_EXPIRED"` | `app/services/job_service.py:641-665`（唯一判据 `app/core/deadline.py::is_expired`） |
+| 审核/提交时岗位已过截止时间（`ADR-017` §5 的动作层判据） | 409 | `CLIENT_ERROR`，`details.reason = "JOB_EXPIRED"` | `app/services/job_service.py::JobService._ensure_not_expired`（唯一判据 `app/core/deadline.py::is_expired`） |
 | 审核自己提交的岗位 | 409 | `CLIENT_ERROR`，`details.reason = "JOB_SELF_REVIEW"` | `app/services/job_service.py:521-527` |
 
 推论两条：① 改路由的 `response_model` 或 `status_code` 动不了 401/404/500/502 的错误契约，要动它们必须改 `app/main.py` 的处理器；② 前端与联调脚本不要拿 `openapi.json` 的 `responses` 键集合去枚举错误分支，那样会漏掉上表全部行。
 
 ### 4.1 身份、归属与可见性（权限矩阵）
 
-身份只来自 JWT：`CurrentUserDep = Depends(get_current_user)`（`app/api/v1/jobs.py:52`）。`users` 表**没有 `role` 列**，角色挂在 `organization_members` 上（`ADR-021` §2.2）；审核身份由 `permissions` 里的 `job:review` 决定（`app/core/permissions.py:74-81`，`ADR-024` §2.2），不是「另一个用户表字段」。旧版「未审核岗位仅创建者和审核者可见」这句在 `ADR-024` 之后**部分回来**了：`pending_review` 对本组织（平台管理员跨组织）的审核人可读，其余人仍是 404。`published` 任何登录用户可读；他人的 `draft` 一律 404，不是 403（403 会暴露「该 id 存在」，先例见 `app/api/v1/profiles.py:10`，本文件与 `app/api/v1/jobs.py:11-12` 的说明）。
+身份只来自 JWT：`CurrentUserDep = Depends(get_current_user)`（`app/api/v1/jobs.py:52`）。`users` 表**没有 `role` 列**，角色挂在 `organization_members` 上（`ADR-021` §2.2）；审核身份由 `permissions` 里的 `job:review` 决定（`app/core/permissions.py::JOB_REVIEW`，`ADR-024` §2.2），不是「另一个用户表字段」。旧版「未审核岗位仅创建者和审核者可见」这句在 `ADR-024` 之后**部分回来**了：`pending_review` 对本组织（平台管理员跨组织）的审核人可读，其余人仍是 404。`published` 任何登录用户可读；他人的 `draft` 一律 404，不是 403（403 会暴露「该 id 存在」，先例见 `app/api/v1/profiles.py:10`，本文件与 `app/api/v1/jobs.py:11-12` 的说明）。
 
 | # | 操作 | 允许的调用者 | 非创建者的结果 | 实际状态码 | 代码位置 |
 |---|---|---|---|---|---|
@@ -282,7 +346,7 @@
 
 1. `POST /jobs` 恒落 `status='draft'`（`app/services/job_service.py:329-421`）；`PUT` 不改 `deleted_at`，`status` 原则上原样保留（`app/repositories/job_repository.py:364-373`），**唯一例外**是编辑 `pending_review` 的岗位会退回 `draft`（`ADR-024` §2.5，`app/services/job_service.py:439`）——审核人批的必须是最终内容，否则审的是旧文本、发的是新文本。提交审核 / 审核 / 下架是三个独立动作（§4.7）。
 2. 每条技能的 `origin` 由服务层现场派生：该条 `evidence_text` 与岗位 `description` 各过四步归一化（NFKC → casefold → 去空白 → 去标点）后，前者是后者的子串 → `jd_verifiable`，否则 → `unverified`（`app/services/job_service.py:766-790`，归一化与子串判定在 `app/integrations/skill_extractor.py:189-225`；值域常量 `app/repositories/job_repository.py:69-70`）。`evidence_text` 为空即 `unverified`——空串是任何文本的子串，必须先挡掉（`app/integrations/skill_extractor.py:216-225`）。
-3. 三列提取溯源戳由服务端在本次保存里盖：本次提交的技能里**只要有任何一条**被判为 `jd_verifiable`，就写入 `extract_model`（固定 `"deepseek-flash"`，`app/integrations/copy_writer.py:40`）、`extract_prompt_version`（`"v1"`，`app/integrations/skill_extractor.py:56`）、`extracted_at`（应用时钟 UTC naive，`app/services/job_service.py:437-453`）；一条都没有则三列保持 `null`。`PUT` 会**整批重算**这三列，不是「只在有值时覆盖」（`app/repositories/job_repository.py:371-373`）。
+3. 三列提取溯源戳由服务端在本次保存里盖：本次提交的技能里**只要有任何一条**被判为 `jd_verifiable`，就写入 `extract_model`（固定 `"deepseek-flash"`，`app/integrations/copy_writer.py:40`）、`extract_prompt_version`（`"v1"`，`app/integrations/skill_extractor.py:56`）、`extracted_at`（应用时钟 UTC naive，`app/services/job_service.py::JobService._to_draft`）；一条都没有则三列保持 `null`。`PUT` 会**整批重算**这三列，不是「只在有值时覆盖」（`app/repositories/job_repository.py:371-373`）。
 4. 一次提交里的技能名重复先报 422「`skill names must be unique`」（`app/schemas/job.py:175-194`），判定键是 `skill_name_key()` = NFKC + casefold，**只有两步**，与上面第 2 条那个四步归一化函数是两回事（`app/core/skill_names.py`；为什么必须分开见 ADR-011 §2.D.2）。数据库侧的 `UNIQUE (job_id, name)` 名为 `uq_job_skills_job_name`（`alembic/versions/20261105_0012_job_skills.py:96`）。
 
 过期是**读侧判定，不落状态、不写库**：`deadline is not None and deadline < date.today()`（判据 `app/core/deadline.py:15-21`，`JobService.is_expired` 只是委托它，`app/services/job_service.py:483-490`；取「今天」的调用点 `:153`）。「今天」取**应用进程时钟**，SQL 里不出现数据库侧的当日函数（`app/repositories/job_repository.py:243`、`:490-492` 的谓词只吃绑定参数）。`deadline` 为 `null` 视为长期有效。`jobs.status` 的值域是**四态** `draft` / `pending_review` / `published` / `rejected`（`app/repositories/job_repository.py::STATUS_*`，CHECK `ck_jobs_status` 见 `alembic/versions/20261113_0022_job_review_workflow.py`，`ADR-024` §2.1）——**没有 `approved`**（通过即上架，不留中间态）、**没有 `expired`，也没有 `closed`**：过期仍只由读侧判定，旧版那句「过期岗位自动转为 `expired`」作废。状态迁移只有四条：`draft|rejected --submit-review--> pending_review`、`pending_review --approve--> published`、`pending_review --reject--> rejected`、`published --unpublish--> draft`；此外「编辑 `pending_review`」与「软删后恢复」不改变这条主线。
@@ -352,7 +416,8 @@
 
 三条口径写在这里，因为它们都出现过「界面上什么错都不报」的形态：
 
-- **提交前必须绑定组织**（第 18 轮裁定 ①）。没有组织归属的账号拿到 `400 JOB_ORGANIZATION_REQUIRED`，文案是「发布岗位前请先绑定组织。」；组织归属在这一刻被写进 `jobs.organization_id`，审核范围从此不靠猜。
+- **提交前必须绑定组织**（第 18 轮裁定 ①，批次 B6 收口后仍成立）。没有组织归属的账号拿到 `400 JOB_ORGANIZATION_REQUIRED`，文案是「发布岗位需要先绑定组织，请用邀请码加入学校组织后再提交审核。」——拦在**动作层**（`app/core/action_gate.py::require_organization`），不是注册层：注册只建账号，组织靠邀请码加入（§8）。组织归属在这一刻被写进 `jobs.organization_id`，审核范围从此不靠猜。
+  拦的是「提交审核」这一个动作，**不是**「建岗位草稿」：没有组织的账号照样能建、能改、能删自己的草稿，只有要把内容推给审核人时才被要求先绑定。
 - **动作层过期拦截**（第 18 轮裁定 ③）：`submit-review` 与 `review` 都先过 `app/core/deadline.py::is_expired`，命中给 `409 JOB_EXPIRED`。所以**一条已经过期的岗位再也进不了广场**——测试里要造「已上架且过期」的行，只能先按未过期发布、再用 SQL 把 `deadline` 改到昨天。
 - **不许自审**：`review` 遇到 `created_by_user_id == 当前用户` 给 `409 JOB_SELF_REVIEW`。教师身份可以靠邀请码拿到（`ADR-023`），所以「有权限」不等于「该审这一条」。前端在 `canReview` 里也把创建者排除掉，但那只是省一次点击，边界在后端。
 
@@ -402,7 +467,7 @@
 
 `data.skills[]` 四格（`ExtractedSkillRead`，`app/schemas/job.py:318-332`）：`name`、`type`（`hard`/`soft`/`domain` 或 `null`）、`evidence`、`confidence`（`float | null`）。字段名是 **`evidence`**，不是 `evidence_text`：这里是「模型给的原话」，还没经过落库判定；用户确认后保存时同一串文字走 `skills[].evidence_text` 进列（`app/schemas/job.py:322-323`）。数组**至少一条**（`min_length=1`，`app/schemas/job.py:374`）——一条都不剩时不是空列表而是 502。
 
-`data.meta` 七个字段逐个的语义（模型 `app/schemas/job.py:330-359`，赋值点 `app/services/job_service.py:293-302`）：
+`data.meta` 七个字段逐个的语义（模型 `app/schemas/job.py:330-359`，赋值点 `app/services/match_service.py::MatchService._to_result`）：
 
 | 字段 | 类型 | 含义 | 值的来源 |
 |---|---|---|---|
@@ -423,7 +488,7 @@
 | # | 情形 | HTTP + `error.code` | 代码位置 |
 |---|---|---|---|
 | 1 | 请求头没有 Key | 400 `AI_KEY_MISSING` | `app/services/job_service.py:281-282` → `app/main.py:259-264` |
-| 2 | DeepSeek 拒绝该 Key | 401 `AI_KEY_INVALID` | `app/integrations/skill_extractor.py:294-298` → `app/services/job_service.py:208-209` → `app/main.py:266-275` |
+| 2 | DeepSeek 拒绝该 Key | 401 `AI_KEY_INVALID` | `app/integrations/skill_extractor.py:294-298` → `app/services/job_service.py::JobService.extract_skills` → `app/main.py:266-275` |
 | 3 | 网络超时 / 上游 4xx·5xx | 502 `AI_SERVICE_UNAVAILABLE` | `app/integrations/skill_extractor.py:299-303` → `app/services/job_service.py:212-213` |
 | 4 | 返回内容不是可解析的 JSON 对象 | 502 `AI_SERVICE_UNAVAILABLE` | `app/integrations/skill_extractor.py:327-343` |
 | 5 | 所有条目的 `evidence` 都回溯不到原文 | 502 `AI_SERVICE_UNAVAILABLE` | `app/services/job_service.py:270-281` |
@@ -671,12 +736,23 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 
 ## 6. 简历
 
-> **本节的状态口径（2026-11-12 补）**：第 6 章长期混着「已实现」与「产品设计意图」两种东西，
-> 读起来分不出哪一条能调。今天的实际路由只有四个——`POST /resumes/generate`、
-> `GET /resumes/current`、`POST /resumes/polish`、`POST /resumes/privacy-check`
-> （`app/api/v1/resumes.py`）。其余小节（`GET /resumes`、`GET /resumes/{id}`、
-> `PATCH …/versions/{id}`、`POST …/export`、`POST …/share`）**都没有实现**，
-> 标题已标「未实现 · 设计意图」，不要照着它们写客户端。
+> **本节的状态口径（2026-11-13 批次 B8 剩余之后）**：第 6 章长期混着「已实现」与「产品设计意图」两种东西，
+> 读起来分不出哪一条能调。今天的实际路由是**七个**，都在 `app/api/v1/resumes.py`：
+>
+> | 端点 | 语义 | 来源 |
+> |---|---|---|
+> | `POST /resumes/generate` | 纯模板生成，落一行新版本并把它设为链头 | ADR-010 / ADR-015 |
+> | `GET /resumes/current` | 只读版本指针，不按 `created_at` 猜 | ADR-015 §2.3 |
+> | `GET /resumes/versions` | 该档案的全部版本（不含正文） | ADR-026 §2.6 |
+> | `GET /resumes/versions/diff` | 两版的结构级差异（纯读） | ADR-026 §2.4 |
+> | `POST /resumes/customize` | 按岗位**只重排**，落一行新版本但**不移动链头** | ADR-026 §2.5 |
+> | `POST /resumes/polish` | AI 润色，纯计算、不落库 | ADR-018 |
+> | `POST /resumes/privacy-check` | 导出前隐私检查，纯计算、不落库 | ADR-011 / B2 |
+>
+> 其余小节（`GET /resumes`、`GET /resumes/{id}`、`PATCH …/versions/{id}`、`POST …/export`、`POST …/share`）
+> **都没有实现**，标题已标「未实现 · 设计意图」，不要照着它们写客户端。
+> 特别注意：`PATCH …/versions/{id}` 与已实现的 `GET /resumes/versions` **不是同一件事**——
+> 前者是「编辑某一版」，后者是「读版本清单」，前者至今没有路由。
 
 ### POST `/resumes/generate`
 
@@ -718,9 +794,131 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 「没生成过」与「指针坏了」必须分得开：两者的用户动作完全不同（一个是「去生成」，一个是「重新生成」），
 而库里都能读成「没有当前简历」。区分靠的是「该档案简历行数 > 0」（`ResumeRepository.count_by_profile`）。
 
+### GET `/resumes/versions` — 版本清单（批次 B8 剩余，`ADR-026` §2.6）
+
+请求：`GET /resumes/versions?profile_id=uuid`（query，可省略；省略时取默认简历）。
+
+响应 `200`：
+
+```json
+{"data":{"profile_id":"…","current_version_id":"…",
+         "versions":[{"resume_id":"…","version_no":3,"title":"投后端 · 面向「后端开发实习生」",
+                      "origin":"customized","is_head":false,"target_job_id":"…","created_at":"…"}, …]}}
+```
+
+| 字段 | 含义 |
+|---|---|
+| `versions[]` | 按 `version_no` **倒序**（最新在前），**不含 `content_html`** |
+| `origin` | `generated`（模板生成）/ `customized`（按岗位定制）。字面量即 `ck_resumes_origin` 的取值 |
+| `is_head` | 是不是当前链头。**定制版恒为 `false`**（`ADR-026` §2.2） |
+| `target_job_id` | 定制版面向的岗位 id；岗位被删后由 `ON DELETE SET NULL` 置空。**岗位标题不在这里**——它已写进 `title`（快照语义） |
+| `current_version_id` | 链头 id，与 `is_head` **同源**；前端画「当前简历」徽标用这一格，`null` 表示链头指针落空 |
+
+三条口径：
+
+1. **列表不背正文**：一份简历的 HTML 是整页纸（数十 KB），20 个版本就是几百 KB 的响应，
+   而列表只需要「几号、叫什么、什么时候、是不是链头」。要看正文走 `GET /resumes/current`（链头）或 `diff`（只回差异，不回全文）。
+2. **一份都没生成过时返回空列表，不是 404**：本端点回答的是「历史上有哪些版本」，空历史是合法答案；
+   「还没有简历」那件事由 `GET /resumes/current` 报（`404 RESUME_NOT_GENERATED`）。两个问题不合并。
+3. 失败只有两档：档案不存在/别人的/在回收站 → `404 PROFILE_NOT_FOUND`；一份档案都没有 → `400 PROFILE_REQUIRED`。
+
+### GET `/resumes/versions/diff` — 两版的结构级差异（批次 B8 剩余，`ADR-026` §2.4）
+
+请求：`GET /resumes/versions/diff?from_version_id=uuid&to_version_id=uuid`（**两个都必填**，写在 query 里）。
+
+参数在 URL 而不是请求体，因为它是**纯读**：可以被浏览器刷新、前进后退、分享链接安全重放。
+两版必须属于**同一份档案且都属于当前用户**，否则统一 `404 RESUME_VERSION_NOT_FOUND`——
+区分「不存在」与「不是你的」等于送出一枚版本 id 探测器。
+
+响应 `200`：
+
+```json
+{"data":{"from_version":{"resume_id":"…","version_no":1,"…":""},
+         "to_version":{"resume_id":"…","version_no":2,"…":""},
+         "comparable":true,
+         "note":null,
+         "summary":{"added":0,"removed":0,"changed":1,"sections_changed":1,
+                    "section_order_changed":false,"item_order_changed":false},
+         "sections":[{"key":"experiences","label":"项目经历","change":"changed",
+                      "title_before":"项目经历","title_after":"项目经历",
+                      "order_changed":false,
+                      "items":[{"kind":"changed","label":"简历生成服务","before":"…","after":"…",
+                                "fields":[{"field":"描述","before":"…","after":"…"}]}]}]}}
+```
+
+差异是**结构级**的，不是文本 diff（`ADR-026` §2.4）：把生成物 HTML 按区块 → 条目 → 字段三层解析
+（`app/services/resume_diff.py`），区块按 item 的 **class 名**识别而不是按标题文字识别——
+所以「把『项目经历』改名成『实践经历』」会被报成 `title_before != title_after` 的**改名**，
+而不是「删掉一整块 + 新增一整块」。这是本节最容易被做错的一格。
+
+四条规则：
+
+1. **`comparable=false` 时 `sections` 为空且 `note` 必给**。`note` 说的是「这两版的排版结构无法识别，只能看正文」——
+   **绝不能**用一份空差异表示「两版一样」（`ADR-026` §1.1 末）。前端遇到 `comparable=false` 只显示 `note`，
+   不许渲染「没有差异」的结论。
+2. **`change=="unchanged"` 的区块照样返回**：用户需要看到「这一块没动」，而不是在列表里找不到它、却不知道是没动还是没解析出来。
+   `summary.sections_changed` 只数 `change != "unchanged"` 的区块。
+3. `ResumeDiffField.before/after` **允许空串**：空串表示「这一版里这一格不存在」，与「这一格的值是空的」不是一回事
+   ——后者在纸面上会显示「待补充：X」。
+4. **顺序变化与内容变化分开报**（`order_changed` / `item_order_changed` / `section_order_changed`）。
+   按岗位定制产出的两版**只应**出现顺序变化：`added/removed/changed` 全为 0，`item_order_changed=true`。
+
+### POST `/resumes/customize` — 按岗位定制（批次 B8 剩余，`ADR-026` §2.5）
+
+请求（`app/schemas/resume.py::ResumeCustomizeRequest`，`extra="forbid"`）：
+
+```json
+{"job_id":"uuid","profile_id":"uuid 可省略"}
+```
+
+响应 `200`：
+
+```json
+{"data":{"resume":{"resume_id":"…","title":"投后端 · 面向「后端开发实习生」","content_html":"…","created_at":"…","version_no":2},
+         "based_on_version_no":1,
+         "focus":{"job_id":"…","job_title":"后端开发实习生",
+                  "matched":["Python","MySQL"],"missing":["Docker"]}}}
+```
+
+**标题是快照**：`resumes.title` 存成「简历名 · 面向「岗位名」」（`_customized_title`，200 字上限按码点截断）。
+不新开一列存岗位标题，是因为岗位后来改名时，手上这份简历的名字不该跟着变。
+
+**「定制」= 只重排，一个字都不改**（`ADR-026` §1.2 把它与「改写」明确切开）：
+
+- 技能区块：JD 命中的技能**稳定**排到前面（命中之间的相对顺序不变）；
+- 经历区块：按关键词命中条数**降序稳定**排序（命中数相同保持原顺序）。
+- **不改任何文字、不删任何条目、不增任何条目**。缺什么由 `focus.missing` 如实告知——
+  它是**提示不是结论**：「JD 里点了这几样、你的档案里没有」，不评价重不重要，也**不写进纸面**。
+
+**定制版不移动链头**（`ADR-026` §2.2，本节最重要的不变量）：它会落一行新版本（`origin="customized"`，
+`target_job_id` 指向这条岗位），但 `student_profiles.current_version_id` 仍然指着原来的那一版。
+所以 `based_on_version_no` 同时是「定制时链头是第几版」与「现在点『当前简历』还会拿到哪一版」的答案。
+理由：定制版是「为这一条岗位准备的另一份」，不是「我现在的简历」。若顺手改了链头，用户回到首页会发现自己「换了简历」
+却什么都没点——而且多条岗位各定制一次，链头会被最后那次悄悄改写。
+
+五道闸门在服务层，路由只把每种失败翻成一句能动手的话：
+
+| 情形 | 状态码（`error.code` + `details.reason`） | 文案 |
+|---|---|---|
+| 档案不存在 / 别人的 / 在回收站 | `404` `NOT_FOUND`，`PROFILE_NOT_FOUND` | 「简历不存在或无法访问，请返回简历列表重新选择。」 |
+| 一份档案都没有 / 档案不完整（缺基本信息、技能、经历） | `400` `CLIENT_ERROR`，`PROFILE_INCOMPLETE` | 「请先完善个人档案（基本信息、技能、经历）后再生成简历。」 |
+| 排版版本是旧的 | `422` `CLIENT_ERROR`，`LAYOUT_VERSION` | 与 `/generate` 同一条：**修得动**，不静默回退默认顺序 |
+| 还没生成过简历（没有可定制的底版） | `404` `NOT_FOUND`，`RESUME_NOT_GENERATED` | 「还没有生成过简历，请先生成一份。」 |
+| 链头指针落空 | `400` `CLIENT_ERROR`，`RESUME_POINTER_BROKEN` | 「当前简历暂时无法读取，请重新生成一份简历。」 |
+| 岗位不存在 / 已删 / 还没发布 | `404` `NOT_FOUND`，`JOB_NOT_FOUND` | 与岗位接口同一句，不区分原因 |
+| **岗位已过截止时间** | `409` `CLIENT_ERROR`，`JOB_EXPIRED` | 「岗位已过截止时间，请先更新截止日期，再提交或审核。」 |
+| 多塞任何字段（如 `title`、`skills`） | `422` `VALIDATION_ERROR` | 定制会落一行新版本，静默忽略会让调用方以为输入生效了 |
+
+`409` 而不是 `400`：它不是「你填错了」，而是「这条岗位的状态变了，请换一条」——
+与岗位审核流对过期动作的口径一致（`ADR-024` §2.4，同一个 `app/core/deadline.py::is_expired`）。
+
 ### GET `/resumes` / GET `/resumes/{resume_id}`（未实现 · 设计意图）
 
 返回版本、来源、确认状态和授权状态。
+
+**注意与已实现的 `GET /resumes/versions` 区分**：后者是「一份档案的版本清单」，已上线；
+这里的 `GET /resumes` 是「这个用户的简历列表（跨档案）」，`GET /resumes/{resume_id}` 是「按 id 读一份（含正文）」，
+两者都**没有路由**。`PATCH …/versions/{id}`（编辑某一版）同样未实现——不要因为 `/versions` 存在就以为它存在。
 
 ### PATCH `/resumes/{resume_id}/versions/{version_id}`（未实现 · 设计意图）
 

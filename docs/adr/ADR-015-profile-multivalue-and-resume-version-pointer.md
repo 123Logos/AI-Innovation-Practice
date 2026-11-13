@@ -16,7 +16,7 @@ FR-02 还差三格：**期望城市 / 证书 / 作品链接**。老板 2026-11-0
 | 可渲染区块被白名单钉死 3 段 | `app/core/document_style.py:155`（`SectionId`）、`:175-179`（`DEFAULT_SECTIONS`）、`:182`（`SECTION_IDS`）；写侧 `max_length=len(SECTION_IDS)`（`app/schemas/profile.py:125`） | 「进简历」必然要动这张白名单，动它就动版本 |
 | `LAYOUT_VERSION = 1`，写侧版本不符即 422 | `app/core/document_style.py:158`、`app/schemas/profile.py:127-132` | 升版会立刻让老客户端存不进配置 |
 | 读侧版本不符**静默回落默认顺序**（只 warning） | `app/core/document_style.py:234-237` | 老配置 + 新版本 = 用户精心排的顺序**悄悄没了**，这是 C/1 那半句要拦的东西 |
-| `resumes` 只有 `content_html` 快照，**零版本列**（无 revision / parent_id / is_current / deleted_at），「最新」全靠 `created_at` 猜 | `alembic/versions/20261023_0001_initial_phase1.py:105-122`、`app/repositories/resume_repository.py:33-51` | C/3 的对象 |
+| `resumes` 只有 `content_html` 快照，**零版本列**（无 revision / parent_id / is_current / deleted_at），「最新」全靠 `created_at` 猜 | `alembic/versions/20261023_0001_initial_phase1.py:105-122`、`app/repositories/resume_repository.py::ResumeRepository.create_resume` | C/3 的对象 |
 | 前端另有一份默认区块表 | `frontend/src/stores/resume.ts::DEFAULT_LAYOUT_SECTIONS`，由 `tests/test_profile_contract.py::test_default_layout_matches_frontend` 比对 | 升版要**两处同改**，否则契约测试红 |
 | 条数上限：技能 8 / 经历 3 / 教育 5 | `app/schemas/profile.py::ProfileUpsertRequest` | 新子表必须自己带上限，一页 A4 装不下无限个证书 |
 
@@ -68,7 +68,7 @@ portfolio_links(id PK, student_profile_id FK→… ON DELETE RESTRICT,
 
 「每个档案至多一条链头」用同一个 MySQL 机制守：生成列 `is_head AS (IF(id = current_version_id, 1, NULL)) STORED` + `UNIQUE(student_profile_id, is_head)`。不这么做就会开出「两行都自称当前版」的双口径——本项目最不想要的那种病。
 
-写入方（`create_resume`）必须在**同一事务**里插新行 + 把旧链头的 `current_version_id` 指向新行 + 新行自指；`GET` 侧「当前简历」只准读这个指针。**「取 `created_at` 最大的一条」这个写法从此不许出现在任何地方**——顺带把这条现状写进契约里，因为它比看起来重要：`ResumeRepository` **今天只有 `create_resume` 一个方法**（`app/repositories/resume_repository.py:33`，全类 `:30-51`），全仓 `app/` 与 `tests/` 里 `select(Resume)` **零命中**。也就是说 `resumes` 是一张**只写不读**的表：每次生成都落库，但没有任何端点把它读回来。所以 C/3 不只是「加一列指针」，它是 B8 第一次给这张表建读侧，**指针必须在那条读路径出现之前先定死**，否则第一个读实现就会顺手写成 `ORDER BY created_at DESC LIMIT 1`，从此变成隐性契约。
+写入方（`create_resume`）必须在**同一事务**里插新行 + 把旧链头的 `current_version_id` 指向新行 + 新行自指；`GET` 侧「当前简历」只准读这个指针。**「取 `created_at` 最大的一条」这个写法从此不许出现在任何地方**——顺带把这条现状写进契约里，因为它比看起来重要：`ResumeRepository` **在本 ADR 定稿时只有 `create_resume` 一个方法**（`app/repositories/resume_repository.py::ResumeRepository.create_resume`；B8 之后它才长出读侧，见 `ADR-026`），全仓 `app/` 与 `tests/` 里 `select(Resume)` **零命中**。也就是说 `resumes` 是一张**只写不读**的表：每次生成都落库，但没有任何端点把它读回来。所以 C/3 不只是「加一列指针」，它是 B8 第一次给这张表建读侧，**指针必须在那条读路径出现之前先定死**，否则第一个读实现就会顺手写成 `ORDER BY created_at DESC LIMIT 1`，从此变成隐性契约。
 
 ## 3. 后果
 

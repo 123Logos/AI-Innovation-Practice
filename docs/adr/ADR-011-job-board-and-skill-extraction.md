@@ -193,7 +193,7 @@ POST /api/v1/jobs/extract-skills     请求头 X-DeepSeek-Key（+ Authorization�
 被否决的两个形态：
 
 - **`POST /jobs` 时顺带提取**（一次调用出成品）：AI 失败时岗位到底落成 draft 还是不落？静默降级被明令禁止，而报错回滚会把用户粘进去的 8000 字 JD 一起丢掉。拆成两个动作，失败只损失提取结果。
-- **异步任务 + `ai_job_id`**（`docs/API.md:100`、L106-108 现在的写法）：需要队列（Redis/ARQ/Celery 仍冻结）。**不采用**，据此修订 API.md（见专章）。
+- **异步任务 + `ai_job_id`**（`docs/API.md` §9 当年的写法，后已删除）：需要队列（Redis/ARQ/Celery 仍冻结）。**不采用**，据此修订 API.md（见专章）。
 
 配套端点草图（命名对齐 `app/api/v1/profiles.py`）：
 

@@ -41,6 +41,9 @@ class AuditAction(StrEnum):
     JOB_SUBMIT_REVIEW = "job.submit_review"
     JOB_APPROVE = "job.approve"
     JOB_REJECT = "job.reject"
+    #: 批次 B6 收口（ADR-025 §2.4）：改密。安全事件必须有账，
+    #: 否则「我的账号是不是被人动过」永远只能靠猜。
+    PASSWORD_CHANGE = "user.password_change"
 
 
 class AuditResult(StrEnum):

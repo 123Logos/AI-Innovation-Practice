@@ -37,6 +37,8 @@ export interface UserRead {
   id: string
   username: string
   email: string | null
+  /** 账号手机号（≠ 档案里展示的联系方式），B6 收口后同时是登录标识之一（`ADR-025` §2.1）。 */
+  phone: string | null
   created_at: string
 }
 
@@ -53,21 +55,35 @@ export interface TokenResponse {
   expires_in: number
 }
 
+/**
+ * `POST /auth/register` 的请求体（`ADR-025` §1.1）。
+ *
+ * **只有四个字段**：`role` 与 `organization_code` 随「带码注册」入口一起下线，
+ * 后端 `extra="forbid"` 会对它们直接 422。注册产出的是散人，
+ * 身份只能由邀请码在加入组织时给定。
+ */
 export interface RegisterRequest {
   username: string
   password: string
   email?: string | null
+  /** 可空；填了就是登录标识之一（后端归一为 11 位数字后唯一）。 */
+  phone?: string | null
 }
 
+/**
+ * `POST /auth/login` 的请求体（`ADR-025` §2.1）。
+ *
+ * 一个 `identifier` 覆盖三种标识：用户名 / 邮箱 / 手机号。
+ * 后端优先级是「用户名 > 邮箱 > 手机号」，所以同一个字符串在两列都命中时
+ * 走的是用户名那一位——前端不需要、也不应该替用户判断他输入的是哪一种。
+ */
 export interface LoginRequest {
-  username: string
+  identifier: string
   password: string
 }
 
 export interface RegisterResponse {
   user: UserRead
-  /** 批次 B5：注册时被授予的角色，后端回显（`ADR-021` §2.2「不静默」的另一半）。 */
-  role?: UserRole
 }
 
 /** 账号在组织里的角色（后端 `app/core/permissions.py::UserRole`）。 */
@@ -375,6 +391,107 @@ export interface ResumeRead {
   title: string
   content_html: string
   created_at: string
+  /** 档案内版本号（`ADR-015` §2.3）。B8 之前前端拿不到，历史列表需要它做序号。 */
+  version_no: number
+}
+
+/* ------------------------ 版本历史 / 差异 / 定制（ADR-026） ------------------------ */
+
+/** 一版简历的来源：模板生成，或按岗位定制（后端 `resumes.origin`）。 */
+export type ResumeVersionOrigin = 'generated' | 'customized'
+
+/**
+ * 版本摘要：**不含正文**。
+ *
+ * 列表页不需要把每一版 HTML 都传一遍（几版下来就是几百 KB），
+ * 正文只在 `GET /resumes/current` 与两版对比时才需要。
+ */
+export interface ResumeVersionSummary {
+  resume_id: string
+  version_no: number
+  title: string
+  origin: ResumeVersionOrigin
+  /** 链头（= 「当前简历」）。同一档案至多一行为 `true`，由库上唯一键保证。 */
+  is_head: boolean
+  target_job_id: string | null
+  created_at: string
+}
+
+export interface ResumeVersionList {
+  profile_id: string
+  current_version_id: string | null
+  versions: ResumeVersionSummary[]
+}
+
+/** 条目里一格字段的前后值；空串表示「这一版里这一格不存在」。 */
+export interface ResumeDiffField {
+  field: string
+  before: string
+  after: string
+}
+
+export interface ResumeDiffItem {
+  kind: 'added' | 'removed' | 'changed'
+  label: string
+  before: string | null
+  after: string | null
+  fields: ResumeDiffField[]
+}
+
+export interface ResumeDiffSection {
+  key: 'educations' | 'skills' | 'experiences' | 'certificates' | 'portfolio'
+  label: string
+  change: 'added' | 'removed' | 'changed' | 'unchanged'
+  title_before: string | null
+  title_after: string | null
+  /** 条目顺序变了（按岗位定制的差异**只会**出现在这里，`ADR-026` §2.5）。 */
+  order_changed: boolean
+  items: ResumeDiffItem[]
+}
+
+export interface ResumeDiffSummary {
+  added: number
+  removed: number
+  changed: number
+  sections_changed: number
+  section_order_changed: boolean
+  item_order_changed: boolean
+}
+
+/**
+ * 两版差异。
+ *
+ * `comparable === false` 时 `sections` 必为空且 `note` 必给：
+ * 界面必须显示那句说明，**不能**把空差异渲染成「两版一样」。
+ */
+export interface ResumeDiff {
+  from_version: ResumeVersionSummary
+  to_version: ResumeVersionSummary
+  comparable: boolean
+  note: string | null
+  summary: ResumeDiffSummary
+  sections: ResumeDiffSection[]
+}
+
+export interface ResumeCustomizeRequest {
+  profile_id?: string | null
+  job_id: string
+}
+
+export interface ResumeCustomizeFocus {
+  job_id: string
+  job_title: string
+  /** 档案里命中本条岗位的技能（按档案顺序）。 */
+  matched: string[]
+  /** 岗位要求但档案里没有的技能（按岗位顺序）。它是提示，不是结论。 */
+  missing: string[]
+}
+
+export interface ResumeCustomizeResult {
+  resume: ResumeRead
+  /** 定制时链头是第几版；定制不移动链头，所以它也是「当前简历」的版本号。 */
+  based_on_version_no: number
+  focus: ResumeCustomizeFocus
 }
 
 /* ------------------------------ AI 润色（ADR-010） ------------------------------ */

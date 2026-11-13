@@ -31,16 +31,15 @@ class UserRole(StrEnum):
     PLATFORM_ADMIN = "platform_admin"
 
 
-#: 自助注册允许声明的角色。**不含** `platform_admin`：能自己注册成平台管理员就是提权漏洞。
-SELF_SERVICE_ROLES: frozenset[UserRole] = frozenset(
-    {UserRole.STUDENT, UserRole.TEACHER, UserRole.SCHOOL_ADMIN}
-)
-
-#: 声明这些角色时**必须**带一个有效的组织码——教师与管理员脱离组织没有意义，
-#: 而「静默降级成学生」正是本批要关掉的那个口子（ADR-021 §2.4）。
-ROLES_REQUIRING_ORGANIZATION: frozenset[UserRole] = frozenset(
-    {UserRole.TEACHER, UserRole.SCHOOL_ADMIN}
-)
+#: 自助注册允许声明的角色：**没有**。批次 B6 收口（`ADR-025` §1.1）把注册请求体里的
+#: `role` 一起删了，理由是「声明了角色却没有组织」只能靠静默降级来实现，而静默降级
+#: 正是 `ADR-021` §2.2 要关掉的口子。角色现在只有两个来源：邀请码（`ADR-023` §2.1）
+#: 与运维在库里授予 `platform_admin`。
+#:
+#: 同理，「教师/管理员必须带有效组织码」那条规则（`ADR-021` §2.4）也随之删除：
+#: 没有「注册时声明角色」这个入口，就没有「声明了却没有组织」这个状态。
+#: 这里刻意不留一个空集合或 `_DEPRECATED` 常量——留一个名字在那里，
+#: 下一个人只会以为还有一条没被删干净的路径。
 
 PROFILE_READ = "profile:read"
 PROFILE_WRITE = "profile:write"

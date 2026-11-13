@@ -35,6 +35,11 @@ from collections.abc import Sequence
 from datetime import date, datetime
 
 from app.core import deadline
+from app.core.action_gate import (
+    ActionRequiresOrganization,
+    OrganizationAction,
+    require_organization,
+)
 from app.core.datetime_display import utc_now
 from app.core.permissions import JOB_REVIEW, UserRole
 from app.core.skill_names import skill_name_key
@@ -630,13 +635,21 @@ class JobService:
     ) -> str:
         """取提交者的组织；没有就拦下并提示绑定（第 18 轮裁定 ①）。
 
+        判据本身在 `app/core/action_gate.require_organization`（`ADR-025` §2.5）：
+        「哪些动作必须依托组织」是一张可枚举的表，不是散在服务里的 `if`。
+        本方法只负责两件本地的事——记一条 `denied` 审计、把自己的域异常抛出去。
+
         返回值直接写进 `jobs.organization_id`：范围在**提交那一刻**定格，
         审核人据此判定「该不该我审」，而不是审核时再去猜提交者属于谁。
         """
-        if context.organization is None:
+        try:
+            return require_organization(
+                context.organization.id if context.organization is not None else None,
+                action=OrganizationAction.PUBLISH_JOB,
+            )
+        except ActionRequiresOrganization as error:
             self._deny(context, AuditAction.JOB_SUBMIT_REVIEW, job, "no_organization", ip)
-            raise JobOrganizationRequiredError(context.user.id)
-        return context.organization.id
+            raise JobOrganizationRequiredError(context.user.id) from error
 
     def _ensure_not_expired(
         self,

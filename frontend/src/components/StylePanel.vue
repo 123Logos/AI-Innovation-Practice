@@ -8,6 +8,7 @@ import { useDialogStore } from '@/stores/dialog'
 
 import PolishReviewDialog from './PolishReviewDialog.vue'
 import PolishSettingsDialog from './PolishSettingsDialog.vue'
+import ResumeVersionsDialog from './ResumeVersionsDialog.vue'
 
 const store = useResumeStore()
 const dialog = useDialogStore()
@@ -17,6 +18,9 @@ const feedback = ref<{ tone: 'ok' | 'error'; text: string } | null>(null)
 /** 润色档位弹窗与对照弹窗的开关（两个弹窗是两段独立的用户决定）。 */
 const settingsOpen = ref(false)
 const reviewOpen = ref(false)
+
+/** 版本历史 / 两版对比弹窗（`ADR-026` §2.6）。 */
+const versionsOpen = ref(false)
 
 /** 纸张尺寸展示：`215.9` 这类小数保留一位，`210` 不补 `.0`。 */
 function formatMm(value: number): string {
@@ -348,6 +352,11 @@ function printResume(): void {
       >
         {{ store.polishing ? 'AI 润色中，请稍候…' : 'AI 润色' }}
       </button>
+      <!--
+        版本历史是**只读**入口，所以放在两个写动作（生成 / 润色）之后、样式最轻：
+        它回答「我之前生成过什么」，不改变任何东西。
+      -->
+      <button class="history-button" type="button" @click="versionsOpen = true">版本历史 / 对比</button>
       <p v-if="feedback" :class="['feedback', `feedback--${feedback.tone}`]">{{ feedback.text }}</p>
     </div>
 
@@ -375,6 +384,8 @@ function printResume(): void {
       @accept="handleAcceptPolish"
       @discard="handleDiscardPolish"
     />
+    <!-- 版本历史 / 两版对比（ADR-026 §2.6）：纯读，打开时才拉数据。 -->
+    <ResumeVersionsDialog v-model="versionsOpen" />
   </aside>
 </template>
 
@@ -493,6 +504,9 @@ h2 { font-size: var(--text-2xl); }
 .polish-button { width: 100%; border: 1px solid var(--theme-rule); border-radius: var(--ui-radius); padding: 10px; color: var(--theme-primary); background: transparent; cursor: pointer; font: inherit; font-size: var(--text-base); line-height: 1.4; }
 .polish-button:hover:not(:disabled) { color: var(--theme-on-primary); background: var(--theme-primary); }
 .polish-button:disabled { opacity: .6; cursor: progress; }
+/* 只读入口：无描边、弱一档，和「打印 / 导出」同形但不抢生成与润色的位置。 */
+.history-button { width: 100%; margin-top: 8px; border: 0; border-radius: var(--ui-radius); padding: 8px; color: var(--ui-ink-muted); background: transparent; cursor: pointer; font: inherit; font-size: var(--text-sm); line-height: 1.4; }
+.history-button:hover { color: var(--theme-primary); background: var(--ui-surface-soft); }
 .feedback { font-size: var(--text-sm); line-height: 1.5; }
 .feedback--ok { color: var(--ui-success); }
 .feedback--error { color: var(--ui-danger); }

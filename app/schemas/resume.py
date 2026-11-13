@@ -10,7 +10,7 @@ ADR-010 新增的 `ResumePolishRequest` 是例外：润色端点收的是**前�
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
 from app.core.datetime_display import format_shanghai_datetime, shanghai_today
 
@@ -289,3 +289,158 @@ class ResumePrivacyCheck(BaseModel):
 
     profile_id: str
     categories: list[PrivacyCategory]
+
+
+# --------------------------------------------------------------------------- #
+# 版本对比与按岗位定制（批次 B8 剩余，`ADR-026`）。
+#
+# 三组模型对应三个端点：版本列表、两版差异、定制结果。全部是**响应模型**，
+# 唯一的请求模型 `ResumeCustomizeRequest` 只有 `profile_id`（可选）与 `job_id`——
+# 「用哪个档案、面向哪条岗位」是调用方的输入，其余（标题、排序、来源标记）
+# 一律由服务层算出来，客户端改不到（与 `/generate` 同一条信任边界）。
+# --------------------------------------------------------------------------- #
+
+#: 这一行怎么来的（`ADR-026` §2.1）。字面量即 `ck_resumes_origin` 的取值。
+ResumeVersionOrigin = Literal["generated", "customized"]
+
+
+class ResumeVersionSummary(BaseModel):
+    """版本列表里的一行：**不含 `content_html`**。
+
+    列表不背正文：一份简历的 HTML 是整页纸（数十 KB），20 个版本就是一次
+    几百 KB 的响应，而列表只需要「几号、叫什么、什么时候、是不是链头」。
+    要看正文就走 `GET /resumes/versions/diff`（它也只回差异，不回全文）。
+    """
+
+    resume_id: str
+    version_no: int
+    title: str
+    origin: ResumeVersionOrigin
+    #: 是不是当前链头（`ADR-015` §2.3）。定制版恒为 `False`（`ADR-026` §2.2）。
+    is_head: bool
+    #: 定制版面向的岗位 id；岗位被删后由 `ON DELETE SET NULL` 置空。
+    #: 岗位**标题**不在这里：它已经写进 `title`（快照语义，`ADR-026` §2.1）。
+    target_job_id: str | None = None
+    created_at: datetime
+
+    @field_serializer("created_at")
+    def serialize_shanghai(self, value: datetime) -> str:
+        return format_shanghai_datetime(value)
+
+
+class ResumeVersionList(BaseModel):
+    """`GET /resumes/versions` 的 `data`。
+
+    `current_version_id` 单独给一格：前端要能画「链头」徽标，
+    而 `versions` 里也带 `is_head`——两处同源，谁都不许自己推。
+    """
+
+    profile_id: str
+    current_version_id: str | None
+    versions: list[ResumeVersionSummary]
+
+
+class ResumeDiffField(BaseModel):
+    """条目里一格字段的前后值（`ADR-026` §2.4 规则 3）。
+
+    `before` / `after` 允许空串：空串表示「这一版里这一格不存在」，
+    与「这一格的值是空的」不是一回事——后者在纸面上会显示「待补充：X」。
+    """
+
+    field: str
+    before: str
+    after: str
+
+
+class ResumeDiffItem(BaseModel):
+    """一个条目的差异。`kind` 三态与 `added/removed/changed` 的计数一一对应。"""
+
+    kind: Literal["added", "removed", "changed"]
+    #: 锚点文本（项目名 / 学校名 / 证书名 / 技能名）——界面上这一行的标题。
+    label: str
+    #: 整条的纯文本（新增/删除时展示全文；修改时是修改前后的全文）。
+    before: str | None = None
+    after: str | None = None
+    fields: list[ResumeDiffField] = Field(default_factory=list)
+
+
+class ResumeDiffSection(BaseModel):
+    """一个区块的差异。
+
+    `change=="unchanged"` 的区块**照样返回**：用户需要看到「这一块没动」，
+    而不是在列表里找不到它却不知道是没动还是没解析出来。
+    """
+
+    key: Literal["educations", "skills", "experiences", "certificates", "portfolio"]
+    #: 区块标题（`to` 那一版；区块被删时取 `from` 的）。
+    label: str
+    change: Literal["added", "removed", "changed", "unchanged"]
+    title_before: str | None = None
+    title_after: str | None = None
+    #: 条目顺序是否变了（`ADR-026` §2.4 规则 4）。按岗位定制的差异**只应**出现在这里。
+    order_changed: bool = False
+    items: list[ResumeDiffItem] = Field(default_factory=list)
+
+
+class ResumeDiffSummary(BaseModel):
+    """一眼能读完的计数。`sections_changed` 只数 `change != "unchanged"` 的区块。"""
+
+    added: int = 0
+    removed: int = 0
+    changed: int = 0
+    sections_changed: int = 0
+    section_order_changed: bool = False
+    item_order_changed: bool = False
+
+
+class ResumeDiff(BaseModel):
+    """`GET /resumes/versions/diff` 的 `data`。
+
+    `comparable=False` 时 `sections` 为空且 `note` 必给：**绝不能**用一份空差异
+    表示「两版一样」（`ADR-026` §1.1 末）。
+    """
+
+    from_version: ResumeVersionSummary
+    to_version: ResumeVersionSummary
+    comparable: bool
+    note: str | None = None
+    summary: ResumeDiffSummary
+    sections: list[ResumeDiffSection]
+
+
+class ResumeCustomizeRequest(BaseModel):
+    """`POST /resumes/customize` 的请求体。
+
+    `extra="forbid"`：定制会**落一行新版本**，多塞一个 `title` 或 `skills`
+    被静默忽略，会让调用方以为自己的输入生效了。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile_id: str | None = Field(default=None, max_length=36)
+    job_id: str = Field(min_length=1, max_length=36)
+
+
+class ResumeCustomizeFocus(BaseModel):
+    """定制版面向哪条岗位，以及「命中/缺失」的对照（`ADR-026` §2.5）。
+
+    `missing` 是**提示不是结论**：它只说「JD 里点了这几样、你的档案里没有」，
+    不评价重不重要，也不写进纸面。
+    """
+
+    job_id: str
+    job_title: str
+    matched: list[str]
+    missing: list[str]
+
+
+class ResumeCustomizeResult(BaseModel):
+    """定制结果：新版本 + 它基于哪一版 + 岗位对照。
+
+    `based_on_version_no` 是「定制时链头是第几版」。定制**不移动链头**，
+    所以它同时也是「现在点『当前简历』还会拿到哪一版」的答案。
+    """
+
+    resume: ResumeRead
+    based_on_version_no: int
+    focus: ResumeCustomizeFocus

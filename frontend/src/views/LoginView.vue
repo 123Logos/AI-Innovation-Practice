@@ -30,7 +30,7 @@ const resume = useResumeStore()
 const router = useRouter()
 const route = useRoute()
 
-const username = ref('')
+const identifier = ref('')
 const password = ref('')
 const errorMessage = ref('')
 
@@ -56,15 +56,17 @@ const passwordVisible = ref(false)
 
 async function submit(): Promise<void> {
   errorMessage.value = ''
-  if (!username.value.trim() || !password.value) {
-    errorMessage.value = '请输入用户名和密码。'
+  if (!identifier.value.trim() || !password.value) {
+    // 三种标识共用一个输入框（`ADR-025` §2.1），所以这句不能说「请输入用户名」——
+    // 用邮箱或手机号登录的人会以为自己的输入方式不被支持。
+    errorMessage.value = '请输入登录账号和密码。'
     return
   }
 
   try {
     // 切换账号前先清掉上一个账号残留在内存里的档案。
     resume.reset()
-    await auth.login({ username: username.value.trim(), password: password.value })
+    await auth.login({ identifier: identifier.value.trim(), password: password.value })
     const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
     await router.replace(redirect)
   } catch (error) {
@@ -92,8 +94,17 @@ async function submit(): Promise<void> {
 
       <form class="auth-form" @submit.prevent="submit">
         <label class="field">
-          <span>用户名</span>
-          <input v-model="username" autocomplete="username" placeholder="请输入用户名" />
+          <!--
+            一格收三种标识（`ADR-025` §2.1）：标签与占位都写成「账号」，
+            精确列出三个可选值。写成「用户名」会让拿邮箱或手机号注册的人
+            以为自己必须另想一个用户名——那是收口后最容易产生的一次误判。
+          -->
+          <span>登录账号</span>
+          <input
+            v-model="identifier"
+            autocomplete="username"
+            placeholder="用户名 / 邮箱 / 手机号"
+          />
         </label>
         <label class="field">
           <span>密码</span>

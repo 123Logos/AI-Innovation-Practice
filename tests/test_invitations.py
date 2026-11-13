@@ -20,6 +20,7 @@ from sqlalchemy import text
 from app.core.datetime_display import utc_now
 from app.repositories.organization_repository import OrganizationRepository
 from app.repositories.user_repository import session_scope
+from tests.accounts import add_member
 
 API = "/api/v1"
 PASSWORD = "Strong-password-1"
@@ -47,9 +48,15 @@ def login(client: TestClient, username: str) -> dict[str, str]:
 def admin(
     client: TestClient, code: str = "AI2026", name: str = "示例大学"
 ) -> tuple[dict[str, str], str]:
+    """建组织 + 一个校长账号。
+
+    校长不是「注册时声明」的：B6 收口后注册只造散人（`ADR-025` §1.1），
+    角色只能从成员关系来——测试里直接落仓储，与真实链路「凭邀请码加入」同形。
+    """
     organization_id = create_organization(code=code, name=name)
-    created = register(client, "admin01", role="school_admin", organization_code=code)
+    created = register(client, "admin01")
     assert created.status_code == 201, created.text
+    add_member("admin01", organization_id, "school_admin")
     return login(client, "admin01"), organization_id
 
 
