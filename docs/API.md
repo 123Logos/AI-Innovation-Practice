@@ -897,7 +897,7 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 | 端点 | 需要的权限 | 说明 |
 |---|---|---|
 | `POST /organizations/{id}/invitations` | `org:member:manage` + 同组织 | 生成邀请码，201 返回 `data.invitation`。body `{"role":"student"\|"teacher","max_uses":1..100,"ttl_days":1..30}`，`extra="forbid"`；**不含 `school_admin`**——一张可转发的码不该能造出第二个校长 |
-| `GET /organizations/{id}/invitations` | `org:member:manage` + 同组织 | `data.items[]`，按创建时间倒序；撤销过的仍在列表里（`revoked_at` 非空） |
+| `GET /organizations/{id}/invitations` | `org:member:manage` + 同组织 | `data.items[]`，按创建时间倒序；撤销过的仍在列表里（`revoked_at` 非空）。每项带 `redeemed_by: string[]`——兑换过这张码的**用户名**（第 18 轮裁定 ④），来源是 `invitation.redeem` 审计行 join `users`，不是邀请表上的列；一张码可被多人兑换（`max_uses > 1`），所以是数组，没被兑换过是 `[]` 而不是 `null` |
 | `DELETE /organizations/{id}/invitations/{invitation_id}` | `org:member:manage` + 同组织 | 撤销（打标，不物理删）。重复撤销是幂等成功，不写第二条审计 |
 | `POST /invitations/redeem` | 只需登录 | 凭码加入组织，body `{"code":"..."}`，返回 `data.{organization, role}` |
 

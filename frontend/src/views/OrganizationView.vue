@@ -334,6 +334,10 @@ onMounted(load)
               {{ roleLabel(item.role) }} · 已用 {{ item.used_count }}/{{ item.max_uses }} 次 ·
               {{ formatDateTime(item.expires_at) }} 前有效
             </span>
+            <span v-if="item.redeemed_by.length" class="hint invite-redeemers">
+              已被 {{ item.redeemed_by.join('、') }} 兑换
+            </span>
+            <span v-else class="hint">还没有人使用</span>
             <span v-if="item.revoked_at" class="tag">已撤回</span>
             <button v-else class="button button--quiet" type="button" @click="handleRevoke(item)">
               撤回
@@ -494,4 +498,5 @@ onMounted(load)
   border-bottom: 1px solid var(--ui-border); padding-bottom: 8px;
 }
 .invite-code { color: var(--ui-ink); font-size: var(--text-base); font-weight: 600; }
+.invite-redeemers { color: var(--theme-primary-strong); }
 </style>

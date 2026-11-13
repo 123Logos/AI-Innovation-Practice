@@ -76,6 +76,8 @@ export interface OrganizationInvitation {
   expires_at: string
   revoked_at: string | null
   created_at: string
+  /** 兑换过这张码的用户名（第 18 轮裁定 ④：发码人要能追溯）。 */
+  redeemed_by: string[]
 }
 
 export interface InvitationCreatePayload {

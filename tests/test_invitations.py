@@ -225,3 +225,23 @@ def test_revoke_is_idempotent_and_stays_in_list(client: TestClient) -> None:
     assert rows[0]["revoked_at"] is not None
     # 幂等不写第二条无意义审计。
     assert audit_actions(client, headers, organization_id).count("invitation.revoke") == 1
+
+
+def test_invitation_list_shows_who_redeemed_it(client: TestClient) -> None:
+    """第 18 轮裁定 ④：发码人要能看到「该码已被谁兑换」，发现滥用可撤销。"""
+    headers, organization_id = admin(client)
+    code = create_invitation(client, headers, organization_id).json()["data"]["invitation"]["code"]
+    register(client, "student07")
+    assert redeem(client, login(client, "student07"), code).status_code == 200
+
+    rows = client.get(f"{API}/organizations/{organization_id}/invitations", headers=headers).json()[
+        "data"
+    ]["items"]
+    assert rows[0]["redeemed_by"] == ["student07"]
+
+    # 没被兑换过的码是空列表，不是 null，也不是把别人的名字串过来。
+    other = create_invitation(client, headers, organization_id).json()["data"]["invitation"]
+    rows = client.get(f"{API}/organizations/{organization_id}/invitations", headers=headers).json()[
+        "data"
+    ]["items"]
+    assert next(row for row in rows if row["id"] == other["id"])["redeemed_by"] == []

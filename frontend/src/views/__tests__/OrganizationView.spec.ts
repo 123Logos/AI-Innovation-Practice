@@ -75,6 +75,7 @@ const INVITATIONS = [
     expires_at: '2026-11-19T09:00:00+08:00',
     revoked_at: null,
     created_at: '2026-11-12T09:00:00+08:00',
+    redeemed_by: ['teacher06'],
   },
 ]
 let calls: string[] = []
@@ -219,6 +220,13 @@ describe('组织管理页', () => {
     const alert = wrapper.find('[role="alert"]')
     expect(alert.exists()).toBe(true)
     expect(alert.text()).toContain('未桩住的请求')
+  })
+
+
+  it('发码人能看到这张邀请码已被谁兑换', async () => {
+    const wrapper = await mountView()
+
+    expect(wrapper.find('.invite-redeemers').text()).toContain('teacher06')
   })
 
 })

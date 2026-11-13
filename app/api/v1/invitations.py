@@ -117,12 +117,14 @@ def list_invitations(
         rows = service.list_for_organization(context, organization_id, ip=client_ip(request))
     except InvitationError as error:
         raise _translate(error) from error
-    return success_response(
-        request,
-        InvitationListData(items=[InvitationRead.model_validate(row) for row in rows]).model_dump(
-            mode="json"
-        ),
-    )
+    redeemers = service.redeemed_usernames([row.id for row in rows])
+    items = [
+        InvitationRead.model_validate(row).model_copy(
+            update={"redeemed_by": redeemers.get(row.id, [])}
+        )
+        for row in rows
+    ]
+    return success_response(request, InvitationListData(items=items).model_dump(mode="json"))
 
 
 @router.delete("/organizations/{organization_id}/invitations/{invitation_id}")

@@ -18,7 +18,8 @@ from sqlalchemy import DateTime, Integer, String, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.core.datetime_display import utc_now
-from app.repositories.user_repository import Base
+from app.repositories.audit_log_repository import AuditAction, AuditLog, AuditResult
+from app.repositories.user_repository import Base, User
 
 #: 邀请默认有效期与次数上限，与 `app/schemas/invitation.py` 的 Field 约束对齐。
 DEFAULT_TTL_DAYS = 7
@@ -110,6 +111,31 @@ class InvitationRepository:
     def consume(self, invitation: OrganizationInvitation) -> None:
         invitation.used_count += 1
         self._session.flush()
+
+    def redeemed_usernames(self, invitation_ids: list[str]) -> dict[str, list[str]]:
+        """按邀请码 id 分组，返回兑换过它的用户名（第 18 轮裁定 ④）。
+
+        来源是 `invitation.redeem` 审计行，不是邀请表上的新列：一张码可以
+        `max_uses > 1`，兑换者天然是一对多，写进一列只能记住最后一个人。
+        被拒绝的尝试（`result=denied`）不算兑换，不展示给发码人。
+        """
+        if not invitation_ids:
+            return {}
+        rows = self._session.execute(
+            select(AuditLog.target_id, User.username)
+            .join(User, User.id == AuditLog.actor_user_id)
+            .where(
+                AuditLog.action == str(AuditAction.INVITATION_REDEEM),
+                AuditLog.result == str(AuditResult.OK),
+                AuditLog.target_id.in_(invitation_ids),
+            )
+            .order_by(AuditLog.id)
+        ).all()
+        grouped: dict[str, list[str]] = {}
+        for invitation_id, username in rows:
+            if invitation_id is not None:
+                grouped.setdefault(invitation_id, []).append(username)
+        return grouped
 
     def commit(self) -> None:
         self._session.commit()

@@ -202,6 +202,10 @@ class InvitationService:
         self._invitations.commit()
         return RedeemResult(organization=organization, role=invitation.role)
 
+    def redeemed_usernames(self, invitation_ids: list[str]) -> dict[str, list[str]]:
+        """发码人要能回答「这张码被谁用了」（第 18 轮裁定 ④）。"""
+        return self._invitations.redeemed_usernames(invitation_ids)
+
     # -------------------------------- 内部 ---------------------------------
 
     def _ensure_same_organization(
