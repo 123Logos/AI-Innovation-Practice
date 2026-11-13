@@ -6,10 +6,11 @@
  *
  * 三条刻意的取舍：
  *
- * 1. **这里只有真的能点到的模块**（守则 L5）。测评一类未实现的模块
+ * 1. **这里只有真的能点到的模块**（守则 L5）。未实现的模块
  *    不进表、不给禁用态——禁用态会让用户以为「快有了」，而我们对它没有排期承诺；
  *    它们落地当天才是第一次可见的时刻。「组织管理」于批次 B5（2026-11-12）、
- *    「模拟面试」于批次 B11a 均已落地，两者都在表里；「测评」等仍未实现的模块不进表。
+ *    「模拟面试」于批次 B11a、「能力测评」于批次 B9（2026-11-13）均已落地，三者都在表里；
+ *    教师端学情看板（B10a）与批量下载（B10b）等仍未实现的模块不进表。
  *    `src/__tests__/layoutGuards.spec.ts` 用 `router.hasRoute()` 逐条钉住这一格。
  *
  * 2. **`name` 是用户可见文案**，归批次 F1a 的文案清扫管；本批一个字都不改，
@@ -26,7 +27,12 @@
  */
 
 /** 模块的稳定 id：给消费方当 key 用，不随文案变化，所以与 `routeName` 分开两个名字。 */
-export type AppModuleKey = 'resume-editor' | 'job-board' | 'organization' | 'interview'
+export type AppModuleKey =
+  | 'resume-editor'
+  | 'job-board'
+  | 'organization'
+  | 'interview'
+  | 'assessment'
 
 export interface AppModule {
   /** 稳定 id（见 `AppModuleKey`）。 */
@@ -91,6 +97,16 @@ export const APP_MODULES: readonly AppModule[] = [
     requiresAuth: true,
     inTopBar: false,
     iconPaths: ['M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'],
+  },
+  {
+    // 批次 B9（FR-04 / ADR-028）落地：能力测评进模块表。与模拟面试同一取舍——
+    // `inTopBar` 取 false，由工作区切换器呈现；已能到达，`layoutGuards.spec.ts` 钉住。
+    key: 'assessment',
+    name: '能力测评',
+    routeName: 'assessment',
+    requiresAuth: true,
+    inTopBar: false,
+    iconPaths: ['M9 12l2 2 4-4', 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0'],
   },
 ]
 

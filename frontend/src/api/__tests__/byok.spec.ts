@@ -475,3 +475,61 @@ describe('Key 注入：模拟面试只让「发消息」这一个 URL 带 Key', 
     expect(sentHeaders.map((item) => item.key)).toEqual([undefined, undefined])
   })
 })
+
+/**
+ * FR-04 / B9 的 BYOK 扩张：能力测评里只有「生成概述」这一条会转发 AI 凭据。
+ *
+ * 同一组路径下另有四个 POST（开考 / 存答案 / 提交 / 放弃）与两个 GET（目录 / 画像），
+ * 它们全部只碰我们自己的数据库——把这些一并纳进来，等于把用户的凭据复制到六个
+ * 与 AI 无关的接收方（`client.ts` 白名单上方的「答不上来就不许加」就是这条）。
+ *
+ * `{id}` 同样要求 UUID 形状：`/assessments/sessions/extra/summary` 这类近似路径没有路由，
+ * 不该因为「看起来像」就带着 Key 出门。
+ */
+describe('Key 注入：能力测评只让「生成概述」这一个 URL 带 Key', () => {
+  const SESSION_ID = '22222222-2222-2222-2222-222222222222'
+  let sentHeaders: Array<{ url: string; key: string | undefined }>
+
+  beforeEach(() => {
+    sentHeaders = []
+    http.defaults.adapter = async (config) => {
+      sentHeaders.push({
+        url: config.url ?? '',
+        key: config.headers['X-DeepSeek-Key'] as string | undefined,
+      })
+      return response(config, { data: null, meta: { request_id: 'r' } })
+    }
+    setDeepSeekKey(TEST_KEY)
+  })
+
+  it('POST /assessments/sessions/{id}/summary 带 Key（这一条会转发 AI）', async () => {
+    await http.post(`/assessments/sessions/${SESSION_ID}/summary`)
+
+    expect(sentHeaders).toHaveLength(1)
+    expect(sentHeaders[0]).toMatchObject({
+      url: `/assessments/sessions/${SESSION_ID}/summary`,
+      key: TEST_KEY,
+    })
+  })
+
+  it('开考 / 存答案 / 提交 / 放弃 / 目录 / 画像都不带 Key', async () => {
+    await http.get('/assessments')
+    await http.post('/assessments/sessions', {})
+    await http.put(`/assessments/sessions/${SESSION_ID}/answers`, { answers: [] })
+    await http.post(`/assessments/sessions/${SESSION_ID}/submit`)
+    await http.post(`/assessments/sessions/${SESSION_ID}/abandon`)
+    await http.get('/assessments/profile')
+
+    for (const item of sentHeaders) {
+      expect(item.key, `${item.url} 不该携带 DeepSeek Key`).toBeUndefined()
+    }
+    expect(sentHeaders).toHaveLength(6)
+  })
+
+  it('近似路径也不带：/assessments/sessions/extra/summary、/summary 换方法', async () => {
+    await http.post('/assessments/sessions/extra/summary')
+    await http.get(`/assessments/sessions/${SESSION_ID}/summary`)
+
+    expect(sentHeaders.map((item) => item.key)).toEqual([undefined, undefined])
+  })
+})

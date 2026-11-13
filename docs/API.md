@@ -717,6 +717,12 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 > `POST /assessments/{assessment_id}/attempts` **从未实现，也不会按那个形态实现**：
 > 真实模型只有「题库版本（`bank_version`）+ 会话（`session`）」两层，没有 `level` 分组也没有 `attempt` 概念。
 > 保留这段说明是为了让读旧 PRD 的人知道它作废了，而不是「还没做」。
+>
+> **前端**：`frontend/src/api/assessments.ts` 是这八个端点的唯一封装；`AssessmentView.vue` 一屏三段
+> （目录 / 答题 / 结果），从工作区切换器进入。BYOK 白名单只扩
+> `POST /assessments/sessions/{id}/summary`（唯一会转发用户凭据的一条），同组其余六个只碰自己库的
+> 端点在 `byok.spec.ts` 里各有反向断言；概述标题按 `source` 分流（`ai` → 「AI 分析」，
+> `fallback` → 「自动整理的概述」），不许把模板文案标成 AI。
 
 ### 5.1 测评端点清单（FR-04 / `ADR-028`）
 

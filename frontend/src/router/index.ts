@@ -14,6 +14,7 @@ import RegisterView from '@/views/RegisterView.vue'
 import ResumeEditorView from '@/views/ResumeEditorView.vue'
 import InterviewListView from '@/views/InterviewListView.vue'
 import InterviewDetailView from '@/views/InterviewDetailView.vue'
+import AssessmentView from '@/views/AssessmentView.vue'
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -128,6 +129,18 @@ const routes: RouteRecordRaw[] = [
         path: 'interviews/:id',
         name: 'interview-detail',
         component: InterviewDetailView,
+        meta: { requiresAuth: true },
+      },
+      /*
+       * 能力测评（FR-04 / B9，ADR-028）：一屏三段（目录 / 答题 / 结果），
+       * 所以只有一条路由，没有下钻页。路径是静态段、不与 `jobs/:id` 同级，
+       * 没有排序陷阱；模块表 `config/modules.ts` 里那一项的 `routeName` 必须与这里
+       * 逐字一致（`layoutGuards.spec.ts` 用 `router.hasRoute()` 钉住）。
+       */
+      {
+        path: 'assessments',
+        name: 'assessment',
+        component: AssessmentView,
         meta: { requiresAuth: true },
       },
     ],

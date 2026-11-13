@@ -52,6 +52,9 @@ function makeRouter(): Router {
     { path: '/organization', name: 'organization', component: BLANK },
     { path: '/interviews', name: 'interview-list', component: BLANK },
     { path: '/interviews/:id', name: 'interview-detail', component: BLANK },
+    // B9（ADR-028）起工作区切换器多一张「能力测评」卡片：模块表里每一项都要能在
+    // 这份本地路由里解析到，否则 `RouterLink` 会抛 `No match`（不是断言失败，是整套挂载炸掉）。
+    { path: '/assessments', name: 'assessment', component: BLANK },
     { path: '/login', name: 'login', component: BLANK },
   ]
   return createRouter({ history: createMemoryHistory(), routes })
