@@ -123,6 +123,8 @@ function detail(id: string, overrides: Record<string, unknown> = {}) {
     ...summary(id),
     description: '负责后端接口开发，熟练掌握 Python 与 FastAPI。',
     experience_required: '3 年以上',
+    // `ADR-024` §2.6：驳回理由。`null` = 没被驳回过（或重提后已清空）。
+    review_note: null,
     extract_model: null,
     extract_prompt_version: null,
     extracted_at: null,
@@ -313,6 +315,16 @@ function fakeAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse>
     )
   }
 
+  if (method === 'get' && url === '/jobs/review-queue') {
+    // 审核人的工作队列：另一个端点、另一个权限，但形状与广场列表一致（`ADR-024` §2.6）。
+    return Promise.resolve(
+      envelope(config, {
+        data: { jobs: [summary('job-pending', { status: 'pending_review' })] },
+        meta: { request_id: 'req-test', page: 1, page_size: 50, total: 1 },
+      }),
+    )
+  }
+
   if (method === 'get' && url === '/jobs') {
     const isDraft = query.status === 'draft'
     return Promise.resolve(
@@ -352,8 +364,21 @@ function fakeAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse>
     return Promise.resolve(envelope(config, { data: { job: detail('job-new', { status: 'draft' }) }, meta: { request_id: 'req-test' } }, 201))
   }
 
-  if (method === 'put' && url === '/jobs/job-1/publish') {
-    return Promise.resolve(envelope(config, { data: { job: detail('job-1', { status: 'published' }) }, meta: { request_id: 'req-test' } }))
+  // `ADR-024` §2.6 之后没有「直发」通道：创建者只能提交审核（→ pending_review），
+  // 上架由审核人那一次 POST /review 决定。
+  if (method === 'post' && url === '/jobs/job-1/submit-review') {
+    return Promise.resolve(envelope(config, { data: { job: detail('job-1', { status: 'pending_review' }) }, meta: { request_id: 'req-test' } }))
+  }
+
+  if (method === 'post' && url === '/jobs/job-1/review') {
+    const decision = ((body ?? {}) as Record<string, unknown>).decision
+    const next = decision === 'approve' ? 'published' : 'rejected'
+    return Promise.resolve(
+      envelope(config, {
+        data: { job: detail('job-1', { status: next, review_note: decision === 'reject' ? '信息不全' : null }) },
+        meta: { request_id: 'req-test' },
+      }),
+    )
   }
 
   if (method === 'put' && url === '/jobs/job-1/unpublish') {
@@ -657,11 +682,30 @@ describe('详情页的只读信息', () => {
     expect(store.isCreatorOf(null)).toBe(false)
   })
 
-  it('发布 / 下架同步详情页；删除清空详情页', async () => {
+  it('待审队列走独立端点：筛 `pending_review` 不会去打 `GET /jobs?status=pending_review`', async () => {
+    const store = useJobStore()
+
+    await store.setStatusFilter('pending_review')
+
+    expect(requestsFor('get', '/jobs/review-queue')).toHaveLength(1)
+    // 反向护栏：广场列表那条路必须一次都没走。写成「也调了、只是结果没用」同样是错的——
+    // 那条请求会按 `published` 的可见性规则去查，审核人在队列里看不到该看的行。
+    expect(requestsFor('get', '/jobs')).toHaveLength(0)
+    expect(store.jobs.map((row) => row.status)).toEqual(['pending_review'])
+  })
+
+  it('提交审核 / 审核通过 / 下架同步详情页；删除清空详情页', async () => {
     const store = useJobStore()
     await store.loadDetail('job-1')
 
-    await store.publish('job-1')
+    // 创建者：只能把草稿交出去，自己点不出 `published`（旧 `PUT /publish` 已删，ADR-024 §2.6）。
+    await store.submitReview('job-1')
+    expect(requestsFor('post', '/jobs/job-1/submit-review')).toHaveLength(1)
+    expect(store.detail?.status).toBe('pending_review')
+
+    // 审核人：那一次 POST /review 才是状态真正变 published 的地方。
+    await store.review('job-1', 'approve')
+    expect(requestsFor('post', '/jobs/job-1/review')).toHaveLength(1)
     expect(store.detail?.status).toBe('published')
 
     await store.unpublish('job-1')

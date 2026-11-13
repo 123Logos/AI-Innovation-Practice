@@ -48,6 +48,9 @@ RESUME_READ = "resume:read"
 RESUME_WRITE = "resume:write"
 JOB_READ = "job:read"
 JOB_WRITE = "job:write"
+#: 审核岗位（`ADR-024` §2.2）。`docs/PRD.md:28` 写「教师……审核岗位」，
+#: `:31` 写「平台管理员：处理内容审核」，所以教师及以上都有，学生没有。
+JOB_REVIEW = "job:review"
 INTERVIEW_OWN = "interview:own"
 ORG_MEMBER_READ = "org:member:read"
 ORG_MEMBER_MANAGE = "org:member:manage"
@@ -66,7 +69,7 @@ _STUDENT_PERMISSIONS: frozenset[str] = frozenset(
     }
 )
 
-_TEACHER_PERMISSIONS: frozenset[str] = _STUDENT_PERMISSIONS | {ORG_MEMBER_READ}
+_TEACHER_PERMISSIONS: frozenset[str] = _STUDENT_PERMISSIONS | {ORG_MEMBER_READ, JOB_REVIEW}
 
 ROLE_PERMISSIONS: dict[UserRole, frozenset[str]] = {
     UserRole.STUDENT: _STUDENT_PERMISSIONS,

@@ -31,6 +31,8 @@ const BLANK = { template: '<div />' }
 interface Call {
   method: string
   url: string
+  /** 出线的请求体（`config.data` 是 axios 序列化后的字符串时解析回对象）；GET 为 `null`。 */
+  body: Record<string, unknown> | null
 }
 
 let calls: Call[] = []
@@ -59,6 +61,38 @@ let requirementCoverage: Array<{ name: string; status: string; matched_form: str
 ]
 /** 匹配失败的真实形状（429 / 404），与 `failDelete` 同一个理由。 */
 let matchFailure: { status: number; code: string; message: string } | null = null
+/**
+ * 审核动作（提交审核 / 通过 / 驳回）要回哪一份失败。
+ *
+ * 三条真实来路都用得上：没有组织 → 400 `JOB_ORGANIZATION_REQUIRED`；
+ * 岗位已过期 → 409 `JOB_EXPIRED`（第 18 轮裁定 ③，前端不许自己比日期）；
+ * 自审 → 409 `JOB_SELF_REVIEW`。做成开关是为了让「成功文案」那条断言不会
+ * 因为适配器永远成功而变成自我实现。
+ */
+let reviewFailure: { status: number; code: string; message: string } | null = null
+
+function reviewFailureError(config: InternalAxiosRequestConfig): AxiosError {
+  const failure = reviewFailure!
+  return new AxiosError(
+    failure.code,
+    'ERR_BAD_RESPONSE',
+    config,
+    {},
+    envelope(
+      config,
+      {
+        error: {
+          code: failure.code,
+          message: failure.message,
+          details: {},
+          retryable: false,
+        },
+        meta: { request_id: 'r' },
+      },
+      failure.status,
+    ),
+  )
+}
 /** 当前在挂的组件实例的卸载钩子，见 `afterEach` 里那段为什么要 unmount。 */
 let unmountCurrent: (() => void) | null = null
 /** 详情页要渲染的岗位：默认「创建者本人 + 一条可回溯、一条无依据」。 */
@@ -96,6 +130,7 @@ function makeJobPayload(overrides: Record<string, unknown> = {}): Record<string,
     deadline: null,
     status: 'draft',
     created_by_user_id: OWN_USER_ID,
+    review_note: null,
     created_at: '2026-11-05T10:00:00+08:00',
     updated_at: '2026-11-05T10:00:00+08:00',
     deleted_at: null,
@@ -177,11 +212,22 @@ function envelope(config: InternalAxiosRequestConfig, data: unknown, status = 20
   return { data, status, statusText: 'OK', headers: {}, config } as AxiosResponse
 }
 
+/** 记一次出线：方法、路径与请求体（审核口径全在请求体里，不能只记两条）。 */
+function recordCall(config: InternalAxiosRequestConfig): void {
+  calls.push({
+    method: (config.method ?? 'get').toLowerCase(),
+    url: config.url ?? '',
+    body:
+      typeof config.data === 'string' && config.data
+        ? (JSON.parse(config.data) as Record<string, unknown>)
+        : ((config.data as Record<string, unknown> | undefined) ?? null),
+  })
+}
+
 function fakeAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse> {
   const method = (config.method ?? 'get').toLowerCase()
   const url = config.url ?? ''
-  calls.push({ method, url })
-
+  recordCall(config)
   if (method === 'get' && /^\/jobs\/[^/]+\/requirement-match$/.test(url)) {
     // 第 3c 条：逐条状态由后端给。用例改 `requirementCoverage` 就能模拟 covered/partial/missing
     // 任意组合——包括「前端本地那套归一化会判错」的那些写法组合。
@@ -281,6 +327,26 @@ function fakeAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse>
     return Promise.resolve(envelope(config, { data: { job_id: 'job-42', deleted: true }, meta: { request_id: 'r' } }))
   }
 
+  // 审核流的两个动作：`ADR-024` 之后创建者只能提交审核，上架由审核人那一次 POST /review 决定。
+  if (method === 'post' && url === '/jobs/job-42/submit-review') {
+    if (reviewFailure) return Promise.reject(reviewFailureError(config))
+    // 没有组织的账号拿到的 400 由用例通过 `reviewFailure` 造，这里只走成功路径。
+    jobPayload = { ...jobPayload, status: 'pending_review', review_note: null }
+    return Promise.resolve(envelope(config, { data: { job: jobPayload }, meta: { request_id: 'r' } }))
+  }
+
+  if (method === 'post' && url === '/jobs/job-42/review') {
+    if (reviewFailure) return Promise.reject(reviewFailureError(config))
+    const body = typeof config.data === 'string' ? (JSON.parse(config.data) as Record<string, unknown>) : {}
+    const rejected = body.decision === 'reject'
+    jobPayload = {
+      ...jobPayload,
+      status: rejected ? 'rejected' : 'published',
+      review_note: rejected ? String(body.note ?? '') : null,
+    }
+    return Promise.resolve(envelope(config, { data: { job: jobPayload }, meta: { request_id: 'r' } }))
+  }
+
   if (method === 'get' && url === '/jobs') {
     return Promise.resolve(
       envelope(config, { data: { jobs: [] }, meta: { request_id: 'r', page: 1, page_size: 50, total: 0 } }),
@@ -327,6 +393,11 @@ function callsFor(method: string, url?: string): Call[] {
   return calls.filter((call) => call.method === method && (url === undefined || call.url === url))
 }
 
+/** 最后一次 `POST /jobs/{id}/review` 的请求体：审核动作的口径全在这两格里。 */
+function lastReviewBody(): Record<string, unknown> | null {
+  return callsFor('post', '/jobs/job-42/review').pop()?.body ?? null
+}
+
 beforeEach(() => {
   pinia = createPinia()
   setActivePinia(pinia)
@@ -335,6 +406,7 @@ beforeEach(() => {
   failDelete = false
   matchPayload = null
   matchFailure = null
+  reviewFailure = null
   requirementCoverage = [
     { name: 'FastAPI', status: 'covered', matched_form: ' FastAPI ' },
     { name: 'Kubernetes', status: 'missing', matched_form: null },
@@ -447,7 +519,7 @@ describe('详情页如实展示提取产物（C1 之后这两格有真值了）'
 
   it('覆盖查询失败时角标整体不显示，但详情页仍然读得出岗位', async () => {
     http.defaults.adapter = (config: InternalAxiosRequestConfig) => {
-      calls.push({ method: (config.method ?? 'get').toLowerCase(), url: config.url ?? '' })
+      recordCall(config)
       if (/requirement-match$/.test(config.url ?? '')) {
         return Promise.reject(new AxiosError('连不上。', 'ERR_NETWORK'))
       }
@@ -900,5 +972,122 @@ describe('匹配卡：只有点按钮才算', () => {
     expect(text).not.toContain('relevance')
     // 反向护栏：`terms[].value` 这些数字确实**没有**被误当成界面元素渲染出来。
     expect(text).not.toContain('0.45')
+  })
+})
+
+/**
+ * 审核流（`ADR-024`）：谁看得见哪一组按钮，以及按钮背后打的是哪条路径。
+ *
+ * 这一组用例的共同毛病都是「界面上什么都不会报错」：
+ * 创建者自己点出 `published`（少了审核）、学生看见审核面板（点了 403）、
+ * 驳回理由丢掉（创建者不知道要改什么）。所以每条都同时断言**看得见的文案**
+ * 与**发出去的请求**，两边任一改动都会变红。
+ */
+describe('审核流（ADR-024）：提交审核与审核面板', () => {
+  /** 把当前账号换成「有 job:review 的同组织老师」。 */
+  function actAsReviewer(): void {
+    useAuthStore().permissions = ['job:review']
+  }
+
+  it('创建者的草稿只有「提交审核」，点了打 POST /jobs/{id}/submit-review 并落到待审', async () => {
+    const { wrapper } = await mountDetail({ status: 'draft' })
+
+    expect(wrapper.find('[data-testid="submit-review-button"]').exists()).toBe(true)
+    // 「发布」这个词从一个创建者能点的按钮上彻底消失：那是 ADR-024 §2.6 删掉的直发通道。
+    expect(wrapper.find('.owner-actions').text()).not.toContain('发布')
+    // 创建者自己也看不见审核面板——哪怕他碰巧有 `job:review`（下面那条单独钉）。
+    expect(wrapper.find('.review-panel').exists()).toBe(false)
+
+    await wrapper.find('[data-testid="submit-review-button"]').trigger('click')
+    await flushPromises()
+
+    expect(callsFor('post', '/jobs/job-42/submit-review')).toHaveLength(1)
+    expect(wrapper.text()).toContain('已提交审核')
+    expect(wrapper.text()).toContain('待审核')
+  })
+
+  it('创建者即便有 `job:review` 也不出审核面板（自审的前端半边，后端 409 兜底）', async () => {
+    actAsReviewer()
+    const { wrapper } = await mountDetail({ status: 'pending_review' })
+
+    expect(wrapper.find('.review-panel').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="approve-button"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="reject-button"]').exists()).toBe(false)
+  })
+
+  it('没有 `job:review` 的账号（学生）对别人的待审岗位既看不到面板也看不到按钮', async () => {
+    const { wrapper } = await mountDetail({ status: 'pending_review', created_by_user_id: 'other-user' })
+
+    expect(wrapper.find('.review-panel').exists()).toBe(false)
+    // 别人的岗位连创建者操作区都不该有。
+    expect(wrapper.find('.owner-actions').exists()).toBe(false)
+  })
+
+  it('审核人看到面板：通过打 POST /review + decision=approve，且不带 note 键', async () => {
+    actAsReviewer()
+    const { wrapper } = await mountDetail({ status: 'pending_review', created_by_user_id: 'other-user' })
+
+    expect(wrapper.find('.review-panel').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="approve-button"]').trigger('click')
+    await flushPromises()
+
+    expect(callsFor('post', '/jobs/job-42/review')).toHaveLength(1)
+    expect(wrapper.text()).toContain('已通过')
+  })
+
+  it('驳回把理由作为 note 发出去，并把理由留在页面上给创建者看', async () => {
+    actAsReviewer()
+    const { wrapper } = await mountDetail({ status: 'pending_review', created_by_user_id: 'other-user' })
+
+    await wrapper.find('[data-testid="review-note"]').setValue('岗位职责写得太笼统')
+    await wrapper.find('[data-testid="reject-button"]').trigger('click')
+    await flushPromises()
+
+    const sent = lastReviewBody()
+    expect(sent).toEqual({ decision: 'reject', note: '岗位职责写得太笼统' })
+    expect(wrapper.text()).toContain('已驳回')
+
+    // 驳回后的详情（适配器已把 status 改成 rejected）必须把理由显示出来。
+    // 重新挂载一次，模拟创建者刷新页面看到的那一屏。
+    const after = await mountDetail({
+      status: 'rejected',
+      created_by_user_id: 'other-user',
+      review_note: '岗位职责写得太笼统',
+    })
+    expect(after.wrapper.text()).toContain('驳回理由：岗位职责写得太笼统')
+  })
+
+  it('岗位已过期：后端 409 那句话原样显示，页面不许自己编一句日期理由', async () => {
+    actAsReviewer()
+    reviewFailure = {
+      status: 409,
+      code: 'JOB_EXPIRED',
+      message: '岗位已过截止时间，请先更新截止日期再审核。',
+    }
+    const { wrapper } = await mountDetail({ status: 'pending_review', created_by_user_id: 'other-user' })
+
+    await wrapper.find('[data-testid="approve-button"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('岗位已过截止时间，请先更新截止日期再审核。')
+    expect(wrapper.text()).not.toContain('已通过')
+    // 反向护栏：过期判据只有一份（`app/core/deadline.py`），前端不许出现第二套日期判断的产物。
+    expect(wrapper.text()).not.toContain('is_expired')
+  })
+
+  it('没有组织：400 的「请先绑定组织」也走同一条受信文案通道', async () => {
+    reviewFailure = {
+      status: 400,
+      code: 'JOB_ORGANIZATION_REQUIRED',
+      message: '发布岗位前请先绑定组织。',
+    }
+    const { wrapper } = await mountDetail({ status: 'draft' })
+
+    await wrapper.find('[data-testid="submit-review-button"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('发布岗位前请先绑定组织。')
+    expect(wrapper.text()).not.toContain('已提交审核')
   })
 })

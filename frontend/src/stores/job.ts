@@ -111,6 +111,8 @@ export const JOB_ORIGIN_BADGES: Record<JobsContract.JobSkillOrigin, string> = {
 export const JOB_STATUS_LABELS: Record<JobStatus, string> = {
   published: '已发布',
   draft: '草稿',
+  pending_review: '待审核',
+  rejected: '已驳回',
 }
 
 /* -------------------------------- 表单约束 -------------------------------- */
@@ -780,13 +782,23 @@ export const useJobStore = defineStore('job', () => {
     loading.value = true
     jobs.value = []
     try {
-      const result = await jobsApi.listJobs({
-        status: filter.status,
-        keyword: filter.keyword,
-        includeExpired: filter.includeExpired,
-        page: targetPage,
-        pageSize: pageSize.value,
-      })
+      // `pending_review` 不是「广场的一档」，它是审核人的工作队列（`ADR-024` §2.6）：
+      // 走另一个端点，因为它按组织过滤、按先来先审排序，还多一层 `job:review` 权限。
+      // 复用同一个 `jobs` / `total`，是为了让分页与卡片渲染不必写第二套。
+      const result =
+        filter.status === 'pending_review'
+          ? await jobsApi.listReviewQueue({
+              keyword: filter.keyword,
+              page: targetPage,
+              pageSize: pageSize.value,
+            })
+          : await jobsApi.listJobs({
+              status: filter.status,
+              keyword: filter.keyword,
+              includeExpired: filter.includeExpired,
+              page: targetPage,
+              pageSize: pageSize.value,
+            })
       jobs.value = result.jobs
       total.value = result.total
       page.value = result.page
@@ -983,11 +995,36 @@ export const useJobStore = defineStore('job', () => {
     }
   }
 
-  /** 发布（仅创建者）：同步详情页，列表由调用方按需刷新。 */
-  async function publish(jobId: string): Promise<JobRead> {
+  /**
+   * 提交审核（仅创建者）：`draft` / `rejected` → `pending_review`。
+   *
+   * 原来的「发布」按钮走的是 `PUT /jobs/{id}/publish`，那条通道已经在 `ADR-024` §2.6
+   * 被删除——创建者不能自己把未审内容推上广场。
+   */
+  async function submitReview(jobId: string): Promise<JobRead> {
     submitting.value = true
     try {
-      const updated = await jobsApi.publishJob(jobId)
+      const updated = await jobsApi.submitJobForReview(jobId)
+      if (detail.value?.id === jobId) detail.value = updated
+      return updated
+    } finally {
+      submitting.value = false
+    }
+  }
+
+  /**
+   * 审核（仅 `job:review`）：通过 → `published`，驳回 → `rejected`（可带理由）。
+   *
+   * 过期判定不在前端：后端按 `is_expired` 拦成 409，视图只需要把那句话显示出来。
+   */
+  async function review(
+    jobId: string,
+    decision: JobsContract.JobReviewDecision,
+    note?: string,
+  ): Promise<JobRead> {
+    submitting.value = true
+    try {
+      const updated = await jobsApi.reviewJob(jobId, decision, note)
       if (detail.value?.id === jobId) detail.value = updated
       return updated
     } finally {
@@ -1129,7 +1166,8 @@ export const useJobStore = defineStore('job', () => {
     submitting,
     createJob,
     updateJob,
-    publish,
+    submitReview,
+    review,
     unpublish,
     remove,
     extractDraft,

@@ -42,6 +42,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    and_,
     delete,
     func,
     or_,
@@ -52,9 +53,16 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 from app.core.datetime_display import utc_now
 
-#: 岗位状态（1.B 的两态）。`draft` 不进广场，`published` 全量可读。
+#: 岗位状态（`ADR-011` 1.B 的两态 + `ADR-024` 装回来的审核两态）。
+#:
+#: `draft` 不进广场，`published` 全量可读。`pending_review` / `rejected` 是审核流
+#: （`ADR-024` §2.1）补的：前者等审核、内容锁定，后者被驳回、可改后重提。
+#: **没有 `approved`**：审核通过的唯一意义就是上架，多一个中间态就多一次漏判机会；
+#: **没有 `expired`**：过期仍是读侧判定（`ADR-011` 2.G），不落状态、不新增定时任务。
 STATUS_DRAFT = "draft"
+STATUS_PENDING_REVIEW = "pending_review"
 STATUS_PUBLISHED = "published"
+STATUS_REJECTED = "rejected"
 
 #: 技能条目的「能否回溯到 JD 原文」标记（1.D 只有两个值；v7 值域改名，方案 a）。
 #:
@@ -109,6 +117,11 @@ class Job(JobBase):
     #: 截止时间。`NULL` = 长期有效，永远出现在默认列表里（2.G）。
     deadline: Mapped[date | None] = mapped_column(Date, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default=STATUS_DRAFT)
+    #: 审核范围（`ADR-024` §2.2）：**提交审核时**由服务层从成员关系写入，请求体够不到。
+    #: 可空：第 18 轮裁定 ① 要求组织归属永久可空、不刷存量数据，存量岗位这一列就是 NULL。
+    organization_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    #: 驳回理由（`ADR-024` §2.6）：只有 `rejected` 时有值，创建人与审核人可见。
+    review_note: Mapped[str | None] = mapped_column(String(200), nullable=True)
     # 三列提取溯源戳：由服务层在保存时盖（ADR-011 v9 第 ② 条），客户端提交不到这里。
     extract_model: Mapped[str | None] = mapped_column(String(60), nullable=True)
     extract_prompt_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
@@ -195,15 +208,33 @@ class JobRepository:
 
     # ------------------------------------------------------------------ 读
 
-    def get_readable(self, job_id: str, viewer_id: str) -> Job | None:
-        """按「1.F #2 的可见性」取一行：`published` 人人可读，`draft` 仅创建者。
+    def get_readable(
+        self,
+        job_id: str,
+        viewer_id: str,
+        *,
+        reviewer_organization_id: str | None = None,
+        reviewer_sees_all: bool = False,
+    ) -> Job | None:
+        """按「1.F #2 的可见性 + `ADR-024` 的审核可见性」取一行。
+
+        `published` 人人可读，`draft` / `rejected` 仅创建者；
+        `pending_review` 额外给审核人读——同组织的传 `reviewer_organization_id`，
+        平台管理员传 `reviewer_sees_all=True`。两个参数都**只该由服务层在验过
+        `JOB_REVIEW` 权限之后**传进来：仓储不认识角色，它只认识范围。
 
         回收站里的行（`deleted_at` 非空）一律不可读 —— 它与「不存在」同样返回 404。
         """
         return self._session.scalar(
             select(Job)
             .where(Job.id == job_id, Job.deleted_at.is_(None))
-            .where(self._visibility_clause(viewer_id))
+            .where(
+                self._visibility_clause(
+                    viewer_id,
+                    reviewer_organization_id=reviewer_organization_id,
+                    reviewer_sees_all=reviewer_sees_all,
+                )
+            )
         )
 
     def get_owned(
@@ -304,6 +335,63 @@ class JobRepository:
             )
         )
 
+    def get_for_review(self, job_id: str, *, organization_id: str | None) -> Job | None:
+        """审核人视角的取行：`organization_id` 为 `None` 表示平台管理员（不限组织）。
+
+        **刻意不复用 `get_readable()`**：那条谓词要回答「我能不能看」，本条要回答
+        「这条岗位该不该由我来审」。混在一起就会出现「草稿也能被审」这种漏洞——
+        草稿根本不在审核流程里。回收站里的行同样审不了。
+        """
+        statement = select(Job).where(Job.id == job_id, Job.deleted_at.is_(None))
+        if organization_id is not None:
+            statement = statement.where(Job.organization_id == organization_id)
+        return self._session.scalar(statement)
+
+    def list_review_queue(
+        self,
+        *,
+        organization_id: str | None,
+        keyword: str | None,
+        offset: int,
+        limit: int,
+    ) -> list[Job]:
+        """待审队列：只出 `pending_review`，`organization_id` 为 `None` 时跨组织。"""
+        conditions = self._review_queue_filters(organization_id=organization_id, keyword=keyword)
+        statement = (
+            select(Job)
+            .where(*conditions)
+            .order_by(Job.created_at.asc(), Job.id.asc())
+            .offset(offset)
+            .limit(limit)
+        )
+        return list(self._session.scalars(statement))
+
+    def count_review_queue(self, *, organization_id: str | None, keyword: str | None) -> int:
+        """与 `list_review_queue()` 同谓词的总数（分页 `meta.total`）。"""
+        conditions = self._review_queue_filters(organization_id=organization_id, keyword=keyword)
+        total = self._session.scalar(select(func.count()).select_from(Job).where(*conditions))
+        return int(total or 0)
+
+    def _review_queue_filters(
+        self, *, organization_id: str | None, keyword: str | None
+    ) -> list[ColumnElement[bool]]:
+        """队列与计数共用：待审 + 未删 + 范围；排序按**先来先审**（`created_at` 升序）。"""
+        conditions: list[ColumnElement[bool]] = [
+            Job.status == STATUS_PENDING_REVIEW,
+            Job.deleted_at.is_(None),
+        ]
+        if organization_id is not None:
+            conditions.append(Job.organization_id == organization_id)
+        if keyword and keyword.strip():
+            pattern = keyword.strip()
+            conditions.append(
+                or_(
+                    Job.company_name.contains(pattern, autoescape=True),
+                    Job.title.contains(pattern, autoescape=True),
+                )
+            )
+        return conditions
+
     # ------------------------------------------------------------------ 写
 
     def create_job(
@@ -356,12 +444,17 @@ class JobRepository:
         job: Job,
         draft: JobDraft,
         skills: Sequence[JobSkillDraft],
+        status_override: str | None = None,
     ) -> Job:
         """父表字段覆盖 + 子表先删后插，整体一次提交（PUT 语义）。
 
         `status` / `deleted_at` 不在这里改：发布与下架是独立动作（1.F #6），
         创建与编辑都不是它们的副作用。把它们混进 PUT，
         就会让「编辑一份草稿」顺带把岗位推上广场。
+
+        `status_override` 是 `ADR-024` §2.5 的**唯一**例外，且只往「更安全的方向」走：
+        编辑一份待审岗位时由服务层传 `STATUS_DRAFT`，把它退回草稿——否则审核人批的
+        是旧内容、发布出去的是新内容。发布方向（→`published`）绝不走这个参数。
 
         先删后插（而不是 diff）与 `replace_profile_content()` 一致：
         技能条目没有稳定业务主键，diff 的复杂度换不来可验证的收益。
@@ -383,6 +476,8 @@ class JobRepository:
         job.extract_model = draft.extract_model
         job.extract_prompt_version = draft.extract_prompt_version
         job.extracted_at = draft.extracted_at
+        if status_override is not None:
+            job.status = status_override
         job.updated_at = now
         self._session.execute(delete(JobSkill).where(JobSkill.job_id == job.id))
         self._add_skills(job.id, skills, now)
@@ -416,6 +511,41 @@ class JobRepository:
                     updated_at=now,
                 )
             )
+
+    def submit_for_review(
+        self, job_id: str, user_id: str, organization_id: str, now: datetime
+    ) -> None:
+        """提交审核：`draft` / `rejected` → `pending_review`，同时**盖审核范围**。
+
+        `organization_id` 每次提交都从成员关系重取（而不是「第一次提交时定死」）：
+        账号换组织之后，旧草稿该归新组织审，而不是归一个它已经不属于的组织。
+        调用方必须先 `get_owned()` 校验归属与状态。
+        """
+        self._session.execute(
+            update(Job)
+            .where(Job.id == job_id, Job.created_by_user_id == user_id)
+            .values(
+                status=STATUS_PENDING_REVIEW,
+                organization_id=organization_id,
+                review_note=None,
+                updated_at=now,
+            )
+        )
+        self._session.commit()
+
+    def set_review(self, job_id: str, status: str, note: str | None, now: datetime) -> None:
+        """审核落地：`pending_review` → `published` / `rejected`。
+
+        **不带 `created_by_user_id`**：审核人不是创建者，这是本文件里唯一一个
+        故意不按创建者过滤的写动作。范围校验由调用方的 `get_for_review()` 完成，
+        而那条查询已经限定了组织（或平台管理员的全域）。
+        """
+        self._session.execute(
+            update(Job)
+            .where(Job.id == job_id, Job.status == STATUS_PENDING_REVIEW)
+            .values(status=status, review_note=note, updated_at=now)
+        )
+        self._session.commit()
 
     def update_status(self, job_id: str, user_id: str, status: str) -> None:
         """发布 / 下架。调用方**必须**先用 `get_owned(job_id, user_id)` 校验归属。
@@ -453,12 +583,33 @@ class JobRepository:
 
     # ---------------------------------------------------------------- 内部
 
-    def _visibility_clause(self, viewer_id: str) -> ColumnElement[bool]:
-        """1.F #1/#2 的可见性谓词：已发布的谁都能看，草稿只有创建者能看。"""
-        return or_(
+    def _visibility_clause(
+        self,
+        viewer_id: str,
+        *,
+        reviewer_organization_id: str | None = None,
+        reviewer_sees_all: bool = False,
+    ) -> ColumnElement[bool]:
+        """1.F #1/#2 的可见性谓词：已发布的谁都能看，其余仅创建者。
+
+        `pending_review` 是审核对象，必须让审核人读得到（`ADR-024` §2.2）：
+        同组织靠 `organization_id`，平台管理员看全部。**范围由参数给，
+        权限由调用方先验**——仓储没有角色概念，也不该有。
+        """
+        clauses: list[ColumnElement[bool]] = [
             Job.status == STATUS_PUBLISHED,
             Job.created_by_user_id == viewer_id,
-        )
+        ]
+        if reviewer_sees_all:
+            clauses.append(Job.status == STATUS_PENDING_REVIEW)
+        elif reviewer_organization_id is not None:
+            clauses.append(
+                and_(
+                    Job.status == STATUS_PENDING_REVIEW,
+                    Job.organization_id == reviewer_organization_id,
+                )
+            )
+        return or_(*clauses)
 
     def _filters(
         self,

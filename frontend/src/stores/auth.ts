@@ -22,11 +22,14 @@ import {
   storeSession,
   type SessionTokens,
 } from '@/api/client'
-import type { LoginRequest, RegisterRequest, UserRead } from '@/api/types'
+import type { LoginRequest, RegisterRequest, UserRead, UserRole } from '@/api/types'
 
 export const useAuthStore = defineStore('auth', () => {
   const token = ref<string | null>(getStoredToken())
   const user = ref<UserRead | null>(null)
+  /** 当前账号在组织里的角色与权限（`/auth/me` 的顶层三格）。 */
+  const role = ref<UserRole | null>(null)
+  const permissions = ref<string[]>([])
   const submitting = ref(false)
   const signingOut = ref(false)
 
@@ -54,6 +57,8 @@ export const useAuthStore = defineStore('auth', () => {
   function logout(): void {
     token.value = null
     user.value = null
+    role.value = null
+    permissions.value = []
     clearStoredToken()
   }
 
@@ -100,16 +105,26 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  /** 用当前 Token 换取用户信息；失败即视为会话失效并清理本地状态。 */
+  /** 用当前 Token 换取用户信息与权限；失败即视为会话失效并清理本地状态。 */
   async function loadCurrentUser(): Promise<UserRead> {
     try {
-      const current = await authApi.fetchCurrentUser()
-      user.value = current
-      return current
+      const current = await authApi.fetchCurrentContext()
+      user.value = current.user
+      role.value = current.role ?? 'student'
+      permissions.value = current.permissions ?? []
+      return current.user
     } catch (error) {
       logout()
       throw error
     }
+  }
+
+  /**
+   * 有没有某个权限。**不是权限边界**：后端每个端点自己再判一次，
+   * 这里只决定「要不要显示这个入口」（与 `app/core/permissions.py` 的模块纪律一致）。
+   */
+  function hasPermission(permission: string): boolean {
+    return permissions.value.includes(permission)
   }
 
   /** 路由守卫用：有 Token 但没有用户信息时补齐（刷新页面场景）。 */
@@ -131,6 +146,9 @@ export const useAuthStore = defineStore('auth', () => {
     signingOut,
     isAuthenticated,
     displayName,
+    role,
+    permissions,
+    hasPermission,
     login,
     register,
     loadCurrentUser,

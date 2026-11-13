@@ -76,9 +76,27 @@ B5 实际落库的是下面三张，迁移文件 `alembic/versions/20261112_0018
    `(organization_id, created_at)` 与 `(actor_user_id, created_at)` 两条复合索引
    （`tests/test_migrations.py` 那条「不许有单列 created_at 索引」判据同时挡着它）。
 
+### 3.2 岗位审核流给 `jobs` 加的两列（批次 B6 后半，2026-11-13，`ADR-024` §2.3 / §2.6）
+
+迁移 `alembic/versions/20261113_0022_job_review_workflow.py`。`jobs` 原有 18 列（`20261105_0011` 建的），本次只加两列、改一条 CHECK、加一条复合索引：
+
+| 列 | 类型 | 可空 | 说明 |
+|---|---|---|---|
+| `organization_id` | `VARCHAR(36)`，FK→`organizations.id` ON DELETE RESTRICT | **YES** | 提交审核那一刻定格的组织，审核范围据此判定。**可空是刻意的**（第 18 轮裁定 ① 渐进式强制）：存量岗位不刷数据，只在「提交审核」这个必须依托组织的动作上拦截。`RESTRICT` 而不是 `SET NULL`：组织删了而岗位还在审核队列里，等于把审计链剪断 |
+| `review_note` | `VARCHAR(200)` | YES | 驳回理由。只有 `rejected` 时有值；`submit-review` 与 `approve` 都会清空它——「通过」必须让创建者读到的理由为空，而不是上一轮的残留 |
+
+两条实现细节值得记下来，它们都是实测撞出来的：
+
+1. **先建索引、后加外键**：`ix_jobs_org_status (organization_id, status)` 建在外键之前，MySQL 就直接复用它做外键索引；反过来会先自动生成一条只有 `organization_id` 的索引，于是同一列上出现两条索引（`tests/test_migrations.py` 的索引判据会数出来）。
+2. **`downgrade` 是有损的**：回到两态时先把 `pending_review` / `rejected` 的行归到 `draft`，再加回两值 CHECK。顺序反了迁移会在加约束那一步直接失败（库里已有非法值）。这条损失写在迁移的 docstring 里，不靠「反正能跑通」蒙过去。
+
 ## 4. 状态与一致性约束
 
-- 岗位：`draft -> pending_review -> approved -> published -> closed/expired/rejected`。
+- 岗位（`ADR-024` §2.1，迁移 `20261113_0022`）：四态 `draft -> pending_review -> published`，
+  `pending_review` 可 `-> rejected`、`rejected` 可 `-> pending_review`（改完重提），
+  `published` 可 `-> draft`（下架），编辑 `pending_review` 的岗位自动退回 `draft`。
+  **没有 `approved`**（通过即上架，不留中间态）、**没有 `expired`**（过期是读侧判定，
+  `ADR-011` §2.G）——四个值由 `ck_jobs_status` 钉死在库上。
 - AI 任务：`queued -> running -> succeeded/failed/cancelled`；同一业务操作通过 `idempotency_key` 唯一约束防重复。
 - 简历版本不可覆盖：每次编辑新增版本，`version_no` 在同一简历内唯一。
 - 授权撤回通过更新 `revoked_at` 立即生效；读取时必须检查 `expires_at IS NULL OR expires_at > UTC_TIMESTAMP()`。
@@ -88,6 +106,9 @@ B5 实际落库的是下面三张，迁移文件 `alembic/versions/20261112_0018
 ## 5. 索引与查询原则
 
 1. 列表查询优先使用 `(organization_id, status, created_at)` 或对应业务状态索引。
+   岗位侧已落的是 `ix_jobs_org_status (organization_id, status)`（`20261113_0022`）——
+   待审队列的谓词恰好是「本组织 + `pending_review`」两格，「先来先审」的排序吃主键之外的
+   `created_at` 不再是索引前缀，所以没把第三列放进去：多一列只会让写放大换不来一次可感知的读优化。
 2. 岗位技能、学生技能和证据使用关联表，避免把可查询技能列表仅存为 JSON。
 3. JSON 仅用于 AI 原始输出、解释和可变的简历区块；核心筛选字段使用独立列。
 4. 不在数据库层依赖前端隐藏按钮实现授权；Repository 查询和 Service 权限检查必须同时执行。

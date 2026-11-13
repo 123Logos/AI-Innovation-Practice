@@ -45,8 +45,10 @@ from app.core.skill_names import skill_name_key
 from app.integrations.skill_extractor import MAX_EVIDENCE_CHARS
 from app.repositories.job_repository import MAX_SKILLS_PER_JOB
 
-#: 岗位状态（`ck_jobs_status`）。只有两态，审核态在 1.A 里被明确否决。
-JobStatus = Literal["draft", "published"]
+#: 岗位状态（`ck_jobs_status`）。`ADR-011` 1.B 的两态由 `ADR-024` §2.1 扩成四态：
+#: `pending_review`（待审核）与 `rejected`（已驳回）是审核流补的，
+#: **没有 `approved`**（通过即上架）、**没有 `expired`**（过期是读侧判定）。
+JobStatus = Literal["draft", "pending_review", "published", "rejected"]
 
 #: 工作方式（`ck_jobs_employment_type`）。1.G 说明本轮不含 `work_mode`（远程/驻场）。
 EmploymentType = Literal["internship", "full_time", "part_time", "contract", "other"]
@@ -258,6 +260,9 @@ class JobRead(BaseModel):
     deadline: date | None = None
     status: JobStatus
     created_by_user_id: str
+    #: 驳回理由（`ADR-024` §2.6）。只有 `rejected` 时有值；创建人与审核人看得到，
+    #: 其他人连这条岗位都读不到（可见性见 `JobRepository.get_readable`）。
+    review_note: str | None = None
     #: 三列提取溯源戳，**由服务端盖，不采信客户端**（ADR-011 v9 第 ② 条）：
     #: 本次保存里只要有任何一条技能被判为 `jd_verifiable`，服务层就写入
     #: `extract_model` = 固定模型、`extract_prompt_version` = `EXTRACT_PROMPT_VERSION`、
@@ -368,3 +373,23 @@ class ExtractSkillsResult(BaseModel):
 
     skills: list[ExtractedSkillRead] = Field(min_length=1)
     meta: ExtractSkillsMeta
+
+
+# --------------------------------------------------------------------------- #
+# B6 另一半：审核动作的请求体（`ADR-024` §2.6）
+#
+# 只有两格：审哪条走路径参数，`decision` 决定落到哪个状态，`note` 是驳回理由。
+# 刻意不做 `JobReviewPatch` 这种「部分更新」模型：审核是一次完整判定，
+# 没有「只改理由」这种动作——要改就重新驳一次，审计里因此永远是一次决定一条记录。
+# --------------------------------------------------------------------------- #
+
+
+class JobReviewRequest(BaseModel):
+    """审核请求体：`approve` → `published`，`reject` → `rejected`（带理由）。
+
+    `note` 上限 200 与列宽一致；通过时传了也会被服务层丢掉（`review_note` 只在
+    驳回时有意义），所以前端不需要在切换按钮时清空输入框。
+    """
+
+    decision: Literal["approve", "reject"]
+    note: str | None = Field(default=None, max_length=200)

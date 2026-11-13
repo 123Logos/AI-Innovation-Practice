@@ -27,7 +27,9 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
+from app.core.error_messages import ErrorMessage
 from app.core.errors import error_response
+from app.core.permissions import JOB_REVIEW
 from app.core.rate_limit import (
     EXTRACT_RATE_LIMIT,
     MATCH_RATE_LIMIT,
@@ -36,12 +38,29 @@ from app.core.rate_limit import (
 )
 from app.core.responses import request_id, success_response
 from app.schemas.auth import UserRead
-from app.schemas.job import MAX_PAGE_SIZE, ExtractSkillsRequest, JobWriteRequest
-from app.services.dependencies import get_current_user, get_job_service, get_match_service
+from app.schemas.job import (
+    MAX_PAGE_SIZE,
+    ExtractSkillsRequest,
+    JobReviewRequest,
+    JobWriteRequest,
+)
+from app.services.auth_service import CurrentUserContext
+from app.services.dependencies import (
+    client_ip,
+    get_current_context,
+    get_current_user,
+    get_job_service,
+    get_match_service,
+    require_permission,
+)
 from app.services.job_service import (
+    JobExpiredError,
     JobNotFoundError,
+    JobOrganizationRequiredError,
+    JobSelfReviewError,
     JobService,
     JobSkillExtractTruncatedError,
+    JobStateConflictError,
 )
 from app.services.match_service import MatchService
 
@@ -50,6 +69,10 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 JobServiceDep = Annotated[JobService, Depends(get_job_service)]
 MatchServiceDep = Annotated[MatchService, Depends(get_match_service)]
 CurrentUserDep = Annotated[UserRead, Depends(get_current_user)]
+CurrentContextDep = Annotated[CurrentUserContext, Depends(get_current_context)]
+#: 审核人（`ADR-024` §2.2）：路由层判「有没有 `job:review`」，
+#: 服务层再判「这条岗位在不在你的范围」。两层缺一不可——只判权限会让教师能审别校岗位。
+JobReviewerDep = Annotated[CurrentUserContext, Depends(require_permission(JOB_REVIEW))]
 
 #: 1.F #1：列表默认只给已发布，自己的草稿要显式传 `status=draft`。
 #: 用 `Literal` 而不是自由字符串：白名单外的值由 FastAPI 直接 422，
@@ -63,6 +86,31 @@ EXTRACT_TRUNCATED_MESSAGE = (
     "AI 输出的技能条目过多，被服务端的 token 上限切断了。"
     "请重试，并只粘贴 JD 的核心段落，或减少期望的条数。"
 )
+
+
+def _review_translate(error: Exception) -> HTTPException:
+    """审核域的三种失败 → 状态码与人话文案（文案全部来自 `ErrorMessage` 受信目录）。
+
+    - 状态冲突 409：看得见这条岗位的人本来就知道它在，藏着只会让人反复点；
+    - 过期 409：动作层的唯一判据给出的结论（`ADR-017` §5 / `ADR-024` §2.4）；
+    - 没组织 400：第 18 轮裁定 ① 的对外提示。
+    """
+    if isinstance(error, JobStateConflictError):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=ErrorMessage.JOB_STATE_CONFLICT
+        )
+    if isinstance(error, JobExpiredError):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=ErrorMessage.JOB_EXPIRED)
+    if isinstance(error, JobSelfReviewError):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=ErrorMessage.JOB_SELF_REVIEW
+        )
+    if isinstance(error, JobOrganizationRequiredError):
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ErrorMessage.JOB_ORGANIZATION_REQUIRED,
+        )
+    return _not_found()
 
 
 def _not_found() -> HTTPException:
@@ -178,16 +226,42 @@ def list_job_trash(
     )
 
 
+@router.get("/review-queue")
+def list_review_queue(
+    request: Request,
+    service: JobServiceDep,
+    context: JobReviewerDep,
+    keyword: str | None = Query(default=None, max_length=200),
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=MAX_PAGE_SIZE)] = 20,
+) -> dict[str, Any]:
+    """待审队列（`ADR-024` §2.6）：只出本组织（平台管理员跨组织）的待审岗位。
+
+    声明在 `/{job_id}` 之前：否则 FastAPI 会把 `review-queue` 当成岗位 id。
+    """
+    jobs, total = service.list_review_queue(
+        context, keyword=keyword, page=page, page_size=page_size
+    )
+    return success_response(
+        request,
+        {"jobs": [job.model_dump(mode="json") for job in jobs]},
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
+
+
 @router.get("/{job_id}")
 def read_job(
     job_id: str,
     request: Request,
     service: JobServiceDep,
-    current_user: CurrentUserDep,
+    context: CurrentContextDep,
 ) -> dict[str, Any]:
-    """详情（1.F #2）：`published` 任何登录用户可读，他人 `draft` 404。"""
+    """详情（1.F #2 + `ADR-024` §2.2）：`published` 谁都可读，其余仅创建者，
+    `pending_review` 额外给本组织的审核人（平台管理员不受组织限制）。"""
     try:
-        job = service.get_job(current_user.id, job_id)
+        job = service.get_job(context, job_id)
     except JobNotFoundError as error:
         raise _not_found() from error
     return success_response(request, {"job": job.model_dump(mode="json")})
@@ -280,18 +354,52 @@ def update_job(
     return success_response(request, {"job": job.model_dump(mode="json")})
 
 
-@router.put("/{job_id}/publish")
-def publish_job(
+@router.post("/{job_id}/submit-review")
+def submit_job_for_review(
     job_id: str,
     request: Request,
     service: JobServiceDep,
-    current_user: CurrentUserDep,
+    context: CurrentContextDep,
 ) -> dict[str, Any]:
-    """发布（1.F #6，仅创建者）：进入广场，任何登录用户可读。"""
+    """提交审核（`ADR-024` §2.3）：`draft` / `rejected` → `pending_review`。
+
+    **取代了原来的 `PUT /{job_id}/publish`**：那条通道让创建者一条命令就把未审内容
+    推上广场，而广场是匹配池的唯一来源——留着它，审核就只是装饰（§2.6）。
+    """
     try:
-        job = service.publish_job(current_user.id, job_id)
+        job = service.submit_for_review(context, job_id, ip=client_ip(request))
     except JobNotFoundError as error:
         raise _not_found() from error
+    except (JobStateConflictError, JobExpiredError, JobOrganizationRequiredError) as error:
+        raise _review_translate(error) from error
+    return success_response(request, {"job": job.model_dump(mode="json")})
+
+
+@router.post("/{job_id}/review")
+def review_job(
+    job_id: str,
+    payload: JobReviewRequest,
+    request: Request,
+    service: JobServiceDep,
+    context: JobReviewerDep,
+) -> dict[str, Any]:
+    """审核（`ADR-024` §2.2 / §2.4）：通过 → `published`，驳回 → `rejected`（带理由）。
+
+    过期岗位在这里被 `is_expired` 拦下（第 18 轮裁定 ③）：审核是改变世界状态的动作，
+    不判过期的「通过」等于把一条已经失效的岗位推上广场。
+    """
+    try:
+        job = service.review(
+            context,
+            job_id,
+            decision=payload.decision,
+            note=payload.note,
+            ip=client_ip(request),
+        )
+    except JobNotFoundError as error:
+        raise _not_found() from error
+    except (JobStateConflictError, JobExpiredError, JobSelfReviewError) as error:
+        raise _review_translate(error) from error
     return success_response(request, {"job": job.model_dump(mode="json")})
 
 

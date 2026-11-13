@@ -12,7 +12,7 @@
 | 唯一判据：`deadline` 非空且**严格早于**今天；`NULL` = 长期有效 | `app/core/deadline.py:15-21` |
 | 服务层两处都调它（列表项 / 详情），**没有第二处 `deadline < today`** | `app/services/job_service.py:483-490`，被 `:515`（`JobSummary`）与 `:538`（`JobRead`）共用 |
 | `is_expired` 是对外字段（详情与列表两种模型都有） | `app/schemas/job.py:235`、`:275` |
-| **只有列表默认过滤**过期行，`include_expired=true` 才一起给 | `app/repositories/job_repository.py:488-490`、参数在 `app/api/v1/jobs.py:80` |
+| **只有列表默认过滤**过期行，`include_expired=true` 才一起给 | `app/repositories/job_repository.py:639-641`、参数在 `app/api/v1/jobs.py:80` |
 | 详情按 id 打得开过期岗位（200 + `is_expired=True`），且这条**已有测试锁着** | `tests/test_jobs.py::test_expired_jobs_are_hidden_by_default_on_the_app_clock`（过期三态与「陌生人读详情」都在这一条里） |
 | 匹配侧的过期表达是 `terms[remaining_time] = {value 0.0, computed True, note "expired"}` | `app/services/match_scoring.py::remaining_time_value` |
 | 前端**不自己比日期**，只读后端那个布尔 | `frontend/src/stores/job.ts`、`JobDetailView.vue`、`JobBoardView.vue` |
@@ -38,7 +38,7 @@
 老板那句「必须走同一个过期过滤函数」按字面做会出事，取证两条：
 
 1. `get_readable` 是详情/match/requirement-match **共用**的读入口（`job_repository.py:198-206` + `_visibility_clause:456-461`），一旦往里加 deadline 谓词，**写完回读也会中招**：`_reload` 走的就是 `get_readable`（`app/services/job_service.py:404-410`）。于是一个「创建时就填了过去的截止日期」的岗位会**保存成功然后立刻 404**——用户刚存的东西自己看不见，而 POST 的响应体也没了。
-2. `tests/test_jobs.py:937` 锁的正是「陌生人读过期详情 = 200 + `is_expired=True`」。这条是 `ADR-011` 2.G 的原意（过期是**状态**，不是**删除**）。
+2. `tests/test_jobs.py:1042` 锁的正是「陌生人读过期详情 = 200 + `is_expired=True`」。这条是 `ADR-011` 2.G 的原意（过期是**状态**，不是**删除**）。
 
 所以：**过滤 = 列表的职责（它决定「现在还有什么可投」）；标注 = 其余读端点的职责（它们决定「这一条本身是什么样子」）**。判据同一个，动作不同，这不是双口径——双口径指的是同一个问题有两个答案，而这里四个端点回答的是四个不同问题。
 
@@ -59,7 +59,7 @@
 ## 3. 替代方案（都否了）
 
 - **四个端点都过滤**：§2.2 的取证 1 直接把它否掉（保存成功后立刻 404 是要用户负责的 bug）。
-- **写时触发自动下架**（改 `status` 或加 `closed_at`）：需要一条定时任务或一次全表扫描，Redis/Celery 至今没引入（`ADR-014` 把「禁令」变成「事实与选择」，但没把「没有必要」变成「有必要」）；而且 `status` 现在是 `draft/published` 两态 + CHECK 约束（`20261105_0011:84-87`），`tests/test_jobs_constraints.py:265` 还**主动禁止**写入 `expired` 状态。真要下架必须是新列，那是另一个 ADR + 一次迁移，v1 不做。
+- **写时触发自动下架**（改 `status` 或加 `closed_at`）：需要一条定时任务或一次全表扫描，Redis/Celery 至今没引入（`ADR-014` 把「禁令」变成「事实与选择」，但没把「没有必要」变成「有必要」）；而且 `status` 当时是 `draft/published` 两态 + CHECK 约束（`20261105_0011:84-87`；**2026-11-13 起为四态** `draft/pending_review/published/rejected`，`ADR-024` §2.1，但 `expired` 仍不在值域里），`tests/test_jobs_constraints.py:276` 还**主动禁止**写入 `expired` 状态。真要下架必须是新列，那是另一个 ADR + 一次迁移，v1 不做。
 - **match 响应里再加一个 `meta.is_expired`**：第五个字段回答第四个问题，`ADR-013` §8 刚把「不重复表达」立为口径。
 - **前端自己比日期**：`ADR-011` 2.G 与 `stores/job.ts:32-33` 都禁止，且各端时区不一致会直接产生分歧读数。
 

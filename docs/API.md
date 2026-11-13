@@ -175,7 +175,7 @@
 ## 4. 岗位
 
 > 本章是 Phase 4（B1 / B1 补正 / B2 / B3 / C1）**已实现**的后端契约，取代本文件旧版的异步岗位分析口径。
-> 代码位置：端点 `app/api/v1/jobs.py`，请求/响应模型 `app/schemas/job.py`，业务规则 `app/services/job_service.py`，ORM 与仓储 `app/repositories/job_repository.py`，DeepSeek 适配器 `app/integrations/skill_extractor.py`；表结构 `alembic/versions/20261105_0011_jobs.py`（`jobs`）与 `20261105_0012_job_skills.py`（`job_skills`）。设计依据 `docs/adr/ADR-011-job-board-and-skill-extraction.md`。
+> 代码位置：端点 `app/api/v1/jobs.py`，请求/响应模型 `app/schemas/job.py`，业务规则 `app/services/job_service.py`，ORM 与仓储 `app/repositories/job_repository.py`，DeepSeek 适配器 `app/integrations/skill_extractor.py`；表结构 `alembic/versions/20261105_0011_jobs.py`（`jobs`）、`20261105_0012_job_skills.py`（`job_skills`）与审核流两列 `alembic/versions/20261113_0022_job_review_workflow.py`。设计依据 `docs/adr/ADR-011-job-board-and-skill-extraction.md`，审核流以 `docs/adr/ADR-024-job-review-workflow.md` 为准。
 > 旧版的 `POST /jobs` 返回 `202` + `ai_job_id`、以及 `POST /jobs/{job_id}/analyze` 异步任务形态**从未实现**，并被 ADR-011 2.A 明确否决（队列依赖 Redis/ARQ/Celery，仍在 AGENTS.md §3.2 冻结清单内）。
 
 ### 4.0 状态码从哪里来（改错误契约前必读）
@@ -188,14 +188,18 @@
 | `POST /api/v1/jobs` | Create Job | `201`、`422` |
 | `POST /api/v1/jobs/extract-skills` | Extract Job Skills | `200`、`422` |
 | `GET /api/v1/jobs/trash` | List Job Trash | `200` |
+| `GET /api/v1/jobs/review-queue` | List Review Queue | `200`、`403` |
 | `GET /api/v1/jobs/{job_id}` | Read Job | `200`、`422` |
 | `POST /api/v1/jobs/{job_id}/match` | Match Job | `200`、`422` |
 | `GET /api/v1/jobs/{job_id}/requirement-match` | Requirement Match Job | `200`、`422` |
 | `PUT /api/v1/jobs/{job_id}` | Update Job | `200`、`422` |
 | `DELETE /api/v1/jobs/{job_id}` | Delete Job | `200`、`422` |
-| `PUT /api/v1/jobs/{job_id}/publish` | Publish Job | `200`、`422` |
+| `POST /api/v1/jobs/{job_id}/submit-review` | Submit Job Review | `200`、`400`、`404`、`409`、`422` |
+| `POST /api/v1/jobs/{job_id}/review` | Review Job | `200`、`403`、`404`、`409`、`422` |
 | `PUT /api/v1/jobs/{job_id}/unpublish` | Unpublish Job | `200`、`422` |
 | `PUT /api/v1/jobs/{job_id}/restore` | Restore Job | `200`、`422` |
+
+**`PUT /api/v1/jobs/{job_id}/publish` 已删除**（`ADR-024` §2.6）：它是绕过审核的直发通道，留着它审核就只是装饰。它对任何岗位都返回 404，所以测试里凡断言「非创建者 publish 得 404」的用例都成了永真式——那类断言已改为打在 `submit-review` 上。
 
 **`400` / `401` / `404` / `429` / `500` / `502` 不在 schema 里**——它们由 `app/main.py` 注册的异常处理器返回裸 `JSONResponse`，FastAPI 不会把处理器写进 `responses`。下面这张表是按处理器实读出来的实际语义，不要读成「schema 已声明这些码」：
 
@@ -203,44 +207,53 @@
 |---|---|---|---|
 | 请求体或查询参数不合模型 | 422 | `VALIDATION_ERROR` | `app/main.py:203-215` |
 | 无 `Authorization` 头 / 令牌无效或过期 | 401 | `CLIENT_ERROR`，message 为 `UNAUTHORIZED_MESSAGE` | 抛出 `app/services/dependencies.py::_context_from_request`、`app/services/dependencies.py::_bearer_token`；映射 `app/main.py:192-194` |
-| 岗位不存在 / 不属于当前用户 / 已在回收站 | 404 | `NOT_FOUND`（处理器的固定文案「资源不存在。」） | 抛出 `app/api/v1/jobs.py:68-70`；映射 `app/main.py::http_exception` |
-| 提取请求缺 `X-DeepSeek-Key` | 400 | `AI_KEY_MISSING`，`retryable: false` | `app/services/job_service.py:204-205` → `app/main.py:259-264` |
+| 岗位不存在 / 不属于当前用户 / 已在回收站 | 404 | `NOT_FOUND`（处理器的固定文案「资源不存在。」） | 抛出 `app/api/v1/jobs.py:116-118`；映射 `app/main.py::http_exception` |
+| 有登录但缺 `job:review`（只出现在 `GET /jobs/review-queue` 与 `POST /jobs/{job_id}/review`） | 403 | `CLIENT_ERROR`，`details.reason = "FORBIDDEN"` | `app/services/dependencies.py:83`；映射 `app/main.py:210-233` |
+| 提取请求缺 `X-DeepSeek-Key` | 400 | `AI_KEY_MISSING`，`retryable: false` | `app/services/job_service.py:281-282` → `app/main.py:259-264` |
 | DeepSeek 拒绝该 Key（鉴权失败） | 401 | `AI_KEY_INVALID` | `app/integrations/skill_extractor.py:294-298` → `app/services/job_service.py:208-209` → `app/main.py:266-275` |
-| 上游不可用 / 输出不是可解析 JSON / 内容为空 / 无一可回溯 | 502 | `AI_SERVICE_UNAVAILABLE`，`retryable: true` | `app/main.py:277-290`（异常族 `app/services/job_service.py:204-213`、`:270-281`） |
+| 上游不可用 / 输出不是可解析 JSON / 内容为空 / 无一可回溯 | 502 | `AI_SERVICE_UNAVAILABLE`，`retryable: true` | `app/main.py:277-290`（异常族 `app/services/job_service.py:281-290`、`:270-281`） |
 | 输出被服务端 `max_tokens` 切断（`finish_reason == "length"`） | 502 | `AI_SERVICE_UNAVAILABLE`，`retryable: true`，**并在外层 `meta.finish_reason` 回显 `"length"`** | 就地组装 `app/api/v1/jobs.py:151-160`，文案 `EXTRACT_TRUNCATED_MESSAGE` `app/api/v1/jobs.py:62-65` |
 | 提取超过 `EXTRACT_RATE_LIMIT`（`10/minute`，按客户端 IP） | 429 | `RATE_LIMITED`，`retryable: true`，响应头 `Retry-After: 60` | 常量 `app/core/rate_limit.py:39`；装饰器 `app/api/v1/jobs.py:122`；映射 `app/main.py:217-237` |
 | 匹配超过 `MATCH_RATE_LIMIT`（`10/minute`，**按用户**而不是按 IP） | 429 | `RATE_LIMITED`，`retryable: true`，响应头 `Retry-After: 60` | 常量 `app/core/rate_limit.py:42`；键函数 `:45`；装饰器 `app/api/v1/jobs.py:197`；映射同一个 `app/main.py:217-237`（§4.10） |
 | 未捕获异常 | 500 | `INTERNAL_ERROR` | `app/main.py:173-182` |
+| 提交审核时账号还没有组织归属（`ADR-024` §2.3，第 18 轮裁定 ①） | 400 | `CLIENT_ERROR`，`details.reason = "JOB_ORGANIZATION_REQUIRED"`，文案「发布岗位需要先绑定组织，请用邀请码加入学校组织后再提交审核。」 | 抛出 `app/api/v1/jobs.py:91-113`（`_review_translate`）← `app/services/job_service.py:624-639` |
+| 审核/提交时岗位状态已经不是你以为的那个 | 409 | `CLIENT_ERROR`，`details.reason = "JOB_STATE_CONFLICT"` | 同上；状态机见 §4.2 |
+| 审核/提交时岗位已过截止时间（`ADR-017` §5 的动作层判据） | 409 | `CLIENT_ERROR`，`details.reason = "JOB_EXPIRED"` | `app/services/job_service.py:641-665`（唯一判据 `app/core/deadline.py::is_expired`） |
+| 审核自己提交的岗位 | 409 | `CLIENT_ERROR`，`details.reason = "JOB_SELF_REVIEW"` | `app/services/job_service.py:521-527` |
 
 推论两条：① 改路由的 `response_model` 或 `status_code` 动不了 401/404/500/502 的错误契约，要动它们必须改 `app/main.py` 的处理器；② 前端与联调脚本不要拿 `openapi.json` 的 `responses` 键集合去枚举错误分支，那样会漏掉上表全部行。
 
 ### 4.1 身份、归属与可见性（权限矩阵）
 
-身份只来自 JWT：`CurrentUserDep = Depends(get_current_user)`（`app/api/v1/jobs.py:52`）。`users` 表**没有 `role` 列**，也没有任何审核角色（ADR-011 1.A），因此旧版「未审核岗位仅创建者和审核者可见」这句作废：**`published` 任何登录用户可读；他人的 `draft` 一律 404，不是 403**（403 会暴露「该 id 存在」，先例见 `app/api/v1/profiles.py:10`，本文件与 `app/api/v1/jobs.py:11-12` 的说明）。
+身份只来自 JWT：`CurrentUserDep = Depends(get_current_user)`（`app/api/v1/jobs.py:52`）。`users` 表**没有 `role` 列**，角色挂在 `organization_members` 上（`ADR-021` §2.2）；审核身份由 `permissions` 里的 `job:review` 决定（`app/core/permissions.py:74-81`，`ADR-024` §2.2），不是「另一个用户表字段」。旧版「未审核岗位仅创建者和审核者可见」这句在 `ADR-024` 之后**部分回来**了：`pending_review` 对本组织（平台管理员跨组织）的审核人可读，其余人仍是 404。`published` 任何登录用户可读；他人的 `draft` 一律 404，不是 403（403 会暴露「该 id 存在」，先例见 `app/api/v1/profiles.py:10`，本文件与 `app/api/v1/jobs.py:11-12` 的说明）。
 
 | # | 操作 | 允许的调用者 | 非创建者的结果 | 实际状态码 | 代码位置 |
 |---|---|---|---|---|---|
 | 1 | `GET /jobs` | 任何登录用户 | 列表里不会出现他人的 `draft` | 200 | `app/api/v1/jobs.py:73-106`、谓词 `app/repositories/job_repository.py:476-479` |
 | 2 | `GET /jobs/{job_id}` | `published`：任何登录用户；`draft`：仅创建者 | 404 | 200 / 404 | `app/api/v1/jobs.py:181-193`、`app/repositories/job_repository.py:198-207`、`:458-463` |
 | 3 | `POST /jobs` | 任何登录用户 | — | 201 / 422 / 401 | `app/api/v1/jobs.py:109-118` |
-| 4 | `PUT /jobs/{job_id}` | 仅创建者 | 404 | 200 / 404 | `app/api/v1/jobs.py:267-280`、`app/repositories/job_repository.py:209-224` |
+| 4 | `PUT /jobs/{job_id}` | 仅创建者 | 404 | 200 / 404 | `app/api/v1/jobs.py:341-354`、`app/repositories/job_repository.py:209-224` |
 | 5 | `DELETE /jobs/{job_id}` | 仅创建者 | 404 | 200 / 404 | `app/api/v1/jobs.py:313-325`、`app/services/job_service.py:368-376` |
-| 6 | `PUT /jobs/{job_id}/publish`、`/unpublish` | 仅创建者 | 404 | 200 / 404 | `app/api/v1/jobs.py:283-310`、`app/services/job_service.py:360-366` |
+| 6 | `POST /jobs/{job_id}/submit-review`、`PUT /jobs/{job_id}/unpublish` | 仅创建者 | 404；提交审核另有 400（无组织）/ 409（状态冲突、已过期） | 200 / 400 / 404 / 409 | `app/api/v1/jobs.py:357-375`、`app/services/job_service.py:448-482`、`app/api/v1/jobs.py:406-418` |
 | 7 | `POST /jobs/extract-skills` | 任何登录用户 | 无归属概念（纯计算，不落库） | 200 / 400 / 401 / 422 / 429 / 502 | `app/api/v1/jobs.py:121-161`、`app/services/job_service.py:190-214` |
 | 8 | `GET /jobs/trash` | 任何登录用户 | 只返回**自己的**软删岗位（过滤在 SQL 里） | 200 | `app/api/v1/jobs.py:164-178`、`app/repositories/job_repository.py:284-295` |
 | 9 | `PUT /jobs/{job_id}/restore` | 仅创建者 | 404；「岗位存在但不在回收站」同样是 404 | 200 / 404 | `app/api/v1/jobs.py:328-346`、`app/services/job_service.py:378-393` |
 | 10 | `POST /jobs/{job_id}/match` | `published`：任何登录用户；`draft`：仅创建者 | 404（他人的草稿**包括**回收站里的） | 200 / 401 / 404 / 422 / 429 | `app/api/v1/jobs.py:196-226`、`app/services/match_service.py::match` |
-| 11 | `GET /jobs/{job_id}/requirement-match` | `published`：任何登录用户；`draft`：仅创建者 | 同上，404 而不是 403（**与 #10 同一个 `get_readable` 谓词**） | 200 / 401 / 404 / 422 | `app/api/v1/jobs.py:229-264`、`app/services/match_service.py::requirement_match` |
+| 11 | `GET /jobs/{job_id}/requirement-match` | `published`：任何登录用户；`draft`：仅创建者 | 同上，404 而不是 403（**与 #10 同一个 `get_readable` 谓词**） | 200 / 401 / 404 / 422 | `app/api/v1/jobs.py:303-338`、`app/services/match_service.py::requirement_match` |
+| 12 | `POST /jobs/{job_id}/review` | `job:review`（teacher / school_admin / platform_admin）**且**不是创建者**且**在审核范围内（同组织；`platform_admin` 跨组织） | 范围外与不存在同为 404（教师不该知道别校有一条待审岗位）；自审 409 而不是静默放过 | 200 / 403 / 404 / 409 | `app/api/v1/jobs.py:378-403`、`app/services/job_service.py:485-541`、范围判定 `app/services/job_service.py:611-622` |
+| 13 | `GET /jobs/review-queue` | `job:review`（**没有**权限直接 403：这是唯一一处 403 而不是 404 的岗位端点，因为队列本身不是某一条具体资源） | 只出本组织的 `pending_review`；`platform_admin` 跨组织 | 200 / 403 | `app/api/v1/jobs.py:229-251`、`app/services/job_service.py:543-568` |
+
+**审核人能不能看见 `/jobs` 列表里那条 `pending_review`，与队列无关**：`GET /jobs?status=…` 的 `status` 白名单只有 `draft` / `published`（`app/api/v1/jobs.py:80`），传 `pending_review` 直接 422。待审岗位只从 `/jobs/review-queue` 出；但**详情**（#2）对范围内的审核人是放开的，否则审核面板打不开。
 
 三条实现约束（都有代码兜住，不是口头承诺）：
 
-- 越权 / 不存在 / 已软删在 service 层收敛成同一个 `JobNotFoundError`（`app/services/job_service.py:94-103`），api 层只有一句 `raise _not_found()`；`app/services/` 下不出现 `HTTPException`（AGENTS.md §4.1）。
+- 越权 / 不存在 / 已软删在 service 层收敛成同一个 `JobNotFoundError`（`app/services/job_service.py:104-113`），api 层只有一句 `raise _not_found()`；`app/services/` 下不出现 `HTTPException`（AGENTS.md §4.1）。
 - 已软删的岗位**读写都是 404**：`get_readable` 带 `deleted_at IS NULL`（`app/repositories/job_repository.py:205`），`get_owned` 默认也带（`:222-223`），只有 `restore` 走 `include_deleted=True`（`app/services/job_service.py:391`）。
 - 归属校验写在 SQL 谓词里（`created_by_user_id == user_id`），不是「先查出来再在服务层比一次」（`app/repositories/job_repository.py:215-224` 的注释；`update_status` 再兜一层 `:428-431`）。
 
 ### 4.2 请求体里有什么、没有什么
 
-`POST /jobs` 与 `PUT /jobs/{job_id}` 共用同一个模型 `JobWriteRequest`（`app/schemas/job.py:137-194`）：
+`POST /jobs` 与 `PUT /jobs/{job_id}` 共用同一个模型 `JobWriteRequest`（`app/schemas/job.py:139-196`）：
 
 | 字段 | 类型 / 约束 | 必填 | 代码位置 |
 |---|---|---|---|
@@ -254,7 +267,7 @@
 | `deadline` | `date`（`YYYY-MM-DD`），允许填**过去**的日期 | ❌ | `:176-178` |
 | `skills` | 数组，最多 15 条（`MAX_SKILLS_PER_JOB`） | ❌，默认 `[]` | `:179`、常量 `app/repositories/job_repository.py:75` |
 
-`skills[]` 每条收**四格**（`JobSkillInput`，`app/schemas/job.py:74-134`）：
+`skills[]` 每条收**四格**（`JobSkillInput`，`app/schemas/job.py:76-136`）：
 
 | 字段 | 类型 / 约束 | 代码位置 |
 |---|---|---|
@@ -267,12 +280,12 @@
 
 四条服务端派生规则（这是「`origin` 不在请求体里」的完整含义）：
 
-1. `POST /jobs` 恒落 `status='draft'`（`app/services/job_service.py:329-344`）；`PUT` 不改 `status` 也不改 `deleted_at`（`app/repositories/job_repository.py:364-366`）。发布 / 下架是独立动作。
-2. 每条技能的 `origin` 由服务层现场派生：该条 `evidence_text` 与岗位 `description` 各过四步归一化（NFKC → casefold → 去空白 → 去标点）后，前者是后者的子串 → `jd_verifiable`，否则 → `unverified`（`app/services/job_service.py:456-480`，归一化与子串判定在 `app/integrations/skill_extractor.py:189-225`；值域常量 `app/repositories/job_repository.py:69-70`）。`evidence_text` 为空即 `unverified`——空串是任何文本的子串，必须先挡掉（`app/integrations/skill_extractor.py:216-225`）。
+1. `POST /jobs` 恒落 `status='draft'`（`app/services/job_service.py:329-421`）；`PUT` 不改 `deleted_at`，`status` 原则上原样保留（`app/repositories/job_repository.py:364-373`），**唯一例外**是编辑 `pending_review` 的岗位会退回 `draft`（`ADR-024` §2.5，`app/services/job_service.py:439`）——审核人批的必须是最终内容，否则审的是旧文本、发的是新文本。提交审核 / 审核 / 下架是三个独立动作（§4.7）。
+2. 每条技能的 `origin` 由服务层现场派生：该条 `evidence_text` 与岗位 `description` 各过四步归一化（NFKC → casefold → 去空白 → 去标点）后，前者是后者的子串 → `jd_verifiable`，否则 → `unverified`（`app/services/job_service.py:766-790`，归一化与子串判定在 `app/integrations/skill_extractor.py:189-225`；值域常量 `app/repositories/job_repository.py:69-70`）。`evidence_text` 为空即 `unverified`——空串是任何文本的子串，必须先挡掉（`app/integrations/skill_extractor.py:216-225`）。
 3. 三列提取溯源戳由服务端在本次保存里盖：本次提交的技能里**只要有任何一条**被判为 `jd_verifiable`，就写入 `extract_model`（固定 `"deepseek-flash"`，`app/integrations/copy_writer.py:40`）、`extract_prompt_version`（`"v1"`，`app/integrations/skill_extractor.py:56`）、`extracted_at`（应用时钟 UTC naive，`app/services/job_service.py:437-453`）；一条都没有则三列保持 `null`。`PUT` 会**整批重算**这三列，不是「只在有值时覆盖」（`app/repositories/job_repository.py:371-373`）。
 4. 一次提交里的技能名重复先报 422「`skill names must be unique`」（`app/schemas/job.py:175-194`），判定键是 `skill_name_key()` = NFKC + casefold，**只有两步**，与上面第 2 条那个四步归一化函数是两回事（`app/core/skill_names.py`；为什么必须分开见 ADR-011 §2.D.2）。数据库侧的 `UNIQUE (job_id, name)` 名为 `uq_job_skills_job_name`（`alembic/versions/20261105_0012_job_skills.py:96`）。
 
-过期是**读侧判定，不落状态、不写库**：`deadline is not None and deadline < date.today()`（判据 `app/core/deadline.py:15-21`，`JobService.is_expired` 只是委托它，`app/services/job_service.py:483-490`；取「今天」的调用点 `:153`）。「今天」取**应用进程时钟**，SQL 里不出现数据库侧的当日函数（`app/repositories/job_repository.py:243`、`:490-492` 的谓词只吃绑定参数）。`deadline` 为 `null` 视为长期有效。`jobs.status` 的值域只有 `draft` / `published`（`app/repositories/job_repository.py:56-57`，CHECK `ck_jobs_status` 见 `alembic/versions/20261105_0011_jobs.py:84-88`）——**没有 `expired`，也没有 `closed`**，旧版那句「过期岗位自动转为 `expired`」作废。
+过期是**读侧判定，不落状态、不写库**：`deadline is not None and deadline < date.today()`（判据 `app/core/deadline.py:15-21`，`JobService.is_expired` 只是委托它，`app/services/job_service.py:483-490`；取「今天」的调用点 `:153`）。「今天」取**应用进程时钟**，SQL 里不出现数据库侧的当日函数（`app/repositories/job_repository.py:243`、`:490-492` 的谓词只吃绑定参数）。`deadline` 为 `null` 视为长期有效。`jobs.status` 的值域是**四态** `draft` / `pending_review` / `published` / `rejected`（`app/repositories/job_repository.py::STATUS_*`，CHECK `ck_jobs_status` 见 `alembic/versions/20261113_0022_job_review_workflow.py`，`ADR-024` §2.1）——**没有 `approved`**（通过即上架，不留中间态）、**没有 `expired`，也没有 `closed`**：过期仍只由读侧判定，旧版那句「过期岗位自动转为 `expired`」作废。状态迁移只有四条：`draft|rejected --submit-review--> pending_review`、`pending_review --approve--> published`、`pending_review --reject--> rejected`、`published --unpublish--> draft`；此外「编辑 `pending_review`」与「软删后恢复」不改变这条主线。
 
 ### 4.3 GET `/jobs` — 广场与我的草稿
 
@@ -280,11 +293,11 @@
 
 | 参数 | 类型 / 默认 | 语义 |
 |---|---|---|
-| `status` | `draft` \| `published`，默认 `published` | 白名单外的值由 FastAPI 直接 422（`Literal` 而非自由字符串，`app/api/v1/jobs.py:57`）。`status=draft` 只返回**本人**的草稿 |
+| `status` | `draft` \| `published`，默认 `published` | 白名单外的值由 FastAPI 直接 422（`Literal` 而非自由字符串，`app/api/v1/jobs.py:80`）。`status=draft` 只返回**本人**的草稿。**`pending_review` 不在这个白名单里**：待审队列走 `/jobs/review-queue`（§4.7），它按组织过滤、按先来先审排序、另要 `job:review`，混进广场列表会同时破坏三者 |
 | `keyword` | string ≤200，可空 | 子串匹配 `company_name` **或** `title`，`autoescape=True`（`app/repositories/job_repository.py:482-489`） |
 | `include_expired` | bool，默认 `false` | `true` 时把 `deadline < 今天` 的岗位一起返回（`:490-492`） |
 | `page` | int ≥1，默认 1 | |
-| `page_size` | int ≥1，≤100（`MAX_PAGE_SIZE`），默认 20 | `app/schemas/job.py:66-67` |
+| `page_size` | int ≥1，≤100（`MAX_PAGE_SIZE`），默认 20 | `app/schemas/job.py:68-69` |
 
 排序固定 `created_at DESC, id DESC`（`app/repositories/job_repository.py:245`、`:257`），不提供排序参数。软删的行永远不在列表里（`:253-254`）。
 
@@ -323,25 +336,35 @@
 
 仅创建者，请求体与 `POST /jobs` 完全同形（同一个 `JobWriteRequest`）。语义是**字段覆盖 + 技能子表先删后插**，一次提交（`app/repositories/job_repository.py:356-386`）：数组里没出现的技能会被删掉，所以前端必须回传完整列表。`status` / `deleted_at` 不变，三列溯源戳按本次提交重算（4.2 第 3 条）。非创建者或已软删 → 404。返回 `200` + `data.job`。
 
-### 4.7 状态与回收站端点
+### 4.7 审核、状态与回收站端点
 
 | 端点 | 方法 | 效果 | 返回 | 代码位置 |
 |---|---|---|---|---|
-| `/jobs/{job_id}/publish` | **PUT**（不是 POST） | `status` → `published`，进广场 | `200` + `data.job` | `app/api/v1/jobs.py:283-295` |
-| `/jobs/{job_id}/unpublish` | **PUT** | `status` → `draft`，广场立刻读不到 | `200` + `data.job` | `app/api/v1/jobs.py:298-310` |
-| `/jobs/{job_id}` | DELETE | 软删除：只打 `deleted_at`，`job_skills` 一行不动（恢复后内容必须还在） | `200` + `{"data": {"job_id": "…", "deleted": true}}` | `app/api/v1/jobs.py:313-325`、`app/repositories/job_repository.py:433-443` |
-| `/jobs/trash` | GET | **自己的**软删岗位，按 `deleted_at DESC, id DESC` | `200` + `data.jobs`（`JobSummary` 数组），`meta` 只有 `request_id`（**无分页参数、无 `total`**） | `app/api/v1/jobs.py:164-178`、`app/repositories/job_repository.py:284-295` |
-| `/jobs/{job_id}/restore` | PUT | `deleted_at` 清回 `null`，`status` 原样保留（删掉已发布岗位再恢复，它仍是已发布） | `200` + `data.job` | `app/api/v1/jobs.py:328-346`、`app/services/job_service.py:378-393` |
+| `/jobs/{job_id}/submit-review` | **POST** | `draft` / `rejected` → `pending_review`；把提交者的组织定格进 `jobs.organization_id` | `200` + `data.job`；无组织 `400`、状态冲突/已过期 `409` | `app/api/v1/jobs.py:357-375`、`app/services/job_service.py:448-482` |
+| `/jobs/{job_id}/review` | **POST** | `pending_review` → `published`（`decision=approve`）或 `rejected`（`decision=reject`，`note` ≤200 存进 `review_note`） | `200` + `data.job`；无权限 `403`、范围外 `404`、自审/状态冲突/已过期 `409` | `app/api/v1/jobs.py:378-403`、`app/services/job_service.py:485-541` |
+| `/jobs/review-queue` | GET | 本组织（`platform_admin` 跨组织）的 `pending_review`，先提交先审 | `200` + `data.jobs` + 分页 `meta`；无 `job:review` 则 `403` | `app/api/v1/jobs.py:229-251`、`app/services/job_service.py:543-568` |
+| `/jobs/{job_id}/unpublish` | **PUT** | `published` → `draft`，广场立刻读不到 | `200` + `data.job` | `app/api/v1/jobs.py:406-418` |
+| `/jobs/{job_id}` | DELETE | 软删除：只打 `deleted_at`，`job_skills` 一行不动（恢复后内容必须还在） | `200` + `{"data": {"job_id": "…", "deleted": true}}` | `app/api/v1/jobs.py:421-433`、`app/repositories/job_repository.py:433-443` |
+| `/jobs/trash` | GET | **自己的**软删岗位，按 `deleted_at DESC, id DESC` | `200` + `data.jobs`（`JobSummary` 数组），`meta` 只有 `request_id`（**无分页参数、无 `total`**） | `app/api/v1/jobs.py:212-226`、`app/repositories/job_repository.py:284-295` |
+| `/jobs/{job_id}/restore` | PUT | `deleted_at` 清回 `null`，`status` 原样保留（删掉已发布岗位再恢复，它仍是已发布） | `200` + `data.job` | `app/api/v1/jobs.py:436-452`、`app/services/job_service.py:378-393` |
 
-**没有 `/jobs/{job_id}/close`**，也没有 `/archive`、`/expire` 之类的端点（OpenAPI 实测 12 个操作里没有）。发布与下架都是 `PUT` 且仅创建者可调，非创建者一律 404（4.1 #6），旧版「`/publish` 需要审核权限」作废。
+**`PUT /jobs/{job_id}/publish` 已删除**（`ADR-024` §2.6）：创建者不能自己把未审内容推上广场，而广场是匹配池的唯一来源。现在「上架」至少是两个人的两件事：创建者 `submit-review`，范围内的审核人 `review`。
 
-路由声明顺序是契约的一部分：`/jobs/trash` 与 `/jobs/extract-skills` 必须排在 `/jobs/{job_id}` **之前**，否则静态段会被当成岗位 id 塞进路径参数，表现为「回收站打不开，404」（`app/api/v1/jobs.py:3-9`）。
+三条口径写在这里，因为它们都出现过「界面上什么错都不报」的形态：
+
+- **提交前必须绑定组织**（第 18 轮裁定 ①）。没有组织归属的账号拿到 `400 JOB_ORGANIZATION_REQUIRED`，文案是「发布岗位前请先绑定组织。」；组织归属在这一刻被写进 `jobs.organization_id`，审核范围从此不靠猜。
+- **动作层过期拦截**（第 18 轮裁定 ③）：`submit-review` 与 `review` 都先过 `app/core/deadline.py::is_expired`，命中给 `409 JOB_EXPIRED`。所以**一条已经过期的岗位再也进不了广场**——测试里要造「已上架且过期」的行，只能先按未过期发布、再用 SQL 把 `deadline` 改到昨天。
+- **不许自审**：`review` 遇到 `created_by_user_id == 当前用户` 给 `409 JOB_SELF_REVIEW`。教师身份可以靠邀请码拿到（`ADR-023`），所以「有权限」不等于「该审这一条」。前端在 `canReview` 里也把创建者排除掉，但那只是省一次点击，边界在后端。
+
+**没有 `/jobs/{job_id}/close`**，也没有 `/archive`、`/expire` 之类的端点。发布与下架是创建者的两个动作，审核是第三个动作，三种身份的边界在 §4.1 #6 / #12 / #13。
+
+路由声明顺序是契约的一部分：`/jobs/trash`、`/jobs/extract-skills` 与 `/jobs/review-queue` 必须排在 `/jobs/{job_id}` **之前**，否则静态段会被当成岗位 id 塞进路径参数，表现为「回收站打不开，404」（`app/api/v1/jobs.py:3-9`）。
 
 岗位没有永久删除端点，也没有定时物理清理（`dev` 库里回收站的行会一直留着），裁定记录见 ADR-011 1.D 的缺口 ②。
 
 ### 4.8 POST `/jobs/extract-skills` — AI 技能提取（纯计算）
 
-**200 同步返回**，需要两个请求头：`Authorization: Bearer <access_token>`（`app/api/v1/jobs.py:128`）与 `X-DeepSeek-Key`（BYOK，常量 `DEEPSEEK_KEY_HEADER` `app/services/dependencies.py:38`；只从请求头读，不落库、不写日志、不进异常消息）。Key 缺失或为空串时服务层抛 `ResumeApiKeyMissingError`（`app/services/job_service.py:204-205`）。
+**200 同步返回**，需要两个请求头：`Authorization: Bearer <access_token>`（`app/api/v1/jobs.py:128`）与 `X-DeepSeek-Key`（BYOK，常量 `DEEPSEEK_KEY_HEADER` `app/services/dependencies.py:38`；只从请求头读，不落库、不写日志、不进异常消息）。Key 缺失或为空串时服务层抛 `ResumeApiKeyMissingError`（`app/services/job_service.py:281-282`）。
 
 本端点**既不读库也不写库**（`app/services/job_service.py:190-203`；ADR-011 附录指定用挂在 **Engine** 上的 `before_cursor_execute` 把这条钉成断言）。提取结果先回显给用户，用户逐条删改后走 `POST/PUT /jobs` 才落库——AI 无法只凭一次点击改动数据库。
 
@@ -377,7 +400,7 @@
 }
 ```
 
-`data.skills[]` 四格（`ExtractedSkillRead`，`app/schemas/job.py:313-327`）：`name`、`type`（`hard`/`soft`/`domain` 或 `null`）、`evidence`、`confidence`（`float | null`）。字段名是 **`evidence`**，不是 `evidence_text`：这里是「模型给的原话」，还没经过落库判定；用户确认后保存时同一串文字走 `skills[].evidence_text` 进列（`app/schemas/job.py:317-318`）。数组**至少一条**（`min_length=1`，`app/schemas/job.py:369`）——一条都不剩时不是空列表而是 502。
+`data.skills[]` 四格（`ExtractedSkillRead`，`app/schemas/job.py:318-332`）：`name`、`type`（`hard`/`soft`/`domain` 或 `null`）、`evidence`、`confidence`（`float | null`）。字段名是 **`evidence`**，不是 `evidence_text`：这里是「模型给的原话」，还没经过落库判定；用户确认后保存时同一串文字走 `skills[].evidence_text` 进列（`app/schemas/job.py:322-323`）。数组**至少一条**（`min_length=1`，`app/schemas/job.py:374`）——一条都不剩时不是空列表而是 502。
 
 `data.meta` 七个字段逐个的语义（模型 `app/schemas/job.py:330-359`，赋值点 `app/services/job_service.py:293-302`）：
 
@@ -385,7 +408,7 @@
 |---|---|---|---|
 | `model` | string | 这批结果是哪个模型产出的 | 常量 `DEEPSEEK_MODEL` = `"deepseek-flash"`（`app/integrations/copy_writer.py:40`） |
 | `prompt_version` | string | 这批结果是哪一版 Prompt 产出的 | 常量 `EXTRACT_PROMPT_VERSION` = `"v1"`（`app/integrations/skill_extractor.py:56`）；Prompt 每改一次 +1 |
-| `received_count` | int | 模型**一共给了**几条（含后来被剔除、被合并、被切断的） | `len(extraction.skills)`（`app/services/job_service.py:249`） |
+| `received_count` | int | 模型**一共给了**几条（含后来被剔除、被合并、被切断的） | `len(extraction.skills)`（`app/services/job_service.py:326`） |
 | `dropped_count` | int | 其中几条因**无法回溯 JD 原文**（或 `name`/`evidence` 不合规）被剔除 | `:251`、`:255-257`；判定 `_verify_item` `:305-326` |
 | `deduped_count` | int | 其中几条与前面的条目**重名**被合并掉（保留第一次出现的） | `:252`、`:258-263`；判定键 `skill_name_key`（`app/core/skill_names.py`）。这是 ADR-011 §2.D.2 的第 7 个字段 |
 | `truncated` | bool | 15 条封顶**是否真的切掉了东西** | `len(kept) > MAX_EXTRACTED_SKILLS`（`app/services/job_service.py:268`；常量 `app/integrations/skill_extractor.py:65`） |
@@ -399,7 +422,7 @@
 
 | # | 情形 | HTTP + `error.code` | 代码位置 |
 |---|---|---|---|
-| 1 | 请求头没有 Key | 400 `AI_KEY_MISSING` | `app/services/job_service.py:204-205` → `app/main.py:259-264` |
+| 1 | 请求头没有 Key | 400 `AI_KEY_MISSING` | `app/services/job_service.py:281-282` → `app/main.py:259-264` |
 | 2 | DeepSeek 拒绝该 Key | 401 `AI_KEY_INVALID` | `app/integrations/skill_extractor.py:294-298` → `app/services/job_service.py:208-209` → `app/main.py:266-275` |
 | 3 | 网络超时 / 上游 4xx·5xx | 502 `AI_SERVICE_UNAVAILABLE` | `app/integrations/skill_extractor.py:299-303` → `app/services/job_service.py:212-213` |
 | 4 | 返回内容不是可解析的 JSON 对象 | 502 `AI_SERVICE_UNAVAILABLE` | `app/integrations/skill_extractor.py:327-343` |
@@ -413,15 +436,15 @@
 
 三个 `AI_*` 码的处理器文案必须作用域中性（`app/main.py` 里三个 `resume_*` 处理器上方的公共注释，与 ADR-011 2.F）：**不得出现「润色」或「简历」**，因为提取侧复用润色的异常族、两个端点进同一组处理器。
 
-日志里只出现计数、`finish_reason`、`request_id`，不出现 Key、JD 正文、`evidence` 内容、技能名（`app/services/job_service.py:274-292`）。
+日志里只出现计数、`finish_reason`、`request_id`，不出现 Key、JD 正文、`evidence` 内容、技能名（`app/services/job_service.py:351-369`）。
 
 ### 4.9 响应对象的字段
 
-`JobSummary`（列表项与回收站项；**不含 `description`**，JD 最长 8000 字；技能只给**前 6 条**，`SUMMARY_SKILL_LIMIT` `app/services/job_service.py:83`、切片 `:537`）：`id`、`company_name`、`title`、`location`、`employment_type`、`salary_min`、`salary_max`、`deadline`、`status`、`created_by_user_id`、`created_at`、`updated_at`、`deleted_at`、`skills[]`、`is_expired`（`app/schemas/job.py:212-243`）。
+`JobSummary`（列表项与回收站项；**不含 `description`**，JD 最长 8000 字；技能只给**前 6 条**，`SUMMARY_SKILL_LIMIT` `app/services/job_service.py:83`、切片 `:537`）：`id`、`company_name`、`title`、`location`、`employment_type`、`salary_min`、`salary_max`、`deadline`、`status`、`created_by_user_id`、`created_at`、`updated_at`、`deleted_at`、`skills[]`、`is_expired`（`app/schemas/job.py:214-245`）。
 
-`JobRead`（详情与所有写操作的返回；含 `description` 全文与**全部**技能）：上面的字段之外还有 `experience_required`、`extract_model`、`extract_prompt_version`、`extracted_at`（`app/schemas/job.py:246-287`）。
+`JobRead`（详情与所有写操作的返回；含 `description` 全文与**全部**技能）：上面的字段之外还有 `experience_required`、`review_note`（驳回理由，`ADR-024` §2.6：只有 `rejected` 时有值，重新提交即清空）、`extract_model`、`extract_prompt_version`、`extracted_at`（`app/schemas/job.py:139-196`）。`organization_id` **不出现在任何读模型里**：它是审核范围的服务端依据，前端猜不出来也不需要猜（`canReview` 只看 `job:review` 与状态）。
 
-`skills[]` 每条（`JobSkillRead`，`app/schemas/job.py:197-209`）：`id`、`name`、`type`、`origin`（`jd_verifiable` 或 `unverified`，**只出现在响应里**）、`confidence`、`evidence_text`。
+`skills[]` 每条（`JobSkillRead`，`app/schemas/job.py:199-211`）：`id`、`name`、`type`、`origin`（`jd_verifiable` 或 `unverified`，**只出现在响应里**）、`confidence`、`evidence_text`。
 
 两个序列化口径（前端与联调都会撞上）：
 
@@ -609,9 +632,9 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 
 以下都是**设计意图或已否决项**，本轮不实现、不排期；标注 `# PHASE-2: not wired`（沿用 ADR-011 修订清单第 7 条的口径）。
 
-- `POST /jobs/{job_id}/analyze`（本文件旧版有）：**端点不存在**，OpenAPI 实测的 12 个操作里没有它。异步任务 + `ai_job_id` 形态被 ADR-011 2.A 否决。# PHASE-2: not wired
+- `POST /jobs/{job_id}/analyze`（本文件旧版有）：**端点不存在**，OpenAPI 实测的 14 个岗位操作里没有它。异步任务 + `ai_job_id` 形态被 ADR-011 2.A 否决。# PHASE-2: not wired
 - `/jobs/{job_id}/close`、「过期自动转 `expired`」：**都不存在**（4.7）。# PHASE-2: not wired
-- 按 `location` / `salary` / `experience_required` 筛选：**存而不筛**，谓词函数里没有这三列（`app/repositories/job_repository.py:463-491`、ADR-011 1.G）。
+- 按 `location` / `salary` / `experience_required` 筛选：**存而不筛**，谓词函数里没有这三列（`app/repositories/job_repository.py:614-642`、ADR-011 1.G）。
 - 岗位收藏、投递记录、批量导出：无端点（ADR-011 议题 3.C）。
 - `/teacher/jobs/{job_id}/candidates` 与 `/export`（见本文件 §8）：候选人查询与导出**继续冻结**，本轮无实现。# PHASE-2: not wired
 - 岗位与学生技能字典的合并或外键：**不建**（ADR-011 1.E）。「你已具备」原先是**前端只读比对**、无后端端点（ADR-011 2.E）。**这半句已按 ADR-013 §10 第 3c 步作废**（2026-11-08）：判定收回后端 `GET /jobs/{job_id}/requirement-match`（§4.10.1），它同样不写任何表、不产匹配分数、不调 AI；本地那套 `normalizeSkillName` 只剩「提交前重名自检」一个用途。**「不建字典表/外键」那半句仍成立**（2026-11-07）：人岗匹配按 ADR-013 解冻并落地为 §4.10 的 `POST /jobs/{job_id}/match`，它是同步纯计算、不落库；而「你已具备」那条前端只读比对**原样保留**，两者不是同一件事，也没有合并。批量匹配（`/match-runs`）与教师端候选人仍在冻结清单。

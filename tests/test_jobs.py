@@ -11,6 +11,7 @@
 每条都同时断言「原数据没被动过」，否则「404 但其实改了」这种实现能骗过只看状态码的测试。
 """
 
+from collections.abc import Iterator
 from datetime import date, timedelta
 from uuid import uuid4
 
@@ -25,6 +26,7 @@ from app.integrations.skill_extractor import (
 )
 from app.main import app
 from app.repositories.job_repository import JobRepository
+from app.repositories.organization_repository import OrganizationRepository
 from app.repositories.user_repository import get_engine, session_scope
 from app.services.dependencies import get_job_service
 from app.services.job_service import JobNotFoundError, JobService
@@ -56,6 +58,13 @@ def _register_and_login(client: TestClient) -> str:
 
 def _headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _login(client: TestClient, username: str) -> dict[str, str]:
+    """按用户名登录并返回请求头；审核辅助要反复用（每个用例的组织只有一个审核人）。"""
+    response = client.post(LOGIN_URL, json={"username": username, "password": PASSWORD})
+    assert response.status_code == 200, response.text
+    return _headers(str(response.json()["data"]["access_token"]))
 
 
 def _user_id(client: TestClient, token: str) -> str:
@@ -95,10 +104,65 @@ def _create(
     return job
 
 
+#: 用例内的组织归属缓存：`_clean_state` 每个用例清库，缓存必须跟着清。
+_ORGANIZATION_OF: dict[str, str] = {}
+
+
+@pytest.fixture(autouse=True)
+def _reset_organization_cache() -> Iterator[None]:
+    _ORGANIZATION_OF.clear()
+    yield
+    _ORGANIZATION_OF.clear()
+
+
+def _membership(client: TestClient, token: str) -> tuple[str, dict[str, str]]:
+    """让 `token` 的主人进入一个组织，并返回 `(组织码, 同组织审核人的请求头)`。
+
+    组织由仓储直接建立（B5 先例：`ADR-021` §3.3 不开放自助建校端点）。
+    这一步在**审核流之前**是可有可无的，现在它是发布的必要条件：
+    第 18 轮裁定 ① 把「发布岗位」定义为必须依托组织的动作（`ADR-024` §2.3）。
+    """
+    user_id = _user_id(client, token)
+    if user_id in _ORGANIZATION_OF:
+        code = _ORGANIZATION_OF[user_id]
+    else:
+        code = f"R{uuid4().hex[:10].upper()}"
+        with session_scope() as session:
+            repository = OrganizationRepository(session)
+            organization = repository.create(code=code, name="审核流测试学校", kind="school")
+            repository.add_member(organization_id=organization.id, user_id=user_id, role="student")
+            repository.commit()
+        _ORGANIZATION_OF[user_id] = code
+    reviewer = f"teacher_{code.lower()}"
+    if client.post(LOGIN_URL, json={"username": reviewer, "password": PASSWORD}).status_code != 200:
+        created = client.post(
+            REGISTER_URL,
+            json={
+                "username": reviewer,
+                "password": PASSWORD,
+                "role": "teacher",
+                "organization_code": code,
+            },
+        )
+        assert created.status_code == 201, created.text
+    return code, _login(client, reviewer)
+
+
 def _publish(client: TestClient, token: str, job_id: object) -> dict[str, object]:
-    response = client.put(f"{JOBS_BASE}/{job_id}/publish", headers=_headers(token))
-    assert response.status_code == 200, response.text
-    job: dict[str, object] = response.json()["data"]["job"]
+    """把一条岗位推进广场：**提交审核 → 同组织审核人通过**（`ADR-024`）。
+
+    `PUT /jobs/{id}/publish` 已被删除（§2.6）——它是绕过审核的直发通道。
+    这个辅助保留原名，是因为十几个既有用例的意图就是「一条已发布的岗位」，
+    它们不该为审核流的内部步骤各写一遍。
+    """
+    _, reviewer_headers = _membership(client, token)
+    submitted = client.post(f"{JOBS_BASE}/{job_id}/submit-review", headers=_headers(token))
+    assert submitted.status_code == 200, submitted.text
+    approved = client.post(
+        f"{JOBS_BASE}/{job_id}/review", headers=reviewer_headers, json={"decision": "approve"}
+    )
+    assert approved.status_code == 200, approved.text
+    job: dict[str, object] = approved.json()["data"]["job"]
     return job
 
 
@@ -156,7 +220,11 @@ def test_all_job_endpoints_require_authentication(client: TestClient) -> None:
     assert client.get(f"{JOBS_BASE}/some-id").status_code == 401
     assert client.put(f"{JOBS_BASE}/some-id", json=_job_payload()).status_code == 401
     assert client.delete(f"{JOBS_BASE}/some-id").status_code == 401
-    assert client.put(f"{JOBS_BASE}/some-id/publish").status_code == 401
+    assert client.post(f"{JOBS_BASE}/some-id/submit-review").status_code == 401
+    assert (
+        client.post(f"{JOBS_BASE}/some-id/review", json={"decision": "approve"}).status_code == 401
+    )
+    assert client.get(f"{JOBS_BASE}/review-queue").status_code == 401
     assert client.put(f"{JOBS_BASE}/some-id/unpublish").status_code == 401
     assert client.put(f"{JOBS_BASE}/some-id/restore").status_code == 401
     assert client.get(f"{JOBS_BASE}/trash").status_code == 401
@@ -646,14 +714,15 @@ def test_update_is_owner_only_and_keeps_status(client: TestClient) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 矩阵第 6 行：publish / unpublish —— 仅创建者，广场可见性立刻跟着变
+# 矩阵第 6 行：submit-review / unpublish —— 仅创建者，广场可见性立刻跟着变
+# （`ADR-024` §2.6：`PUT /publish` 已删除，审核通过才是上架）
 # --------------------------------------------------------------------------- #
 
 
-def test_publish_and_unpublish_are_owner_only_and_take_effect_immediately(
+def test_submit_review_and_unpublish_are_owner_only_and_take_effect_immediately(
     client: TestClient,
 ) -> None:
-    """矩阵 #6：非创建者两个动作都 404；unpublish 后别人立刻读不到、自己也回不到广场。"""
+    """矩阵 #6：非创建者两个动作都 404；未审核不进广场；下架后要重新过审。"""
     owner = _register_and_login(client)
     stranger = _register_and_login(client)
     created = _create(client, owner)
@@ -662,30 +731,58 @@ def test_publish_and_unpublish_are_owner_only_and_take_effect_immediately(
     assert _list_ids(client, stranger) == []
     assert client.get(f"{JOBS_BASE}/{created['id']}", headers=_headers(stranger)).status_code == 404
 
-    # 陌生人既不能发布也不能下架
-    for verb, action in (("put", "publish"), ("put", "unpublish")):
-        response = getattr(client, verb)(
-            f"{JOBS_BASE}/{created['id']}/{action}", headers=_headers(stranger)
-        )
-        assert response.status_code == 404, response.text
+    # 陌生人既不能提交审核也不能下架
+    assert (
+        client.post(f"{JOBS_BASE}/{created['id']}/submit-review", headers=_headers(stranger))
+    ).status_code == 404
+    assert (
+        client.put(f"{JOBS_BASE}/{created['id']}/unpublish", headers=_headers(stranger))
+    ).status_code == 404
     assert _scalar("SELECT status FROM jobs WHERE id = :id", id=created["id"]) == "draft"
 
-    published = _publish(client, owner, created["id"])
-    assert published["status"] == "published"
+    # 旧直发通道必须已经消失（§2.6）：留着它，审核就只是装饰
+    gone = client.put(f"{JOBS_BASE}/{created['id']}/publish", headers=_headers(owner))
+    assert gone.status_code in (404, 405), gone.text
+    assert _scalar("SELECT status FROM jobs WHERE id = :id", id=created["id"]) == "draft"
+
+    # 提交审核：进队列，但**广场仍然看不到**（未审核不可进入推荐池）
+    _, reviewer_headers = _membership(client, owner)
+    submitted = client.post(f"{JOBS_BASE}/{created['id']}/submit-review", headers=_headers(owner))
+    assert submitted.status_code == 200, submitted.text
+    assert submitted.json()["data"]["job"]["status"] == "pending_review"
+    assert _list_ids(client, stranger) == []
+    assert _list_ids(client, owner) == []
+
+    # 审核通过才上架
+    approved = client.post(
+        f"{JOBS_BASE}/{created['id']}/review",
+        headers=reviewer_headers,
+        json={"decision": "approve"},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["data"]["job"]["status"] == "published"
     assert _list_ids(client, stranger) == [str(created["id"])]
     assert _detail(client, stranger, created["id"])["status"] == "published"
 
+    # 下架：立刻从广场消失，回草稿
     unpublished = client.put(f"{JOBS_BASE}/{created['id']}/unpublish", headers=_headers(owner))
     assert unpublished.status_code == 200, unpublished.text
     assert unpublished.json()["data"]["job"]["status"] == "draft"
-    # 下架后广场立刻没有，陌生人详情也 404（读的是 status，不是缓存）
     assert _list_ids(client, stranger) == []
     assert client.get(f"{JOBS_BASE}/{created['id']}", headers=_headers(stranger)).status_code == 404
-    # 创建者自己的列表也回到草稿侧
     assert _list_ids(client, owner) == []
     assert _list_ids(client, owner, status="draft") == [str(created["id"])]
 
-    assert client.put(f"{JOBS_BASE}/{uuid4()}/publish", headers=_headers(owner)).status_code == 404
+    # 草稿再提交一次会重新进队列，而不是直接回广场
+    resubmitted = client.post(f"{JOBS_BASE}/{created['id']}/submit-review", headers=_headers(owner))
+    assert resubmitted.status_code == 200, resubmitted.text
+    assert resubmitted.json()["data"]["job"]["status"] == "pending_review"
+    assert _list_ids(client, stranger) == []
+
+    assert (
+        client.post(f"{JOBS_BASE}/{uuid4()}/submit-review", headers=_headers(owner)).status_code
+        == 404
+    )
     assert (
         client.put(f"{JOBS_BASE}/{uuid4()}/unpublish", headers=_headers(owner)).status_code == 404
     )
@@ -717,11 +814,12 @@ def test_soft_delete_hides_everything_but_keeps_children(client: TestClient) -> 
     assert _list_ids(client, token) == []
     assert _list_ids(client, token, status="draft") == []
     assert client.get(f"{JOBS_BASE}/{created['id']}", headers=_headers(token)).status_code == 404
-    # 软删的岗位连发布都不能做（已回收的行不参与任何写路径）
+    # 软删的岗位连提交审核都不能做（已回收的行不参与任何写路径）。
+    # 注意这里**不能**写 `PUT /publish`：那条路由在 `ADR-024` §2.6 已整条删除，
+    # 它对**任何**岗位都返回 404——断言它反而会是一条永远为真的假绿。
     assert (
-        client.put(f"{JOBS_BASE}/{created['id']}/publish", headers=_headers(token)).status_code
-        == 404
-    )
+        client.post(f"{JOBS_BASE}/{created['id']}/submit-review", headers=_headers(token))
+    ).status_code == 404
 
     trash = _trash(client, token)
     assert [job["id"] for job in trash] == [str(created["id"])]
@@ -902,8 +1000,11 @@ def test_expired_jobs_are_hidden_by_default_on_the_app_clock(client: TestClient)
     token = _register_and_login(client)
     today = date.today()
 
+    # 先按「还没到期」发布，再用一条 SQL 把截止日期改到昨天：
+    # 审核流之后，**已过期岗位提交 / 通过都会被 `is_expired` 拦下**（ADR-024 §2.4），
+    # 所以「过期」在这条用例里只能用时间流逝来制造，不能靠绕过审核去造。
     expired = _create(
-        client, token, title="昨天截止", deadline=(today - timedelta(days=1)).isoformat()
+        client, token, title="昨天截止", deadline=(today + timedelta(days=1)).isoformat()
     )
     due_today = _create(client, token, title="今天截止", deadline=today.isoformat())
     future = _create(
@@ -912,6 +1013,11 @@ def test_expired_jobs_are_hidden_by_default_on_the_app_clock(client: TestClient)
     forever = _create(client, token, title="没有截止时间")
     for job_id in (expired["id"], due_today["id"], future["id"], forever["id"]):
         _publish(client, token, job_id)
+    with get_engine().begin() as connection:
+        connection.execute(
+            text("UPDATE jobs SET deadline = :deadline WHERE id = :id"),
+            {"deadline": today - timedelta(days=1), "id": expired["id"]},
+        )
 
     default_ids = _list_ids(client, token)
     assert str(expired["id"]) not in default_ids, "deadline < 今天 默认不出现"

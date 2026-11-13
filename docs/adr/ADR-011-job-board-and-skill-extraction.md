@@ -80,6 +80,8 @@
 - `closed` / `expired` 需要状态流转任务 → Redis/ARQ/Celery 仍冻结；过期改为读侧判定（2.G），不落状态、不动数据；
 - `draft`（自己录的还没确认）+ `published`（广场可见）已能表达真实产品行为，`deleted_at` 承接「下架」。
 
+> **2026-11-13 修订（`ADR-024` §2.1）**：本节「7 态砍成 2 态」的两条理由**同时到期**——审核角色随 B5 的组织与权限落地（`job:review` 给 teacher / school_admin / platform_admin），后台的岗位审核页随 B6 交付，于是 `pending_review` / `rejected` 重新成为值域成员：`draft` / `pending_review` / `published` / `rejected`。**仍不引入 `approved`**（通过即上架，中间态只会多一处要对账的地方）、**仍不引入 `expired`**（过期继续是读侧判定，见 2.G）。同批给 `jobs` 加了 `organization_id`（可空，渐进式强制：只在「提交审核」时拦）+ `review_note`（200 字，仅 `rejected` 时有值），并把 `PUT /jobs/{id}/publish` 整条删除——直发通道让「审核」变成装饰。本 ADR 下文凡出现「只有 `draft` / `published`」的表述，均以 `ADR-024` 为准。
+
 #### 1.C 不记录录入者身份 —— 已定
 
 「老师/在校生/已毕业校友均可录入」这句需求的意图是「别把入口锁死给某一类人」，不是「要按身份统计」。因此**不建** `submitter_kind` 列，`jobs` 表保持干净。将来真需要统计（例如「老师贡献了多少岗位」），用一个迁移补一列的成本远低于现在埋下一个「名字像权限、其实是自述」的字段并被误用。
@@ -164,7 +166,7 @@
 | 截止时间 | `deadline` | ✅ 含过期判定（2.G） |
 
 `PRD.md:105`（保存模型 / 提示词版本 / 时间 / 置信度）：✅ `jobs.extract_model`、`extract_prompt_version`、`extracted_at`、`job_skills.confidence`。
-`PRD.md:106`（未经审核的岗位不可进入推荐池）：❌ **未覆盖**——审核角色与推荐池都不存在，相关能力仍在冻结（L42）。最接近的现有语义是 `status='draft'` 的岗位不进广场，任何登录用户只能读到 `published`（1.F #1/#2）。
+`PRD.md:106`（未经审核的岗位不可进入推荐池）：❌ **未覆盖**——审核角色与推荐池都不存在，相关能力仍在冻结（L42）。**2026-11-13 起前半句已覆盖**（`ADR-024`：`pending_review` 不进广场，而广场是匹配池的唯一来源）；推荐池本身仍不存在。最接近的现有语义是 `status='draft'` 的岗位不进广场，任何登录用户只能读到 `published`（1.F #1/#2）。
 `PRD.md:107`（来源：人工录入 / 学校导入 / 合法授权接口）：只覆盖人工录入；「学校导入」与任何自动采集**保持冻结**。
 
 筛选与统计本轮一律不做，只保留 `keyword` + `status`（议题 3.C）。
@@ -201,7 +203,10 @@ POST   /api/v1/jobs              201
 GET    /api/v1/jobs/{job_id}
 PUT    /api/v1/jobs/{job_id}
 DELETE /api/v1/jobs/{job_id}     软删
-PUT    /api/v1/jobs/{job_id}/publish   /   /unpublish
+PUT    /api/v1/jobs/{job_id}/publish   /   /unpublish      # /publish 已于 2026-11-13 删除（ADR-024 §2.6）
+POST   /api/v1/jobs/{job_id}/submit-review                # 2026-11-13 新增
+POST   /api/v1/jobs/{job_id}/review                       # 2026-11-13 新增
+GET    /api/v1/jobs/review-queue                          # 2026-11-13 新增
 GET    /api/v1/jobs/trash
 PUT    /api/v1/jobs/{job_id}/restore    （v6 补入：对齐 `app/api/v1/profiles.py:221` 的 `/{profile_id}/restore` 先例——回收站没有恢复入口就是半个功能。B1 实测发现草图漏了这一条并上报，未自行加路由）
 ```
@@ -479,7 +484,7 @@ def skill_name_key(name: str) -> str:
 | 1 | §4 L100（`POST /jobs`） | 「返回 `202` 并创建 `ai_job_id`，用于异步岗位分析」 | 返回 `201` + 岗位对象；岗位分析不在创建请求里发生 |
 | 2 | §4 L97 示例 body | `"requirements": ["Python","FastAPI"]`（字符串数组，客户端直传技能） | 请求体收 `salary_min`/`salary_max`/`experience_required`；技能条目走 `job_skills` 结构（`name`/`type`/`confidence`/`evidence_text`），`origin` **不在请求体里**（服务端派生，1.D） |
 | 3 | 新增 | 无提取端点 | `POST /jobs/extract-skills`：200 同步返回 `{skills, meta}`；需 `X-DeepSeek-Key`；错误码 `AI_KEY_MISSING`/`AI_KEY_INVALID`/`AI_SERVICE_UNAVAILABLE`（三码复用润色，**处理器文案须作用域中性，见 2.F**）；限流 `EXTRACT_RATE_LIMIT = "10/minute"`；**`meta` 结构必须逐字段写进 API.md**：`meta = {model, prompt_version, received_count, dropped_count, deduped_count, truncated, finish_reason}`（缺一份字段契约，将来改 API.md 时就只剩端点名，7 个字段的语义会丢；`deduped_count` 是 v10 追加的第 7 个，三个计数之间的算术关系见 2.D「核验计数必须可见」） |
-| 4 | §4 L104 | 「未审核岗位仅创建者和**审核者**可见」 | 无审核角色。新口径：`published` 任何登录用户可读；他人 `draft` **404**（1.F） |
+| 4 | §4 L104 | 「未审核岗位仅创建者和**审核者**可见」 | 无审核角色。新口径：`published` 任何登录用户可读；他人 `draft` **404**（1.F）。**2026-11-13 部分回正**（`ADR-024`）：`pending_review` 对本组织审核人可读，其余人仍 404 |
 | 5 | §4 L104 | 查询参数 `keyword`、`status`、`location`、**`skill_id`**、`page`、`page_size` | 只保留 `keyword`、`status`、`include_expired`、`page`、`page_size`；删 `location` 与 `skill_id`（本轮不筛，`skill_id` 依赖并不存在的技能字典表） |
 | 6 | §4 L110-112 | 「`/publish`、`/close` 需要**审核权限**；过期岗位**自动转为 `expired`**」 | `/publish`、`/unpublish` 仅创建者（非创建者 404）；无 `/close`；过期不落状态，读侧按 `date.today()` 判定且默认隐藏（2.G） |
 | 7 | §4 标题层级 | 「岗位」章节含教师端候选人接口 | `API.md:186-190` 的 `/teacher/jobs/...` 候选人查询与导出**继续冻结**（L42），本轮保留为设计意图占位并标注 `# PHASE-2: not wired` |
