@@ -29,10 +29,23 @@ export async function login(payload: LoginRequest): Promise<TokenResponse> {
   return unwrap(response)
 }
 
-/** `GET /api/v1/auth/me` → 200，需要有效 Token。 */
-export async function fetchCurrentUser(): Promise<UserRead> {
+/**
+ * `GET /api/v1/auth/me` 的完整响应：`user` + `role` + `organization` + `permissions`。
+ *
+ * 后端从 B5 起就把这四样放在同一层（`ADR-021` §2.6），但前端长期只取了 `user`，
+ * 于是「有没有某个权限」在前端无处可问，只能靠角色名猜——而角色名不是权限边界，
+ * 后端每个端点都自己判一次（`app/core/permissions.py` 的模块纪律）。
+ * B6 审核流需要「有 `job:review` 才显示审核入口」，所以在这里把上下文完整取回来。
+ */
+export async function fetchCurrentContext(): Promise<MeResponse> {
   const response = await http.get<ApiSuccess<MeResponse>>('/auth/me')
-  return unwrap(response).user
+  return unwrap(response)
+}
+
+/** `GET /api/v1/auth/me` → 200，需要有效 Token。只要用户本身时用这个。 */
+export async function fetchCurrentUser(): Promise<UserRead> {
+  const current = await fetchCurrentContext()
+  return current.user
 }
 
 /**

@@ -85,6 +85,8 @@ function detailFixture(overrides: Partial<JobRead> = {}): JobRead {
     ...summaryFixture(),
     description: '负责后端接口开发，熟练掌握 Python 与 FastAPI。',
     experience_required: '3 年以上后端经验',
+    // `ADR-024` §2.6：驳回理由，只有 `rejected` 时有值。
+    review_note: null,
     extract_model: null,
     extract_prompt_version: null,
     extracted_at: null,
@@ -177,6 +179,21 @@ function fakeAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse>
     )
   }
 
+  if (method === 'get' && url === '/jobs/review-queue') {
+    // 待审队列的形状与广场列表一致（`{ jobs } + 分页 meta`），只是能进来的行不同。
+    return Promise.resolve(
+      envelope(config, {
+        data: { jobs: [summaryFixture({ id: 'job-pending', status: 'pending_review' })] },
+        meta: {
+          request_id: 'req-test',
+          page: Number(query.page ?? 1),
+          page_size: Number(query.page_size ?? 20),
+          total: 51,
+        },
+      }),
+    )
+  }
+
   if (method === 'get' && url === '/jobs') {
     // `page` / `page_size` 如实回显请求值（与后端 `success_response(..., page=page)` 一致），
     // `total` 是「符合筛选的总数」而不是当页条数——前端两个来源搞混就会算错页码。
@@ -193,11 +210,20 @@ function fakeAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse>
     )
   }
 
-  // 其余（POST /jobs、GET|PUT /jobs/{id}、PUT .../publish|unpublish|restore）都回一条详情。
+  // 其余（POST /jobs、GET|PUT /jobs/{id}、POST .../submit-review|review、
+  // PUT .../unpublish|restore）都回一条详情。状态按动作给，免得「前端拿到什么就信什么」
+  // 的用例在错误的初始态上通过。
+  const actionStatus = url.endsWith('/submit-review')
+    ? 'pending_review'
+    : url.endsWith('/review')
+      ? 'published'
+      : method === 'post'
+        ? 'draft'
+        : 'published'
   return Promise.resolve(
     envelope(
       config,
-      { data: { job: detailFixture({ status: method === 'post' ? 'draft' : 'published' }) }, meta: { request_id: 'req-test' } },
+      { data: { job: detailFixture({ status: actionStatus }) }, meta: { request_id: 'req-test' } },
       method === 'post' ? 201 : 200,
     ),
   )
@@ -327,17 +353,39 @@ describe('单条与写入的路径', () => {
 })
 
 describe('状态与回收站的路径', () => {
-  it('publish / unpublish / restore 都是 PUT，且都挂在 {id} 之后', async () => {
-    await jobsApi.publishJob('job-42')
-    expect(lastRequest().method).toBe('put')
-    expect(lastRequest().url).toBe('/jobs/job-42/publish')
+  it('submit-review / review 是 POST 且挂在 {id} 之后；unpublish / restore 仍是 PUT', async () => {
+    await jobsApi.submitJobForReview('job-42')
+    expect(lastRequest().method).toBe('post')
+    expect(lastRequest().url).toBe('/jobs/job-42/submit-review')
+
+    await jobsApi.reviewJob('job-42', 'approve')
+    expect(lastRequest().method).toBe('post')
+    expect(lastRequest().url).toBe('/jobs/job-42/review')
+    // 通过时不带 `note` 键：空串会被后端存成「写过理由但没内容」。
+    expect(lastRequest().body).toEqual({ decision: 'approve' })
+
+    await jobsApi.reviewJob('job-42', 'reject', '  缺少薪资范围  ')
+    expect(lastRequest().url).toBe('/jobs/job-42/review')
+    // 理由先 trim 再发：前后空格留着，驳回理由在详情页就带一段莫名其妙的缩进。
+    expect(lastRequest().body).toEqual({ decision: 'reject', note: '缺少薪资范围' })
 
     await jobsApi.unpublishJob('job-42')
+    expect(lastRequest().method).toBe('put')
     expect(lastRequest().url).toBe('/jobs/job-42/unpublish')
 
     await jobsApi.restoreJob('job-42')
     expect(lastRequest().method).toBe('put')
     expect(lastRequest().url).toBe('/jobs/job-42/restore')
+  })
+
+  it('listReviewQueue 打 GET /jobs/review-queue —— 静态段不能被当成岗位 id 发成 /jobs/{id}', async () => {
+    const result = await jobsApi.listReviewQueue({ keyword: '后端' })
+
+    expect(lastRequest().method).toBe('get')
+    expect(lastRequest().url).toBe('/jobs/review-queue')
+    expect(lastRequest().query).toMatchObject({ keyword: '后端', page: '1', page_size: '50' })
+    // `total` 取的是 `meta`（符合筛选的总数），不是当页条数。
+    expect(result.total).toBe(51)
   })
 
   it('deleteJob 打 DELETE /jobs/{id}，且不把响应体当数据用', async () => {

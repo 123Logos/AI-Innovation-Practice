@@ -29,12 +29,14 @@
    第 5 条（无一可回溯）在这里判。
 """
 
+import json
 import logging
 from collections.abc import Sequence
 from datetime import date, datetime
 
 from app.core import deadline
 from app.core.datetime_display import utc_now
+from app.core.permissions import JOB_REVIEW, UserRole
 from app.core.skill_names import skill_name_key
 from app.integrations.skill_extractor import (
     DEEPSEEK_MODEL,
@@ -50,11 +52,18 @@ from app.integrations.skill_extractor import (
     SkillExtractTruncatedError,
     is_traceable,
 )
+from app.repositories.audit_log_repository import (
+    AuditAction,
+    AuditLogRepository,
+    AuditResult,
+)
 from app.repositories.job_repository import (
     ORIGIN_JD_VERIFIABLE,
     ORIGIN_UNVERIFIED,
     STATUS_DRAFT,
+    STATUS_PENDING_REVIEW,
     STATUS_PUBLISHED,
+    STATUS_REJECTED,
     Job,
     JobDraft,
     JobRepository,
@@ -71,6 +80,7 @@ from app.schemas.job import (
     JobSummary,
     JobWriteRequest,
 )
+from app.services.auth_service import CurrentUserContext
 from app.services.resume_service import (
     ResumeApiKeyMissingError,
     ResumeCopyRejectedError,
@@ -103,6 +113,60 @@ class JobNotFoundError(Exception):
         super().__init__(f"job {job_id} not found")
 
 
+class JobOrganizationRequiredError(Exception):
+    """没有组织归属的账号不能提交审核（`ADR-024` §2.3、第 18 轮裁定 ①）。
+
+    「发布岗位」是裁定点名的、必须依托组织才能完成的动作：这里不静默降级、
+    不自动建组织，只拦下并提示绑定。
+    """
+
+    def __init__(self, user_id: str) -> None:
+        self.user_id = user_id
+        super().__init__(f"user {user_id} has no organization")
+
+
+class JobStateConflictError(Exception):
+    """当前状态不接受这个动作（例如审核一条已经审完的岗位）。
+
+    与 `JobNotFoundError` 分开：状态冲突时用户**有权知道**这条岗位存在——
+    他本来就是创建者或审核人，藏着只会让人反复点。对外 409。
+    """
+
+    def __init__(self, job_id: str, action: str, status: str) -> None:
+        self.job_id = job_id
+        self.action = action
+        self.status = status
+        super().__init__(f"job {job_id} cannot {action} in status {status}")
+
+
+class JobSelfReviewError(Exception):
+    """不能审核自己提交的岗位（`ADR-024` §2.2）。
+
+    教师角色可由邀请码获得（`ADR-023` §2.1），若不挡这一层，一个既是教师又是录入者的
+    账号点一下「通过」就把自己的岗位放进广场——审核流当场退化成一次点击。
+    与 B5 的「不能改自己的角色」（`SELF_ROLE_CHANGE`）同一个理由：
+    审自己等于没有审。
+    """
+
+    def __init__(self, job_id: str) -> None:
+        self.job_id = job_id
+        super().__init__(f"job {job_id} cannot be reviewed by its creator")
+
+
+class JobExpiredError(Exception):
+    """岗位已过截止时间，审核动作（以及提交审核）被 `is_expired` 拦下。
+
+    `ADR-017` §5 把「动作层必须先过同一个判据」记成开工约束，
+    `ADR-024` §2.4 是它第一次有实现物——判据只来自 `app/core/deadline.is_expired`，
+    本模块里**没有**任何一处自己比较日期。
+    """
+
+    def __init__(self, job_id: str, action: str) -> None:
+        self.job_id = job_id
+        self.action = action
+        super().__init__(f"job {job_id} is expired, cannot {action}")
+
+
 class JobSkillExtractTruncatedError(ResumeCopyUnavailableError):
     """失败语义第 7 情形：输出被服务端自己设的输出 token 上限切断（`finish_reason == "length"`）。
 
@@ -126,12 +190,17 @@ class JobService:
         self,
         repository: JobRepository,
         extractor: JobSkillExtractor | None = None,
+        audit: AuditLogRepository | None = None,
     ) -> None:
         self._repository = repository
         # `None` = 这次请求没有可用的 DeepSeek Key。与 `ResumeService._copy_writer` 同一口径：
         # 用它而不是「塞一个会 raise NotImplementedError 的占位实现」更诚实，
         # 而且让「不需要 Key 的读写路径」保持零成本（`get_job_service` 每次请求都会装配本服务）。
         self._extractor = extractor
+        # 审计与岗位仓储**必须同一个 session**（`ADR-021` §2.5：业务与审计同事务）。
+        # 允许 `None` 只为让不碰审核的单测不被迫造一个仓储；审核动作在缺它时直接报错，
+        # 不会出现「悄悄不写审计」的情况。
+        self._audit = audit
 
     # ------------------------------------------------------------------ 读
 
@@ -175,12 +244,20 @@ class JobService:
         today = date.today()
         return [self._to_summary(job, today) for job in self._repository.list_trash(user_id)]
 
-    def get_job(self, user_id: str, job_id: str) -> JobRead:
-        """详情（1.F #2）：`published` 任何登录用户可读，`draft` 仅创建者。
+    def get_job(self, context: CurrentUserContext, job_id: str) -> JobRead:
+        """详情（1.F #2 + `ADR-024` §2.2）。
 
-        可见性判定在仓储的一个 SQL 谓词里（`get_readable`），这里只把 `None` 翻译成异常。
+        `published` 任何登录用户可读，其余仅创建者；`pending_review` 额外给审核人读
+        （同组织 / 平台管理员）。可见性仍然只在仓储的一个 SQL 谓词里，
+        本层只负责把「有没有审核权、范围多大」翻译成两个参数。
         """
-        job = self._repository.get_readable(job_id, user_id)
+        reviewer_org, sees_all = self._review_scope(context)
+        job = self._repository.get_readable(
+            job_id,
+            context.user.id,
+            reviewer_organization_id=reviewer_org,
+            reviewer_sees_all=sees_all,
+        )
         if job is None:
             raise JobNotFoundError(job_id)
         return self._to_read(job)
@@ -348,22 +425,159 @@ class JobService:
 
         `status` 原样保留：PUT 改的是内容，发布/下架是独立动作，
         否则「编辑草稿」会顺带把岗位推上广场。
+
+        **唯一例外（`ADR-024` §2.5）**：编辑一份 `pending_review` 的岗位会把它退回
+        `draft`。审核人批的必须是最终内容——不改状态的话，审的是旧文本、发的是新文本。
+        退回方向只会更安全，反方向（编辑变发布）在这里没有任何入口。
+
         三列溯源戳**跟着这一次提交重算**（见 `_extract_stamp`）。
         """
         job = self._repository.get_owned(job_id, user_id)
         if job is None:
             raise JobNotFoundError(job_id)
         skills = self._to_skill_drafts(payload)
-        self._repository.replace_job(job, self._to_draft(payload, skills), skills)
+        status_override = STATUS_DRAFT if job.status == STATUS_PENDING_REVIEW else None
+        self._repository.replace_job(
+            job,
+            self._to_draft(payload, skills),
+            skills,
+            status_override=status_override,
+        )
         return self._reload(job)
 
-    def publish_job(self, user_id: str, job_id: str) -> JobRead:
-        """发布（1.F #6，仅创建者）。非创建者拿到的是 404，不是 403。"""
-        return self._set_status(user_id, job_id, STATUS_PUBLISHED)
+    def submit_for_review(
+        self,
+        context: CurrentUserContext,
+        job_id: str,
+        *,
+        ip: str | None = None,
+    ) -> JobRead:
+        """提交审核（`ADR-024` §2.3 / §2.4）：`draft` / `rejected` → `pending_review`。
+
+        三道门，每一道都对应一条已裁定的口径：
+
+        1. **归属**：只认创建者（非创建者 404，不留 403 的信息通道）；
+        2. **组织**：没有组织归属就拦下并提示绑定（第 18 轮裁定 ①，「发布岗位」
+           是它点名的动作）。这一步同时把 `organization_id` 写进岗位行——
+           审核范围从此不靠猜；
+        3. **过期**：`is_expired` 判据（裁定 ③ 的延伸）。否则队列里堆的全是
+           「审核人只能驳回」的岗位。
+        """
+        job = self._repository.get_owned(job_id, context.user.id)
+        if job is None:
+            raise JobNotFoundError(job_id)
+        if job.status not in (STATUS_DRAFT, STATUS_REJECTED):
+            raise JobStateConflictError(job_id, "submit_for_review", job.status)
+        organization_id = self._require_organization(context, job, "submit_for_review", ip)
+        self._ensure_not_expired(context, job, "submit_for_review", ip)
+
+        # 先记审计、再由仓储那一次 commit 把「审计 + 状态」一起落库（ADR-021 §2.5）。
+        self._record(
+            AuditAction.JOB_SUBMIT_REVIEW,
+            context,
+            job,
+            ip=ip,
+            detail={"from": job.status},
+        )
+        self._repository.submit_for_review(job.id, context.user.id, organization_id, utc_now())
+        return self._reload(job)
+
+    def review(
+        self,
+        context: CurrentUserContext,
+        job_id: str,
+        *,
+        decision: str,
+        note: str | None = None,
+        ip: str | None = None,
+    ) -> JobRead:
+        """审核（`ADR-024` §2.2 / §2.4）：`pending_review` → `published` / `rejected`。
+
+        审核范围由 `_review_scope()` 给出：同组织的教师/校长，或平台管理员（不限组织）。
+        范围外的岗位与「不存在」一样返回 404 —— 教师不该知道别校有一条待审岗位。
+
+        **过期拦截是裁定 ③ 的本体**：通过和驳回都改变世界状态，都先过
+        `deadline.is_expired`；被拦下的尝试写 `denied` 审计，方便以后回答
+        「为什么这条岗位一直没人批」。
+        """
+        organization_id, sees_all = self._review_scope(context)
+        # 「有权限但算不出范围」（教师没有组织）必须当成看不见，而不是把 `None`
+        # 当成「不限组织」传下去——`get_for_review(organization_id=None)` 的语义是
+        # **平台管理员**，两者混淆就是一个跨组织审核的漏洞。
+        if organization_id is None and not sees_all:
+            self._deny(context, AuditAction.JOB_APPROVE, None, "no_review_scope", ip)
+            raise JobNotFoundError(job_id)
+        job = self._repository.get_for_review(
+            job_id, organization_id=None if sees_all else organization_id
+        )
+        if job is None:
+            audit_action = (
+                AuditAction.JOB_APPROVE if decision == "approve" else AuditAction.JOB_REJECT
+            )
+            self._deny(context, audit_action, None, "not_in_review_scope", ip)
+            raise JobNotFoundError(job_id)
+        if job.status != STATUS_PENDING_REVIEW:
+            raise JobStateConflictError(job_id, decision, job.status)
+        if job.created_by_user_id == context.user.id:
+            audit_action = (
+                AuditAction.JOB_APPROVE if decision == "approve" else AuditAction.JOB_REJECT
+            )
+            self._deny(context, audit_action, job, "self_review", ip)
+            raise JobSelfReviewError(job.id)
+        self._ensure_not_expired(context, job, decision, ip)
+
+        approved = decision == "approve"
+        status = STATUS_PUBLISHED if approved else STATUS_REJECTED
+        self._record(
+            AuditAction.JOB_APPROVE if approved else AuditAction.JOB_REJECT,
+            context,
+            job,
+            ip=ip,
+            detail={"note": note} if note else None,
+        )
+        # 驳回理由只在驳回时存；通过时把上一轮的旧理由清掉（`submit` 已清一次，
+        # 这里再清是因为「通过」必须让前端拿到的 `review_note` 是空的，而不是残留）。
+        self._repository.set_review(job.id, status, None if approved else note, utc_now())
+        return self._reload(job)
+
+    def list_review_queue(
+        self,
+        context: CurrentUserContext,
+        *,
+        keyword: str | None = None,
+        page: int = 1,
+        page_size: int = DEFAULT_PAGE_SIZE,
+    ) -> tuple[list[JobSummary], int]:
+        """待审队列（`ADR-024` §2.6）：只出本组织的 `pending_review`，先来先审。
+
+        权限由路由层判（`require_permission(JOB_REVIEW)`）；本层只算范围。
+        有权限但没有组织（理论上构造不出来）给空列表，而不是把全平台的岗位倒出来。
+        """
+        organization_id, sees_all = self._review_scope(context)
+        if organization_id is None and not sees_all:
+            return [], 0
+        scope = None if sees_all else organization_id
+        offset = (page - 1) * page_size
+        jobs = self._repository.list_review_queue(
+            organization_id=scope, keyword=keyword, offset=offset, limit=page_size
+        )
+        total = self._repository.count_review_queue(organization_id=scope, keyword=keyword)
+        today = date.today()
+        return [self._to_summary(job, today) for job in jobs], total
 
     def unpublish_job(self, user_id: str, job_id: str) -> JobRead:
-        """下架回草稿（1.F #6，仅创建者）。"""
-        return self._set_status(user_id, job_id, STATUS_DRAFT)
+        """下架回草稿（1.F #6，仅创建者）。
+
+        `ADR-024` §2.6：下架保留，但**重新上架必须重新过审** —— 下架不是「撤销发布」
+        的同义词，它把岗位变回一份需要重新提交的草稿。
+        """
+        job = self._repository.get_owned(job_id, user_id)
+        if job is None:
+            raise JobNotFoundError(job_id)
+        if job.status != STATUS_PUBLISHED:
+            raise JobStateConflictError(job_id, "unpublish", job.status)
+        self._repository.update_status(job.id, user_id, STATUS_DRAFT)
+        return self._reload(job)
 
     def delete_job(self, user_id: str, job_id: str) -> None:
         """软删除进回收站（1.F #5，仅创建者）。
@@ -394,12 +608,108 @@ class JobService:
 
     # ----------------------------------------------------------------- 内部
 
-    def _set_status(self, user_id: str, job_id: str, status: str) -> JobRead:
-        job = self._repository.get_owned(job_id, user_id)
-        if job is None:
-            raise JobNotFoundError(job_id)
-        self._repository.update_status(job.id, user_id, status)
-        return self._reload(job)
+    def _review_scope(self, context: CurrentUserContext) -> tuple[str | None, bool]:
+        """审核范围 → `(组织 id, 是否跨组织)`（`ADR-024` §2.2）。
+
+        - 没有 `JOB_REVIEW`：`(None, False)`，即「读不到任何待审岗位」；
+        - `platform_admin`：`(None, True)`，全平台；
+        - 其余审核人：`(本组织 id, False)`；没有组织时是 `(None, False)`。
+        """
+        if JOB_REVIEW not in context.permissions:
+            return None, False
+        if context.role is UserRole.PLATFORM_ADMIN:
+            return None, True
+        return (context.organization.id if context.organization is not None else None), False
+
+    def _require_organization(
+        self,
+        context: CurrentUserContext,
+        job: Job,
+        action: str,
+        ip: str | None,
+    ) -> str:
+        """取提交者的组织；没有就拦下并提示绑定（第 18 轮裁定 ①）。
+
+        返回值直接写进 `jobs.organization_id`：范围在**提交那一刻**定格，
+        审核人据此判定「该不该我审」，而不是审核时再去猜提交者属于谁。
+        """
+        if context.organization is None:
+            self._deny(context, AuditAction.JOB_SUBMIT_REVIEW, job, "no_organization", ip)
+            raise JobOrganizationRequiredError(context.user.id)
+        return context.organization.id
+
+    def _ensure_not_expired(
+        self,
+        context: CurrentUserContext,
+        job: Job,
+        action: str,
+        ip: str | None,
+    ) -> None:
+        """动作层的唯一过期判据（`ADR-017` §5 / `ADR-024` §2.4）。
+
+        判据只有 `app/core/deadline.is_expired` 一处；本文件**没有**任何一处
+        自己写 `job.deadline < date.today()`，也没有 `deadline is None` 的特殊分支——
+        「没有截止时间」由那个函数定义成「不过期」，在这里再判一次就是第二份真相。
+        """
+        if not deadline.is_expired(job.deadline, date.today()):
+            return
+        audit_action = {
+            "submit_for_review": AuditAction.JOB_SUBMIT_REVIEW,
+            "approve": AuditAction.JOB_APPROVE,
+            "reject": AuditAction.JOB_REJECT,
+        }[action]
+        self._deny(context, audit_action, job, "job_expired", ip)
+        raise JobExpiredError(job.id, action)
+
+    def _record(
+        self,
+        action: AuditAction,
+        context: CurrentUserContext,
+        job: Job,
+        *,
+        ip: str | None,
+        detail: dict[str, object] | None = None,
+    ) -> None:
+        """写一条成功审计。**不 commit**：跟着紧随其后的业务提交一起落库。"""
+        if self._audit is None:  # pragma: no cover - 只有裸构图的服务才会走到
+            raise RuntimeError("job review requires an audit repository")
+        self._audit.record(
+            action=action,
+            actor_user_id=context.user.id,
+            organization_id=job.organization_id
+            or (context.organization.id if context.organization is not None else None),
+            target_type="job",
+            target_id=job.id,
+            detail=json.dumps(detail, ensure_ascii=False) if detail else None,
+            ip=ip,
+        )
+
+    def _deny(
+        self,
+        context: CurrentUserContext,
+        action: AuditAction,
+        job: Job | None,
+        reason: str,
+        ip: str | None,
+    ) -> None:
+        """被拒绝的尝试单独记 `denied` 并**立即提交**（业务没有任何写入，单独提交安全）。"""
+        if self._audit is None:  # pragma: no cover
+            return
+        self._audit.record(
+            action=action,
+            actor_user_id=context.user.id,
+            organization_id=(
+                job.organization_id
+                if job is not None and job.organization_id
+                else (context.organization.id if context.organization is not None else None)
+            ),
+            target_type="job",
+            target_id=job.id if job is not None else None,
+            result=AuditResult.DENIED,
+            detail=json.dumps({"reason": reason}, ensure_ascii=False),
+            ip=ip,
+        )
+        self._audit.commit()
 
     def _reload(self, job: Job) -> JobRead:
         """写完重新读一遍：`create_job()` 会先提交父行，`updated_at` 也要取库里的值。
@@ -503,6 +813,8 @@ class JobService:
             deadline=job.deadline,
             status=job.status,  # type: ignore[arg-type]
             created_by_user_id=job.created_by_user_id,
+            # 驳回理由：只有 `rejected` 时仓储里才有值，其余状态恒为 None（ADR-024 §2.6）。
+            review_note=job.review_note,
             extract_model=job.extract_model,
             extract_prompt_version=job.extract_prompt_version,
             extracted_at=job.extracted_at,

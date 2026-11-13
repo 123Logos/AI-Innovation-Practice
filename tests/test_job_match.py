@@ -39,6 +39,7 @@ from app.integrations.evidence_scorer import (
     ScoringFragment,
 )
 from app.services import dependencies
+from tests.review_support import publish_via_review
 
 PROFILES_URL = "/api/v1/profiles/me"
 JOBS_URL = "/api/v1/jobs"
@@ -122,9 +123,26 @@ def _create_published_job(client: TestClient, token: str, **overrides: Any) -> s
     created = client.post(JOBS_URL, json=payload, headers=_headers(token))
     assert created.status_code == 201, created.text
     job_id = created.json()["data"]["job"]["id"]
-    published = client.put(f"{JOBS_URL}/{job_id}/publish", headers=_headers(token))
-    assert published.status_code == 200, published.text
+    # 发布 = 提交审核 + 同组织审核人通过（`ADR-024` §2.6，直发通道 `PUT /publish` 已删）。
+    publish_via_review(client, token, job_id)
     return job_id
+
+
+def _set_deadline(job_id: str, deadline: str) -> None:
+    """直接把截止日期改到某一天（模拟「时间流逝」）。
+
+    走裸 SQL 而不是 `PUT /jobs/{id}`：那条写路径会重算技能派生与溯源三列，
+    本函数只想要「这条已发布的岗位老了」，不该顺手动别的东西。
+    """
+    from sqlalchemy import text
+
+    from app.repositories.user_repository import get_engine
+
+    with get_engine().begin() as connection:
+        connection.execute(
+            text("UPDATE jobs SET deadline = :deadline WHERE id = :id"),
+            {"deadline": deadline, "id": job_id},
+        )
 
 
 def match_url(job_id: str) -> str:
@@ -837,10 +855,14 @@ def test_expired_job_reads_agree_across_every_endpoint(client: TestClient) -> No
     角标与时效**无关**。判据仍然只有 `app/core/deadline.is_expired` 一处（ADR-011 2.G），
     而这里刻意不导入它：断言只比对端点读数，比对源码就成了自证。
     """
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    today = date.today()
+    yesterday = (today - timedelta(days=1)).isoformat()
     token = _register_and_login(client, prefix="expiry")
     _put_profile(client, token)
-    job_id = _create_published_job(client, token, deadline=yesterday)
+    # 「过期」只能靠时间流逝制造：`ADR-024` §2.4 之后，已过截止时间的岗位连提交审核/通过
+    # 都会被 `is_expired` 拦下（409），所以先按「明天截止」发布，再把日期改到昨天。
+    job_id = _create_published_job(client, token, deadline=(today + timedelta(days=1)).isoformat())
+    _set_deadline(job_id, yesterday)
 
     assert job_id not in [job["id"] for job in _list_jobs(client, token)], (
         "过期岗位默认不出现在列表（2.G）"

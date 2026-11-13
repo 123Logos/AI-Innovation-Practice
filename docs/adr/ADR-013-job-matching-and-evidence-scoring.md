@@ -678,8 +678,8 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
 不属于匹配的代码，但没有它一切无法验收。约定：
 - 取材方式：公开搜索结果与可访问的高校就业网/招聘聚合页（Boss直聘/猎聘详情页是 JS 渲染，直接抓只能拿到壳）。**文字全部由我们自己重写**，不逐字复制任何站点，不写具体真实公司名（用「某 AIGC 创业公司」这类形式）。
 - 建号：只用于内部测试的账号，命名带可辨识前缀并沿用现有约定（今天的 `preflight_*` / `pf_*` / `nx_*` 已被要求排除在真实用户统计外）。岗位以这些账号创建、`published`、每人 3–5 条，覆盖 §1.1 的 5 类岗位（大模型算法实习、Python 后端实习、数据分析实习、AI 产品实习、前端实习）。
-- 走真实路径 `POST /jobs` + `PUT /jobs/{id}/publish`，不用裸 SQL 插库——否则等于用假数据骗自己，且绕过 `JobSkillInput` 的全部校验。
-- 每份岗位的技能条目控制在 8–15 条、必备/加分语义写进 `type`；`origin` **不是我们填的字段**——服务端用 `is_traceable(evidence_text, description)` 派生（`app/services/job_service.py:473`），`evidence_text` 必须是 JD 原文（归一化后）的连续子串才拿到 `jd_verifiable`，否则自动 `unverified`。所以种子数据想有可回溯徽标，就得真的把技能写进 JD 正文里，而不是在请求里声明。
+- 走真实路径 `POST /jobs` + 提交审核 → 审核通过，不用裸 SQL 插库——否则等于用假数据骗自己，且绕过 `JobSkillInput` 的全部校验。（原来这后半步是 `PUT /jobs/{id}/publish`，该端点已于 2026-11-13 删除，见 `ADR-024` §2.6；本 ADR 的判据不受影响，只是「造一条已发布岗位」多了审核这一步，测试辅助见 `tests/review_support.py`。）
+- 每份岗位的技能条目控制在 8–15 条、必备/加分语义写进 `type`；`origin` **不是我们填的字段**——服务端用 `is_traceable(evidence_text, description)` 派生（`app/services/job_service.py:783`），`evidence_text` 必须是 JD 原文（归一化后）的连续子串才拿到 `jd_verifiable`，否则自动 `unverified`。所以种子数据想有可回溯徽标，就得真的把技能写进 JD 正文里，而不是在请求里声明。
 - 红线：不含性别/年龄/户籍/健康/婚育，不含「2027 届」这类年龄代理，不含「无挂科」「限男性」。
 - 测试账号与种子岗位在下一轮真实用户测试前必须下架/停用，并再次声明不计入真实用户统计。
 
@@ -828,7 +828,7 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
     > 另有 4 处是**历史引用**，代码状态本身已不存在、行号无处可指，改成只留文件与符号并注明时点：
     > ADR-012 的 `aiError()`（已删）、本 ADR §1.2 的 `self_rating`（§10 第 4 步删）、
     > §1.3 表里的 `skill_name_key`（已搬到 `app/core/skill_names.py`）、§1.3 正文的学生侧裸相等（第 3 步修）。
-    > 还有一处口径错误顺手改掉：§1.3 正文说岗位侧 strip 在 `app/schemas/job.py:127-130`，
+    > 还有一处口径错误顺手改掉：§1.3 正文说岗位侧 strip 在 `app/schemas/job.py:129-132`，
     > 那个位置现在是 `dedup_key`，`normalize_name` 在 `:99-110`。
 11. **写法判据与零候选文案**（2026-11-08 老板三条裁定：并进 PR #11 / 技能补全只抽取不推断 / 非计算机别名暂缓）。
     → **已实现**：`app/core/skill_names.py::skill_forms_match`（四条规则，理由与被推翻的旧结论见 §1.3）+

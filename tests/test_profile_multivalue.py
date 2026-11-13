@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from app.repositories.user_repository import get_engine
+from tests.review_support import publish_via_review
 
 PROFILES_URL = "/api/v1/profiles/me"
 PROFILES_BASE = "/api/v1/profiles"
@@ -234,8 +235,8 @@ def test_soft_deleted_rows_disappear_from_all_three_screens(client: TestClient) 
     )
     assert job.status_code == 201, job.text
     job_id = job.json()["data"]["job"]["id"]
-    published = client.put(f"{JOBS_URL}/{job_id}/publish", headers=_headers(token))
-    assert published.status_code == 200, published.text
+    # 审核流（`ADR-024` §2.6）：直发通道已删，上架 = 创建者提交 + 同组织审核人通过。
+    publish_via_review(client, token, job_id)
 
     before = client.post(f"{JOBS_URL}/{job_id}/match", headers=_headers(token))
     assert before.status_code == 200, before.text

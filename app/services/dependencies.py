@@ -176,6 +176,9 @@ def get_job_service(request: Request) -> Iterator[JobService]:
         yield JobService(
             repository=JobRepository(session),
             extractor=DeepSeekJobSkillExtractor(api_key) if api_key else None,
+            # 审核流（`ADR-024`）起，岗位服务也要写审计：仓储与审计必须同一个 session，
+            # 否则「状态改了、审计没写」就成了一种可能（`ADR-021` §2.5）。
+            audit=AuditLogRepository(session),
         )
 
 

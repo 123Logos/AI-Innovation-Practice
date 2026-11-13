@@ -37,6 +37,7 @@ from app.integrations.skill_extractor import normalize_for_trace
 from app.repositories import job_repository
 from app.repositories.user_repository import get_engine
 from app.services import job_service
+from tests.review_support import publish_via_review
 
 JOB_COLUMNS = {
     "id",
@@ -51,6 +52,10 @@ JOB_COLUMNS = {
     "experience_required",
     "deadline",
     "status",
+    # `ADR-024` §2.3 / §2.6：审核流的两列。归属可空（渐进式强制：不刷存量），
+    # 审核理由只在 `rejected` 时有值。
+    "organization_id",
+    "review_note",
     "extract_model",
     "extract_prompt_version",
     "extracted_at",
@@ -195,6 +200,12 @@ def test_jobs_columns_match_adr_011_1b() -> None:
     assert columns["status"]["type"] == "varchar(16)"
     assert columns["status"]["nullable"] == "NO"
     assert columns["status"]["default"] == "draft"
+    # 审核流的两列（`ADR-024`）：归属是 36 位 uuid 外键且**可空**（渐进式强制不刷存量），
+    # 理由 200 字上限、可空——「没有理由」与「理由是空串」不是一件事，前者才是常态。
+    assert columns["organization_id"]["type"] == "varchar(36)"
+    assert columns["organization_id"]["nullable"] == "YES"
+    assert columns["review_note"]["type"] == "varchar(200)"
+    assert columns["review_note"]["nullable"] == "YES"
     assert columns["extract_model"]["type"] == "varchar(60)"
     assert columns["extract_prompt_version"]["type"] == "varchar(20)"
     # 时间列统一 DATETIME(6)（微秒），与全仓口径一致
@@ -263,16 +274,24 @@ def _expect_check_violation(constraint: str, write: Callable[[], Any]) -> None:
 
 
 def test_status_check_rejects_review_and_expired_states() -> None:
-    """1.B：七态砍成两态。审核态与 `expired` 都写不进去（没有审核角色、没有定时任务）。"""
+    """`ADR-024` §2.1：值域是**四态**，`approved` / `expired` / 半截状态都写不进去。
+
+    四态取代了 1.B 的两态：`pending_review` 与 `rejected` 现在是合法状态，
+    但 `approved`（通过即上架，不存在这一步）与 `expired`（过期是读侧判定，
+    `ADR-011` §2.G）仍然不该有列值——库里存了 `expired`，读侧判据就成了第二份真相。
+    """
     user_id = _insert_user()
 
-    for illegal in ("pending_review", "approved", "rejected", "closed", "expired"):
+    for illegal in ("approved", "closed", "expired", "review", "pending", "reviewed"):
         _expect_check_violation(
             "ck_jobs_status", lambda illegal=illegal: _insert_job(user_id, status=illegal)
         )
 
-    _insert_job(user_id, status="draft")
-    _insert_job(user_id, status="published")
+    # 大小写**不是**这里的判据：`status` 列的排序规则是 `utf8mb4_0900_ai_ci`，
+    # `'REJECTED'` 与 `'rejected'` 在这条 CHECK 眼里是同一个值。写进行里只会让
+    # 「约束拦得住非法值」这句话变成一句关于排序规则的断言，所以不列进上面的清单。
+    for legal in ("draft", "pending_review", "published", "rejected"):
+        _insert_job(user_id, status=legal)
 
 
 def test_employment_type_check_accepts_only_the_five_values() -> None:
@@ -650,10 +669,8 @@ def test_full_slice_persists_every_layer_once(client: TestClient) -> None:
     job_id = created.json()["data"]["job"]["id"]
     assert created.json()["data"]["job"]["status"] == "draft"
 
-    published = client.put(
-        f"/api/v1/jobs/{job_id}/publish", headers={"Authorization": f"Bearer {token}"}
-    )
-    assert published.status_code == 200, published.text
+    # 端到端要的是「一条真的上架了的岗位」：审核流两步都走完（`ADR-024` §2.6）。
+    publish_via_review(client, token, job_id)
 
     with get_engine().connect() as connection:
         job = connection.execute(

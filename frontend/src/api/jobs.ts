@@ -38,8 +38,17 @@ import type { ApiMeta, ApiSuccess } from './types'
 
 /* -------------------------------- 枚举与常量 ------------------------------- */
 
-/** 岗位状态（`ck_jobs_status`，后端 `JobStatus`）。只有两态，没有审核态。 */
-export type JobStatus = 'draft' | 'published'
+/**
+ * 岗位状态（`ck_jobs_status`，后端 `JobStatus`）。
+ *
+ * 四态由 `ADR-024` §2.1 定格：`draft`（自己还没提交）/ `pending_review`（等审核，
+ * 内容锁定）/ `published`（审核通过并上架）/ `rejected`（被驳回，改完可重提）。
+ * **没有 `approved`**（通过即上架）、**没有 `expired`**（过期是读侧判定）。
+ */
+export type JobStatus = 'draft' | 'pending_review' | 'published' | 'rejected'
+
+/** 审核动作（`POST /jobs/{id}/review` 的 `decision`）。 */
+export type JobReviewDecision = 'approve' | 'reject'
 
 /** 工作方式（`ck_jobs_employment_type`，后端 `EmploymentType`）。本轮不含远程/驻场。 */
 export type EmploymentType = 'internship' | 'full_time' | 'part_time' | 'contract' | 'other'
@@ -141,6 +150,8 @@ export interface JobRead {
   deadline: string | null
   status: JobStatus
   created_by_user_id: string
+  /** 驳回理由（`ADR-024` §2.6）：只有 `rejected` 时有值，重新提交后清空。 */
+  review_note: string | null
   /**
    * 三列提取溯源戳：**由服务端盖，不采信客户端**（ADR-011 1.F v9 第 ② 条）。
    * 本次保存的技能里只要有任何一条被判为 `jd_verifiable`，三列一起写入
@@ -383,10 +394,57 @@ export async function updateJob(jobId: string, payload: JobWriteRequest): Promis
   return unwrap(response).job
 }
 
-/** `PUT /api/v1/jobs/{jobId}/publish`：发布进广场（仅创建者；1.F #6 的显式动作）。 */
-export async function publishJob(jobId: string): Promise<JobRead> {
-  const response = await http.put<ApiSuccess<{ job: JobRead }>>(`/jobs/${jobId}/publish`)
+/**
+ * `POST /api/v1/jobs/{jobId}/submit-review`：提交审核（仅创建者）。
+ *
+ * **取代了原来的 `PUT /jobs/{id}/publish`**（`ADR-024` §2.6）：那条直发通道让创建者
+ * 一条命令就把未审内容推上广场，而广场是匹配池的唯一来源。没有加入组织的账号会拿到
+ * 400（`JOB_ORGANIZATION_REQUIRED`），提示先绑定组织——这是第 18 轮裁定 ① 的落地点。
+ */
+export async function submitJobForReview(jobId: string): Promise<JobRead> {
+  const response = await http.post<ApiSuccess<{ job: JobRead }>>(`/jobs/${jobId}/submit-review`)
   return unwrap(response).job
+}
+
+/**
+ * `POST /api/v1/jobs/{jobId}/review`：审核（仅 `job:review`，同组织或平台管理员）。
+ *
+ * 过期岗位会被后端按 `is_expired` 拦成 409（第 18 轮裁定 ③）——前端不做第二份日期判断，
+ * 只负责把服务端那句「请先更新截止日期」显示出来。
+ */
+export async function reviewJob(
+  jobId: string,
+  decision: JobReviewDecision,
+  note?: string,
+): Promise<JobRead> {
+  const payload: { decision: JobReviewDecision; note?: string } = { decision }
+  const trimmed = note?.trim()
+  if (trimmed) payload.note = trimmed
+  const response = await http.post<ApiSuccess<{ job: JobRead }>>(`/jobs/${jobId}/review`, payload)
+  return unwrap(response).job
+}
+
+/** `GET /api/v1/jobs/review-queue`：待审队列（本组织；平台管理员跨组织）。 */
+export async function listReviewQueue(
+  query: { keyword?: string; page?: number; pageSize?: number } = {},
+): Promise<JobListResult> {
+  const page = query.page ?? 1
+  const pageSize = query.pageSize ?? JOB_LIST_PAGE_SIZE
+  const params: Record<string, string | number> = { page, page_size: pageSize }
+  const keyword = query.keyword?.trim()
+  if (keyword) params.keyword = keyword
+
+  const response = await http.get<ApiSuccess<{ jobs: JobSummary[] }> & { meta: JobListMeta }>(
+    '/jobs/review-queue',
+    { params },
+  )
+  const meta = response.data.meta
+  return {
+    jobs: unwrap(response).jobs,
+    page: meta?.page ?? page,
+    pageSize: meta?.page_size ?? pageSize,
+    total: meta?.total ?? 0,
+  }
 }
 
 /** `PUT /api/v1/jobs/{jobId}/unpublish`：下架回草稿（广场立刻读不到）。 */

@@ -144,6 +144,10 @@ def _assert_schema_after_upgrade(engine: Engine) -> None:
             # B6（ADR-023）：邀请归属组织、发起人可追溯，删任一方都不该带走邀请记录。
             "fk_organization_invitations_organization",
             "fk_organization_invitations_creator",
+            # B6 另一半（ADR-024 §2.8）：岗位的审核范围。可空（存量岗位不回溯，
+            # 第 18 轮裁定 ①），但一旦指向某个组织就挡住删组织——审核记录不能
+            # 指向一个已经不存在的组织。
+            "fk_jobs_organization",
         }
         # 「附属数据跟着删」的外键；其余外键一律 RESTRICT 或 SET NULL（挡住删除）。
         for cascade_fk in (

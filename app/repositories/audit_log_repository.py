@@ -35,6 +35,12 @@ class AuditAction(StrEnum):
     INVITATION_CREATE = "invitation.create"
     INVITATION_REDEEM = "invitation.redeem"
     INVITATION_REVOKE = "invitation.revoke"
+    # 批次 B6 另一半（ADR-024）：岗位提交审核 / 通过 / 驳回。
+    # 三个动作都带 `target_type="job"` 与 `target_id`，否则审计只能回答
+    # 「谁在什么时候审过东西」，答不了「审的是哪一条」。
+    JOB_SUBMIT_REVIEW = "job.submit_review"
+    JOB_APPROVE = "job.approve"
+    JOB_REJECT = "job.reject"
 
 
 class AuditResult(StrEnum):

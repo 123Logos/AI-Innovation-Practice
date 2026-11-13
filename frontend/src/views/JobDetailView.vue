@@ -25,8 +25,12 @@
  * **只有点按钮才发匹配请求**：那一步每次都可能向 DeepSeek 真实调用、花用户自己的 Key，
  * 所以不许在 `onMounted` 里自动算（`load()` / `loadCoverage()` 是两个只读 GET，与它不同）。
  *
- * 只有创建者能看到「发布 / 下架 / 删除」——后端对非创建者一律 404（1.F），
+ * 只有创建者能看到「提交审核 / 下架 / 删除」——后端对非创建者一律 404（1.F），
  * 摆一个必然失败的按钮比不摆更糟。
+ *
+ * **审核流（`ADR-024`）之后创建者不再能直接发布**：`draft` / `rejected` 只能「提交审核」，
+ * 上架由同组织的审核人（或平台管理员）点「通过」。审核面板只对 `job:review` 且**不是
+ * 创建者**的账号出现 —— 后端也会拒自审（409），前端不摆一个必然失败的按钮。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
@@ -43,16 +47,22 @@ import {
 } from '@/stores/job'
 import { formatDate, formatDateTime } from '@/utils/datetime'
 import SkeletonList from '@/components/SkeletonList.vue'
+import AutoTextarea from '@/components/AutoTextarea.vue'
+import { useAuthStore } from '@/stores/auth'
 
 const store = useJobStore()
+const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
 
 const loadError = ref('')
 const actionError = ref('')
 const actionNotice = ref('')
-/** 正在执行发布/下架/删除时锁住这一组按钮。 */
-const actionBusy = ref<'publish' | 'unpublish' | 'delete' | null>(null)
+/** 正在执行提交审核/下架/删除/审核时锁住这一组按钮。 */
+const actionBusy = ref<'submit' | 'unpublish' | 'delete' | 'approve' | 'reject' | null>(null)
+
+/** 驳回理由草稿；通过时后端会丢掉它，所以切换按钮不需要清空输入框。 */
+const reviewNote = ref('')
 
 /** JD 超过这么长就先折叠；600 字大约是手机上 12–14 行，够看清「这是不是我要的岗位」。 */
 const COLLAPSE_THRESHOLD = 600
@@ -68,6 +78,17 @@ const descriptionText = computed(() => {
 
 /** 只有创建者才有的操作区；比对用的是 JWT 里的用户 id 与 `created_by_user_id`。 */
 const isCreator = computed(() => store.isCreatorOf(job.value))
+
+/**
+ * 当前账号能不能审这条岗位。
+ *
+ * 三个条件缺一不可：有 `job:review`（后端权限表同源）、不是创建者（自审无意义，
+ * 后端 409 兜底）、岗位正处在待审状态。范围（同组织）不在这里判——
+ * 那是服务端的事，前端猜不出来也不该猜。
+ */
+const canReview = computed(
+  () => auth.hasPermission('job:review') && !isCreator.value && job.value?.status === 'pending_review',
+)
 
 function employmentLabel(value: string | null): string {
   if (!value) return ''
@@ -155,17 +176,39 @@ async function loadCoverage(): Promise<void> {
   }
 }
 
-async function handlePublish(): Promise<void> {
+async function handleSubmitReview(): Promise<void> {
   const current = job.value
   if (!current || actionBusy.value) return
-  actionBusy.value = 'publish'
+  actionBusy.value = 'submit'
   actionError.value = ''
   actionNotice.value = ''
   try {
-    await store.publish(current.id)
-    actionNotice.value = '已发布，任何登录用户都能在列表里看到它。'
+    await store.submitReview(current.id)
+    actionNotice.value = '已提交审核，审核通过后会出现在广场；审核前修改会退回草稿。'
   } catch (error) {
-    actionError.value = describeError(error, '发布失败，请稍后重试。')
+    // 没有组织的账号会拿到 400「请先绑定组织」——那句话直接来自后端受信文案表，
+    // 前端不再自己编一句（两处各写一句必然漂移）。
+    actionError.value = describeError(error, '提交审核失败，请稍后重试。')
+  } finally {
+    actionBusy.value = null
+  }
+}
+
+async function handleReview(decision: 'approve' | 'reject'): Promise<void> {
+  const current = job.value
+  if (!current || actionBusy.value) return
+  actionBusy.value = decision
+  actionError.value = ''
+  actionNotice.value = ''
+  try {
+    await store.review(current.id, decision, reviewNote.value)
+    actionNotice.value = decision === 'approve' ? '已通过，岗位现在出现在广场。' : '已驳回，创建者会看到理由。'
+    reviewNote.value = ''
+  } catch (error) {
+    actionError.value = describeError(
+      error,
+      decision === 'approve' ? '审核通过失败，请稍后重试。' : '驳回失败，请稍后重试。',
+    )
   } finally {
     actionBusy.value = null
   }
@@ -345,6 +388,16 @@ onBeforeUnmount(() => {
           <span v-if="job.is_expired" class="badge badge--expired">已过期</span>
         </div>
 
+        <p v-if="job.status === 'rejected' && job.review_note" class="review-note" role="note">
+          驳回理由：{{ job.review_note }}
+        </p>
+        <p v-else-if="job.status === 'rejected'" class="review-note" role="note">
+          这条岗位被驳回了，修改后可以重新提交审核。
+        </p>
+        <p v-else-if="job.status === 'pending_review'" class="review-note" role="note">
+          正在等待审核；审核前修改内容会退回草稿，需要重新提交。
+        </p>
+
         <dl class="meta-grid">
           <div class="meta-item">
             <dt>工作地点</dt>
@@ -373,16 +426,17 @@ onBeforeUnmount(() => {
 
         <div v-if="isCreator" class="owner-actions">
           <button
-            v-if="job.status === 'draft'"
+            v-if="job.status === 'draft' || job.status === 'rejected'"
             class="row-button row-button--primary"
             type="button"
+            data-testid="submit-review-button"
             :disabled="actionBusy !== null || store.submitting"
-            @click="handlePublish"
+            @click="handleSubmitReview"
           >
-            {{ actionBusy === 'publish' ? '发布中…' : '发布到广场' }}
+            {{ actionBusy === 'submit' ? '提交中…' : '提交审核' }}
           </button>
           <button
-            v-else
+            v-else-if="job.status === 'published'"
             class="row-button"
             type="button"
             :disabled="actionBusy !== null || store.submitting"
@@ -399,6 +453,45 @@ onBeforeUnmount(() => {
           >
             {{ actionBusy === 'delete' ? '删除中…' : '删除' }}
           </button>
+        </div>
+
+        <div v-if="canReview" class="review-panel">
+          <h2 class="review-title">审核这条岗位</h2>
+          <p class="review-hint">
+            通过后它会立刻出现在广场；驳回时下面这句话会显示给创建者。
+            已过截止时间的岗位会被拦下（后端按同一个过期判据判断）。
+          </p>
+          <label class="review-label" for="review-note">驳回理由（通过时不使用）</label>
+          <!-- 守则 F1：多行输入只走 AutoTextarea，直写 <textarea> 会被 eslint 拦住。 -->
+          <AutoTextarea
+            id="review-note"
+            v-model="reviewNote"
+            class="review-input"
+            :min-height="44"
+            maxlength="200"
+            placeholder="例如：岗位职责写得太笼统，请补充具体工作内容。"
+            data-testid="review-note"
+          />
+          <div class="review-actions">
+            <button
+              class="row-button row-button--primary"
+              type="button"
+              data-testid="approve-button"
+              :disabled="actionBusy !== null || store.submitting"
+              @click="handleReview('approve')"
+            >
+              {{ actionBusy === 'approve' ? '通过中…' : '通过并发布' }}
+            </button>
+            <button
+              class="row-button"
+              type="button"
+              data-testid="reject-button"
+              :disabled="actionBusy !== null || store.submitting"
+              @click="handleReview('reject')"
+            >
+              {{ actionBusy === 'reject' ? '驳回中…' : '驳回' }}
+            </button>
+          </div>
         </div>
 
         <p v-if="actionError" class="feedback feedback--error" role="alert">{{ actionError }}</p>
@@ -637,6 +730,16 @@ onBeforeUnmount(() => {
 .meta-item dt { color: var(--ui-ink-faint); font-size: var(--text-xs); letter-spacing: .04em; }
 .meta-item dd { margin: 4px 0 0; color: var(--ui-ink); font-size: var(--text-base); line-height: 1.5; overflow-wrap: anywhere; }
 .meta-flag { margin-left: 6px; color: var(--ui-danger); font-size: var(--text-xs); }
+
+.review-note { margin: 0; border-left: 2px solid var(--theme-rule-soft); padding-left: 8px; color: var(--ui-ink-muted); font-size: var(--text-sm); line-height: 1.6; }
+
+/* 审核面板：与「创建者动作区」同一条分隔线，但用虚线框表示「这是别人的工作面」。 */
+.review-panel { display: grid; gap: 8px; border: 1px dashed var(--ui-border-strong); border-radius: var(--ui-radius); padding: 14px 16px; }
+.review-title { margin: 0; color: var(--ui-ink); font-size: var(--text-md); font-weight: 650; }
+.review-hint { margin: 0; color: var(--ui-ink-faint); font-size: var(--text-xs); line-height: 1.6; }
+.review-label { color: var(--ui-ink-faint); font-size: var(--text-xs); letter-spacing: .04em; }
+.review-input { width: 100%; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 8px 10px; color: var(--ui-ink); font: inherit; font-size: var(--text-base); line-height: 1.6; }
+.review-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 
 .owner-actions { display: flex; flex-wrap: wrap; gap: 10px; border-top: 1px solid var(--ui-surface-sunken); padding-top: 14px; }
 

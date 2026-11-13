@@ -14,16 +14,18 @@
  *
  * 数据全在 `stores/job.ts`（含筛选条件），所以从详情页返回时筛选与页码都还在。
  */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import { isApiError } from '@/api'
 import type { jobsApi as JobsContract } from '@/api'
 import { EMPLOYMENT_TYPE_LABELS, JOB_STATUS_LABELS, useJobStore } from '@/stores/job'
+import { useAuthStore } from '@/stores/auth'
 import { formatDate } from '@/utils/datetime'
 import SkeletonList from '@/components/SkeletonList.vue'
 
 const store = useJobStore()
+const auth = useAuthStore()
 
 type JobStatus = JobsContract.JobStatus
 
@@ -31,8 +33,19 @@ const loadError = ref('')
 /** 搜索框的输入值：按「搜索」或回车才写进 store 的筛选条件，不逐字发请求。 */
 const keywordDraft = ref(store.filter.keyword)
 
-/** 筛选项只有两个（议题 3.C）：薪资/地点/经验都存而不筛。 */
-const STATUS_FILTERS: JobStatus[] = ['published', 'draft']
+/**
+ * 范围筛选：广场 / 自己的草稿，外加「待审核」。
+ *
+ * 前两档是议题 3.C 的原始口径（薪资/地点/经验都存而不筛）；`pending_review` 是
+ * `ADR-024` §2.6 的审核队列，**只对有 `job:review` 的账号出现**——
+ * 学生看到这一档点进去只会拿到 403，摆一个必然失败的入口比不摆更糟。
+ * 后端每次都自己判权限，这里只是不显示。
+ */
+const STATUS_FILTERS = computed<JobStatus[]>(() =>
+  auth.hasPermission('job:review')
+    ? ['published', 'draft', 'pending_review']
+    : ['published', 'draft'],
+)
 
 function describeError(error: unknown, fallback: string): string {
   if (isApiError(error) && error.message) return error.message
@@ -167,7 +180,10 @@ onMounted(load)
       </div>
 
       <p v-if="store.filter.status === 'draft'" class="filter-hint">
-        草稿只有创建者自己看得到；发布后才会出现在「已发布」里。
+        草稿只有创建者自己看得到；提交审核并通过后才会出现在「已发布」里。
+      </p>
+      <p v-else-if="store.filter.status === 'pending_review'" class="filter-hint">
+        只列本组织的待审岗位，先提交的先审；点进去可以通过或驳回。
       </p>
     </section>
 
@@ -197,6 +213,8 @@ onMounted(load)
                   {{ employmentLabel(job.employment_type) }}
                 </span>
                 <span v-if="job.status === 'draft'" class="tag tag--draft">草稿</span>
+                <span v-else-if="job.status === 'pending_review'" class="tag tag--draft">待审核</span>
+                <span v-else-if="job.status === 'rejected'" class="tag tag--draft">已驳回</span>
                 <span v-if="job.is_expired" class="tag tag--expired">已过期</span>
               </div>
             </div>

@@ -246,13 +246,19 @@ describe('Key 注入矩阵：岗位侧只扩 `/jobs/extract-skills` 这一个 UR
     expect(sentHeaders.map((item) => item.url)).toEqual(['/resumes/polish', '/jobs/extract-skills'])
   })
 
-  it('`/jobs` 下其余九个端点一律不带 Key（含第 3c 条的 requirement-match）', async () => {
+  it('`/jobs` 下其余十二个端点一律不带 Key（含第 3c 条的 requirement-match 与审核流）', async () => {
     // 这一串就是「宽判据会把 Key 送到哪儿」的清单：`includes('/jobs')` 会把它们全纳进去。
+    //
+    // 条目数在 `ADR-024` 之后从十变十二：`PUT /jobs/{id}/publish` 那条直发通道被删除，
+    // 换来 `POST /jobs/{id}/submit-review`、`POST /jobs/{id}/review` 与 `GET /jobs/review-queue`。
+    // 审核动作也不转发 DeepSeek——它是纯状态迁移，一次出网请求都不产生。
     await jobsApi.listJobs({ status: 'draft' })
     await jobsApi.getJob('job-42')
     await jobsApi.createJob({ company_name: 'c', title: 't', description: 'd', skills: [] })
     await jobsApi.updateJob('job-42', { company_name: 'c', title: 't', description: 'd', skills: [] })
-    await jobsApi.publishJob('job-42')
+    await jobsApi.submitJobForReview('job-42')
+    await jobsApi.reviewJob('job-42', 'approve')
+    await jobsApi.listReviewQueue()
     await jobsApi.unpublishJob('job-42')
     await jobsApi.listJobTrash()
     await jobsApi.restoreJob('job-42')
@@ -261,7 +267,7 @@ describe('Key 注入矩阵：岗位侧只扩 `/jobs/extract-skills` 这一个 UR
     // 后端 `requirement_match()` 不 import `app/integrations`，一次出网请求都不产生。
     await jobsApi.getRequirementMatch('job-42')
 
-    expect(sentHeaders.length).toBe(10)
+    expect(sentHeaders.length).toBe(12)
     for (const item of sentHeaders) {
       expect(item.key, `${item.method} ${item.url} 不该携带 DeepSeek Key`).toBeUndefined()
     }
@@ -271,10 +277,12 @@ describe('Key 注入矩阵：岗位侧只扩 `/jobs/extract-skills` 这一个 UR
       'get /jobs',
       'get /jobs/job-42',
       'get /jobs/job-42/requirement-match',
+      'get /jobs/review-queue',
       'get /jobs/trash',
       'post /jobs',
+      'post /jobs/job-42/review',
+      'post /jobs/job-42/submit-review',
       'put /jobs/job-42',
-      'put /jobs/job-42/publish',
       'put /jobs/job-42/restore',
       'put /jobs/job-42/unpublish',
     ])
