@@ -8,6 +8,7 @@
 一个「只有 alembic_version」的空库上，只能靠调整文件执行顺序来掩盖。
 """
 
+import json
 import os
 from pathlib import Path
 
@@ -40,6 +41,11 @@ EXPECTED_TABLES = {
     "audit_logs",
     # B6（ADR-023）：组织邀请码。
     "organization_invitations",
+    # B9（ADR-028）：题库、测评会话、答案、画像标签。
+    "assessment_questions",
+    "assessment_sessions",
+    "assessment_answers",
+    "profile_tags",
 }
 
 
@@ -92,7 +98,53 @@ def _assert_schema_after_upgrade(engine: Engine) -> None:
             "active_marker",
             "created_at",
             "updated_at",
+            # B7（ADR-027 §2.1）：来源 / 最近使用 / 首次加入。
+            "source",
+            "last_used_on",
+            "first_added_at",
         }
+
+        # B7（`ADR-027` §2.1）：三列的类型本身就是契约，逐项钉住。
+        # `source` 的宽度是 24 不是 16 —— 最长取值 `teacher_confirmed` 是 17 个字符，
+        # 第一版按 16 建，`tests/test_skill_metadata.py` 一插就 `1406 Data too long`。
+        # `first_added_at` 必须是 `DATETIME(6)`（与 `created_at` 同精度），
+        # 否则回填 `= created_at` 会被四舍五入到整秒，「比早晚」这件事就失真了。
+        skill_metadata_columns = {
+            row.COLUMN_NAME: row
+            for row in connection.execute(
+                text(
+                    "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, "
+                    "       DATETIME_PRECISION "
+                    "FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'skills'"
+                )
+            ).all()
+        }
+        assert skill_metadata_columns["source"].COLUMN_TYPE == "varchar(24)"
+        assert skill_metadata_columns["source"].IS_NULLABLE == "NO"
+        assert skill_metadata_columns["source"].COLUMN_DEFAULT == "self_reported"
+        assert skill_metadata_columns["last_used_on"].COLUMN_TYPE == "date"
+        assert skill_metadata_columns["last_used_on"].IS_NULLABLE == "YES"
+        assert skill_metadata_columns["first_added_at"].COLUMN_TYPE == "datetime(6)"
+        assert skill_metadata_columns["first_added_at"].IS_NULLABLE == "YES"
+
+        # `source` 的取值域在库上是 CHECK（与 `jobs.status` / `resumes.origin` 同一做法），
+        # 「多一个来源」必须是一次迁移，而不是某处随手写的字符串。
+        skill_checks = {
+            row.CONSTRAINT_NAME
+            for row in connection.execute(
+                text(
+                    "SELECT cc.CONSTRAINT_NAME "
+                    "FROM information_schema.CHECK_CONSTRAINTS AS cc "
+                    "JOIN information_schema.TABLE_CONSTRAINTS AS tc "
+                    "  ON tc.CONSTRAINT_SCHEMA = cc.CONSTRAINT_SCHEMA "
+                    " AND tc.CONSTRAINT_NAME = cc.CONSTRAINT_NAME "
+                    "WHERE cc.CONSTRAINT_SCHEMA = DATABASE() "
+                    "  AND tc.TABLE_NAME = 'skills' AND tc.CONSTRAINT_TYPE = 'CHECK'"
+                )
+            ).all()
+        }
+        assert skill_checks == {"ck_skills_source"}
 
         foreign_keys = dict(
             connection.execute(
@@ -153,12 +205,25 @@ def _assert_schema_after_upgrade(engine: Engine) -> None:
             # 第 18 轮裁定 ①），但一旦指向某个组织就挡住删组织——审核记录不能
             # 指向一个已经不存在的组织。
             "fk_jobs_organization",
+            # B9（ADR-028）：测评会话归属用户与档案，删任一方都挡住（历史测评是证据）；
+            # 答案是会话的组成部分（CASCADE），但题目被删时答案必须挡住（RESTRICT）——
+            # 一道题被物理删掉之后，那份答案就再也解释不了了。
+            "fk_assessment_sessions_user",
+            "fk_assessment_sessions_profile",
+            "fk_assessment_answers_session",
+            "fk_assessment_answers_question",
+            # 画像标签挂档案（RESTRICT）；会话没了标签要活下来（SET NULL）——
+            # 标签已经写进画像，不该因为清理会话而消失。
+            "fk_profile_tags_profile",
+            "fk_profile_tags_session",
         }
         # 「附属数据跟着删」的外键；其余外键一律 RESTRICT 或 SET NULL（挡住删除）。
         for cascade_fk in (
             "fk_refresh_tokens_user_id",
             "fk_job_skills_job_id",
             "fk_org_members_user",
+            # B9：答案是会话的组成部分，会话没了答案跟着走。
+            "fk_assessment_answers_session",
         ):
             assert foreign_keys.pop(cascade_fk) == "CASCADE"
         for set_null_fk in (
@@ -166,6 +231,8 @@ def _assert_schema_after_upgrade(engine: Engine) -> None:
             "fk_resumes_target_job",
             "fk_audit_logs_actor",
             "fk_audit_logs_organization",
+            # B9：标签已经写进画像，会话被清掉时只让指针落空。
+            "fk_profile_tags_session",
         ):
             assert foreign_keys.pop(set_null_fk) == "SET NULL"
         assert set(foreign_keys.values()) == {"RESTRICT"}
@@ -504,6 +571,156 @@ def _assert_schema_after_upgrade(engine: Engine) -> None:
         )
         assert resume_checks == {"ck_resumes_origin"}
 
+        # ------------------------------------------------------------------ #
+        # B9（ADR-028 §2.1–§2.4）：测验四张表的列名即契约、状态值域、唯一键与种子。
+        # ------------------------------------------------------------------ #
+        for table, expected_columns in (
+            (
+                "assessment_questions",
+                {
+                    "id",
+                    "skill_key",
+                    "skill_name",
+                    "prompt",
+                    "options",
+                    "answer_key",
+                    "bank_version",
+                    "is_active",
+                    "created_at",
+                },
+            ),
+            (
+                "assessment_sessions",
+                {
+                    "id",
+                    "user_id",
+                    "student_profile_id",
+                    "status",
+                    "bank_version",
+                    "question_ids",
+                    "question_count",
+                    "correct_count",
+                    "score",
+                    "started_at",
+                    "submitted_at",
+                    "abandoned_at",
+                    "ai_summary",
+                    "ai_summary_source",
+                    "ai_summary_at",
+                },
+            ),
+            (
+                "assessment_answers",
+                {"id", "session_id", "question_id", "chosen_key", "is_correct", "answered_at"},
+            ),
+            (
+                "profile_tags",
+                {
+                    "id",
+                    "student_profile_id",
+                    "tag",
+                    "status",
+                    "score",
+                    "source",
+                    "evidence_count",
+                    "session_id",
+                    "created_at",
+                    "updated_at",
+                },
+            ),
+        ):
+            columns = set(
+                connection.execute(
+                    text(
+                        "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table"
+                    ),
+                    {"table": table},
+                ).scalars()
+            )
+            assert columns == expected_columns, f"{table} 列集合与 ADR-028 不一致"
+
+        for table, expected in (
+            (
+                "assessment_sessions",
+                {"ck_assessment_sessions_status", "ck_assessment_sessions_summary_source"},
+            ),
+            ("profile_tags", {"ck_profile_tags_status", "ck_profile_tags_source"}),
+        ):
+            checks = set(
+                connection.execute(
+                    text(
+                        "SELECT cc.CONSTRAINT_NAME FROM information_schema.CHECK_CONSTRAINTS AS cc "
+                        "JOIN information_schema.TABLE_CONSTRAINTS AS tc "
+                        "  ON tc.CONSTRAINT_SCHEMA = cc.CONSTRAINT_SCHEMA "
+                        " AND tc.CONSTRAINT_NAME = cc.CONSTRAINT_NAME "
+                        "WHERE cc.CONSTRAINT_SCHEMA = DATABASE() "
+                        "  AND tc.TABLE_NAME = :table AND tc.CONSTRAINT_TYPE = 'CHECK'"
+                    ),
+                    {"table": table},
+                ).scalars()
+            )
+            assert checks == expected, f"{table} 的 CHECK 集合与 ADR-028 不一致"
+
+        # 一场会话里一道题只有一行：改答案必须走覆盖（ADR-028 §2.3），追加会让
+        # 「我明明改成了 B」与「判分用的是 A」同时成立。
+        answer_unique = connection.execute(
+            text(
+                "SELECT COLUMN_NAME, NON_UNIQUE FROM information_schema.STATISTICS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'assessment_answers' "
+                "  AND INDEX_NAME = 'uq_assessment_answers_session_question' "
+                "ORDER BY SEQ_IN_INDEX"
+            )
+        ).all()
+        assert [row.COLUMN_NAME for row in answer_unique] == ["session_id", "question_id"]
+        assert all(int(row.NON_UNIQUE) == 0 for row in answer_unique)
+
+        # 重考覆盖同一标签而不是追加（ADR-028 §2.4）。
+        tag_unique = connection.execute(
+            text(
+                "SELECT COLUMN_NAME, NON_UNIQUE FROM information_schema.STATISTICS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'profile_tags' "
+                "  AND INDEX_NAME = 'uq_profile_tags_profile_tag' ORDER BY SEQ_IN_INDEX"
+            )
+        ).all()
+        assert [row.COLUMN_NAME for row in tag_unique] == ["student_profile_id", "tag"]
+        assert all(int(row.NON_UNIQUE) == 0 for row in tag_unique)
+
+        # 种子题库（ADR-028 §2.1 第 4 条）：12 题、4 项技能各 3 题、同一个 bank_version。
+        # 把数量写死是刻意的——扩库是一次「明确的改动」，不该悄悄发生。
+        seed = connection.execute(
+            text(
+                "SELECT bank_version, COUNT(*) AS total, COUNT(DISTINCT skill_key) AS skills "
+                "FROM assessment_questions GROUP BY bank_version"
+            )
+        ).all()
+        assert len(seed) == 1
+        assert str(seed[0].bank_version) == "v1"
+        assert int(seed[0].total) == 12
+        assert int(seed[0].skills) == 4
+        per_skill = connection.execute(
+            text(
+                "SELECT skill_key, COUNT(*) AS total FROM assessment_questions "
+                "GROUP BY skill_key ORDER BY skill_key"
+            )
+        ).all()
+        assert {str(row.skill_key): int(row.total) for row in per_skill} == {
+            "git": 3,
+            "python": 3,
+            "react": 3,
+            "sql": 3,
+        }
+        # 每道题的 `answer_key` 必须真的是它自己的一个选项：种子里写错一个字母，
+        # 那道题就永远不可能答对，而这种错在界面上一模一样（只看得到「全错」）。
+        questions = connection.execute(
+            text("SELECT id, options, answer_key FROM assessment_questions")
+        ).all()
+        for row in questions:
+            options = row.options if isinstance(row.options, list) else json.loads(row.options)
+            keys = {str(option["key"]) for option in options}
+            assert str(row.answer_key) in keys, f"{row.id} 的 answer_key 不在选项里"
+            assert len(keys) == 4, f"{row.id} 的选项数量与种子不一致"
+
         # 三张新子表的列名即契约（ADR-015 §2.1 / §5 ③ 逐字）。
         for table, expected_columns in (
             (
@@ -633,6 +850,16 @@ def _assert_schema_removed(engine: Engine) -> None:
     assert "skill_aliases" not in remaining_tables
     # B4 的三张多值子表（ADR-015）同理必须真的被 `20261110_0016` 的 downgrade 删掉。
     for table in ("profile_certificates", "portfolio_links", "profile_city_preferences"):
+        assert table not in remaining_tables
+    # B9（ADR-028）的四张表也必须被 `20261113_0026` 的 downgrade 删干净。
+    # 残留题库表比残留空表更糟：下一次 upgrade 会在同一条 `bulk_insert` 上撞主键，
+    # 迁移于是「第一次能跑、第二次跑不了」。
+    for table in (
+        "profile_tags",
+        "assessment_answers",
+        "assessment_sessions",
+        "assessment_questions",
+    ):
         assert table not in remaining_tables
 
 

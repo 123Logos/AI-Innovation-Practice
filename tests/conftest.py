@@ -123,13 +123,25 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 #: 但它**必须**在这一栏里：别名行会改变判定结果，残留一行就等于「后面所有用例都跑在
 #: 一张非空词表上」，而 §5.1 那条「空表 = 纯词面行为」的验收会静默失去意义。
 APP_TABLES = (
+    # B9（ADR-028）：测评会话与答案、画像标签。`assessment_answers` 外键指向会话与题库、
+    # `profile_tags` 外键指向档案与会话，两者都必须排在父表之前清；
+    # 顺序错了会 1451（Cannot delete or update a parent row）。
+    #
+    # **`assessment_questions` 故意不在这张清单里**：它是**参考数据**（题库），
+    # 由迁移 `0026` 的种子建出来，不是任何用户写进去的。放进来就会被每用例的清理
+    # 一并 DELETE 掉，于是第一个用例之后整套测评测试都跑在一张空题库上（表现为
+    # 「题库为空」400，而红的地方与被测行为无关）。用例若要改题库（停用一道题之类），
+    # 必须自己还原——它和 `skill_aliases` 不同：别名是空表才有意义，题库是**满表**才有意义。
+    "assessment_answers",
+    "profile_tags",
+    "assessment_sessions",
     # FR-07 / B11a：面试两张表。`interview_turns` 外键指向 `interview_sessions`（子表在前），
     # `interview_sessions` 外键指向 `jobs` / `users`，因此两张都插在最前，保证 DELETE 顺序
     # 是子表 → 父表（见上方删除顺序的说明）。
-    # B6（ADR-023）：邀请表外键指向 organizations / users，必须排在两者之前清。
-    "organization_invitations",
     "interview_turns",
     "interview_sessions",
+    # B6（ADR-023）：邀请表外键指向 organizations / users，必须排在两者之前清。
+    "organization_invitations",
     "skill_aliases",
     "job_skills",
     "jobs",

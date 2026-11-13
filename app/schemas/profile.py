@@ -54,6 +54,10 @@ from app.schemas.resume import ExperienceInput, SkillInput
 #: 学历枚举，与 `ck_educations_degree` 约束保持一致。
 Degree = Literal["专科", "本科", "硕士", "博士"]
 
+#: 技能来源（`ADR-027` §2.1），与 `ck_skills_source` 逐字一致。
+#: 读侧四个值都可能有；写侧只接受前三个（`assessment` 由测评提交时服务端写入）。
+SkillSource = Literal["self_reported", "assessment", "project", "teacher_confirmed"]
+
 #: 纸张尺寸（D5.1）。只做两档：A4 是国内招聘事实标准，Letter 覆盖北美投递。
 #: 加第三种纸必须同时改前端 `PAPER_SPECS` 与 `@page` 注入，否则「能选但不能印」。
 PaperSize = Literal["A4", "Letter"]
@@ -164,10 +168,39 @@ class LayoutConfigRead(BaseModel):
 
 
 class SkillRead(BaseModel):
+    """一条技能 + 它的元数据（`ADR-027`）。
+
+    `first_added_at` 是**只读**的派生事实（写入历史算出来的），客户端改不到；
+    `source` 今天可能是 `assessment`（只有测评提交会写，客户端可写集合里没有它）。
+    """
+
     model_config = ConfigDict(from_attributes=True)
 
     id: str
     name: str
+    source: SkillSource = "self_reported"
+    last_used_on: date | None = None
+    first_added_at: datetime | None = None
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def degrade_unknown_source(cls, value: object) -> object:
+        """读侧遇到库里的未知来源时**降级成 `self_reported`**，不抛 500（`ADR-027` §2.1）。
+
+        库上的 `ck_skills_source` 保证今天写不进第五个值，所以这条分支正常永远走不到；
+        它挡的是「将来迁移加了一个来源、而这版 API 还没跟上」的滚动窗口——
+        那时候 `Literal` 会让**整份档案**读不出来（`GET /profiles/{id}` 一起 500），
+        一个技能标签的变化不该把用户简历页打挂。而降级方向是安全的那一侧：
+        它只会让「更弱的来源」显示成基准档，不会伪造任何证据。
+        """
+        if isinstance(value, str) and value not in (
+            "self_reported",
+            "assessment",
+            "project",
+            "teacher_confirmed",
+        ):
+            return "self_reported"
+        return value
 
 
 class ExperienceRead(BaseModel):

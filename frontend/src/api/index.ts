@@ -5,6 +5,7 @@
  * 便于后续替换 mock / 增加请求重试而不用改业务代码。
  */
 
+export * as assessmentsApi from './assessments'
 export * as authApi from './auth'
 export * as interviewsApi from './interviews'
 export * as jobsApi from './jobs'

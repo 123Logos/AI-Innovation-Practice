@@ -48,6 +48,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 from app.core.datetime_display import utc_now
+from app.core.skill_names import skill_name_key
 
 #: 回收站保留天数：`deleted_at` 早于「现在 - 30 天」的记录会被惰性物理删除。
 TRASH_RETENTION_DAYS = 30
@@ -144,6 +145,20 @@ class Skill(ProfileBase):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     student_profile_id: Mapped[str] = mapped_column(String(36), nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
+    #: 来源（`ADR-027` §2.1）。四个取值由 `ck_skills_source` 约束；`assessment` **只由
+    #: 测评提交时写入**（`ADR-028` §2.6），客户端传它会被 422 拦下。
+    #: 宽度 24：最长取值 `teacher_confirmed` 是 17 个字符，按 16 建会在写入时
+    #: `1406 Data too long`（`tests/test_skill_metadata.py` 撞过）。
+    source: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="self_reported", server_default="self_reported"
+    )
+    #: 用户声明的「最近使用」（`ADR-027` §1.2）。**不从 `created_at`/`updated_at` 推**——
+    #: 全量替换让那两列恒等于「上次保存时间」，与「上次用这个技术」毫无关系。
+    last_used_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    #: 首次加入这份档案的时间。跨全量替换**保留**（写入时按 `skill_name_key` 在全部历史行里
+    #: 取最早的一条，见 `SkillRepository` 风格的 `_first_added_map`）。没有它，每次保存都会
+    #: 把「我什么时候开始写这条技能」清零。
+    first_added_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     #: ADR-015 §2.1：非空即历史行（全量替换时被盖戳），读侧只取 NULL 的行。
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     active_marker: Mapped[int | None] = mapped_column(Integer, _active_marker(), nullable=True)
@@ -254,7 +269,19 @@ class ProfileDraft:
 
 @dataclass(frozen=True)
 class SkillDraft:
+    """写入侧的技能：名字 + 元数据（`ADR-027`）。
+
+    `first_added_at` **不在请求体里**：它由写入历史决定，服务层不采信客户端的值
+    （否则用户可以把自己的技能改成「用了一年」）。
+
+    `source` 到这里必须已经是**具体值**：「省略 = 沿用同名技能已有的来源」这条
+    解析在服务层（`ProfileService._save_content`）完成，因为它要读一次活跃行；
+    仓储只负责写，不再二次推断（同一规则两处实现必然分叉）。
+    """
+
     name: str
+    source: str = "self_reported"
+    last_used_on: date | None = None
 
 
 @dataclass(frozen=True)
@@ -411,6 +438,63 @@ class StudentProfileRepository:
         )
         return list(self._session.scalars(statement))
 
+    def mark_skills_assessed(
+        self, student_profile_id: str, skill_names: Sequence[str], *, now: datetime
+    ) -> list[str]:
+        """把**已有的**同名技能来源升成 `assessment`（B9 提交时调用，`ADR-028` §2.6）。
+
+        三条边界，每条都是被 ADR 写死的：
+
+        1. **只改已有行，不新建技能**：测评能证明「你答对了这几题」，不能证明
+           「你要把这条技能写进简历」——简历内容永远是用户自己确认的；
+        2. **不动 `last_used_on` / `first_added_at` / `name`**：这条写入只回答
+           「谁说的」，不替用户补充或修改任何事实；
+        3. **匹配用 `skill_name_key`**（大小写 / 全半角 / 空白），并在这里用 Python
+           折算——与 `_first_added_map` 同一条理由：归一规则只能在代码里有一份。
+
+        返回真正被改动的技能名（原写法），供服务层与测试问「改了哪几条」。
+        """
+        targets = {skill_name_key(name) for name in skill_names}
+        if not targets:
+            return []
+        changed: list[str] = []
+        for skill in self.list_skills(student_profile_id):
+            if skill_name_key(skill.name) not in targets:
+                continue
+            if skill.source == "assessment":
+                continue
+            skill.source = "assessment"
+            skill.updated_at = now
+            changed.append(skill.name)
+        return changed
+
+    def _first_added_map(self, student_profile_id: str) -> dict[str, datetime]:
+        """`skill_name_key` → 该技能**在这份档案里**最早的出现时间（`ADR-027` §1.3）。
+
+        扫的是**全部行**（含软删除的历史行），不是 `list_skills()`：一条技能被删掉
+        再加回来时，用户看到的应该是「我从 3 月就在用」，而不是「我今天刚加」。
+
+        用 Python 折算 `skill_name_key` 而不是在 SQL 里 `LOWER()`：归一规则是**代码**的一部分
+        （大小写 + 全半角 + 空白），在 SQL 里重写一遍就是第二份真相，而两份真相迟早会分叉。
+
+        数据量上界是「一份档案的历史技能行数」（上限 8 条 × 保存次数），
+        单次全量替换扫一次，可接受；真到需要优化时应该加一列持久化的 `name_key`，
+        而不是把归一规则拆成两份。
+        """
+        rows = self._session.execute(
+            select(Skill.name, Skill.first_added_at, Skill.created_at).where(
+                Skill.student_profile_id == student_profile_id
+            )
+        ).all()
+        earliest: dict[str, datetime] = {}
+        for name, first_added_at, created_at in rows:
+            stamp = first_added_at or created_at
+            key = skill_name_key(name)
+            current = earliest.get(key)
+            if current is None or stamp < current:
+                earliest[key] = stamp
+        return earliest
+
     def list_experiences(self, student_profile_id: str) -> list[Experience]:
         statement = (
             select(Experience)
@@ -557,6 +641,11 @@ class StudentProfileRepository:
                     id=str(uuid4()),
                     student_profile_id=target.id,
                     name=skill.name,
+                    # 复制简历 = 复制这份内容，`ADR-027` 的三格元数据一并带过去：
+                    # 副本里「这条技能是项目来的、上次 5 月用过」与源档案是同一个事实。
+                    source=skill.source,
+                    last_used_on=skill.last_used_on,
+                    first_added_at=skill.first_added_at or now,
                     created_at=_staggered(now, index),
                     updated_at=now,
                 )
@@ -691,12 +780,19 @@ class StudentProfileRepository:
                 .where(model.student_profile_id == profile.id, model.deleted_at.is_(None))
                 .values(deleted_at=now)
             )
+        # `ADR-027` §1.3：`first_added_at` 必须跨全量替换保留，否则每次保存都把
+        # 「我什么时候开始写这条技能」清零。**先取快照，不然后面插的新行会被算进去**。
+        first_added = self._first_added_map(profile.id)
         for index, skill in enumerate(skills):
+            key = skill_name_key(skill.name)
             self._session.add(
                 Skill(
                     id=str(uuid4()),
                     student_profile_id=profile.id,
                     name=skill.name,
+                    source=skill.source,
+                    last_used_on=skill.last_used_on,
+                    first_added_at=first_added.get(key, now),
                     deleted_at=None,
                     created_at=_staggered(now, index),
                     updated_at=now,

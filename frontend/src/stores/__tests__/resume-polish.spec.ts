@@ -77,10 +77,13 @@ function seedDraft() {
   const store = useResumeStore()
   store.draft.full_name = '张三'
   store.draft.contact = '13800000000'
+  // B7（ADR-027）：技能的草稿形状多了「来源」与「最近使用」两格。
+  // 这里显式写全，因为 `SkillDraft` 是必填结构——用 `Partial` 兜住会让
+  // 「忘了带元数据」在类型层面悄悄过关。
   store.draft.skills = [
-    { name: 'Python' },
-    { name: '' },
-    { name: 'SQL' },
+    { name: 'Python', source: 'self_reported', last_used_on: '' },
+    { name: '', source: 'self_reported', last_used_on: '' },
+    { name: 'SQL', source: 'self_reported', last_used_on: '' },
   ]
   store.draft.experiences = [
     {
@@ -119,7 +122,7 @@ describe('polish 的前置拦截', () => {
     store.draft.skills = []
     expect(store.validateForPolish()).toContain('技能')
 
-    store.draft.skills = [{ name: 'Python' }]
+    store.draft.skills = [{ name: 'Python', source: 'self_reported', last_used_on: '' }]
     store.draft.experiences = []
     expect(store.validateForPolish()).toContain('项目经历')
 

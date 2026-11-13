@@ -59,6 +59,16 @@ class ErrorMessage(StrEnum):
     # ---- 批次 B11a（ADR-022）：面试会话。 ----
     INTERVIEW_NOT_FOUND = "面试会话不存在或无法访问，请返回面试列表重新选择。"
     INTERVIEW_ENDED = "这场面试已经结束，请新建一场继续练习。"
+    # ---- 批次 B9（ADR-028）：标准化题库测评与画像。 ----
+    # ① 会话不存在 / 不属于自己：与岗位、简历、面试同一句口径，不区分原因。
+    ASSESSMENT_NOT_FOUND = "这次测评不存在或无法访问，请返回测评列表重新选择。"
+    # ② 状态冲突（重复提交 / 提交后改答案 / 放弃已提交的）：说清「为什么不能再改」，
+    #    并给下一步动作。只说「状态不允许」等于让用户自己猜。
+    ASSESSMENT_STATE_CONFLICT = "这次测评已经提交或已放弃，不能再修改；想再测一次请新建一场测评。"
+    # ③ 选项不合法：用户选的 key 不属于那道题（贴值 / 旧页面 / 题目被停用）。
+    ASSESSMENT_ANSWER_INVALID = "这题的选项已无效，请刷新页面后重新作答。"
+    # ④ 题库为空：部署数据问题，但也不能回 500 —— 用户看到的是「暂时不能测」。
+    ASSESSMENT_BANK_EMPTY = "测评题库暂时不可用，请稍后再试或联系管理员。"
     # ui-copy:allow 此处名称用于定位用户必须配置的凭据，不展示凭据内容。
     AI_KEY_MISSING = "请先在「AI 设置」中配置 DeepSeek API Key。"
     # ui-copy:allow 此处名称用于定位用户必须检查的凭据，不展示凭据内容。
@@ -96,6 +106,13 @@ class ErrorMessage(StrEnum):
     EMAIL_FORMAT = "邮箱格式不正确，请填写如 name@example.com 的地址。"
     CONTACT_FORMAT = "手机号格式不正确，请填写中国大陆 11 位手机号。"
     SKILL_BLANK = "{field}的技能名称为空，请填写技能名称或删除空条目。"
+    #: B7（`ADR-027`）：技能的「最近使用」不可能是明天；「测评」来源不是用户能选的。
+    #: 两句都必须是**能动手**的话——前一版若只说「格式不正确」，用户不知道该改成什么。
+    SKILL_LAST_USED_FUTURE = "技能的「最近使用」不能填未来日期，请选择今天或更早的月份。"
+    SKILL_SOURCE_ASSESSMENT = (
+        "「已通过测评」这个来源不能手动选择：它由标准化测评提交时自动写入，"
+        "现在请选择「自评」或「项目」。"
+    )
     SKILL_DUPLICATE = "技能名称重复，请合并同名技能后提交。"
     EXPERIENCE_DATES = "{field}的日期有误，请确保开始日期不晚于今天、结束日期不早于开始日期。"
     EDUCATION_DATES = "{field}的日期有误，请确保入学日期不晚于今天、毕业日期不早于入学日期。"
@@ -212,6 +229,8 @@ VALIDATOR_MESSAGES = {
     "phone must be a mainland China mobile number": ErrorMessage.CONTACT_FORMAT,
     "contact must be a mainland China mobile number": ErrorMessage.CONTACT_FORMAT,
     "skill name must not be blank": ErrorMessage.SKILL_BLANK,
+    "last_used_on must not be in the future": ErrorMessage.SKILL_LAST_USED_FUTURE,
+    "skill source assessment is written by the server": ErrorMessage.SKILL_SOURCE_ASSESSMENT,
     "skill names must be unique": ErrorMessage.SKILL_DUPLICATE,
     "end_date must be on or after start_date": ErrorMessage.EXPERIENCE_DATES,
     "start_date must not be in the future": ErrorMessage.EXPERIENCE_DATES,

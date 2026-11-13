@@ -82,6 +82,8 @@ import type {
   ResumeRead,
   ResumeVersionSummary,
   SectionId,
+  SkillSource,
+  SkillSourceRead,
   ThemeId,
 } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
@@ -278,6 +280,21 @@ export const GENERATE_MIN = { skills: 1, experiences: 1, educations: 1 } as cons
 export const DEGREE_OPTIONS: readonly Degree[] = ['专科', '本科', '硕士', '博士']
 
 /**
+ * 技能来源的下拉选项（B7 / `ADR-027` §2.2）。
+ *
+ * 只有三个可写值：`assessment` 不在其中，它由标准化测评提交时服务端写入。
+ * 界面**不给**这一档，也不给「已通过测评」这种听起来更厉害的文案——
+ * 让用户在没有测评的情况下给自己贴一个更强的来源，等于把「证据」这个词作废。
+ *
+ * 顺序即推荐顺序：默认档在最前，用户不选就是自评（真话，也是基准）。
+ */
+export const SKILL_SOURCE_OPTIONS: readonly { value: SkillSource; label: string }[] = [
+  { value: 'self_reported', label: '自评' },
+  { value: 'project', label: '来自项目' },
+  { value: 'teacher_confirmed', label: '教师确认' },
+]
+
+/**
  * 中国大陆手机号；与后端 `app/schemas/profile.py::PHONE_PATTERN` 同源，
  * 两边必须同步修改，否则前端放过、后端 422。
  */
@@ -319,6 +336,23 @@ const LAST_PROFILE_STORAGE_PREFIX = 'resume_last_profile:'
 
 export interface SkillDraft {
   name: string
+  /**
+   * 来源（B7 / `ADR-027`）：自评 / 来自项目 / 教师确认，外加 `assessment`
+   * ——**最后那一档只可能从服务端读回来**（标准化测评提交时写的）。
+   *
+   * 草稿里必须保留它、不能就地降级成自评：用户测完评之后改一个字再保存，
+   * 若这一格已经变成 `self_reported`，测评写下的来源就被自己的保存动作抹掉了。
+   * 提交时的处理是「不传」（见 `toUpsertPayload()`）：省略 = 沿用库里那一档。
+   */
+  source: SkillSourceRead
+  /**
+   * 最近使用（`YYYY-MM`，与 `<input type="month">` 同格式；空串 = 没填）。
+   *
+   * 为什么是「用户填」而不是「保存时间自动带上」：全量替换让
+   * `created_at`/`updated_at` 恒等于「上次点保存」，与「上次用这个技术」无关
+   * （`ADR-027` §1.2）。系统猜的那一格一定是不解释的假事实。
+   */
+  last_used_on: string
 }
 
 export interface ExperienceDraft {
@@ -463,6 +497,27 @@ function toTheme(value: unknown): ThemeId {
   return found ? found.id : DEFAULT_THEME
 }
 
+/**
+ * 把任意值收敛到四个来源之一，未知值回落 `self_reported`。
+ *
+ * 三个来源都可能是脏的：`localStorage` 里的旧草稿（B7 之前根本没有这一格）、
+ * 后端响应里的 `assessment`（服务端写的，客户端无权再提交）、以及拼错的值。
+ * 与后端读侧同一方向：**只往弱的那一侧降级**——一个来源标签坏了不该让整份草稿恢复失败。
+ *
+ * `assessment` **要保留**（不降级）：它在草稿里代表「这一格不是我说的」，
+ * 提交时会整格省略（见 `toUpsertPayload()`）。就地降成自评等于替用户撤回证据。
+ */
+function toSkillSource(value: unknown): SkillSourceRead {
+  if (value === 'assessment') return 'assessment'
+  const found = SKILL_SOURCE_OPTIONS.find((option) => option.value === value)
+  return found ? found.value : 'self_reported'
+}
+
+function createEmptySkill(): SkillDraft {
+  // 默认来源是 `self_reported`：用户没说明出处时，「他自己说的」是唯一不撒谎的答案。
+  return { name: '', source: 'self_reported', last_used_on: '' }
+}
+
 function createEmptyEducation(): EducationDraft {
   return {
     school: '',
@@ -488,7 +543,7 @@ function createEmptyDraft(): ProfileDraft {
     paper_size: 'A4',
     theme: DEFAULT_THEME,
     layout_config: createDefaultLayout(),
-    skills: Array.from({ length: 3 }, () => ({ name: '' })),
+    skills: Array.from({ length: 3 }, () => createEmptySkill()),
     experiences: [
       {
         title: '',
@@ -518,7 +573,13 @@ function draftFromProfile(profile: ProfileRead): ProfileDraft {
     theme: toTheme(profile.theme),
     // D5.3：后端读侧恒返回解析后的配置；`?? null` 只是兼容「D5.2 之前缓存的响应」。
     layout_config: toLayoutConfig(profile.layout_config),
-    skills: profile.skills.map((skill) => ({ name: skill.name })),
+    // B7：来源与最近使用一起进草稿。`assessment` 原样保留——它是服务端写的值，
+    // 草稿若就地把降级成自评，用户的下一次保存会把测评结果抹掉。
+    skills: profile.skills.map((skill) => ({
+      name: skill.name,
+      source: toSkillSource(skill.source),
+      last_used_on: toMonth(skill.last_used_on),
+    })),
     experiences: profile.experiences.map((experience) => ({
       title: experience.title,
       start_date: experience.start_date,
@@ -725,7 +786,13 @@ function normalizeDraft(raw: ProfileDraft): ProfileDraft {
     layout_config: toLayoutConfig(raw.layout_config),
     skills: (raw.skills ?? [])
       .filter((skill) => skill && typeof skill.name === 'string')
-      .map((skill) => ({ name: skill.name })),
+      // B7 之前的草稿没有这两格：补自评 + 空月份，而不是判成脏草稿（否则用户
+      // 升级后正在编辑的内容会被静默丢弃）。
+      .map((skill) => ({
+        name: skill.name,
+        source: toSkillSource(skill.source),
+        last_used_on: toMonth(skill.last_used_on),
+      })),
     experiences: (raw.experiences ?? [])
       .filter((experience) => experience && typeof experience.title === 'string')
       .map((experience) => ({
@@ -829,7 +896,13 @@ function comparableOf(source: ProfileDraft): string {
     theme: toTheme(source.theme),
     // 排版（D5.3）：顺序与标题都要参与比较，否则「只调顺序」会被判成没有修改。
     layout_config: layoutComparable(source.layout_config),
-    skills: meaningfulSkills(source).map((skill) => skill.name.trim()),
+    // 技能（B7）：三元组一起比，否则「只改了来源 / 只补了最近使用」会被判成
+    // 没有修改——用户点保存后横幅不消失，而后端也真的收不到那两格。
+    skills: meaningfulSkills(source).map((skill) => [
+      skill.name.trim(),
+      toSkillSource(skill.source),
+      skill.last_used_on ?? '',
+    ]),
     experiences: meaningfulExperiences(source).map((experience) => [
       experience.title,
       experience.start_date,
@@ -1141,9 +1214,29 @@ export const useResumeStore = defineStore('resume', () => {
     markContentChanged()
   }
 
+  /**
+   * 改来源（B7）。**拒绝把 `assessment` 改掉**——那一档是服务端写的，
+   * 界面上也根本没有它的选项；这里再挡一次，是因为 `draft` 也能被
+   * 恢复草稿 / 粘贴值改到，静默改成自评等于替用户撤回证据。
+   */
+  function updateSkillSource(index: number, value: string): void {
+    const skill = draft.skills[index]
+    if (!skill || skill.source === 'assessment') return
+    skill.source = toSkillSource(value)
+    markContentChanged()
+  }
+
+  /** 改「最近使用」（`YYYY-MM`；空串 = 清掉）。 */
+  function updateSkillLastUsed(index: number, value: string): void {
+    const skill = draft.skills[index]
+    if (!skill) return
+    skill.last_used_on = value
+    markContentChanged()
+  }
+
   function addSkill(): void {
     if (!canAddSkill.value) return
-    draft.skills.push({ name: '' })
+    draft.skills.push(createEmptySkill())
     markContentChanged()
   }
 
@@ -1304,7 +1397,13 @@ export const useResumeStore = defineStore('resume', () => {
               title: sectionTitle(section),
             })),
           },
-      skills: meaningfulSkills(draft).map((skill) => ({ name: skill.name.trim() })),
+      skills: meaningfulSkills(draft).map((skill) => ({
+        name: skill.name.trim(),
+        // `assessment` 整格省略 = 「沿用库里那一档」（后端 `ADR-027` §2.3）：
+        // 客户端没有资格重新声明服务端写入的来源，传过去只会 422。
+        ...(skill.source === 'assessment' ? {} : { source: skill.source }),
+        last_used_on: toIsoDate(skill.last_used_on),
+      })),
       experiences: meaningfulExperiences(draft).map((experience) => ({
         title: experience.title.trim(),
         start_date: experience.start_date,
@@ -2289,6 +2388,8 @@ export const useResumeStore = defineStore('resume', () => {
     canRemoveCityPreference,
     updateProfileField,
     updateSkill,
+    updateSkillSource,
+    updateSkillLastUsed,
     addSkill,
     removeSkill,
     updateExperience,

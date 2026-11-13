@@ -208,12 +208,16 @@ export function hasDeepSeekKey(): boolean {
  * 哪些请求携带 `X-DeepSeek-Key`（BYOK）。
  *
  * 判据是一份**白名单**而不是模式匹配，且只列真正消耗用户 AI 额度的端点。
- * 今天两条精确路径 + 两条模式：
+ * 今天两条精确路径 + 三条模式：
  * - `/resumes/polish`（ADR-010）
  * - `POST /jobs/extract-skills`（ADR-011 2.A）
  * - `POST /jobs/{id}/match`（ADR-013 §6）
  * - `POST /interviews/{id}/messages`（FR-07 / B11a）：面试官的下一段由 AI 生成，
  *   带凭据时转发 DeepSeek；和岗位匹配同族——没有凭据不会报错，而是走内置题库的可见降级。
+ * - `POST /assessments/sessions/{id}/summary`（FR-04 / B9，`ADR-028` §2.5）：画像那段
+ *   人话由 AI 写，带凭据时转发；没凭据/失败时后端把 `source` 落成 `fallback` 并照旧给
+ *   一段由标签拼的文案。`POST /assessments/sessions`（开考）与其余读写端点都只碰我们自己的
+ *   库，一个字节都不发往 DeepSeek，所以**不**在白名单里。
  *
  * 为什么岗位侧只扩这三条：`/jobs` 下其余端点（列表 / 创建 / 详情 / 更新 / publish /
  * unpublish / trash / restore / 删除）全部走我们自己的数据库，一个字节都不发往 DeepSeek。
@@ -247,6 +251,9 @@ const BYOK_KEY_PATTERNS: ReadonlyArray<{ method: string; pattern: RegExp }> = [
   // FR-07 / B11a：面试发消息会转发 AI 凭据（用户填了凭据时）。
   // `{id}` 必须是 UUID 形状：排掉 `/interviews/extra/messages` 这类无路由的近似路径。
   { method: 'post', pattern: new RegExp(`^\\/interviews\\/${UUID_SEGMENT}\\/messages$`) },
+  // FR-04 / B9（ADR-028 §2.5）：只让「生成概述」这一条带凭据。同一条目下另有
+  // 开考 / 存答案 / 提交 / 放弃四个 POST，它们都只写我们自己的库，不进白名单。
+  { method: 'post', pattern: new RegExp(`^\\/assessments\\/sessions\\/${UUID_SEGMENT}\\/summary$`) },
 ]
 
 function isDeepSeekKeyRequest(url: string | undefined, method?: string): boolean {

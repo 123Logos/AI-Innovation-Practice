@@ -20,8 +20,10 @@ from app.core.error_messages import ErrorMessage
 from app.integrations.copy_writer import DeepSeekCopyWriter
 from app.integrations.evidence_scorer import DeepSeekEvidenceScorer
 from app.integrations.interview_coach import DeepSeekInterviewCoach
+from app.integrations.profile_summarizer import DeepSeekProfileSummarizer
 from app.integrations.resume_generator import TemplateResumeGenerator
 from app.integrations.skill_extractor import DeepSeekJobSkillExtractor
+from app.repositories.assessment_repository import AssessmentRepository
 from app.repositories.audit_log_repository import AuditLogRepository
 from app.repositories.interview_repository import InterviewRepository
 from app.repositories.invitation_repository import InvitationRepository
@@ -33,6 +35,7 @@ from app.repositories.skill_alias_repository import SkillAliasRepository
 from app.repositories.student_profile_repository import StudentProfileRepository
 from app.repositories.user_repository import UserRepository, session_scope
 from app.schemas.auth import UserRead
+from app.services.assessment_service import AssessmentService
 from app.services.auth_service import (
     AuthError,
     AuthService,
@@ -204,6 +207,26 @@ def get_match_service(request: Request) -> Iterator[MatchService]:
             profile_repository=StudentProfileRepository(session),
             alias_repository=SkillAliasRepository(session),
             scorer=DeepSeekEvidenceScorer(api_key) if api_key else None,
+        )
+
+
+def get_assessment_service(request: Request) -> Iterator[AssessmentService]:
+    """装配测评服务（FR-04 / B9，`ADR-028`）。
+
+    一个 session、**两个**仓储（测评 / 档案）：提交要同时写「会话 + 答案 + 标签」
+    并改「技能来源」（`ADR-028` §2.6），分两次会话会留下「标签写了、来源没升」
+    或反过来的半截状态。
+
+    Key 的取法与 `get_interview_service` 完全同构：空 Key 时 summarizer 装 `None`，
+    由服务层翻译成 `source='fallback'` + `note='key_missing'`，**不在这里 4xx**——
+    画像没有 Key 也要能看（事实是标签，AI 只负责措辞）。
+    """
+    api_key = request.headers.get(DEEPSEEK_KEY_HEADER, "").strip()
+    with session_scope() as session:
+        yield AssessmentService(
+            repository=AssessmentRepository(session),
+            profile_repository=StudentProfileRepository(session),
+            summarizer=DeepSeekProfileSummarizer(api_key) if api_key else None,
         )
 
 
