@@ -5,6 +5,7 @@ import {
   EXPERIENCE_LIMIT,
   MULTIVALUE_LIMIT,
   SKILL_LIMIT,
+  SKILL_SOURCE_OPTIONS,
   useResumeStore,
 } from '@/stores/resume'
 import type {
@@ -40,6 +41,14 @@ function onProfileInput(field: ProfileField, event: Event): void {
 
 function onSkillName(index: number, event: Event): void {
   store.updateSkill(index, (event.target as HTMLInputElement).value)
+}
+
+function onSkillSource(index: number, event: Event): void {
+  store.updateSkillSource(index, (event.target as HTMLSelectElement).value)
+}
+
+function onSkillLastUsed(index: number, event: Event): void {
+  store.updateSkillLastUsed(index, (event.target as HTMLInputElement).value)
 }
 
 function onEducationInput(index: number, field: keyof EducationDraft, event: Event): void {
@@ -345,11 +354,46 @@ function onCityInput(index: number, event: Event): void {
         >
           ×
         </button>
+        <div class="skill-meta">
+          <!--
+            `assessment` 那一档不渲染下拉：它是标准化测评提交时服务端写的，
+            客户端无权改动。渲染成下拉就等于给用户一个「撤回证据」的按钮，
+            而且选它会被后端 422 拒掉（ADR-027 §2.2）。这里只是如实告诉他出处。
+          -->
+          <p v-if="skill.source === 'assessment'" class="skill-source-static">
+            来源：已通过标准化测评（由测评记录决定，不能在这里改）
+          </p>
+          <label v-else class="field">
+            <span>来源</span>
+            <select
+              :value="skill.source"
+              :aria-label="`技能 ${index + 1} 的来源`"
+              @change="onSkillSource(index, $event)"
+            >
+              <option v-for="option in SKILL_SOURCE_OPTIONS" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+          </label>
+          <label class="field">
+            <span>最近使用（选填）</span>
+            <input
+              type="month"
+              :value="skill.last_used_on"
+              :max="maxMonth"
+              :aria-label="`技能 ${index + 1} 的最近使用月份`"
+              @input="onSkillLastUsed(index, $event)"
+            />
+          </label>
+        </div>
       </div>
       <button class="text-button" type="button" :disabled="!store.canAddSkill" @click="store.addSkill">
         + 新增技能
       </button>
-      <p class="hint">最多 {{ SKILL_LIMIT.max }} 条，名称不可重复；可先存草稿。</p>
+      <p class="hint">
+        最多 {{ SKILL_LIMIT.max }} 条，名称不可重复；「最近使用」由你自己填，系统不替你猜。
+        可先存草稿。
+      </p>
     </section>
 
     <section class="form-section">
@@ -493,7 +537,11 @@ textarea { line-height: 1.45; }
 .polish-note { margin: 0; border-left: 3px solid var(--ui-warning-border); padding-left: 8px; color: var(--ui-ink-muted); font-size: var(--text-sm); line-height: 1.6; }
 .text-button { justify-self: start; border: 0; padding: 0; color: var(--theme-primary); background: transparent; cursor: pointer; font-size: var(--text-sm); }
 .text-button:disabled { color: var(--el-text-color-disabled); cursor: not-allowed; }
+/* 技能一行：名称 + 删除在第一条线，来源与最近使用缩进在第二条线
+   （375px 宽下四列并排会把「教师确认」压成省略号，那比多一行更糟）。 */
 .skill-row { display: grid; grid-template-columns: minmax(0, 1fr) 20px; align-items: center; gap: 8px; }
+.skill-meta { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.skill-source-static { color: var(--ui-ink-muted); font-size: var(--text-sm); line-height: 1.5; }
 .remove-button { border: 0; padding: 0 4px; color: var(--ui-danger); background: transparent; cursor: pointer; font-size: var(--text-2xl); line-height: 1; }
 .remove-button:disabled { color: var(--ui-border); cursor: not-allowed; }
 .experience-form, .education-form { display: grid; gap: 10px; border-top: 1px solid var(--ui-border); padding-top: 12px; }

@@ -1093,7 +1093,7 @@ api 不能依赖 repositories/integrations、repositories 不能依赖 services�
 
 ### 11.3 `create_profile()` 的显式 kwarg 也要补
 
-`student_profile_repository.py:304-316` 同样是显式列举全部列。
+`student_profile_repository.py:574-591` 同样是显式列举全部列。
 新列必须在这里给出值（或依赖 Python 侧默认值），否则 INSERT 缺列。
 
 **注意**：`server_default` 只对 `ALTER TABLE` 的老行生效，

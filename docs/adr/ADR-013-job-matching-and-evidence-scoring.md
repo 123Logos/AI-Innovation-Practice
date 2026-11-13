@@ -404,7 +404,7 @@ preference=None/no_target_role    remaining_time=None/no_deadline
 
 **输入预算**（§13 复核新增，之前这一条是漏的）：交给模型的字符数不能由用户的自由文本决定。实测：
 单档案技能 ≤8（`app/schemas/profile.py:271`）、经历 ≤3（`:272`），但 `description`/`responsibility` 在
-`app/schemas/resume.py:67-68` 是**裸 `str`、没有任何长度约束**，库里是 `Text`（`student_profile_repository.py:129-130`）。
+`app/schemas/resume.py:117-118` 是**裸 `str`、没有任何长度约束**，库里是 `Text`（`student_profile_repository.py:129-130`）。
 dev 库现有 8 条经历的 `description` 长度是 p50 44 / p90 102 / **max 615** 字——也就是说今天最真实的一条已经能到几百字，
 而 3 条经历 × 2 个字段 × 8 个技能若整段送，最坏情况没有上界。窗口规则（上面第 2 点）把上界变成
 「命中次数 × 160 字」，与自由文本长度**解耦**，因此不需要给 `ExperienceInput` 加 `max_length`（那会是对用户数据的截断式改动，属于另一个决定）。
@@ -925,7 +925,7 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
 |---|---|---|---|
 | 1 | 限流口径与仓库机制不符，按 IP 会让局域网测试互相抢额度 | `app/core/rate_limit.py:72` `key_func=get_remote_address`；`:37` 自记多 worker 局限；`Limiter.limit` 签名实测支持 `key_func=` 覆盖 | §3 改为按用户键 + 新增 `MATCH_RATE_LIMIT`，另三条规则不动 |
 | 2 | 「AI 失败退化成 200」与三个全局 AI 处理器冲突，实现时最自然的写法会把它变成红字报错 | `app/main.py:259/266/277` 分别 400/401/502；异常类 `ResumeApiKeyMissingError` / `ResumeCopyRejectedError` / `ResumeCopyUnavailableError`（`app/services/resume_service.py:43/47/51`） | §3 新增「状态码边界」；§6.5 新增 `degrade_reason` 五值 + 五情形各一测试 |
-| 3 | 交给模型的输入没有上界，而它由用户自由文本决定 | 技能 ≤8 / 经历 ≤3（`app/schemas/profile.py:271-272`），但 `description`/`responsibility` 无长度约束（`app/schemas/resume.py:67-68`，列型 `Text`）；dev 库 8 条经历 `description` p50 44 / p90 102 / **max 615** | §6 第 2 点改窗口化（±80 字）+ `fragments_truncated`；不给 `ExperienceInput` 加 `max_length`（那是截断用户数据，另一个决定） |
+| 3 | 交给模型的输入没有上界，而它由用户自由文本决定 | 技能 ≤8 / 经历 ≤3（`app/schemas/profile.py:271-272`），但 `description`/`responsibility` 无长度约束（`app/schemas/resume.py:117-118`，列型 `Text`）；dev 库 8 条经历 `description` p50 44 / p90 102 / **max 615** | §6 第 2 点改窗口化（±80 字）+ `fragments_truncated`；不给 `ExperienceInput` 加 `max_length`（那是截断用户数据，另一个决定） |
 | 4 | §7.5 与 §5.1 的「未知怎么办」自相矛盾，常数 0.5 进分母会把总分往中间挤 | `status='published'` 6 行、`deadline is null` 2 行（其中 1 行是回收站异常行）→ 真实可点 5 个里 1 个走这一支 | §7.5 改为 `computed=False`，键名 `freshness` → `remaining_time`，UI 改名「剩余投递时间」 |
 | 5 | §6 的白名单自证不成立：正则也命中**不存在**的路径，那些请求不转发 DeepSeek | `client.ts` 现在是 `BYOK_KEY_PATHS.includes(path)` 整段相等，模式机制今天不存在；`:229` 只做查询串与尾斜杠归一化 | §6.1 换成路由表论证 + 三条断言（正向 / 不扩张 / 已注册路由闭合），并进 `byok.spec.ts` 现有注入矩阵 |
 | 6 | §8 故意不做计数闭合，等于把一条漏计写进设计 | 少一个「模型没回这条」的通道，等式必然不闭合 | 新增 `dropped_missing_output` + 四桶互斥次序 + **要求写成断言**；同时更正我引用的 ADR-011 「先例」其实是已知缺陷 |

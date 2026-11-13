@@ -143,9 +143,31 @@ export interface AuditLogEntry {
 
 /* ---------------------------------- 档案 ---------------------------------- */
 
-/** 后端 `SkillInput`：名称 + 1–5 自评。 */
+/**
+ * 技能来源的**可写**集合（B7 / `ADR-027` §2.2），与后端 `SkillInput.source` 同源。
+ *
+ * 第四个值 `assessment` 刻意不在里面：它只能由标准化测评提交时由服务端写入。
+ * 客户端自己声明「已通过测评」等于在没有测评的情况下伪造一个更强的来源，
+ * 后端收到会 422，所以这里连类型都不给——让它在编译期就写不出来。
+ */
+export type SkillSource = 'self_reported' | 'project' | 'teacher_confirmed'
+
+/** 读侧可能多一个 `assessment`（测评提交后由服务端写进去的）。 */
+export type SkillSourceRead = SkillSource | 'assessment'
+
+/**
+ * 后端 `SkillInput`：名称 + 来源 + 最近使用（B7）。
+ *
+ * 两格元数据都是**用户声明**，系统不推断：
+ * - `source` 省略即 `self_reported`（没人核过就是自评，这是真话）；
+ * - `last_used_on` 省略即清空（PUT 整体覆盖语义，与 `target_role` 同一条）。
+ *   `first_added_at` **不在这里**：它由写入历史算出来，客户端无权声明。
+ */
 export interface SkillInput {
   name: string
+  source?: SkillSource
+  /** `YYYY-MM-DD`；null 表示「不知道 / 没填」。 */
+  last_used_on?: string | null
 }
 
 /** 后端 `ExperienceInput`：日期为 `YYYY-MM-DD`，`end_date` 为 null 表示「至今」。 */
@@ -240,8 +262,19 @@ export interface CityPreferenceRead extends CityPreferenceInput {
   id: string
 }
 
-export interface SkillRead extends SkillInput {
+/**
+ * 后端 `SkillRead`：技能 + 元数据。
+ *
+ * 不写成 `extends SkillInput`：读侧的 `source` 可能是 `assessment`，
+ * 比写侧宽一格——TS 的 interface 继承不允许把属性拓宽。
+ * `first_added_at` 是服务端派生值（跨全量替换保留的「首次加入」），只读。
+ */
+export interface SkillRead {
   id: string
+  name: string
+  source: SkillSourceRead
+  last_used_on: string | null
+  first_added_at: string | null
 }
 
 export interface ExperienceRead extends ExperienceInput {

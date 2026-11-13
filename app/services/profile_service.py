@@ -16,6 +16,7 @@ from collections import Counter
 from collections.abc import Sequence
 
 from app.core.document_style import DEFAULT_THEME, normalize_theme, resolve_layout
+from app.core.skill_names import skill_name_key
 from app.repositories.student_profile_repository import (
     CertificateDraft,
     CityPreferenceDraft,
@@ -257,7 +258,26 @@ class ProfileService:
             theme=self._resolve_theme(profile, payload),
             layout_config=self._resolve_layout_config(profile, payload),
         )
-        skills = [SkillDraft(name=skill.name) for skill in payload.skills]
+        # `ADR-027`：`first_added_at` 由仓储按写入历史保留；`source` 的「省略 = 沿用」
+        # 在这里解析（只此一处），因为它要读一次**当前活跃行**：
+        # - 客户端没说来源 → 沿用同名技能已有那一档（新技能落 `self_reported`）；
+        # - 若省略当清空，用户测完评之后改一个字再保存，`assessment` 就被抹成自评，
+        #   而客户端本来也没有资格「重新声明」服务端写的值（`ADR-027` §2.3）。
+        # `last_used_on` 不用沿用：它是纯用户数据，省略就是「我不知道 / 清掉」。
+        previous_source = {
+            skill_name_key(skill.name): skill.source
+            for skill in self._repository.list_skills(profile.id)
+        }
+        skills = [
+            SkillDraft(
+                name=skill.name,
+                source=skill.source
+                if skill.source is not None
+                else previous_source.get(skill_name_key(skill.name), "self_reported"),
+                last_used_on=skill.last_used_on,
+            )
+            for skill in payload.skills
+        ]
         experiences = [
             ExperienceDraft(
                 title=experience.title,
@@ -339,7 +359,8 @@ class ProfileService:
         - 父表字段比的是**三态解析后**的值（`_resolve_*`）：「没传 paper_size」解析成
           库里原值，自然判等；「显式 null」解析成默认值，与原值不同才算变更。
         - 技能 / 证书 / 作品 / 城市按**保存顺序**比（读侧按 created_at 排，顺序即内容：
-          用户在表单里拖动排序是一次真实变更）。
+          用户在表单里拖动排序是一次真实变更）。技能比的是**三元组**
+          `(名称, 来源, 最近使用)`：只比名称会让「只改了来源」被 no-op 吃掉（`ADR-027` §2.4）。
         - 经历 / 教育按**多重集**比：读侧与渲染都按开始时间倒序，提交顺序不改变任何
           用户可见物，重排不算变更；同内容两条（多重集计重数）也算一致。
         - 子表只与**活跃行**比：`list_*` 已在仓储层过滤软删除，这里不自比 `deleted_at`。
@@ -354,9 +375,16 @@ class ProfileService:
             or profile.layout_config != draft.layout_config
         ):
             return False
-        if [item.name for item in self._repository.list_skills(profile.id)] != [
-            item.name for item in skills
-        ]:
+        # 技能按 (名称, 来源, 最近使用) 三元组比，**不是只比名称**（`ADR-027` §2.4）。
+        # 只比名称时，「把自评改成项目」「补一个最近使用月份」会被判成没变更 →
+        # 静默丢掉用户的编辑，而响应还会回旧值（用户以为保存成功）。
+        # 这一条是第一版实现漏的：`test_skill_metadata.py` 里
+        # `test_last_used_on_round_trip_and_clear` 与 `test_metadata_only_change_is_saved`
+        # 一起撞出来的，不是假想。
+        if [
+            (item.name, item.source, item.last_used_on)
+            for item in self._repository.list_skills(profile.id)
+        ] != [(item.name, item.source, item.last_used_on) for item in skills]:
             return False
         if Counter(
             ExperienceDraft(

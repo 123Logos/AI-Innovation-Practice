@@ -13,8 +13,8 @@ FR-02 还差三格：**期望城市 / 证书 / 作品链接**。老板 2026-11-0
 |---|---|---|
 | 全仓**没有任何**可放证书 / 作品链接 / 附件的列 | `alembic/versions/` 全链 + `app/`、`frontend/src/` grep `certificate\|portfolio\|url\|attachment` 零命中 | 这不是「补一列」，是开新实体 |
 | 技能 / 经历 / 教育每次保存是**物理先删后插**，且新行换全新 UUID | `app/repositories/student_profile_repository.py:486-488` | 任何挂在 `skills.id` 下的子表**每存一次就成孤儿**——这正是 C/2 要解决的问题 |
-| 可渲染区块被白名单钉死 3 段 | `app/core/document_style.py:155`（`SectionId`）、`:175-179`（`DEFAULT_SECTIONS`）、`:182`（`SECTION_IDS`）；写侧 `max_length=len(SECTION_IDS)`（`app/schemas/profile.py:125`） | 「进简历」必然要动这张白名单，动它就动版本 |
-| `LAYOUT_VERSION = 1`，写侧版本不符即 422 | `app/core/document_style.py:158`、`app/schemas/profile.py:127-132` | 升版会立刻让老客户端存不进配置 |
+| 可渲染区块被白名单钉死 3 段 | `app/core/document_style.py:155`（`SectionId`）、`:175-179`（`DEFAULT_SECTIONS`）、`:182`（`SECTION_IDS`）；写侧 `max_length=len(SECTION_IDS)`（`app/schemas/profile.py:129`） | 「进简历」必然要动这张白名单，动它就动版本 |
+| `LAYOUT_VERSION = 1`，写侧版本不符即 422 | `app/core/document_style.py:158`、`app/schemas/profile.py:132-135` | 升版会立刻让老客户端存不进配置 |
 | 读侧版本不符**静默回落默认顺序**（只 warning） | `app/core/document_style.py:234-237` | 老配置 + 新版本 = 用户精心排的顺序**悄悄没了**，这是 C/1 那半句要拦的东西 |
 | `resumes` 只有 `content_html` 快照，**零版本列**（无 revision / parent_id / is_current / deleted_at），「最新」全靠 `created_at` 猜 | `alembic/versions/20261023_0001_initial_phase1.py:105-122`、`app/repositories/resume_repository.py::ResumeRepository.create_resume` | C/3 的对象 |
 | 前端另有一份默认区块表 | `frontend/src/stores/resume.ts::DEFAULT_LAYOUT_SECTIONS`，由 `tests/test_profile_contract.py::test_default_layout_matches_frontend` 比对 | 升版要**两处同改**，否则契约测试红 |

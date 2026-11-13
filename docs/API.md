@@ -708,13 +708,94 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 
 ## 5. 测评、匹配与成长
 
-### GET `/assessments`
+> **本节的状态口径（2026-11-13 批次 B9 之后）**：**测评这一块已实现**——8 个端点，全部在
+> `app/api/v1/assessments.py`，口径写死在 `docs/adr/ADR-028-standardized-assessment-and-ai-profile.md`；
+> 下面 `match-runs` / `growth-plans` 两段仍是**设计意图**，今天没有对应路由（批量匹配要新表 + 后台任务，
+> `ADR-013` §12 已明确不采用；单岗位匹配见 §4.10）。
+>
+> 原先这里写的 `GET /assessments`（按 `skill_id` / `level` / `version` 查题）与
+> `POST /assessments/{assessment_id}/attempts` **从未实现，也不会按那个形态实现**：
+> 真实模型只有「题库版本（`bank_version`）+ 会话（`session`）」两层，没有 `level` 分组也没有 `attempt` 概念。
+> 保留这段说明是为了让读旧 PRD 的人知道它作废了，而不是「还没做」。
 
-按 `skill_id`、`level`、`version` 查询可用题目集合，不返回答案。
+### 5.1 测评端点清单（FR-04 / `ADR-028`）
 
-### POST `/assessments/{assessment_id}/attempts`
+| 方法与路径 | 作用 | 权限 | 失败语义 |
+|---|---|---|---|
+| `GET /assessments` | 题库目录：`bank_version` + 每个技能几道题。**不含题干、不含选项、不含答案** | 登录 | — |
+| `POST /assessments/sessions` | 开一场测评，返回题目（**不含答案**） | 登录 | 无档案 400 `PROFILE_REQUIRED`；`profile_id` 是别人的 → 404 |
+| `GET /assessments/sessions/{id}` | 会话详情：题目（按出题顺序）+ 我的答案 + 状态 | 本人 | 别人的会话 → 404（不是 403） |
+| `PUT /assessments/sessions/{id}/answers` | 批量**覆盖**答案，可反复调用 | 本人 | 已提交/已放弃 → 409；题不在本场或选项不属于该题 → 400 |
+| `POST /assessments/sessions/{id}/submit` | 判分 + 写画像标签 + 把已验证技能的来源升成 `assessment` | 本人 | 重复提交 → 409（不重新判分） |
+| `POST /assessments/sessions/{id}/abandon` | 放弃：不判分、不写标签 | 本人 | 终态后再操作 → 409 |
+| `POST /assessments/sessions/{id}/summary` | 生成画像概述（BYOK；AI 失败降级为 `fallback`，仍 200） | 本人 | 未提交的会话 → 409 |
+| `GET /assessments/profile` | 我的画像：标签列表 + 最近一次已提交会话的概述与来源 | 登录（自己的档案） | 无档案 400 |
 
-创建测评尝试，返回 `attempt_id`。答案提交到 `POST /assessment-attempts/{attempt_id}/answers`，完成使用 `POST /assessment-attempts/{attempt_id}/submit`。
+**两条不写在字段里但同样硬的约定**：
+
+1. **`answer_key` 永不进响应**。所有返回题目的地方都用 `AssessmentQuestionRead`，只有
+   `id` / `skill_name` / `prompt` / `options`（每个选项只有 `key` / `label`）。
+   把标准答案放进响应，测评当场变开卷，而这件事不会有任何报错提醒你（`ADR-028` §2.1）。
+2. **越权与不存在同义**：`AssessmentRepository.get_session` 在 SQL 层就按 `user_id` 过滤，
+   别人的会话对当前用户与「不存在」在响应里完全一样（404 `NOT_FOUND`），
+   不用 403 承认「这个 id 存在」。
+
+### 5.2 关键响应形状
+
+题库目录（`GET /assessments`）：
+
+```json
+{"data": {"catalog": {"bank_version": "v1", "total_questions": 12,
+  "skills": [{"skill_key": "python", "skill_name": "Python", "question_count": 3}]}}}
+```
+
+开考（`POST /assessments/sessions`，`201`）与详情（`GET /assessments/sessions/{id}`）：
+
+```json
+{"data": {
+  "session": {"id": "…", "student_profile_id": "…", "status": "in_progress",
+              "bank_version": "v1", "question_count": 12,
+              "correct_count": null, "score": null, "started_at": "2026-11-13T21:00:00+08:00"},
+  "questions": [{"id": "…", "skill_name": "Python", "prompt": "…",
+                 "options": [{"key": "A", "label": "…"}]}],
+  "answers": [{"question_id": "…", "chosen_key": "B", "is_correct": null}]}}
+```
+
+- `status`：`in_progress` / `submitted` / `abandoned`；终态**单向**，任何写入都是 409。
+- `correct_count` / `score`（0–100 整数，四舍五入）：`in_progress` 时都是 `null`，**不是 0**
+  （0 会被读成「一分没得」）。判分只在 `submit` 那一刻发生，纯函数、不调 AI，同一份答案永远同样的分。
+- `answers[].is_correct`：提交前 `null`，提交后才有真假值。
+- 详情里的 `questions` 顺序 = 开考时的出题顺序（服务层按 `session.question_ids` 重排；
+  直接给 `WHERE id IN (...)` 的结果，刷新一次就可能换一次题序）。
+
+提交（`POST …/submit`）返回本次标签，标签三态口径在 `app/core/assessment_rules.py`：
+
+```json
+{"data": {"session": {"status": "submitted", "correct_count": 9, "score": 75},
+  "tags": [{"tag": "Python", "status": "verified", "score": 100, "evidence_count": 3}]}}
+```
+
+| 状态 | 判据 |
+|---|---|
+| `verified` | 命中率 ≥ 0.8 **且**该技能题数 ≥ 2（答对一道题不构成证据） |
+| `improving` | 命中率 < 0.5 |
+| `pending` | 其余（含题数不足 2） |
+
+概述（`POST …/summary`）与画像（`GET /assessments/profile`）：
+
+```json
+{"data": {"summary": {"session_id": "…", "summary": "本次标准化测评共 12 题，答对 9 题。…",
+  "source": "fallback", "note": "未配置 AI 密钥，以下为根据测评结果自动整理的概述。"}}}
+```
+
+- `source`：`ai` / `fallback`。**降级不伪装成 AI**——它是落库的一列
+  （`assessment_sessions.ai_summary_source`），前端据此把标题写成「自动概述」；
+- `note`：只描述**这一次请求**发生了什么（`key_missing` / `key_invalid` / `timeout` /
+  `upstream` / `bad_output`），**不落库**（落库会让上次的原因被当成本次的原因展示）；
+- 送进模型的只有技能名、三态、题量与 `bank_version`，**不含简历正文、姓名、邮箱、手机号**。
+- 画像标签写在 `profile_tags`（`UNIQUE(student_profile_id, tag)`）：重考**覆盖**同一标签，不追加；
+  `source` 今天是 `assessment`。提交成功时，`verified` 的标签会把**已存在**的同名技能
+  （按 `skill_name_key` 匹配）的 `skills.source` 升成 `assessment`——**不新建技能、不改名、不动 `last_used_on`**。
 
 ### POST `/match-runs`
 

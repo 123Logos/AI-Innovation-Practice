@@ -10,7 +10,14 @@ ADR-010 新增的 `ResumePolishRequest` 是例外：润色端点收的是**前�
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from app.core.datetime_display import format_shanghai_datetime, shanghai_today
 
@@ -39,9 +46,28 @@ class SkillInput(BaseModel):
 
     2026-11-07 起没有 `self_rating`：那一格在 UI 已下线、渲染不使用、库里恒为 3，
     却仍要求每个客户端编一个 1–5 的数。迁移与理由见 ADR-013 §4。
+
+    B7（`ADR-027`）加了两格**元数据**，它们不是自评分的壳：
+
+    - `source`：这条技能**是谁说的**（自评 / 来自项目 / 教师确认）。**省略 = 沿用库里
+      同名技能已有的来源**（新技能则落 `self_reported`），不是「清空」。`assessment`
+      不在可写集合里——它只能由测评提交时由服务端写入（`ADR-028` §2.6），客户端传它
+      等于在没有测评的情况下自称「已被验证」；
+    - `last_used_on`：用户声明的最近使用日，**省略即清空**（PUT 整体覆盖语义，
+      与 `target_role` 同一条）。它不从 `created_at` 推：全量替换让那列恒等于
+      「上次保存时间」。
+
+    两格的省略语义**故意不同**：`last_used_on` 是纯用户数据，「没说就是没有」；
+    `source` 有一档是**服务端写的**（`assessment`），若省略也当清空，
+    那么用户测完评之后随便改一个字再保存，测评写下的来源就被抹成自评——
+    B9 的证据一次保存就作废。客户端的正确做法是：自己没资格表态的那一行**别传**。
+
+    `first_added_at` 不在这里：它由写入历史决定，客户端无权声明。
     """
 
     name: str = Field(min_length=1, max_length=100)
+    source: Literal["self_reported", "project", "teacher_confirmed"] | None = None
+    last_used_on: date | None = None
 
     @model_validator(mode="after")
     def normalize_name(self) -> "SkillInput":
@@ -50,6 +76,30 @@ class SkillInput(BaseModel):
             raise ValueError("skill name must not be blank")
         self.name = stripped
         return self
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def reject_assessment_source(cls, value: object) -> object:
+        """`assessment` 不给客户端选，且**要说清为什么**（`ADR-027` §2.2）。
+
+        不写成 `Literal` 一员然后「先收着」：允许客户端声明「已被测评验证」，等于让人
+        在没有测评的情况下伪造一个更强的来源；而「收了却不用」是另一种静默降级。
+        """
+        if value == "assessment":
+            raise ValueError("skill source assessment is written by the server")
+        return value
+
+    @field_validator("last_used_on")
+    @classmethod
+    def validate_last_used_on(cls, value: date | None) -> date | None:
+        """「上次用这个技术」不可能是明天。
+
+        与经历的「开始时间不得晚于今天」同一口径（东八区）；结束时间那格反而允许未来
+        （「预计结束」），因为那是计划，而「最近使用」是已发生的事。
+        """
+        if value is not None and value > shanghai_today():
+            raise ValueError("last_used_on must not be in the future")
+        return value
 
 
 class ExperienceInput(BaseModel):
