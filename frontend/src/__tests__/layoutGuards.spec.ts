@@ -17,7 +17,7 @@ import { join, resolve } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { APP_MODULES, TOP_BAR_MODULES } from '@/config/modules'
+import { APP_MODULES } from '@/config/modules'
 import { BREAKPOINTS } from '@/composables/useViewport'
 import router from '@/router'
 
@@ -280,16 +280,21 @@ describe('守则 L4：导航条目只有一张表', () => {
     expect(declarers).toEqual(['config/modules.ts'])
   })
 
-  it('顶栏模板里没有写死的模块名，文案一律来自表', () => {
-    const template = withoutHtmlComments(templateOf(file('components/AppTopBar.vue').text))
+  it('顶栏不再承载模块导航：既没有写死的模块名，也没有第二份模块数组', () => {
+    const source = file('components/AppTopBar.vue')
+    const template = withoutHtmlComments(templateOf(source.text))
 
-    // 顶栏要渲染的那些名字（本批即「岗位库」）不许再以字面量出现在标记里。
-    for (const module of TOP_BAR_MODULES) {
-      expect(template).not.toContain(module.name)
+    /*
+     * 2026-11-14（UI 收尾第 3/4 条）：顶栏上那两个文字入口（「岗位库」「组织管理」）
+     * 与 Logo 右侧的切换器都删掉了，模块切换只有顶栏下方的 `ModuleNav.vue` 一处。
+     * 判据随之翻面：以前是「顶栏渲染的名字必须来自表」，现在是「顶栏一个模块名都不许有」
+     * ——任何名字出现在这里都说明有人把入口又摆回来了。这条比原来更强，不是放宽。
+     */
+    for (const module of APP_MODULES) {
+      expect(template, `${module.name} 不该出现在顶栏模板里`).not.toContain(module.name)
     }
-    // 正向：它确实读了表，否则上面那条会因为「什么都没渲染」而假绿。
-    expect(file('components/AppTopBar.vue').text).toContain("from '@/config/modules'")
-    expect(template).toContain('TOP_BAR_MODULES')
+    expect(source.text).not.toContain("from '@/config/modules'")
+    expect(template).not.toContain('v-for="module in APP_MODULES"')
   })
 
   /**
@@ -303,31 +308,32 @@ describe('守则 L4：导航条目只有一张表', () => {
    * 已删除。第三个消费者在这里显式记账，是因为「消费者名单」本身就是这条守则的判据：
    * 名单外的文件一旦 import 那张表，说明有人开始抄第二份数组了。
    */
-  it('除顶栏外，没有任何组件把模块表再抄一份成自己的数组', () => {
+  it('除二级导航外，没有任何组件把模块表再抄一份成自己的数组', () => {
     const consumers = sources
       .filter((source) => /from '@\/config\/modules'/.test(source.text))
       .map((source) => source.rel)
 
-    // 三个消费者，都是**读表**而不是抄表：顶栏取 `TOP_BAR_MODULES`（`inTopBar` 过滤），
-    // 工作区切换器取 `APP_MODULES` 渲染卡片，工作台首屏取 `APP_MODULES` 渲染入口卡片。
-    // 再多一个消费者要在这里显式记账。
-    expect(consumers).toEqual([
-      'components/AppTopBar.vue',
-      'components/WorkspaceSwitcher.vue',
-      'views/DashboardView.vue',
-    ])
+    /*
+     * 两个消费者，都是**读表**而不是抄表（2026-11-14 起）：
+     * - `components/ModuleNav.vue`：顶栏下方的二级导航，模块入口的唯一一处；
+     * - `views/DashboardView.vue`：工作台首屏的入口卡片。
+     * 顶栏与工作区切换器都已退出这份名单（切换器组件已删除）。
+     * 再多一个消费者要在这里显式记账——名单本身就是这条守则的判据：
+     * 名单外的文件一旦 import 那张表，说明有人开始抄第二份数组了。
+     */
+    expect(consumers).toEqual(['components/ModuleNav.vue', 'views/DashboardView.vue'])
   })
 
-  it('工作区切换器的卡片文案也一律来自表，模板里没有写死的模块名', () => {
-    const source = file('components/WorkspaceSwitcher.vue')
+  it('二级导航的页签文案也一律来自表，模板里没有写死的模块名', () => {
+    const source = file('components/ModuleNav.vue')
     const template = withoutHtmlComments(templateOf(source.text))
 
     for (const module of APP_MODULES) {
-      expect(template, `${module.name} 不该以字面量出现在切换器模板里`).not.toContain(module.name)
+      expect(template, `${module.name} 不该以字面量出现在导航模板里`).not.toContain(module.name)
     }
     // 正向：它确实在遍历那张表，否则上面那条会因为「什么都没渲染」而假绿。
-    expect(template).toContain('v-for="module in APP_MODULES"')
-    expect(template).toContain(':to="{ name: module.routeName }"')
+    expect(template).toContain('v-for="item in APP_MODULES"')
+    expect(template).toContain(':to="{ name: item.routeName }"')
   })
 })
 

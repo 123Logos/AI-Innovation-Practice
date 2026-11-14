@@ -33,6 +33,7 @@ import { ref } from 'vue'
 import { RouterView } from 'vue-router'
 
 import AppTopBar from '@/components/AppTopBar.vue'
+import ModuleNav from '@/components/ModuleNav.vue'
 import ResumeCreateDialog from '@/components/ResumeCreateDialog.vue'
 import ResumeDrawer from '@/components/ResumeDrawer.vue'
 import ResumeList from '@/components/ResumeList.vue'
@@ -79,6 +80,14 @@ function openCreate(): void {
       @toggle-resumes="toggleResumes"
     />
 
+    <!--
+      二级导航（2026-11-14，UI 收尾第 4 条）：占满横向的模块页签，替代原来 Logo 右侧的
+      弹层式工作区切换器。放在**正常流**里而不是 sticky：顶栏本身是 sticky，它的高度不是
+      令牌（≥1100 档 63px、375 档 59px，窄屏还会整组换行），本栏再 sticky 就要把那两个数
+      抄一遍、换行时还会互相穿插；在流里最差只是滚走，永远不会遮住内容。
+    -->
+    <ModuleNav />
+
     <div class="app-body">
       <!-- ≥1440：常驻左栏。它是内容（用户自己的简历），不是模块导航，所以不进模块表（L4）。 -->
       <aside v-if="isSidebar" class="resume-sidebar" aria-label="我的简历">
@@ -99,7 +108,17 @@ function openCreate(): void {
       </div>
     </div>
 
-    <Transition name="ui-fade">
+    <!--
+      抽屉仍然用 `v-if`（2026-11-14 UI 收尾第 5 条试过 `v-show`，放弃了，理由写在这里）：
+      `v-show` 是把 `display: none` 挂到组件**根元素**上的，而本组件的根是 `<Teleport>`
+      ——Vue 对 Teleport / fragment 根的 `v-show` 并不保证生效（真实内容已经被搬到 body，
+      根上那层壳没东西可藏）。要「保持挂载」就得让 `DrawerPanel` 自己接一个 `open` prop
+      去控制面板可见性，那是另一个改动面（还要改 `aria-hidden` / 遮罩 / 焦点圈定）。
+      **卡顿的真因不在挂载次数上**：抽屉每次开合都会重新挂载 `ResumeList`，而它原来在
+      `onMounted` 里无条件 `refreshProfiles()` ——一次多余网络请求 + 骨架闪一下。
+      那个已经修了（`profilesLoaded` 缓存，见 `ResumeList.vue`），开合现在是从内存渲染。
+    -->
+    <Transition name="ui-slide-right">
       <ResumeDrawer
         v-if="!isSidebar && resumesOpen"
         @close="resumesOpen = false"

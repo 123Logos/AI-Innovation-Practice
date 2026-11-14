@@ -1,9 +1,12 @@
 <script setup lang="ts">
 /**
- * 顶栏：品牌 + 工作区切换器 + 一级导航 + 简历入口（只在窄屏）+ 账户入口。
+ * 顶栏：品牌 + 简历入口（只在窄屏）+ 未保存提示 + 账户入口。
  *
- * 工作区切换器（清单第 6 条，第四片）在 Logo 右侧，是 `WorkspaceSwitcher.vue` 一个组件：
- * 卡片与当前工作区名都读模块表，顶栏这里只负责把它摆在品牌旁边（`.brand-side` 那一组）。
+ * **模块导航不在这里**（2026-11-14，UI 收尾第 3/4 条）：原来这一排挂着「岗位库」「组织管理」
+ * 两个文字入口，Logo 右侧还有一个 `WorkspaceSwitcher.vue` 弹层——两处入口说的是同一件事，
+ * 用户要在两个地方找同一个页面。现在模块切换统一收进顶栏下方的 `ModuleNav.vue`
+ * （一条占满横向的二级导航，读的是同一张 `APP_MODULES`），切换器组件已删除。
+ * 顶栏因此只剩「与当前页面/账号相关」的东西：删掉的是重复入口，不是能力。
  *
  * 批次 F3 第三片之后顶栏不再持有简历列表：清单第 5 条把「简历切换」改成左侧常驻 Sidebar、
  * 窄屏折叠成 Drawer，列表内容与全部 handler 收进 `components/ResumeList.vue` 一份，
@@ -24,12 +27,10 @@
  * 涵盖岗位数据（`stores/job.ts` 里每个 `load*()` 前的清空只是缓解，不替代它）。
  */
 import { computed, ref } from 'vue'
-import { RouterLink, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 
 import { clearDeepSeekKey, hasDeepSeekKey, setDeepSeekKey } from '@/api'
 import UserDrawer from '@/components/UserDrawer.vue'
-import WorkspaceSwitcher from '@/components/WorkspaceSwitcher.vue'
-import { TOP_BAR_MODULES } from '@/config/modules'
 import { useAuthStore } from '@/stores/auth'
 import { useJobStore } from '@/stores/job'
 import { useResumeStore } from '@/stores/resume'
@@ -138,38 +139,15 @@ async function handleLogout(): Promise<void> {
           <p class="brand-title">职业发展助手</p>
         </div>
       </div>
-      <!-- 工作区切换器（清单第 6 条）：Logo 右侧，卡片与文案都读模块表，见组件文件头。 -->
-      <WorkspaceSwitcher />
     </div>
 
     <div class="user-area">
       <!--
-        一级导航入口（ADR-011 议题 3.A + 守则 L4）。
-
-        模块名与路由一律来自模块表 `@/config/modules`，这里不写死任何模块名：
-        「一张表」的判据是**新增加一个模块时只改那张表**，而不是「这张表旁边另有一份也能用」。
-
-        其余取舍不变（议题 3.A / 3.D 裁定）：模块导航只有一条文字入口、不降级成图标——
-        手机是学生的主力设备，这条功能的入口藏起来等于没有。
-        3.A 当年那句「不加侧边栏」管的是**模块导航**，与清单第 5 条的简历列表左栏不是一件事：
-        左栏里是用户自己的简历（内容），不是产品模块（导航），模块表仍然只有这一处消费者。
-        岗位自己的回收站不在这里（简历的「回收站」在列表底部，两个混在一层会让人
-        分不清删掉的是什么），入口在 `/jobs` 列表页顶部的「我的删除」。
-
-        `class="jobs-entry"` 这个类名沿用不改：`AppTopBar.spec.ts` 的一级项顺序断言按它取值。
-        模块表的 `iconPaths` 在这里**仍然不渲染**，但这已经不是一个「等批次」的欠账：
-        批次 F4 已交付，图标只在工作区切换器（`WorkspaceSwitcher.vue`）与企业卡片里出现。
-        一级导航保持纯文字是有意的——它在窄屏要挤进 8 个字符宽的一行，
-        每加一个 20px 图标就少一个模块名；「图标 + 文字」的形态由切换器承担。
+        模块入口**不在这里**（2026-11-14，UI 收尾第 3/4 条）：这一排原来有两个文字入口
+        （「岗位库」「组织管理」），与 Logo 右侧切换器说的是同一件事。现在统一由
+        `ModuleNav.vue` 那条二级导航承担（同一张 `APP_MODULES`），顶栏只留与当前页面、
+        与账号相关的动作。
       -->
-      <RouterLink
-        v-for="item in TOP_BAR_MODULES"
-        :key="item.key"
-        class="jobs-entry"
-        :to="{ name: item.routeName }"
-      >
-        {{ item.name }}
-      </RouterLink>
       <!--
         简历入口：只在窄屏渲染（宽屏那份列表常驻在左栏，不需要按钮）。
         `aria-controls` 只在展开时给：收起态抽屉不在 DOM 里，指一个不存在的 id 是假声明。
@@ -218,8 +196,10 @@ async function handleLogout(): Promise<void> {
         </span>
       </button>
 
-      <!-- 收起态整个不渲染（原来是恒在 + 靠 CSS 类收起，那是为了宽屏把两个按钮当一级项用）。 -->
-      <Transition name="ui-fade">
+      <!-- 收起态整个不渲染（原来是恒在 + 靠 CSS 类收起，那是为了宽屏把两个按钮当一级项用）。
+           过渡是**水平滑入**（2026-11-14，UI 收尾第 2 条）：抽屉贴右边缘，上下位移会让它
+           看起来从天上掉下来。遮罩在同一份过渡里淡入，面板单独 translateX（见 `styles.css`）。 -->
+      <Transition name="ui-slide-right">
         <UserDrawer
           v-if="drawerOpen"
           :username="auth.displayName || '已登录用户'"
@@ -326,13 +306,6 @@ async function handleLogout(): Promise<void> {
 .account-word { display: none; color: var(--ui-ink-muted); font-size: var(--text-base); }
 .account-caret { flex: 0 0 auto; color: var(--ui-ink-faint); font-size: var(--text-xs); line-height: 1; transition: transform var(--motion-base) var(--motion-ease); }
 .account-caret--open { transform: rotate(180deg); }
-/*
- * 岗位库入口：与上面控件同规格（32px 高、`--ui-radius`、`--ui-*` 令牌），
- * 但它是导航而不是动作，所以底色留空、hover 只加下划线级别的提示。
- */
-.jobs-entry { display: inline-flex; flex: 0 0 auto; align-items: center; height: 32px; border: 1px solid transparent; border-radius: var(--ui-radius); padding: 0 10px; color: var(--ui-ink-muted); font-size: var(--text-sm); text-decoration: none; white-space: nowrap; }
-.jobs-entry:hover { border-color: var(--theme-rule); color: var(--theme-primary); }
-.jobs-entry[aria-current='page'] { border-color: var(--ui-border-strong); color: var(--theme-primary-deep); background: var(--theme-bg-light); font-weight: 600; }
 .ai-settings-status { margin: 0; color: var(--ui-ink-faint); font-size: var(--text-sm); }
 /* ---- 简历入口（只在窄屏渲染，宽屏那份列表常驻在左栏） ---- */
 .resumes-trigger { display: inline-flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 8px; max-width: min(300px, 100%); height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 12px; color: var(--ui-ink); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-sm); }
@@ -355,7 +328,6 @@ async function handleLogout(): Promise<void> {
   .app-topbar { --topbar-inset: 16px; gap: 10px 10px; padding: 12px var(--topbar-inset); }
   .brand-side { gap: 8px; }
   .user-area { gap: 8px; }
-  .jobs-entry { padding: 0 8px; }
   .account-trigger { padding: 0 10px; }
   /*
    * 手机上只留品牌方块：连同品牌文字实测要 458px（可用 343px），顶栏被挤成两行、

@@ -95,7 +95,6 @@ function onCityInput(index: number, event: Event): void {
     <div class="panel-heading">
       <p class="eyebrow">简历编辑</p>
       <h1>完善你的简历</h1>
-      <p class="panel-intro">改动会实时同步到中央预览，点预览区上方的「保存修改」才会保存。</p>
     </div>
 
     <section class="form-section">
@@ -134,7 +133,6 @@ function onCityInput(index: number, event: Event): void {
           @input="onProfileInput('target_role', $event)"
         />
       </label>
-      <p class="hint">带 <b class="required">*</b> 的项在「生成简历」时才校验；随时可保存草稿。</p>
     </section>
 
     <section class="form-section">
@@ -520,7 +518,6 @@ function onCityInput(index: number, event: Event): void {
 .eyebrow { margin: 0 0 8px; color: var(--theme-rule); font-size: var(--text-sm); letter-spacing: .12em; }
 h1, h2, p { margin: 0; }
 h1 { font-size: var(--text-5xl); font-weight: 650; }
-.panel-intro { margin-top: 8px; color: var(--ui-ink-muted); font-size: var(--text-base); line-height: 1.5; }
 .form-section { display: grid; gap: 10px; margin-bottom: 20px; }
 .form-section h2 { font-size: var(--text-base); font-weight: 650; }
 .section-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -546,8 +543,9 @@ textarea { line-height: 1.45; }
 .remove-button:disabled { color: var(--ui-border); cursor: not-allowed; }
 .experience-form, .education-form { display: grid; gap: 10px; border-top: 1px solid var(--ui-border); padding-top: 12px; }
 .required { color: var(--ui-danger); font-weight: 400; }
-.item-index { color: var(--theme-rule); font-family: "SF Mono", Consolas, monospace; font-size: var(--text-sm); }
+/* 说明性小字：还留在「最多 N 条」「只用于投递」这类真有信息量的地方。 */
 .hint { color: var(--ui-ink-faint); font-size: var(--text-xs); line-height: 1.5; }
+.item-index { color: var(--theme-rule); font-family: "SF Mono", Consolas, monospace; font-size: var(--text-sm); }
 @media print {
   .editor-panel { display: none; }
 }

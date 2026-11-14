@@ -1021,6 +1021,23 @@ export const useResumeStore = defineStore('resume', () => {
   /** 当前正在编辑的简历 id；null = 库里一份都没有，正处于「未落库的空白骨架」。 */
   const currentProfileId = ref<string | null>(null)
   const profilesLoading = ref(false)
+  /**
+   * 列表是否已经拉过（2026-11-14，UI 收尾第 5 条）。
+   *
+   * 侧栏 / 抽屉每次挂载都 `refreshProfiles()` 是「切回工作台卡一下」的一半原因：
+   * 一次多余的网络往返 + 骨架闪一下，而数据几乎总是没变。现在挂载方先问这个标志，
+   * 有数据就只渲染、不发请求；任何一次成功的列表拉取都会把它置真，
+   * `reset()`（退出登录 / 切账号）把它置假，避免下一个账号看到上一个人的列表。
+   */
+  const profilesLoaded = ref(false)
+  /**
+   * 编辑器是否已经在**这一次会话**里完整加载过（列表 + 当前简历 + 草稿回填）。
+   *
+   * 从岗位库切回工作台时，store 里的草稿还是刚才那份，没必要再 GET 一遍再把草稿覆盖掉
+   * （更糟的是：那次覆盖会把手改到一半的内容换成服务端版本）。`loadFromServer()` 成功后置真，
+   * `reset()` 置假。
+   */
+  const loadedFromServer = ref(false)
   /** 回收站列表：只在打开回收站时拉取，不跟着编辑器一起加载。 */
   const trashProfiles = ref<ProfileSummary[]>([])
   const trashLoading = ref(false)
@@ -1640,6 +1657,7 @@ export const useResumeStore = defineStore('resume', () => {
   /** 列表刷新（不含回收站）：新建 / 删除 / 恢复 / 设默认 / 改名之后都要同步一次。 */
   async function refreshProfiles(): Promise<void> {
     profiles.value = await profilesApi.listProfiles(listQuery())
+    profilesLoaded.value = true
   }
 
   /** 切换排序字段（D4.3）；同字段重复点是「换方向」，不在这里处理。 */
@@ -1837,6 +1855,7 @@ export const useResumeStore = defineStore('resume', () => {
       const list = await profilesApi.listProfiles(listQuery())
       if (seq !== requestSeq) return
       profiles.value = list
+      profilesLoaded.value = true
 
       /*
        * 选哪一份（D4.3）：上次打开的那份 > 默认简历 > 列表第一份。
@@ -1856,6 +1875,8 @@ export const useResumeStore = defineStore('resume', () => {
       const profile = target ? await profilesApi.getProfile(target.id) : null
       if (seq !== requestSeq) return
       applyDraft(profile ? draftFromProfile(profile) : createEmptyDraft(), profile)
+      // 只有走到这里才算「这一次会话已经完整加载过」；抛异常时保持假，下一次进来照旧重拉。
+      loadedFromServer.value = true
     } finally {
       if (seq === requestSeq) {
         loading.value = false
@@ -2299,6 +2320,9 @@ export const useResumeStore = defineStore('resume', () => {
     autosavedAt.value = null
     profiles.value = []
     currentProfileId.value = null
+    // 缓存标志一起清：下一个账号必须重新拉，不能继承上一个人的「已加载」状态。
+    profilesLoaded.value = false
+    loadedFromServer.value = false
     trashProfiles.value = []
     applyDraft(createEmptyDraft(), null)
     lastSavedAt.value = null
@@ -2358,6 +2382,8 @@ export const useResumeStore = defineStore('resume', () => {
     currentProfileId,
     currentProfileTitle,
     profilesLoading,
+    profilesLoaded,
+    loadedFromServer,
     hasProfiles,
     trashProfiles,
     trashLoading,

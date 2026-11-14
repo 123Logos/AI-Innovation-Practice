@@ -420,7 +420,7 @@ function toApiError(error: AxiosError<ApiErrorBody>): ApiError {
 
   return new ApiError(
     payload?.message ??
-      (status === 0 ? '连不上服务。刷新页面再试一次；如果一直打不开，是服务这边的问题。' : '请求失败，请稍后重试。'),
+      (status === 0 ? '连不上服务。刷新页面再试一次。' : '请求失败，请稍后重试。'),
     status,
     payload?.code ?? (status === 0 ? 'NETWORK_ERROR' : 'UNKNOWN_ERROR'),
     payload?.details ?? null,

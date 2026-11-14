@@ -1,8 +1,9 @@
 /**
  * 模块表（守则 L4）——「产品里有哪些模块」这张表的唯一定义处。
  *
- * 一处定义、多处消费：顶栏（今天已消费）、批次 F3 的右侧用户抽屉与 Logo 旁工作区切换器
- * （还没建）都从这里读。视图里再出现第二份硬编码的模块名数组，就是违反 L4。
+ * 一处定义、多处消费：`ModuleNav.vue`（顶栏下方的二级导航，2026-11-14 起模块切换只有这一处）
+ * 与 `DashboardView.vue`（工作台首屏的入口卡片）都从这里读。
+ * 视图里再出现第二份硬编码的模块名数组，就是违反 L4。
  *
  * 三条刻意的取舍：
  *
@@ -45,12 +46,6 @@ export interface AppModule {
   readonly routeName: string
   /** 可达条件：是否需要登录。与路由记录上的 `meta.requiresAuth` 由测试核对一致。 */
   readonly requiresAuth: boolean
-  /**
-   * 是否出现在顶栏一级。`false` 的模块由批次 F3 的抽屉 / 切换器呈现。
-   * 简历工作台标 `false` 不是漏项：它就是顶栏所在的工作台本身，
-   * 在一级导航里再摆一份「回自己」的入口，正是守则 V2 要挪走的东西。
-   */
-  readonly inTopBar: boolean
   /** 24×24 描边图标的 `path d` 列表（C1：图标必须是 SVG，不许是字符）。 */
   readonly iconPaths: readonly string[]
 }
@@ -62,13 +57,12 @@ export interface AppModule {
 export const APP_MODULES: readonly AppModule[] = [
   {
     // 批次 F7 落地：工作台首屏（双态）。老板 2026-11-09「纳入路由，不要删」。
-    // `inTopBar` 取 false：它是登录后的落点页之一，不是一级导航；
-    // 顶栏已经有 Logo 回首页，再摆一个「工作台」只会与它重复。
+    // 它是登录后的落点页：顶栏已有 Logo 回首页，二级导航里再摆一个「工作台」是有意的
+    // （从任意模块页一键回到工作台，比回 Logo 更明确）。
     key: 'dashboard',
     name: '工作台',
     routeName: 'dashboard',
     requiresAuth: true,
-    inTopBar: false,
     iconPaths: ['M3 10.5 12 3l9 7.5', 'M5 9.5V21h14V9.5'],
   },
   {
@@ -76,7 +70,6 @@ export const APP_MODULES: readonly AppModule[] = [
     name: '简历工作台',
     routeName: 'resume-editor',
     requiresAuth: true,
-    inTopBar: false,
     iconPaths: ['M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z', 'M14 3v5h5'],
   },
   {
@@ -84,7 +77,6 @@ export const APP_MODULES: readonly AppModule[] = [
     name: '岗位库',
     routeName: 'job-board',
     requiresAuth: true,
-    inTopBar: true,
     iconPaths: ['M3 8h18v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z', 'M9 8V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v3'],
   },
   /*
@@ -97,28 +89,25 @@ export const APP_MODULES: readonly AppModule[] = [
     name: '组织管理',
     routeName: 'organization',
     requiresAuth: true,
-    inTopBar: true,
     iconPaths: ['M3 21h18', 'M5 21V7l7-4 7 4v14', 'M9 21v-6h6v6'],
   },
   {
     // 批次 B11a（FR-07 / ADR-022）落地：模拟面试进模块表，工作区切换器自动多一张卡片（L4/L5）。
-    // `inTopBar` 取 false：这一批不占顶栏一级入口（避免顶栏项过多），由工作区切换器呈现，
+    // 由顶栏下方的二级导航呈现（2026-11-14 起模块入口只有那一处），
     // 已能到达——`layoutGuards.spec.ts` 钉住它的 routeName 必须可解析。
     key: 'interview',
     name: '模拟面试',
     routeName: 'interview-list',
     requiresAuth: true,
-    inTopBar: false,
     iconPaths: ['M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'],
   },
   {
     // 批次 B9（FR-04 / ADR-028）落地：能力测评进模块表。与模拟面试同一取舍——
-    // `inTopBar` 取 false，由工作区切换器呈现；已能到达，`layoutGuards.spec.ts` 钉住。
+    // 由二级导航呈现；已能到达，`layoutGuards.spec.ts` 钉住。
     key: 'assessment',
     name: '能力测评',
     routeName: 'assessment',
     requiresAuth: true,
-    inTopBar: false,
     iconPaths: ['M9 12l2 2 4-4', 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0'],
   },
   {
@@ -128,15 +117,9 @@ export const APP_MODULES: readonly AppModule[] = [
     name: '学情看板',
     routeName: 'teacher-dashboard',
     requiresAuth: true,
-    inTopBar: false,
     iconPaths: ['M4 20V10', 'M10 20V4', 'M16 20v-7', 'M22 20H2'],
   },
 ]
-
-/** 顶栏一级导航读这一份：批次 F3 加抽屉时也是加过滤条件，不是再抄一份数组。 */
-export const TOP_BAR_MODULES: readonly AppModule[] = APP_MODULES.filter(
-  (module) => module.inTopBar,
-)
 
 /**
  * 按稳定 id 取模块。取不到就直接抛：模块表是编译期枚举（`AppModuleKey`），
