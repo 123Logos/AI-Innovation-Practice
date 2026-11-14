@@ -47,10 +47,18 @@ PROFILES_URL = f"{API}/profiles/me"
 #: 假 BYOK 密钥。带不带它决定 `get_assessment_service` 装不装 summarizer（与真实依赖同构）。
 FAKE_DEEPSEEK_KEY = "sk-fake"
 
-#: 迁移 `0026` 的种子题库：4 项技能 × 3 题。写死在这里是有意的——
-#: 断言「12 题 / 4 个技能」时若跟着实现读库取数，题库被删空了也是一片绿。
-SEED_QUESTION_COUNT = 12
-SEED_SKILLS = ("Git", "Python", "React", "SQL")
+#: 当前题库版本与它的规模（迁移 `0026` 是 `v1` 的 12 题，`0028` 追加 `v2` 的 50 题）。
+#: 写死在这里是有意的——断言「50 题 / 5 个技能」时若跟着实现读库取数，题库被删空了也是一片绿。
+BANK_VERSION = "v2"
+BANK_QUESTION_COUNT = 50
+BANK_SKILLS = ("Git", "Python", "React", "SQL", "数据结构与算法")
+#: `v2` 的配比：5 项技能各 10 题。3 题只能给出 0/33/67/100 四档，
+#: 而 80 / 50 两条阈值要有区分力，就得有更细的命中率。
+QUESTIONS_PER_SKILL = 10
+
+#: `v1` 的 12 题必须**原样留在库里**：历史会话的解释力靠它（`ADR-028` §2.1 第 3 条）。
+LEGACY_BANK_VERSION = "v1"
+LEGACY_QUESTION_COUNT = 12
 
 
 # --------------------------------------------------------------------------- #
@@ -124,13 +132,21 @@ def _db(sql: str, **params: object) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def _bank() -> dict[str, dict[str, Any]]:
-    """题库全量：`question_id → {skill_name, answer_key, option_keys}`。
+def _bank(version: str = BANK_VERSION) -> dict[str, dict[str, Any]]:
+    """某个版本的题库：`question_id → {skill_name, answer_key, option_keys}`。
+
+    **必须按版本过滤**：`v1` 的 12 题还在库里（历史会话要能解释），
+    把它们混进 `v2` 会话的答案里会被后端当成「题不在本场」整批 400 ——
+    那不是被测逻辑坏了，是测试自己拿错了题。
 
     `options` 是 JSON 列，走 `text()` 时不经过 SQLAlchemy 的类型处理，
     驱动可能给回字符串也可能给回对象，两种都接住。
     """
-    rows = _db("SELECT id, skill_name, answer_key, options FROM assessment_questions")
+    rows = _db(
+        "SELECT id, skill_name, answer_key, options FROM assessment_questions "
+        "WHERE bank_version = :version",
+        version=version,
+    )
     bank: dict[str, dict[str, Any]] = {}
     for row in rows:
         options = row["options"]
@@ -172,8 +188,8 @@ def _answers(
 
 
 def _all_correct() -> list[dict[str, str]]:
-    """每一项技能都答对它的全部题（种子题库是 4 技能 × 3 题）。"""
-    return _answers(_bank(), {skill: 3 for skill in SEED_SKILLS})
+    """每一项技能都答对它的全部题（`v2` 是 5 技能 × 10 题）。"""
+    return _answers(_bank(), {skill: QUESTIONS_PER_SKILL for skill in BANK_SKILLS})
 
 
 def _tags_by_name(payload: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -272,6 +288,53 @@ def test_start_session_with_other_users_profile_is_not_found(client: TestClient)
 # --------------------------------------------------------------------------- #
 
 
+def test_legacy_bank_version_is_kept_intact(client: TestClient) -> None:
+    """扩库**不覆盖旧版本**：`v1` 的 12 题仍在库里且启用。
+
+    这条不是为了「多一个断言」，它守的是一件真事：`assessment_sessions.bank_version`
+    钉在会话上，三个月前那份测评要靠 `v1` 的题才能解释「当时考了什么」。
+    扩库时如果改成「就地改题 / 删旧题」，历史会话的分数会变成一段无法追溯的数字
+    （`ADR-028` §2.1 第 3 条）。所以 `0028` 只**追加** `v2`，`downgrade` 也只删 `v2`。
+    """
+    rows = _db(
+        "SELECT COUNT(*) AS total, MIN(is_active) AS all_active "
+        "FROM assessment_questions WHERE bank_version = :version",
+        version=LEGACY_BANK_VERSION,
+    )
+    assert rows[0]["total"] == LEGACY_QUESTION_COUNT
+    assert rows[0]["all_active"] == 1
+
+    # 反向护栏：`v2` 真的比 `v1` 多，否则上面那条「旧版本还在」会与「题库根本没扩」同时成立。
+    current = _db(
+        "SELECT COUNT(*) AS total FROM assessment_questions WHERE bank_version = :version",
+        version=BANK_VERSION,
+    )
+    assert current[0]["total"] == BANK_QUESTION_COUNT
+    assert BANK_QUESTION_COUNT >= 50
+
+
+def test_answers_from_another_bank_version_are_rejected(client: TestClient) -> None:
+    """`v1` 的题不能拿来答 `v2` 的会话（否则等于「用旧题库的答案刷分」）。"""
+    headers = _headers(client, "b9mixver")
+    _profile(client, headers, ["Python"])
+    session_id = _start(client, headers)["session"]["id"]
+
+    legacy_answers = _answers(_bank(LEGACY_BANK_VERSION), {})
+    assert legacy_answers, "v1 题库不该是空的"
+    response = _put_answers(client, headers, session_id, legacy_answers[:3])
+
+    assert response.status_code == 400, response.text
+    # T6 统一错误模型只给到 CLIENT_ERROR 这一层；真正要钉住的是「一条都没写进去」。
+    assert response.json()["error"]["code"] == "CLIENT_ERROR"
+    assert (
+        _db(
+            "SELECT COUNT(*) AS total FROM assessment_answers WHERE session_id = :session_id",
+            session_id=session_id,
+        )[0]["total"]
+        == 0
+    )
+
+
 def test_catalog_never_leaks_answer_keys(client: TestClient) -> None:
     """目录只回答「能测什么」：没有题干、没有选项、更没有任何一处 `answer_key`。
 
@@ -283,10 +346,10 @@ def test_catalog_never_leaks_answer_keys(client: TestClient) -> None:
     assert response.status_code == 200, response.text
 
     catalog = response.json()["data"]["catalog"]
-    assert catalog["bank_version"] == "v1"
-    assert catalog["total_questions"] == SEED_QUESTION_COUNT
-    assert tuple(sorted(skill["skill_name"] for skill in catalog["skills"])) == SEED_SKILLS
-    assert all(skill["question_count"] == 3 for skill in catalog["skills"])
+    assert catalog["bank_version"] == BANK_VERSION
+    assert catalog["total_questions"] == BANK_QUESTION_COUNT
+    assert tuple(sorted(skill["skill_name"] for skill in catalog["skills"])) == BANK_SKILLS
+    assert all(skill["question_count"] == QUESTIONS_PER_SKILL for skill in catalog["skills"])
     # 目录行的字段集合是封闭的：多出 `prompt` / `options` 都算泄露题干。
     assert all(
         set(skill) == {"skill_key", "skill_name", "question_count"} for skill in catalog["skills"]
@@ -306,12 +369,12 @@ def test_start_session_returns_questions_without_answers(client: TestClient) -> 
     questions = data["questions"]
 
     assert session["status"] == "in_progress"
-    assert session["question_count"] == SEED_QUESTION_COUNT
+    assert session["question_count"] == BANK_QUESTION_COUNT
     # 还没判分：两个分数字段都必须是 NULL，不能是 0（0 会被读成「一分没得」）。
     assert session["correct_count"] is None
     assert session["score"] is None
     assert session["submitted_at"] is None
-    assert len(questions) == SEED_QUESTION_COUNT
+    assert len(questions) == BANK_QUESTION_COUNT
     assert all(set(question) == {"id", "skill_name", "prompt", "options"} for question in questions)
     assert all(
         set(option) == {"key", "label"} for question in questions for option in question["options"]
@@ -363,16 +426,16 @@ def test_answers_are_overwritten_not_appended(client: TestClient) -> None:
     # 全量写一遍：总数仍是 12，不是 13 或 14。
     full = _put_answers(client, headers, session_id, _all_correct())
     assert full.status_code == 200, full.text
-    assert len(full.json()["data"]["answers"]) == SEED_QUESTION_COUNT
+    assert len(full.json()["data"]["answers"]) == BANK_QUESTION_COUNT
 
     detail = client.get(f"{SESSIONS_URL}/{session_id}", headers=headers).json()["data"]
-    assert len(detail["answers"]) == SEED_QUESTION_COUNT
+    assert len(detail["answers"]) == BANK_QUESTION_COUNT
     rows = _db(
         "SELECT question_id FROM assessment_answers WHERE session_id = :session_id",
         session_id=session_id,
     )
-    assert len(rows) == SEED_QUESTION_COUNT
-    assert len({row["question_id"] for row in rows}) == SEED_QUESTION_COUNT
+    assert len(rows) == BANK_QUESTION_COUNT
+    assert len({row["question_id"] for row in rows}) == BANK_QUESTION_COUNT
 
 
 def test_answers_reject_unknown_question_and_option(client: TestClient) -> None:
@@ -412,9 +475,11 @@ def test_answers_reject_unknown_question_and_option(client: TestClient) -> None:
 
 
 def test_submit_grades_and_writes_tags(client: TestClient) -> None:
-    """全对 → 100 分 / 4 条 verified；按技能答错 → 分与三态**逐格**对上阈值。
+    """全对 → 100 分 / 5 条 verified；按技能答错 → 分与三态**逐格**对上阈值。
 
     第二段（B 账号）是这条用例的主体：只验全对的话，「提交即满分」也能绿。
+    阈值取的是边界值（50% 与 80% 各自卡在判定线上），题库换成 10 题/技能之后
+    这两格才判得出来——3 题时只有 33 / 67 / 100 三档，摸不到边界。
     """
     # --- A：全对 ---------------------------------------------------------
     headers_a = _headers(client, "b9full")
@@ -426,16 +491,16 @@ def test_submit_grades_and_writes_tags(client: TestClient) -> None:
     assert submitted.status_code == 200, submitted.text
     data = submitted.json()["data"]
     assert data["session"]["status"] == "submitted"
-    assert data["session"]["correct_count"] == SEED_QUESTION_COUNT
+    assert data["session"]["correct_count"] == BANK_QUESTION_COUNT
     assert data["session"]["score"] == 100
     assert data["session"]["submitted_at"] is not None
 
     tags = _tags_by_name(data["tags"])
-    assert tuple(sorted(tags)) == SEED_SKILLS
-    for name in SEED_SKILLS:
+    assert tuple(sorted(tags)) == BANK_SKILLS
+    for name in BANK_SKILLS:
         assert tags[name]["status"] == "verified", name
         assert tags[name]["score"] == 100, name
-        assert tags[name]["evidence_count"] == 3, name
+        assert tags[name]["evidence_count"] == QUESTIONS_PER_SKILL, name
 
     # 判分结果落在答案行上，且真的进库了（不是只回显在响应里）。
     detail = client.get(f"{SESSIONS_URL}/{session_a}", headers=headers_a).json()["data"]
@@ -446,22 +511,28 @@ def test_submit_grades_and_writes_tags(client: TestClient) -> None:
     headers_b = _headers(client, "b9mix")
     profile_b = _profile(client, headers_b, ["Python"])
     session_b = _start(client, headers_b)["session"]["id"]
-    # Python 1/3（33%，<0.5 → improving）、SQL 2/3（67%，0.5≤x<0.8 → pending）、
-    # React 0/3（improving）、Git 3/3（verified）。
-    mixed = _answers(_bank(), {"Python": 1, "SQL": 2, "React": 0, "Git": 3})
+    # 10 题/技能下取两组**边界值**，让阈值真的被判到：
+    # Python 5/10（=50%，不低于 0.5 → pending）、SQL 8/10（=80%，正好摸到 verified 线）、
+    # React 2/10（20% → improving）、Git 10/10（verified）、算法 4/10（40% → improving）。
+    mixed = _answers(
+        _bank(),
+        {"Python": 5, "SQL": 8, "React": 2, "Git": 10, "数据结构与算法": 4},
+    )
     assert _put_answers(client, headers_b, session_b, mixed).status_code == 200
 
     mixed_submitted = _submit(client, headers_b, session_b)
     assert mixed_submitted.status_code == 200, mixed_submitted.text
     mixed_data = mixed_submitted.json()["data"]
-    assert mixed_data["session"]["correct_count"] == 6
-    assert mixed_data["session"]["score"] == 50
+    assert mixed_data["session"]["correct_count"] == 29
+    # 29/50 = 58%（half-up）。
+    assert mixed_data["session"]["score"] == 58
 
     expected = {
-        "Python": ("improving", 33),
-        "SQL": ("pending", 67),
-        "React": ("improving", 0),
+        "Python": ("pending", 50),
+        "SQL": ("verified", 80),
+        "React": ("improving", 20),
         "Git": ("verified", 100),
+        "数据结构与算法": ("improving", 40),
     }
     mixed_tags = _tags_by_name(mixed_data["tags"])
     assert {
@@ -605,7 +676,7 @@ def test_retake_overwrites_tags(client: TestClient) -> None:
     assert _put_answers(client, headers, first_session, _answers(_bank(), {})).status_code == 200
     assert _submit(client, headers, first_session).status_code == 200
     before = _db_tags(profile["id"])
-    assert len(before) == len(SEED_SKILLS)
+    assert len(before) == len(BANK_SKILLS)
     assert {row["status"] for row in before} == {"improving"}
     assert {row["score"] for row in before} == {0}
 
@@ -614,7 +685,7 @@ def test_retake_overwrites_tags(client: TestClient) -> None:
     assert _submit(client, headers, second_session).status_code == 200
     after = _db_tags(profile["id"])
 
-    assert len(after) == len(SEED_SKILLS)  # 覆盖，不是追加
+    assert len(after) == len(BANK_SKILLS)  # 覆盖，不是追加
     assert {row["status"] for row in after} == {"verified"}
     assert {row["score"] for row in after} == {100}
     assert {row["session_id"] for row in after} == {second_session}
@@ -648,7 +719,8 @@ def test_verified_tags_upgrade_skill_source(client: TestClient) -> None:
     }
 
     session_id = _start(client, headers)["session"]["id"]
-    answers = _answers(_bank(), {"Python": 3, "SQL": 1})
+    # Python 全对（10/10 → verified）、SQL 只对 1 题（10% → improving）。
+    answers = _answers(_bank(), {"Python": QUESTIONS_PER_SKILL, "SQL": 1})
     assert _put_answers(client, headers, session_id, answers).status_code == 200
     submitted = _submit(client, headers, session_id)
     assert submitted.status_code == 200, submitted.text
@@ -693,8 +765,8 @@ def test_summary_falls_back_without_a_key(client: TestClient) -> None:
     assert summary["source"] == "fallback"
     assert summary["note"] and "自动整理" in summary["note"]
     # 事实一个字都不少：题数、答对数、按三态分组的技能名。
-    assert f"共 {SEED_QUESTION_COUNT} 题" in summary["summary"]
-    assert f"答对 {SEED_QUESTION_COUNT} 题" in summary["summary"]
+    assert f"共 {BANK_QUESTION_COUNT} 题" in summary["summary"]
+    assert f"答对 {BANK_QUESTION_COUNT} 题" in summary["summary"]
     assert "已验证" in summary["summary"]
     assert "Python" in summary["summary"]
 
@@ -764,7 +836,7 @@ def test_summary_uses_ai_when_available(client: TestClient, summarizer: _FakeSum
         assert "@example.com" not in prompt
     # 该给的给了：技能名与题量（否则模型只能编）。
     assert "Python" in user_prompt
-    assert f"共 {SEED_QUESTION_COUNT} 题" in user_prompt
+    assert f"共 {BANK_QUESTION_COUNT} 题" in user_prompt
 
 
 def test_summary_requires_submitted_session(client: TestClient) -> None:

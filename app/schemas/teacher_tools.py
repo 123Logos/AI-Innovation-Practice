@@ -79,3 +79,34 @@ class BatchManifest(BaseModel):
     item_count: int
     items: list[dict[str, object]]
     skipped: list[SkippedResume]
+
+
+class SkillConfirmRequest(BaseModel):
+    """教师确认一个学生技能（B7 证据链，`ADR-027` §5 第 3 条）。
+
+    `skill_name` 用**原始写法**（「Python」而不是「python」）：确认结果要直接上屏，
+    归一化只用于「找哪一行技能」，不用于展示（`app/core/skill_names.py` 同一分工）。
+    """
+
+    profile_id: str = Field(min_length=1, max_length=36, description="学生的档案 id。")
+    skill_name: str = Field(
+        min_length=1, max_length=100, description="要确认的技能名，如「Python」。"
+    )
+
+
+class SkillConfirmation(BaseModel):
+    """确认结果：写进去的那条标签 + 技能来源有没有被一起升上去。
+
+    `previous_tag_source` 与 `upgraded_skill_source` 都是 `None` 时表示
+    「这条标签原本不存在」与「学生简历里没有这项技能」——两件事分开报，
+    因为对老师的下一步动作完全不同（前者是首次作证，后者是提醒学生把技能补进简历）。
+    """
+
+    profile_id: str
+    tag: str
+    status: DashboardTagStatus
+    source: Literal["teacher"]
+    score: int
+    evidence_count: int
+    previous_tag_source: str | None
+    upgraded_skill_source: bool

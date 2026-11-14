@@ -49,6 +49,10 @@ class AuditAction(StrEnum):
     DASHBOARD_VIEW = "dashboard.view"
     RESUME_EXPORT_PDF = "resume.export_pdf"
     RESUME_BATCH_DOWNLOAD = "resume.batch_download"
+    # 批次 B7 证据链（`ADR-027` §5 第 3 条）：教师确认学生技能。
+    # 它写的是**别人的档案**，所以「谁在什么时候替谁作证」必须有账——
+    # 这条与 `resume.export_pdf` 是同一族「教师动作」，共用一张表。
+    SKILL_TEACHER_CONFIRM = "skill.teacher_confirm"
 
 
 class AuditResult(StrEnum):

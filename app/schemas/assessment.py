@@ -132,7 +132,11 @@ class ProfileTagRead(BaseModel):
     tag: str
     status: TagStatus
     score: int
-    source: Literal["assessment"]
+    #: 这条标签的证据从哪来（`ck_profile_tags_source` 的三个取值）。
+    #: B7 教师确认之前这里只写 `assessment`——那是**当日事实**，不是契约：
+    #: 老师确认一条技能会写 `teacher`，写死成单值会让画像接口 500（响应校验失败），
+    #: 而 500 与「没有这条标签」在用户看来是两件事。
+    source: Literal["assessment", "project", "teacher"]
     evidence_count: int
     updated_at: datetime
 

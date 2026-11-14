@@ -20,6 +20,7 @@ import ast
 import io
 import json
 import zipfile
+from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
@@ -233,8 +234,17 @@ def _audit_rows() -> list[dict[str, object]]:
 
 
 def _teacher_rows() -> list[dict[str, object]]:
-    """只取 B10 的三个动作：注册与登录也会写 `audit_logs`（B5 既有行为）。"""
-    actions = {"dashboard.view", "resume.export_pdf", "resume.batch_download"}
+    """只取教师动作：注册与登录也会写 `audit_logs`（B5 既有行为）。
+
+    名单要与 `AuditAction` 里那几个教师动作同步——漏一个，对应的用例就会
+    「查不到行 → 断言空 == 空」假绿（B7 确认这一条正是这么漏过一次）。
+    """
+    actions = {
+        "dashboard.view",
+        "resume.export_pdf",
+        "resume.batch_download",
+        "skill.teacher_confirm",
+    }
     return [row for row in _audit_rows() if row["action"] in actions]
 
 
@@ -249,7 +259,7 @@ def _reason(response: object) -> str:
 
 
 def test_unbound_user_is_blocked_on_every_entry(client: TestClient) -> None:
-    """散人：看板 / 批量下载 / 单份导出三个入口都是 400 + 「请先绑定组织」。"""
+    """散人：看板 / 批量下载 / 单份导出 / 教师确认，四个入口都是 400 + 「请先绑定组织」。"""
     headers, _ = _user(client, f"b10_loose_{uuid4().hex[:8]}")
     resume_id = str(uuid4())
 
@@ -258,6 +268,11 @@ def test_unbound_user_is_blocked_on_every_entry(client: TestClient) -> None:
         client.get(RESUMES_URL, headers=headers),
         client.post(BATCH_URL, json={"resume_ids": [resume_id]}, headers=headers),
         client.post(EXPORT_URL.format(id=resume_id), headers=headers),
+        client.post(
+            f"{API}/teacher/skills/confirm",
+            json={"profile_id": str(uuid4()), "skill_name": "Python"},
+            headers=headers,
+        ),
     )
     for response in attempts:
         assert response.status_code == 400, response.text
@@ -302,7 +317,7 @@ def test_every_entry_starts_with_the_action_gate() -> None:
         for node in service_class.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    for name in ("dashboard", "list_downloadable", "export_pdf", "batch_download"):
+    for name in ("dashboard", "list_downloadable", "export_pdf", "batch_download", "confirm_skill"):
         statements = [
             node
             for node in methods[name].body
@@ -346,6 +361,7 @@ def test_every_entry_starts_with_the_action_gate() -> None:
         "list_downloadable_resumes",
         "batch_download",
         "export_resume",
+        "confirm_skill",
     ):
         statements = [
             n
@@ -368,6 +384,7 @@ def test_every_entry_starts_with_the_action_gate() -> None:
                 "list_downloadable_resumes": "list_downloadable",
                 "batch_download": "batch_download",
                 "export_resume": "export_pdf",
+                "confirm_skill": "confirm_skill",
             }[name]
         )
 
@@ -671,3 +688,222 @@ def test_renderer_unavailable_is_not_a_fake_pdf(
     denied = [row for row in _teacher_rows() if row["result"] == "denied"]
     assert len(denied) == 2
     assert all(json.loads(str(row["detail"]))["reason"] == "renderer_unavailable" for row in denied)
+
+
+# --------------------------------------------------------------------------- #
+# 5. B7 教师确认技能（证据链，`ADR-027` §5 第 3 条）
+# --------------------------------------------------------------------------- #
+
+CONFIRM_URL = f"{API}/teacher/skills/confirm"
+
+
+def _tags_of(profile_id: str) -> list[dict[str, object]]:
+    return _db_rows(
+        "SELECT tag, status, score, source, evidence_count, session_id FROM profile_tags "
+        "WHERE student_profile_id = :pid ORDER BY tag",
+        pid=profile_id,
+    )
+
+
+def _skill_sources(profile_id: str) -> dict[str, str]:
+    rows = _db_rows(
+        "SELECT name, source FROM skills WHERE student_profile_id = :pid AND deleted_at IS NULL",
+        pid=profile_id,
+    )
+    return {str(row["name"]): str(row["source"]) for row in rows}
+
+
+def _db_rows(sql: str, **params: object) -> list[dict[str, object]]:
+    with get_engine().connect() as connection:
+        return [dict(row) for row in connection.execute(text(sql), params).mappings().all()]
+
+
+def test_teacher_confirms_skill_and_upgrades_source(client: TestClient) -> None:
+    """确认 → 写一条 `source='teacher'` 的标签，并把已有技能的来源升成 `teacher_confirmed`。
+
+    四格各挡一件事：
+    - 标签是 `verified` / 100 分 / `evidence_count=1` / `session_id=NULL`（不来自任何一场测评）；
+    - 技能来源变了（`self_reported` → `teacher_confirmed`），这是 B7 的「只升不建」；
+    - 名字比对**不区分大小写**（老师写「python」也要认得出学生写的「Python」）；
+    - 没被确认的技能一个字都不能动。
+    """
+    headers, org_id = _school(client, "b7c")
+    student, _ = _user(client, f"b7_stu_{uuid4().hex[:8]}", organization_id=org_id, role="student")
+    profile_id = _profile(client, student, name="被确认学生", skills=["Python", "Go"])
+    assert _skill_sources(profile_id) == {"Python": "self_reported", "Go": "self_reported"}
+
+    response = client.post(
+        CONFIRM_URL,
+        json={"profile_id": profile_id, "skill_name": "python"},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data == {
+        "profile_id": profile_id,
+        "tag": "python",
+        "status": "verified",
+        "source": "teacher",
+        "score": 100,
+        "evidence_count": 1,
+        "previous_tag_source": None,
+        "upgraded_skill_source": True,
+    }
+
+    tags = _tags_of(profile_id)
+    assert len(tags) == 1
+    assert tags[0]["source"] == "teacher"
+    assert tags[0]["status"] == "verified"
+    assert tags[0]["session_id"] is None
+
+    assert _skill_sources(profile_id) == {"Python": "teacher_confirmed", "Go": "self_reported"}
+
+    audit = _teacher_rows()
+    assert [row["action"] for row in audit] == ["skill.teacher_confirm"]
+    assert audit[0]["result"] == "ok"
+    assert audit[0]["target_type"] == "student_profile"
+    assert audit[0]["target_id"] == profile_id
+    detail = json.loads(str(audit[0]["detail"]))
+    assert detail["skill"] == "python"
+    assert detail["previous_tag_source"] is None
+    assert detail["previous_skill_source"] == "self_reported"
+
+
+def test_confirm_does_not_add_a_skill_the_student_never_wrote(client: TestClient) -> None:
+    """确认一个学生简历里没有的技能：标签照写，但**不往简历里加技能**。
+
+    简历里写哪些技能是学生自己的声明（`ADR-028` §2.6 同一纪律）。老师确认的是
+    「你说的这项我认可」，不是「我替你加一项」——后者会悄悄改变一份要投出去的简历。
+    """
+    headers, org_id = _school(client, "b7n")
+    student, _ = _user(client, f"b7_ns_{uuid4().hex[:8]}", organization_id=org_id, role="student")
+    profile_id = _profile(client, student, name="没写 Rust 的学生", skills=["Python"])
+
+    response = client.post(
+        CONFIRM_URL, json={"profile_id": profile_id, "skill_name": "Rust"}, headers=headers
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["upgraded_skill_source"] is False
+    assert _skill_sources(profile_id) == {"Python": "self_reported"}
+    assert [row["tag"] for row in _tags_of(profile_id)] == ["Rust"]
+
+
+def test_confirm_other_organization_profile_is_404_and_writes_nothing(
+    client: TestClient,
+) -> None:
+    """跨组织确认 → 404（与「档案不存在」同一个响应），且一行都不写、不留 OK 审计。"""
+    teacher_headers, _ = _school(client, "b7a")
+    _, other_org = _school(client, "b7b")
+    outsider, _ = _user(
+        client, f"b7_out_{uuid4().hex[:8]}", organization_id=other_org, role="student"
+    )
+    foreign_profile = _profile(client, outsider, name="别的学校的学生", skills=["Python"])
+
+    response = client.post(
+        CONFIRM_URL,
+        json={"profile_id": foreign_profile, "skill_name": "Python"},
+        headers=teacher_headers,
+    )
+
+    assert response.status_code == 404, response.text
+    assert _reason(response) == "SKILL_CONFIRM_PROFILE_NOT_FOUND"
+    assert _tags_of(foreign_profile) == []
+    assert _skill_sources(foreign_profile) == {"Python": "self_reported"}
+    assert [row for row in _teacher_rows() if row["result"] == "ok"] == []
+
+
+def test_confirm_overwrites_assessment_tag_and_keeps_previous_source_in_audit(
+    client: TestClient,
+) -> None:
+    """测评标签被教师确认**覆盖**，但「原来是什么来源」必须留在审计里。
+
+    标签是 `UNIQUE(student_profile_id, tag)` 的覆盖写，写入之后库里只剩 `teacher`——
+    所以审计是唯一能回答「这条证据盖掉了什么」的地方。不记的话，
+    一次确认就永久抹掉了「他测评只拿了 40 分」这件事。
+    """
+    headers, org_id = _school(client, "b7o")
+    student, _ = _user(client, f"b7_ov_{uuid4().hex[:8]}", organization_id=org_id, role="student")
+    profile_id = _profile(client, student, name="被覆盖的学生", skills=["Python"])
+    with get_engine().begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO profile_tags "
+                "(id, student_profile_id, tag, status, score, source, evidence_count, "
+                " session_id, created_at, updated_at) VALUES "
+                "(:id, :pid, 'Python', 'improving', 40, 'assessment', 10, NULL, :now, :now)"
+            ),
+            {
+                "id": str(uuid4()),
+                "pid": profile_id,
+                "now": datetime(2026, 11, 14, 9, 0, 0),
+            },
+        )
+
+    response = client.post(
+        CONFIRM_URL, json={"profile_id": profile_id, "skill_name": "Python"}, headers=headers
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["previous_tag_source"] == "assessment"
+    tags = _tags_of(profile_id)
+    assert len(tags) == 1
+    assert (tags[0]["source"], tags[0]["status"], tags[0]["score"]) == ("teacher", "verified", 100)
+    detail = json.loads(str(_teacher_rows()[0]["detail"]))
+    assert detail["previous_tag_source"] == "assessment"
+
+
+def test_confirm_rejects_blank_skill_name(client: TestClient) -> None:
+    """只有空白的技能名：400 + 一句能照做的话，不写任何行。"""
+    headers, org_id = _school(client, "b7z")
+    student, _ = _user(client, f"b7_bl_{uuid4().hex[:8]}", organization_id=org_id, role="student")
+    profile_id = _profile(client, student, name="空白名", skills=["Python"])
+
+    response = client.post(
+        CONFIRM_URL, json={"profile_id": profile_id, "skill_name": "   "}, headers=headers
+    )
+
+    assert response.status_code == 400, response.text
+    assert _reason(response) == "SKILL_CONFIRM_NAME_INVALID"
+    assert _tags_of(profile_id) == []
+
+
+def test_confirm_requires_permission(client: TestClient) -> None:
+    """组织里的学生过了动作闸但过不了权限闸：403，且不写标签。"""
+    org_id = _organization(f"B7S{uuid4().hex[:6]}")
+    student, _ = _user(client, f"b7_pm_{uuid4().hex[:8]}", organization_id=org_id, role="student")
+    profile_id = _profile(client, student, name="学生自己", skills=["Python"])
+
+    response = client.post(
+        CONFIRM_URL, json={"profile_id": profile_id, "skill_name": "Python"}, headers=student
+    )
+
+    assert response.status_code == 403, response.text
+    assert _tags_of(profile_id) == []
+
+
+def test_teacher_tag_is_readable_through_the_student_profile_endpoint(
+    client: TestClient,
+) -> None:
+    """学生自己的画像接口能读出 `source='teacher'` 的标签（不是 500）。
+
+    这条守的是**跨批次的契约接线**：`ProfileTagRead.source` 原本写死成
+    `Literal["assessment"]`，教师确认一旦写进 `teacher`，画像响应就会校验失败变成 500——
+    而 500 与「没有这条标签」在界面上是两件完全不同的事。前端 `ProfileTag.source`
+    同理是从 `'assessment'` 放宽到三值的。
+    """
+    headers, org_id = _school(client, "b7r")
+    student, _ = _user(client, f"b7_rd_{uuid4().hex[:8]}", organization_id=org_id, role="student")
+    profile_id = _profile(client, student, name="被确认后要能读到", skills=["Python"])
+
+    confirmed = client.post(
+        CONFIRM_URL, json={"profile_id": profile_id, "skill_name": "Python"}, headers=headers
+    )
+    assert confirmed.status_code == 200, confirmed.text
+
+    read_back = client.get(f"{API}/assessments/profile", headers=student)
+    assert read_back.status_code == 200, read_back.text
+    tags = read_back.json()["data"]["profile"]["tags"]
+    assert [(item["tag"], item["status"], item["source"]) for item in tags] == [
+        ("Python", "verified", "teacher")
+    ]

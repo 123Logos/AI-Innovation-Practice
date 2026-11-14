@@ -33,13 +33,17 @@ class OrganizationAction(StrEnum):
       `ADR-029` §2.1 起由真实端点启用——占位时写的口径没有改，这正是它的用处；
     - `VIEW_DASHBOARD`：教师端学情看板（B10a）。「查看数据」也算动作，
       因为会先读到本组织的聚合数据；
-    - `EXPORT_RESUME`：单份简历 PDF 导出（B10b）。
+    - `EXPORT_RESUME`：单份简历 PDF 导出（B10b）；
+    - `CONFIRM_SKILL`：教师确认学生的技能（B7 证据链，`ADR-027` §5 第 3 条）。
+      它是**写入他人档案**的动作，比「看数据」更依赖组织边界：确认者必须属于同一个组织，
+      否则「谁有资格替你作证」无从回答。
     """
 
     PUBLISH_JOB = "publish_job"
     BULK_DOWNLOAD = "bulk_download"
     VIEW_DASHBOARD = "view_dashboard"
     EXPORT_RESUME = "export_resume"
+    CONFIRM_SKILL = "confirm_skill"
 
 
 class ActionRequiresOrganization(Exception):

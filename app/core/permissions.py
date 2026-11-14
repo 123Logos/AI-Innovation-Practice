@@ -58,6 +58,11 @@ AUDIT_READ = "audit:read"
 #: 两项都**不给学生**——看板读的是全班聚合数据，下载会产出可带走的简历文件。
 DASHBOARD_READ = "dashboard:read"
 RESUME_DOWNLOAD = "resume:download"
+#: 批次 B7 证据链（`ADR-027` §5 第 3 条）：教师确认学生技能。
+#: 这与 `JOB_REVIEW` 是两件事——「能不能审岗位」不等于「能不能替一个学生作证」；
+#: 平台管理员也有，因为它是跨校运营里唯一的人工证据来源，而它写的是**一条带署名的
+#: 标签**（`profile_tags.source='teacher'`），不是改简历正文。
+SKILL_CONFIRM = "skill:confirm"
 
 #: 学生自己那份能力。后两个角色是它的**超集**，所以这里写清楚再合并，不重复抄三遍。
 _STUDENT_PERMISSIONS: frozenset[str] = frozenset(
@@ -77,6 +82,7 @@ _TEACHER_PERMISSIONS: frozenset[str] = _STUDENT_PERMISSIONS | {
     JOB_REVIEW,
     DASHBOARD_READ,
     RESUME_DOWNLOAD,
+    SKILL_CONFIRM,
 }
 
 ROLE_PERMISSIONS: dict[UserRole, frozenset[str]] = {

@@ -790,7 +790,7 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 概述（`POST …/summary`）与画像（`GET /assessments/profile`）：
 
 ```json
-{"data": {"summary": {"session_id": "…", "summary": "本次标准化测评共 12 题，答对 9 题。…",
+{"data": {"summary": {"session_id": "…", "summary": "本次标准化测评共 50 题，答对 29 题。…",
   "source": "fallback", "note": "未配置 AI 密钥，以下为根据测评结果自动整理的概述。"}}}
 ```
 
@@ -800,15 +800,18 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
   `upstream` / `bad_output`），**不落库**（落库会让上次的原因被当成本次的原因展示）；
 - 送进模型的只有技能名、三态、题量与 `bank_version`，**不含简历正文、姓名、邮箱、手机号**。
 - 画像标签写在 `profile_tags`（`UNIQUE(student_profile_id, tag)`）：重考**覆盖**同一标签，不追加；
-  `source` 今天是 `assessment`。提交成功时，`verified` 的标签会把**已存在**的同名技能
+  `source` 有 `assessment`（测评提交写入）与 `teacher`（教师确认，见 §5.3 的
+  `POST /teacher/skills/confirm`）两种生产者，`project` 尚无生产者。
+  提交成功时，`verified` 的标签会把**已存在**的同名技能
   （按 `skill_name_key` 匹配）的 `skills.source` 升成 `assessment`——**不新建技能、不改名、不动 `last_used_on`**。
 
 ### 5.3 教师端工具（FR-08 / B10a、B10b，`ADR-029`）
 
-> **四个端点全部先过动作层组织闸**：`app/core/action_gate.py::require_organization`。
+> **五个端点全部先过动作层组织闸**：`app/core/action_gate.py::require_organization`。
 > 无组织归属的账号一律 `400 ORGANIZATION_ACTION_REQUIRED`（「请先绑定组织」），
 > 拦截发生在读业务表之前；组织内的 `student` 角色过闸后被权限闸挡成 403。
-> 权限：`dashboard:read`（看板 / 清单）、`resume:download`（批量下载 / 单份导出）。
+> 权限：`dashboard:read`（看板 / 清单）、`resume:download`（批量下载 / 单份导出）、
+> `skill:confirm`（教师确认技能——独立一项，不与前两者共用）。
 
 | 方法与路径 | 响应 | 说明 |
 |---|---|---|
@@ -816,6 +819,28 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 | `GET /teacher/resumes` | JSON `items[]` | 本组织可导出的简历清单（`resume_id` / `profile_id` / `full_name` / `title` / `version_no`），不含正文 |
 | `POST /teacher/resumes/batch-download` | `application/zip` | 请求 `{"resume_ids":[...],"format":"pdf"}`，最多 50 条 |
 | `POST /resumes/{id}/export?format=pdf` | `application/pdf` | 单份导出；打印 CSS 与 `ResumePreview.vue` 同源 |
+| `POST /teacher/skills/confirm` | JSON | 教师确认学生技能（B7 证据链，2026-11-14 补）；权限 `skill:confirm`，**唯一写别人档案的教师端点** |
+
+**`POST /teacher/skills/confirm`**（`ADR-027` §5 第 3 条落地）：
+
+```json
+// 请求
+{"profile_id": "uuid", "skill_name": "Python"}
+// 响应
+{"data": {"profile_id": "uuid", "tag": "Python", "status": "verified", "source": "teacher",
+          "score": 100, "evidence_count": 1, "previous_tag_source": "assessment",
+          "upgraded_skill_source": true}}
+```
+
+- 散人 → `400 ORGANIZATION_ACTION_REQUIRED`；档案不在本组织 / 已删除 → `404`
+  （与「档案不存在」同响应，不告诉外人它存在）；技能名为空白 → `400`；
+- 写两处、**只升不建**：`profile_tags` 落一条 `source='teacher'` 的标签（覆盖写，
+  `session_id` 为 `NULL`——它不是任何一场测评）；学生简历里**已有**同名技能时把
+  `skills.source` 升成 `teacher_confirmed`，**没有就不新建**；
+- `previous_tag_source` / `upgraded_skill_source` 分开报：前者是「盖掉了什么证据」，
+  后者是「学生简历里有没有这项技能」，对老师的下一步动作不同；
+- 审计 `skill.teacher_confirm`，`detail` 为 `{"skill":...,"previous_tag_source":...,"previous_skill_source":...}`
+  ——标签是覆盖写，不记就查不到「原来那条证据是什么」。
 
 **ZIP 结构**：`README.txt`（导出时间 / 组织 / 发起人 / 条目数）、`manifest.json`
 （`generated_at` / `organization_id` / `actor_user_id` / `items[]` 逐条 `sha256` 与 `bytes` /
