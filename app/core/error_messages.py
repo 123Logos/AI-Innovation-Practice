@@ -81,6 +81,12 @@ class ErrorMessage(StrEnum):
     PDF_RENDERER_UNAVAILABLE = (
         "暂时无法生成 PDF，请先用浏览器的打印功能保存为 PDF，或联系管理员配置导出服务。"
     )
+    # ---- 批次 B7 证据链：教师确认技能（`ADR-027` §5 第 3 条）。 ----
+    # ① 档案不在本组织 / 已删除：与「这份简历不存在」同一条 404 口径，
+    #    不区分两种原因（区分就等于告诉外人「这个 id 存在，只是不归你」）。
+    SKILL_CONFIRM_PROFILE_NOT_FOUND = "这个学生的档案不在你的组织里，或已被删除。"
+    # ② 技能名为空 / 超长：确认动作必须点名一个技能，否则等于什么都没说。
+    SKILL_CONFIRM_NAME_INVALID = "请填写要确认的技能名称，长度不超过 100 个字符。"
     # ui-copy:allow 此处名称用于定位用户必须配置的凭据，不展示凭据内容。
     AI_KEY_MISSING = "请先在「AI 设置」中配置 DeepSeek API Key。"
     # ui-copy:allow 此处名称用于定位用户必须检查的凭据，不展示凭据内容。

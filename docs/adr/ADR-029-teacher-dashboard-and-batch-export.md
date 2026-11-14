@@ -199,6 +199,16 @@ resumes_20261114-160000.zip
 | `GET /teacher/resumes` | 本组织可导出简历清单（看板页勾选用，不含正文） | 登录 + `dashboard:read` + `VIEW_DASHBOARD` |
 | `POST /teacher/resumes/batch-download` | 打包下载（ZIP） | 登录 + `resume:download` + `BULK_DOWNLOAD` |
 | `POST /resumes/{id}/export?format=pdf` | 单份 PDF 导出 | 登录 + `resume:download` + `EXPORT_RESUME` |
+| `POST /teacher/skills/confirm` | 教师确认学生技能（B7 证据链，2026-11-14 补） | 登录 + `skill:confirm` + `CONFIRM_SKILL` |
+
+**`/teacher/skills/confirm` 是这一族里唯一写别人数据的端点**（`ADR-027` §5 第 3 条落地）：
+它走同一条动作闸（散人 400「请先绑定组织」）、同一条 SQL 归属边界（跨组织 404，与
+「档案不存在」同响应），但权限是**独立**的 `skill:confirm`——不与看板 / 下载共用，
+因为「能看班级数据」和「能替一个学生作证」不是同一个授权面。写两处：
+`profile_tags` 一条 `source='teacher'` 的标签（覆盖写，原来源记进审计），
+以及**已有**技能行的来源升成 `teacher_confirmed`（学生没写的技能不会被塞进简历）。
+它的审计 `detail` 形状与下载不同（没有 `format`/`bytes`），由
+`app/core/teacher_tools_rules.py::skill_confirm_audit_detail` 单独定义，**不复用**下载那份。
 
 清单端点也过同一个动作闸，但**不写 `ok` 审计**：它只是页面加载时的一次读，
 审计记的是「看了一眼看板」与「真的带走了文件」（§2.4）。给每次列表刷新都记一条

@@ -108,6 +108,30 @@ def teacher_audit_detail(
     return json.dumps(detail, ensure_ascii=False)
 
 
+def skill_confirm_audit_detail(
+    skill: str,
+    *,
+    previous_tag_source: str | None,
+    previous_skill_source: str | None,
+) -> str:
+    """教师确认技能那条审计的 `detail`（B7 证据链）。
+
+    **不复用 `teacher_audit_detail()`**：那个函数里 `format` 恒为 `"pdf"`、还有 `bytes`，
+    它们描述的是「一次下载」；确认动作既不产出文件也没有字节数，套上去就成了
+    一条自相矛盾的审计。两个形状各写一处，字段名反而不会分叉。
+
+    为什么要记 `previous_*`：标签是**覆盖写**（`UNIQUE(student_profile_id, tag)`），
+    写入之后那一行只剩 `teacher`，原来「测评 80 分」这件事在库里就查不到了。
+    审计是唯一能回答「这条证据盖掉了什么」的地方。
+    """
+    detail: dict[str, object] = {
+        "skill": skill,
+        "previous_tag_source": previous_tag_source,
+        "previous_skill_source": previous_skill_source,
+    }
+    return json.dumps(detail, ensure_ascii=False)
+
+
 def safe_zip_filename(index: int, student_name: str, version_no: int) -> str:
     """ZIP 内条目名：`001_姓名_v3.pdf`。
 

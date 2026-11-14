@@ -686,30 +686,39 @@ def _assert_schema_after_upgrade(engine: Engine) -> None:
         assert [row.COLUMN_NAME for row in tag_unique] == ["student_profile_id", "tag"]
         assert all(int(row.NON_UNIQUE) == 0 for row in tag_unique)
 
-        # 种子题库（ADR-028 §2.1 第 4 条）：12 题、4 项技能各 3 题、同一个 bank_version。
-        # 把数量写死是刻意的——扩库是一次「明确的改动」，不该悄悄发生。
+        # 种子题库（ADR-028 §2.1 第 4 条 / §5 第 1 条）：**两个版本并存**。
+        # `v1` 12 题（4 项技能 × 3 题）是历史会话的解释力，`v2` 50 题（5 项技能 × 10 题）
+        # 是扩库结果。把数量写死是刻意的——扩库与「删旧题」都是一次「明确的改动」，
+        # 不该悄悄发生（`test_legacy_bank_version_is_kept_intact` 守的是同一件事的业务侧）。
         seed = connection.execute(
             text(
                 "SELECT bank_version, COUNT(*) AS total, COUNT(DISTINCT skill_key) AS skills "
-                "FROM assessment_questions GROUP BY bank_version"
+                "FROM assessment_questions GROUP BY bank_version ORDER BY bank_version"
             )
         ).all()
-        assert len(seed) == 1
-        assert str(seed[0].bank_version) == "v1"
-        assert int(seed[0].total) == 12
-        assert int(seed[0].skills) == 4
+        assert [(str(row.bank_version), int(row.total), int(row.skills)) for row in seed] == [
+            ("v1", 12, 4),
+            ("v2", 50, 5),
+        ]
         per_skill = connection.execute(
             text(
-                "SELECT skill_key, COUNT(*) AS total FROM assessment_questions "
-                "GROUP BY skill_key ORDER BY skill_key"
+                "SELECT bank_version, skill_key, COUNT(*) AS total FROM assessment_questions "
+                "GROUP BY bank_version, skill_key ORDER BY bank_version, skill_key"
             )
         ).all()
-        assert {str(row.skill_key): int(row.total) for row in per_skill} == {
-            "git": 3,
-            "python": 3,
-            "react": 3,
-            "sql": 3,
-        }
+        assert [
+            (str(row.bank_version), str(row.skill_key), int(row.total)) for row in per_skill
+        ] == [
+            ("v1", "git", 3),
+            ("v1", "python", 3),
+            ("v1", "react", 3),
+            ("v1", "sql", 3),
+            ("v2", "algorithm", 10),
+            ("v2", "git", 10),
+            ("v2", "python", 10),
+            ("v2", "react", 10),
+            ("v2", "sql", 10),
+        ]
         # 每道题的 `answer_key` 必须真的是它自己的一个选项：种子里写错一个字母，
         # 那道题就永远不可能答对，而这种错在界面上一模一样（只看得到「全错」）。
         questions = connection.execute(

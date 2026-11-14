@@ -36,6 +36,7 @@ from app.core.teacher_tools_rules import (
     coverage_percent,
     empty_buckets,
     safe_zip_filename,
+    skill_confirm_audit_detail,
     tag_distribution,
     teacher_audit_detail,
 )
@@ -52,6 +53,7 @@ from app.schemas.teacher_tools import (
     DashboardRead,
     DownloadableResume,
     JobCoverageItem,
+    SkillConfirmation,
     SkippedResume,
     TagDistributionItem,
 )
@@ -70,6 +72,14 @@ class ResumeExportNotFoundError(Exception):
 
 class NoDownloadableResumeError(Exception):
     """批量请求里一个可下载项都没剩下；对外 400。"""
+
+
+class SkillConfirmProfileNotFoundError(Exception):
+    """档案不在本组织 / 已删除；对外 404，不区分两种原因。"""
+
+
+class SkillConfirmNameInvalidError(Exception):
+    """技能名为空或超长；对外 400（模型层也有 `min_length`/`max_length` 兜一次）。"""
 
 
 @dataclass(frozen=True)
@@ -381,6 +391,84 @@ class TeacherToolsService:
         stamp = utc_now().strftime("%Y%m%d-%H%M%S")
         return DownloadResult(filename=f"resumes_{stamp}.zip", content=content)
 
+    # ------------------------------------------------------ 教师确认（B7）
+
+    def confirm_skill(
+        self,
+        context: CurrentUserContext,
+        profile_id: str,
+        skill_name: str,
+        *,
+        ip: str | None = None,
+    ) -> SkillConfirmation:
+        """教师确认一个学生的技能（B7 证据链，`ADR-027` §5 第 3 条）。
+
+        三件事按顺序发生，顺序本身是契约：
+
+        1. **动作闸**（第一句）：没有组织 → 400「请先绑定组织」，且**在读写任何行之前**；
+        2. **归属判定在 SQL 里**：档案必须属于本组织的 `role='student'` 成员且未删除，
+           否则 404（与「档案不存在」同一个响应，不告诉外人它存在）；
+        3. **写两处、只升不建**：`profile_tags` 写一条 `source='teacher'` 的标签；
+           若学生简历里**已有**同名技能，把它的来源升成 `teacher_confirmed`，
+           没有就**不新建**（简历里写哪些技能是学生自己的声明，见 `ADR-028` §2.6）。
+        """
+        organization_id = self._require_organization(
+            context,
+            action=OrganizationAction.CONFIRM_SKILL,
+            audit_action=AuditAction.SKILL_TEACHER_CONFIRM,
+            resource_ids=[profile_id],
+            ip=ip,
+        )
+
+        normalized = skill_name.strip()
+        if not normalized or len(normalized) > 100:
+            raise SkillConfirmNameInvalidError(profile_id)
+
+        profile = self._repository.student_profile_in_organization(organization_id, profile_id)
+        if profile is None:
+            raise SkillConfirmProfileNotFoundError(profile_id)
+
+        now = utc_now()
+        tag_row, previous_source = self._repository.confirm_tag(
+            student_profile_id=profile.id, tag=normalized, now=now
+        )
+        previous_skill_source = self._repository.upgrade_skill_source(
+            student_profile_id=profile.id, skill_name=normalized
+        )
+
+        self._write_audit(
+            context=context,
+            organization_id=organization_id,
+            action=AuditAction.SKILL_TEACHER_CONFIRM,
+            target_type="student_profile",
+            target_id=profile.id,
+            result=AuditResult.OK,
+            resource_ids=[profile.id],
+            item_count=1,
+            bytes_count=0,
+            reason=None,
+            ip=ip,
+            # 覆盖会把原来源冲掉，所以「原来是什么」只能在这条审计里留痕。
+            detail=skill_confirm_audit_detail(
+                normalized,
+                previous_tag_source=previous_source,
+                previous_skill_source=previous_skill_source,
+            ),
+        )
+        self._repository.commit()
+        self._audit.commit()
+
+        return SkillConfirmation(
+            profile_id=profile.id,
+            tag=str(tag_row.tag),
+            status=str(tag_row.status),  # type: ignore[arg-type]
+            source="teacher",
+            score=int(tag_row.score),
+            evidence_count=int(tag_row.evidence_count),
+            previous_tag_source=previous_source,
+            upgraded_skill_source=previous_skill_source is not None,
+        )
+
     # ------------------------------------------------------------------ 内部
 
     def _render(self, content_html: str, paper_size: str) -> bytes:
@@ -426,8 +514,14 @@ class TeacherToolsService:
         bytes_count: int,
         reason: str | None,
         ip: str | None,
+        detail: str | None = None,
     ) -> None:
-        """`audit_logs` 的行形状见 `ADR-029` §2.4 那张表；一处写，不在调用点拼字段。"""
+        """`audit_logs` 的行形状见 `ADR-029` §2.4 那张表；一处写，不在调用点拼字段。
+
+        `detail` 只有「教师确认技能」会传：它的事件形状与下载不同（没有文件、没有字节数），
+        强行套下载那一份 `format/bytes` 会写出一条自相矛盾的审计。
+        默认路径仍然只走 `teacher_audit_detail()`，避免字段名在调用点分叉。
+        """
         self._audit.record(
             action=action,
             actor_user_id=context.user.id,
@@ -435,7 +529,9 @@ class TeacherToolsService:
             target_type=target_type,
             target_id=target_id,
             result=result,
-            detail=teacher_audit_detail(resource_ids, item_count, bytes_count, reason=reason),
+            detail=detail
+            if detail is not None
+            else teacher_audit_detail(resource_ids, item_count, bytes_count, reason=reason),
             ip=ip,
         )
 
@@ -444,6 +540,8 @@ __all__ = [
     "DownloadResult",
     "NoDownloadableResumeError",
     "ResumeExportNotFoundError",
+    "SkillConfirmNameInvalidError",
+    "SkillConfirmProfileNotFoundError",
     "TeacherOrganizationRequiredError",
     "TeacherToolsService",
 ]

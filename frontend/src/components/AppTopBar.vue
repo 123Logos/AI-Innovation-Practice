@@ -157,7 +157,10 @@ async function handleLogout(): Promise<void> {
         分不清删掉的是什么），入口在 `/jobs` 列表页顶部的「我的删除」。
 
         `class="jobs-entry"` 这个类名沿用不改：`AppTopBar.spec.ts` 的一级项顺序断言按它取值。
-        模块表的 `iconPaths` 仍不渲染——加图标是视觉改动，归批次 F4。
+        模块表的 `iconPaths` 在这里**仍然不渲染**，但这已经不是一个「等批次」的欠账：
+        批次 F4 已交付，图标只在工作区切换器（`WorkspaceSwitcher.vue`）与企业卡片里出现。
+        一级导航保持纯文字是有意的——它在窄屏要挤进 8 个字符宽的一行，
+        每加一个 20px 图标就少一个模块名；「图标 + 文字」的形态由切换器承担。
       -->
       <RouterLink
         v-for="item in TOP_BAR_MODULES"

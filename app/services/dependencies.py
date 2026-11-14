@@ -108,11 +108,14 @@ def require_permission(permission: str) -> Callable[[Request], CurrentUserContex
     return guard
 
 
-#: B10 拒绝审计：动作 → 写进 `audit_logs.action` 的枚举（`ADR-029` §2.4）。
+#: 教师动作的拒绝审计：动作 → 写进 `audit_logs.action` 的枚举（`ADR-029` §2.4）。
+#: 新增一个 `OrganizationAction` 时**必须**在这里补一行，否则散人一拒绝就 KeyError 500
+#: （`teacher_permission` 的下标取值是这个映射唯一的消费者）。
 _TEACHER_DENY_ACTIONS = {
     OrganizationAction.VIEW_DASHBOARD: AuditAction.DASHBOARD_VIEW,
     OrganizationAction.BULK_DOWNLOAD: AuditAction.RESUME_BATCH_DOWNLOAD,
     OrganizationAction.EXPORT_RESUME: AuditAction.RESUME_EXPORT_PDF,
+    OrganizationAction.CONFIRM_SKILL: AuditAction.SKILL_TEACHER_CONFIRM,
 }
 
 

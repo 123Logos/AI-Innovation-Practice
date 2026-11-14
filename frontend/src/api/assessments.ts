@@ -106,12 +106,28 @@ export interface AssessmentAnswer {
   is_correct: boolean | null
 }
 
-/** 画像里的一个标签。`source` 今天只有 `assessment`（枚举留位给项目/教师证据）。 */
+/**
+ * 画像里的一个标签。`source` 是**这条证据从哪来**（`ck_profile_tags_source` 三值）：
+ * - `assessment`：标准化测评（B9 自动写入）；
+ * - `teacher`：教师确认（B7 证据链，`POST /teacher/skills/confirm`）；
+ * - `project`：项目证据（尚未有生产者，枚举先留位）。
+ *
+ * 类型原本写死成 `'assessment'`，那在 B7 确认动作上线那天就会让画像接口的响应
+ * 校验失败——前端类型写窄了不会报错，只会在真实数据到达时表现成「页面白屏」。
+ */
+export type TagSource = 'assessment' | 'teacher' | 'project'
+
+/** 标签来源的上屏文案；未知来源不猜，直接不显示（比写错强）。 */
+export const TAG_SOURCE_LABELS: Readonly<Record<TagSource, string>> = {
+  assessment: '测评',
+  teacher: '教师确认',
+  project: '项目',
+}
 export interface ProfileTag {
   tag: string
   status: TagStatus
   score: number
-  source: 'assessment'
+  source: TagSource
   evidence_count: number
   updated_at: string
 }

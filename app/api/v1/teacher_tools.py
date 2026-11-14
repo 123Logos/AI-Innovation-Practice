@@ -20,9 +20,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from app.core.action_gate import OrganizationAction
 from app.core.error_messages import ErrorMessage
 from app.core.pdf_errors import PdfRendererUnavailableError
-from app.core.permissions import DASHBOARD_READ, RESUME_DOWNLOAD
+from app.core.permissions import DASHBOARD_READ, RESUME_DOWNLOAD, SKILL_CONFIRM
 from app.core.responses import success_response
-from app.schemas.teacher_tools import BatchDownloadRequest
+from app.schemas.teacher_tools import BatchDownloadRequest, SkillConfirmRequest
 from app.services.auth_service import CurrentUserContext
 from app.services.dependencies import (
     client_ip,
@@ -32,6 +32,8 @@ from app.services.dependencies import (
 from app.services.teacher_tools_service import (
     NoDownloadableResumeError,
     ResumeExportNotFoundError,
+    SkillConfirmNameInvalidError,
+    SkillConfirmProfileNotFoundError,
     TeacherOrganizationRequiredError,
     TeacherToolsService,
 )
@@ -53,6 +55,12 @@ ExportDep = Annotated[
     CurrentUserContext,
     Depends(teacher_permission(RESUME_DOWNLOAD, OrganizationAction.EXPORT_RESUME)),
 ]
+#: 教师确认技能（B7 证据链）：独立权限，不与「看板」或「下载」共用——
+#: 它是唯一一个**写别人档案**的教师动作，授权面不该被另两件事顺带放大。
+ConfirmerDep = Annotated[
+    CurrentUserContext,
+    Depends(teacher_permission(SKILL_CONFIRM, OrganizationAction.CONFIRM_SKILL)),
+]
 
 
 def _attachment(filename: str, media_type: str, content: bytes) -> Response:
@@ -66,7 +74,7 @@ def _attachment(filename: str, media_type: str, content: bytes) -> Response:
 
 
 def _translate(error: Exception) -> HTTPException:
-    """域异常 → HTTP；四种失败各自的下一步动作不同，绝不合成一句「操作失败」。"""
+    """域异常 → HTTP；五种失败各自的下一步动作不同，绝不合成一句「操作失败」。"""
     if isinstance(error, TeacherOrganizationRequiredError):
         return HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -86,6 +94,16 @@ def _translate(error: Exception) -> HTTPException:
         return HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=ErrorMessage.PDF_RENDERER_UNAVAILABLE,
+        )
+    if isinstance(error, SkillConfirmProfileNotFoundError):
+        return HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ErrorMessage.SKILL_CONFIRM_PROFILE_NOT_FOUND,
+        )
+    if isinstance(error, SkillConfirmNameInvalidError):
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ErrorMessage.SKILL_CONFIRM_NAME_INVALID,
         )
     raise error
 
@@ -155,3 +173,29 @@ def export_resume(
     ) as error:
         raise _translate(error) from error
     return _attachment(result.filename, "application/pdf", result.content)
+
+
+@router.post("/skills/confirm")
+def confirm_skill(
+    payload: SkillConfirmRequest,
+    request: Request,
+    service: TeacherToolsDep,
+    context: ConfirmerDep,
+) -> dict[str, Any]:
+    """教师确认一个学生的技能（B7 证据链，`ADR-027` §5 第 3 条）。
+
+    写两处、只升不建：`profile_tags` 落一条 `source='teacher'` 的标签；
+    学生简历里已有同名技能时把它的来源升成 `teacher_confirmed`，没有就不新建。
+    档案不在本组织 → 404（与「档案不存在」同一个响应）；散人 → 400 提示绑定组织。
+    """
+    try:
+        result = service.confirm_skill(
+            context, payload.profile_id, payload.skill_name, ip=client_ip(request)
+        )
+    except (
+        TeacherOrganizationRequiredError,
+        SkillConfirmProfileNotFoundError,
+        SkillConfirmNameInvalidError,
+    ) as error:
+        raise _translate(error) from error
+    return success_response(request, result.model_dump(mode="json"))

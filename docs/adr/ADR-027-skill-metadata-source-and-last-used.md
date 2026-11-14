@@ -172,5 +172,14 @@
 2. **`source='project'` 的自动溯源**：需要「经历 → 技能」的引用（`evidence_type/evidence_id`
    或一张关联表），今天只有标题匹配，属证据链；
 3. **教师确认的真实性**：要有确认记录 + 教师身份校验（B5 有角色，但没有确认动作）；
+   → **2026-11-14 已交付**：`POST /api/v1/teacher/skills/confirm`（`app/api/v1/teacher_tools.py::confirm_skill`）。
+   落成形态与本文的口径对齐：唯一新增的 `skills.source` 生产者就是它（写 `teacher_confirmed`），
+   权限是独立的 `skill:confirm`（不与「审岗位」「看板」「下载」共用），动作层先过
+   `require_organization`（`OrganizationAction.CONFIRM_SKILL`），**跨组织一律 404**；
+   档案归属的判定写在 SQL 里（`TeacherToolsRepository.student_profile_in_organization`），
+   确认记录进 `audit_logs`（`skill.teacher_confirm`，`detail` 记 `previous_tag_source` /
+   `previous_skill_source`——标签是覆盖写，不记就查不到「原来那条证据是什么」）。
+   两处「只升不建」：不新建技能行（学生没写的技能不会被老师塞进简历），
+   但 `profile_tags` 会新增一条 `source='teacher'` 的标签（那是老师的断言，不是学生的声明）。
 4. **熟练度**：若重新引入，必须先有可信来源，且不得回到「UI 不采集、库恒为 3」的老路；
 5. **`skill_events` 事件表**：等测评真的回写技能之后再建，届时它才有第一条数据。
