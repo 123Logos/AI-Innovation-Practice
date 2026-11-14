@@ -15,6 +15,7 @@ import ResumeEditorView from '@/views/ResumeEditorView.vue'
 import InterviewListView from '@/views/InterviewListView.vue'
 import InterviewDetailView from '@/views/InterviewDetailView.vue'
 import AssessmentView from '@/views/AssessmentView.vue'
+import TeacherDashboardView from '@/views/TeacherDashboardView.vue'
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -141,6 +142,16 @@ const routes: RouteRecordRaw[] = [
         path: 'assessments',
         name: 'assessment',
         component: AssessmentView,
+        meta: { requiresAuth: true },
+      },
+      /*
+       * 教师端学情看板（FR-08 / B10a、B10b，ADR-029）：同样只有一条静态路由。
+       * 由工作区切换器进入；是否可用由后端权限与组织闸判，前端不重复判一次。
+       */
+      {
+        path: 'teacher',
+        name: 'teacher-dashboard',
+        component: TeacherDashboardView,
         meta: { requiresAuth: true },
       },
     ],

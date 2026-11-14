@@ -44,6 +44,11 @@ class AuditAction(StrEnum):
     #: 批次 B6 收口（ADR-025 §2.4）：改密。安全事件必须有账，
     #: 否则「我的账号是不是被人动过」永远只能靠猜。
     PASSWORD_CHANGE = "user.password_change"
+    # 批次 B10a / B10b（ADR-029 §2.4）：**同一张 audit_logs**，不另建下载审计表。
+    # 三个动作的 `target_type` / `detail` JSON 形状写死在 ADR-029 §2.4 那张表里。
+    DASHBOARD_VIEW = "dashboard.view"
+    RESUME_EXPORT_PDF = "resume.export_pdf"
+    RESUME_BATCH_DOWNLOAD = "resume.batch_download"
 
 
 class AuditResult(StrEnum):

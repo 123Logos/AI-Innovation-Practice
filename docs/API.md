@@ -803,6 +803,38 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
   `source` 今天是 `assessment`。提交成功时，`verified` 的标签会把**已存在**的同名技能
   （按 `skill_name_key` 匹配）的 `skills.source` 升成 `assessment`——**不新建技能、不改名、不动 `last_used_on`**。
 
+### 5.3 教师端工具（FR-08 / B10a、B10b，`ADR-029`）
+
+> **四个端点全部先过动作层组织闸**：`app/core/action_gate.py::require_organization`。
+> 无组织归属的账号一律 `400 ORGANIZATION_ACTION_REQUIRED`（「请先绑定组织」），
+> 拦截发生在读业务表之前；组织内的 `student` 角色过闸后被权限闸挡成 403。
+> 权限：`dashboard:read`（看板 / 清单）、`resume:download`（批量下载 / 单份导出）。
+
+| 方法与路径 | 响应 | 说明 |
+|---|---|---|
+| `GET /teacher/dashboard` | JSON | 标签分布（按学生去重）+ 岗位技能覆盖率概况；**不含姓名 / 邮箱 / 手机号 / 简历正文**，空组织返回零值结构 |
+| `GET /teacher/resumes` | JSON `items[]` | 本组织可导出的简历清单（`resume_id` / `profile_id` / `full_name` / `title` / `version_no`），不含正文 |
+| `POST /teacher/resumes/batch-download` | `application/zip` | 请求 `{"resume_ids":[...],"format":"pdf"}`，最多 50 条 |
+| `POST /resumes/{id}/export?format=pdf` | `application/pdf` | 单份导出；打印 CSS 与 `ResumePreview.vue` 同源 |
+
+**ZIP 结构**：`README.txt`（导出时间 / 组织 / 发起人 / 条目数）、`manifest.json`
+（`generated_at` / `organization_id` / `actor_user_id` / `items[]` 逐条 `sha256` 与 `bytes` /
+`skipped[]`）、`resumes/NNN_姓名_vN.pdf`。不属于本组织或已不存在的 id 进 `skipped`
+而不整批失败；一个可下载项都不剩 → 400 `NO_DOWNLOADABLE_RESUME`。
+
+**PDF 打印方案**（第 15 轮裁定）：正文取 `resumes.content_html`，外面包
+`.paper-stage > .paper`，注入从 `frontend/src/components/ResumePreview.vue` 原样切出的
+纸面 CSS。自然分页（`min-height: 0`、不截断、不缩字号）、**非 scoped** 的
+`@media print` 里 `.paper-experience` 写 `break-inside: avoid` 与
+`page-break-inside: avoid`、段标题 `break-after: avoid`、预警线打印时 `display: none`。
+页码由浏览器打印页脚给，**不写进正文 HTML**（写进去会在第二页重复）。
+宿主机没有无头浏览器时 → `503 PDF_RENDERER_UNAVAILABLE`，绝不返回假 PDF。
+
+**审计**：与 B5 共用 `audit_logs`（不建第二套）。三个新 `action`：
+`dashboard.view` / `resume.export_pdf` / `resume.batch_download`；`detail` 是
+`{"resource_ids":[...],"item_count":N,"format":"pdf","bytes":N,"reason":...}`，
+`result=denied` 的尝试（无组织 / 渲染失败 / 无可下载项）也记一行。
+
 ### POST `/match-runs`
 
 请求：`{"job_id":"uuid","student_ids":["uuid"],"weight_version":"v1"}`。返回异步 `match_run_id`。
