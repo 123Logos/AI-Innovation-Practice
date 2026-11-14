@@ -178,13 +178,6 @@ onMounted(load)
           <span>含已过期</span>
         </label>
       </div>
-
-      <p v-if="store.filter.status === 'draft'" class="filter-hint">
-        草稿只有创建者自己看得到；提交审核并通过后才会出现在「已发布」里。
-      </p>
-      <p v-else-if="store.filter.status === 'pending_review'" class="filter-hint">
-        只列本组织的待审岗位，先提交的先审；点进去可以通过或驳回。
-      </p>
     </section>
 
     <p v-if="loadError" class="feedback feedback--error" role="alert">{{ loadError }}</p>
@@ -284,7 +277,6 @@ h1 { margin: 0; color: var(--ui-ink); font-size: var(--text-4xl); font-weight: 6
 .filter-chip--active { border-color: var(--theme-primary); color: var(--theme-primary-strong); background: var(--theme-bg-light); font-weight: 600; }
 .expired-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--ui-ink-muted); font-size: var(--text-sm); cursor: pointer; }
 .expired-toggle input { margin: 0; accent-color: var(--theme-primary); }
-.filter-hint { margin: 0; color: var(--ui-ink-faint); font-size: var(--text-xs); line-height: 1.5; }
 
 .feedback { margin: 0 0 14px; color: var(--ui-ink-faint); font-size: var(--text-base); line-height: 1.5; }
 .feedback--error { color: var(--ui-danger); }

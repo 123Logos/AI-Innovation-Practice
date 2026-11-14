@@ -252,7 +252,6 @@ onMounted(load)
     <template v-else-if="phase === 'catalog'">
       <section v-if="catalog" class="panel" aria-label="可测评的技能">
         <h2 class="panel-title">可以测这些技能</h2>
-        <p class="panel-note">共 {{ catalog.total_questions }} 道题，全部答完大约几分钟。</p>
         <ul class="skill-list">
           <li v-for="skill in catalog.skills" :key="skill.skill_key" class="skill-item">
             <span class="skill-name">{{ skill.skill_name }}</span>
@@ -287,7 +286,6 @@ onMounted(load)
           放弃这次测评
         </button>
       </div>
-      <p class="panel-note">没作答的题会按答错计算，所以尽量都选一下再提交。</p>
 
       <ol class="question-list">
         <li v-for="question in questions" :key="question.id" class="question-item">

@@ -120,7 +120,14 @@ describe('目录态', () => {
 
     expect(wrapper.text()).toContain('Python')
     expect(wrapper.text()).toContain('SQL')
-    expect(wrapper.text()).toContain('共 3 道题')
+    /*
+     * 显式改写（2026-11-14 第 22 轮，守则 R1）：判据原来是汇总那行「共 3 道题」，
+     * 而这一轮把「共 N 道题，全部答完大约几分钟」整句当说明性小字删了。
+     * 题数本身没丢——它逐个技能在报（`2 题` / `1 题`），判据跟着改量逐技能的那两处，
+     * 验的还是同一件事：每个技能测几道题必须上屏。
+     */
+    expect(wrapper.text()).toContain('2 题')
+    expect(wrapper.text()).toContain('1 题')
     expect(wrapper.text()).not.toContain('我的画像')
   })
 

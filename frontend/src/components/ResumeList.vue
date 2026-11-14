@@ -372,12 +372,19 @@ async function goTrash(): Promise<void> {
   min-height: 0;
 }
 
-.menu-sort { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; border-bottom: 1px solid var(--ui-surface-sunken); padding: 10px; }
-.menu-sort__label { color: var(--ui-ink-faint); font-size: var(--text-xs); }
-.sort-chip { border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 3px 8px; color: var(--ui-ink-muted); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-xs); line-height: 1.5; white-space: nowrap; }
+/*
+ * 排序这一行必须在**一行**里排完（2026-11-14 第 22 轮）：原来在 240px 的常驻左栏里它会折行，
+ * 「最新在前」掉到第二行。横向预算算过：240 − 内缩 8×2 = 224，
+ * 「排序」22 + 两枚 chip 各 58 + 方向按钮 58 + 三个间距 4×3 = 208，余 16px。
+ * 收的是内缩（10→8）、间距（6→4）、chip 内缩（8→6）与方向按钮字号（`--text-sm`→`--text-xs`），
+ * **没有把标签改短**。`flex-wrap` 保留：将来标签变长时宁可折行，也不许把侧栏撑出横向滚动。
+ */
+.menu-sort { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; border-bottom: 1px solid var(--ui-surface-sunken); padding: 8px; }
+.menu-sort__label { flex: 0 0 auto; color: var(--ui-ink-faint); font-size: var(--text-xs); white-space: nowrap; }
+.sort-chip { border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 3px 6px; color: var(--ui-ink-muted); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-xs); line-height: 1.5; white-space: nowrap; }
 .sort-chip:hover { border-color: var(--theme-rule-soft); color: var(--theme-primary-deep); }
 .sort-chip--active { border-color: var(--theme-primary); color: var(--theme-primary-strong); background: var(--theme-bg-light); font-weight: 600; }
-.sort-direction { margin-left: auto; width: auto; min-width: 26px; padding: 0 6px; height: 24px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); color: var(--theme-primary); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-sm); line-height: 1; }
+.sort-direction { margin-left: auto; flex: 0 0 auto; width: auto; min-width: 26px; padding: 0 6px; height: 24px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); color: var(--theme-primary); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-xs); line-height: 1; white-space: nowrap; }
 .sort-direction:hover { border-color: var(--theme-rule); background: var(--theme-bg-hover); }
 .sort-chip:focus-visible, .sort-direction:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 1px; }
 
