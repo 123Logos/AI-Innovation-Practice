@@ -172,6 +172,15 @@ async function submit(): Promise<void> {
         还没有账号？
         <RouterLink :to="{ name: 'register' }">去注册</RouterLink>
       </p>
+
+      <!--
+        批次 F7：访客态工作台的入口。放在登录表单之后而不是之前——
+        来登录的人目标很明确，把他往「先逛逛」上引是打扰；而还在犹豫的人
+        往下读到这里，正好需要一个不用注册就能看的页面。
+      -->
+      <p class="switch-hint">
+        <RouterLink :to="{ name: 'welcome' }">先看看平台能做什么</RouterLink>
+      </p>
     </section>
   </main>
 </template>

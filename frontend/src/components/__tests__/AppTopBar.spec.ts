@@ -57,6 +57,8 @@ function makeRouter(): Router {
     { path: '/assessments', name: 'assessment', component: BLANK },
     // B10a（ADR-029）起工作区切换器又多一张「学情看板」卡片，同样要能解析到。
     { path: '/teacher', name: 'teacher-dashboard', component: BLANK },
+    // F7（批次 F7）起模块表第一项是「工作台」：切换器会 resolve 它，缺了就整套挂载炸掉。
+    { path: '/dashboard', name: 'dashboard', component: BLANK },
     { path: '/login', name: 'login', component: BLANK },
   ]
   return createRouter({ history: createMemoryHistory(), routes })
