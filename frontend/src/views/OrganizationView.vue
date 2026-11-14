@@ -224,10 +224,11 @@ onMounted(load)
 
 <template>
   <main class="org-page">
-    <header class="page-head">
-      <h1>组织管理</h1>
-      <p class="page-sub">查看你所在的组织、成员与操作记录。</p>
-    </header>
+    <div class="page-heading">
+      <p class="eyebrow">组织管理</p>
+      <h1>组织与成员</h1>
+      <p class="intro">看你所在的组织、里面有谁，以及谁在什么时候改过什么。</p>
+    </div>
 
     <p v-if="errorMessage" class="notice notice--error" role="alert">{{ errorMessage }}</p>
     <p v-if="roleError" class="notice notice--error" role="alert">{{ roleError }}</p>
@@ -391,9 +392,19 @@ onMounted(load)
 </template>
 
 <style scoped>
-.org-page { display: flex; flex-direction: column; gap: var(--space-4); width: min(960px, 100%); margin: 0 auto; padding: 32px 48px 72px; }
-.page-head h1 { margin: 0; color: var(--ui-ink); font-size: var(--text-4xl); font-weight: 650; }
-.page-sub { margin: 6px 0 0; color: var(--ui-ink-muted); font-size: var(--text-base); }
+/*
+ * 页壳与页首与其余页面同规（2026-11-14 UI 收尾第 4 条）：`min(900px, 100%)` + 居中 +
+ * `32px 48px 72px` 内缩，页首是 `.page-heading`（小标题 eyebrow / h1 / intro 三行），
+ * 与 `AssessmentView` / `InterviewListView` / `TeacherDashboardView` 逐字一致。
+ * 本页是 flex 竖排、块间距走 `gap: var(--space-4)`（10px），所以 `.page-heading` 补 10px，
+ * 合起来正好是别处那一句 `margin-bottom: 20px`（1280 档实测页首底边到第一张卡片 20px）——
+ * 同一把尺，两种写法要对得上数。
+ */
+.org-page { display: flex; flex-direction: column; gap: var(--space-4); width: min(900px, 100%); margin: 0 auto; padding: 32px 48px 72px; }
+.page-heading { margin-bottom: var(--space-4); }
+.eyebrow { margin: 0 0 10px; color: var(--theme-rule); font-size: var(--text-sm); letter-spacing: .12em; }
+h1 { margin: 0; color: var(--ui-ink); font-size: var(--text-4xl); font-weight: 650; }
+.intro { margin: 8px 0 0; max-width: 62ch; color: var(--ui-ink-muted); font-size: var(--text-base); line-height: 1.6; }
 .card {
   border: 1px solid var(--ui-border);
   border-radius: var(--ui-radius);

@@ -224,10 +224,11 @@ describe('外框只有一处定义（守则 L1）', () => {
     const wrapper = await visit('/jobs')
 
     expect(wrapper.findAll('.app-topbar')).toHaveLength(1)
-    // 顶栏与内容区仍同屏，但中间多了外框的两层：`.app-body`（左栏 + 内容）与 `.app-content`
-    // （容器查询的参照）。批次 F3 第三片加了常驻左栏，嵌套因此从两层变四层——
+    // 顶栏与内容区仍同屏，但中间多了外框的层数：`.app-chrome`（2026-11-14 UI 收尾第 1 条
+    // 把顶栏与二级导航合成一个 sticky 头部）、`.app-body`（左栏 + 内容）与 `.app-content`
+    // （容器查询的参照）。批次 F3 第三片加了常驻左栏时从两层变四层，本轮再加一层——
     // 这条断言跟着显式改写，验的还是同一件事：嵌套没漏层、顶栏没被套进内容里。
-    expect(wrapper.find('.app-shell > .app-topbar').exists()).toBe(true)
+    expect(wrapper.find('.app-shell > .app-chrome > .app-topbar').exists()).toBe(true)
     expect(wrapper.find('.app-shell > .app-body > .app-content > main.board-page').exists()).toBe(true)
     // 视图确实自己拉过数据（不是靠异常分支渲染出的一具空壳）。
     expect(requested).toContain('get /jobs')
@@ -283,10 +284,12 @@ describe('外框只有一处定义（守则 L1）', () => {
   })
 })
 
-describe('模块导航在顶栏下方（守则 L4，2026-11-14 改版）', () => {
+describe('模块导航与顶栏同处一个 sticky 外框（2026-11-14 UI 收尾第 1 条）', () => {
   it('二级导航渲染出「岗位库」页签，href 指向 /jobs，且在顶栏之下、不在抽屉里', async () => {
     const wrapper = await visit('/jobs')
-    const nav = wrapper.find('.app-shell > .module-nav')
+    // 显式改写（R1）：导航从 `.app-shell` 的直接子项搬进 `.app-chrome`，选择器跟着搬一层。
+    // 不搬就是空检——`.app-shell > .module-nav` 现在必然量不到东西。
+    const nav = wrapper.find('.app-chrome > .module-nav')
     expect(nav.exists()).toBe(true)
 
     /*
@@ -310,17 +313,39 @@ describe('模块导航在顶栏下方（守则 L4，2026-11-14 改版）', () =>
     expect(jobsTab?.element.closest('.drawer-root')).toBeNull()
   })
 
-  it('二级导航在顶栏**之后**、内容区之前（顺序即层级）', async () => {
+  it('外框里是「顶栏在前、导航在后」，外框整体在内容区之前', async () => {
     const wrapper = await visit('/jobs')
-    const shell = wrapper.find('.app-shell').element
-    const order = [...shell.children].map((node) => node.className.split(' ')[0])
+    const chrome = wrapper.find('.app-shell > .app-chrome')
+    expect(chrome.exists()).toBe(true)
+    expect([...chrome.element.children].map((node) => node.className.split(' ')[0])).toEqual([
+      'app-topbar',
+      'module-nav',
+    ])
+    const order = [...wrapper.find('.app-shell').element.children].map(
+      (node) => node.className.split(' ')[0],
+    )
+    expect(order.indexOf('app-chrome')).toBe(0)
+    // 内容区仍然是第二个直接子项（拉出按钮是 fixed 的浮层，不参与这一层顺序）。
+    expect(order.indexOf('app-body')).toBe(1)
+  })
 
-    const topbarAt = order.indexOf('app-topbar')
-    const navAt = order.indexOf('module-nav')
-    const bodyAt = order.indexOf('app-body')
-    expect(topbarAt).toBe(0)
-    expect(navAt).toBe(1)
-    expect(bodyAt).toBe(2)
+  it('侧栏的偏移来自实测的外框高度，不是抄下来的顶栏数字', async () => {
+    setViewportWidth(1440)
+    // 顶栏 + 导航量出来 110px：外框把这一个数写进 `--chrome-h`，左栏的 sticky 偏移与
+    // 高度都读它。写死 63px 的那一版就是这么把两个按钮顶出屏幕的（导航 41 从没算进去）。
+    const original = Element.prototype.getBoundingClientRect
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      if (this.classList?.contains('app-chrome')) {
+        return { ...original.call(this), height: 110 } as DOMRect
+      }
+      return original.call(this)
+    }
+    try {
+      const wrapper = await visit('/jobs')
+      expect(wrapper.find('.app-shell').attributes('style')).toContain('--chrome-h: 110px')
+    } finally {
+      Element.prototype.getBoundingClientRect = original
+    }
   })
 })
 
@@ -360,7 +385,7 @@ describe('简历列表住哪（清单第 5 条：宽屏常驻左栏 / 其余宽�
     expect(bodyEl('#resume-drawer')).toBeNull()
   })
 
-  it('≥1440：左栏默认收起，点左边缘按钮才展开；收起态不挤内容', async () => {
+  it('≥1440：左栏默认收起，点左边缘按钮展开、再点一次收回；按钮全程常驻', async () => {
     setViewportWidth(1440)
     const wrapper = await visit('/jobs')
 
@@ -371,17 +396,28 @@ describe('简历列表住哪（清单第 5 条：宽屏常驻左栏 / 其余宽�
     expect(wrapper.find('.app-body > .app-content > main.board-page').exists()).toBe(true)
     expect(wrapper.find('.resumes-trigger').exists()).toBe(false)
 
-    // 拉出按钮在：点它展开侧栏。
+    // 显式改写（R1）：上一版这里断言「展开后拉出按钮消失」，因为按钮 `v-if` 掉了——
+    // 那句话钉住的正是本轮要修的缺陷：拉出来之后屏幕上没有收回的入口。
+    // 现在按钮常驻，判据换成「两态都能到，且 `aria-expanded` 说得出当前是哪一态」。
     const toggle = wrapper.find('.sidebar-toggle')
     expect(toggle.exists()).toBe(true)
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(toggle.attributes('aria-controls')).toBe('resume-sidebar')
+    expect(sidebar.attributes('id')).toBe('resume-sidebar')
+
     await toggle.trigger('click')
     await flushPromises()
 
     expect(wrapper.find('.resume-sidebar--closed').exists()).toBe(false)
     expect(wrapper.find('.app-body > .resume-sidebar .menu-sort').exists()).toBe(true)
-    // 展开后拉出按钮消失（它只在收起态出现），没有任何抽屉被打开。
-    expect(wrapper.find('.sidebar-toggle').exists()).toBe(false)
+    expect(wrapper.find('.sidebar-toggle').attributes('aria-expanded')).toBe('true')
+    expect(wrapper.find('.sidebar-toggle').classes()).toContain('sidebar-toggle--open')
     expect(bodyEl('#resume-drawer')).toBeNull()
+
+    // 再点一次收回。
+    await wrapper.find('.sidebar-toggle').trigger('click')
+    expect(wrapper.find('.resume-sidebar--closed').exists()).toBe(true)
+    expect(wrapper.find('.sidebar-toggle').attributes('aria-expanded')).toBe('false')
   })
 
   it('1100–1439：左栏不常驻，列表改走同一个抽屉（裁定：左栏一登场纸面就缩水）', async () => {

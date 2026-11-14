@@ -219,7 +219,11 @@ describe('守则 L2：断点只用同一组值', () => {
     // 阈值不低于算术下限：794 纸面 + 240 左栏 + 24 间距 + 56 内缩 + 15 滚动条 = 1429。
     expect(BREAKPOINTS.sidebar).toBeGreaterThanOrEqual(794 + 240 + 24 + 56 + 15)
     // 左栏宽度就是算式里那个 240：改宽它必须一起抬阈值，否则纸面又开始缩水。
-    expect(layout).toContain('flex: 0 0 240px')
+    // 2026-11-14 UI 收尾第 2 条把这一个数收进 `--resume-sidebar-width`（左栏本身与
+    // 收放按钮展开时贴的那条边都要读同一个数，写两遍就会错开），判据因此改量两件事：
+    // 令牌声明等于 240、左栏确实消费这个令牌。**数值一格没放宽**（守则 R3）。
+    expect(layout).toContain('--resume-sidebar-width: 240px')
+    expect(layout).toContain('flex: 0 0 var(--resume-sidebar-width)')
   })
 
   it('宽度相关的 matchMedia 只出现在 composables/useViewport.ts 一处', () => {

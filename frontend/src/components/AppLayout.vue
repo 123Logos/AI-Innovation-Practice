@@ -29,7 +29,7 @@
  * 「新建简历」弹窗也归这里持有，因为它不能随抽屉卸载而消失（理由写在那个组件里）。
  * 于是外框成了三件事的唯一出处：顶栏、简历列表的住法、内容区的宽度参照（容器查询）。
  */
-import { ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterView } from 'vue-router'
 
 import AppTopBar from '@/components/AppTopBar.vue'
@@ -62,12 +62,42 @@ const createVisible = ref(false)
  *
  * 为什么要默认收起：宽屏常驻左栏会吃掉 240px，纸面会缩水（老板 2026-11-11 裁定的那条
  * 「绝不能屏幕更宽、简历更小」）；而「常驻」又是清单第 5 条的原意——两者只能靠「默认收起、
- * 点一下再展开」调和：想看列表就拉开，不看就让它让出宽度。
+ * 点一下再展开」调和：想看列表就拉开，不看就让它让出宽度。拉开与收回用的是同一颗按钮
+ * （见模板里 `.sidebar-toggle`，上一版它只在收起态渲染，展开后就再也收不回去）。
  *
  * 为什么放在外框而不是顶栏：这个开合只影响「≥1440 的左栏」，窄屏那份列表走右侧抽屉，
  * 与它无关；顶栏不该知道「现在是常驻还是折叠」。
  */
 const sidebarOpen = ref(false)
+
+/**
+ * 外框高度（顶栏 + 二级导航）实测出来，交给侧栏当 sticky 偏移 —— 2026-11-14 UI 收尾第 1 条。
+ *
+ * 为什么不许再写死一个数字：上一版这里写的是 `top: 63px`（= 品牌方块 34 那一档的顶栏高度），
+ * 而 Logo 放大到 40 之后顶栏实测 69、二级导航又占 41，侧栏的真实起点是 110。
+ * 盒子按 `100vh - 63` 算出 837px，比可用的 790px 长出 47px，于是贴在盒子底部的
+ * 「新建简历」「回收站」整条掉到屏幕外（1440×900 实测：按钮 top 902 / bottom 937）。
+ * 量一次就自洽：Logo 再变大、窄屏顶栏整组换行、导航手动收起，都不需要有人记得改这里。
+ */
+const chromeEl = ref<HTMLElement | null>(null)
+const chromeHeight = ref(0)
+/** 导航收起/展开、顶栏换行、窗口缩放都改外框高度，所以必须观察而不是只读一次。 */
+let chromeObserver: ResizeObserver | null = null
+
+function measureChrome(): void {
+  chromeHeight.value = Math.round(chromeEl.value?.getBoundingClientRect().height ?? 0)
+}
+
+onMounted(() => {
+  measureChrome()
+  chromeObserver = new ResizeObserver(measureChrome)
+  if (chromeEl.value) chromeObserver.observe(chromeEl.value)
+})
+
+onBeforeUnmount(() => {
+  chromeObserver?.disconnect()
+  chromeObserver = null
+})
 
 function toggleResumes(): void {
   resumesOpen.value = !resumesOpen.value
@@ -88,31 +118,40 @@ function openCreate(): void {
 </script>
 
 <template>
-  <div class="app-shell">
-    <AppTopBar
-      :resumes-open="resumesOpen"
-      :show-resumes-trigger="!isSidebar"
-      @toggle-resumes="toggleResumes"
-    />
-
+  <div class="app-shell" :style="{ '--chrome-h': `${chromeHeight}px` }">
     <!--
-      二级导航（2026-11-14，UI 收尾第 4 条）：占满横向的模块页签，替代原来 Logo 右侧的
-      弹层式工作区切换器。放在**正常流**里而不是 sticky：顶栏本身是 sticky，它的高度不是
-      令牌（≥1100 档 63px、375 档 59px，窄屏还会整组换行），本栏再 sticky 就要把那两个数
-      抄一遍、换行时还会互相穿插；在流里最差只是滚走，永远不会遮住内容。
+      顶栏与二级导航合成一个 sticky 的外框（2026-11-14 UI 收尾第 1 条）。
+      原来只有顶栏 sticky，二级导航在正常流里——它不是「有人做了自动收起」，而是跟着页面滚走了，
+      滚动到中段时整条模块入口就不在屏幕上。合进同一层之后：要么两栏都在，要么两栏一起滚出，
+      不存在「导航自己溜走、按钮留在原地」那种半截状态。导航的显隐改由它自己那颗按钮手动控制。
     -->
-    <ModuleNav />
+    <div ref="chromeEl" class="app-chrome">
+      <AppTopBar
+        :resumes-open="resumesOpen"
+        :show-resumes-trigger="!isSidebar"
+        @toggle-resumes="toggleResumes"
+      />
+      <ModuleNav />
+    </div>
 
     <div class="app-body">
       <!--
         ≥1440 的左侧简历栏（2026-11-14 UI 收尾第 1/2 条改版）：
         - 默认**收起**，由左边缘一个常驻的拉出按钮展开；展开态仍是普通流里的 flex 列
-          （不是 fixed 悬浮层），所以不会盖住内容，也不会把「新建简历」「回收站」挤出屏幕；
+          （不是 fixed 悬浮层），所以不会盖住内容；
+        - 高度与 sticky 偏移都从 `--chrome-h` 来（见上面 `measureChrome` 那段），
+          盒子底边正好落在视口下沿，「新建简历」「回收站」不再被顶出屏幕；
         - 内容区 `.app-content` 用 `flex: 1 1 auto; min-width: 0` 吸收挤压——侧栏收放
           只是让内容变宽变窄，任何页面都不会因为多了一列而产生横向滚动或丢控件。
         它是**内容**（用户自己的简历），不是模块导航，所以不进模块表（L4）。
       -->
-      <aside v-if="isSidebar" class="resume-sidebar" :class="{ 'resume-sidebar--closed': !sidebarOpen }" aria-label="我的简历">
+      <aside
+        v-if="isSidebar"
+        id="resume-sidebar"
+        class="resume-sidebar"
+        :class="{ 'resume-sidebar--closed': !sidebarOpen }"
+        aria-label="我的简历"
+      >
         <ResumeList @create="openCreate" />
       </aside>
 
@@ -131,20 +170,24 @@ function openCreate(): void {
     </div>
 
     <!--
-      左边缘的「拉出侧栏」入口（2026-11-14 UI 收尾第 2 条）：只在 ≥1440（有常驻栏）且
-      侧栏收起时出现，悬浮在左边缘中间。它不参与 flex 布局，所以不占宽度、不挤内容。
-      用 `aria-expanded` + `aria-controls` 指向侧栏，展开后箭头反向。
+      左边缘的侧栏收放按钮（2026-11-14 UI 收尾第 2 条改版）：只在 ≥1440（有常驻栏）出现，
+      而且是**常驻**——收起时贴在视口左缘往外拉，展开时跟着贴到侧栏右缘往里收。
+      上一版它只在收起态渲染（`v-if="isSidebar && !sidebarOpen"`），于是拉出来之后
+      屏幕上没有任何收回的入口，实测 `clicked: false`——「能收回」这一半根本没做到。
+      它不参与 flex 布局，所以不占宽度、不挤内容；展开时压在内容区那 48px 内缩上，
+      盖不到任何控件。
     -->
     <button
-      v-if="isSidebar && !sidebarOpen"
+      v-if="isSidebar"
       class="sidebar-toggle"
+      :class="{ 'sidebar-toggle--open': sidebarOpen }"
       type="button"
       :aria-expanded="sidebarOpen"
       aria-controls="resume-sidebar"
-      aria-label="展开简历列表"
+      :aria-label="sidebarOpen ? '收起简历列表' : '展开简历列表'"
       @click="toggleSidebar"
     >
-      <span class="sidebar-toggle__caret" aria-hidden="true">›</span>
+      <span class="sidebar-toggle__caret" aria-hidden="true">{{ sidebarOpen ? '‹' : '›' }}</span>
     </button>
 
     <!--
@@ -173,8 +216,20 @@ function openCreate(): void {
 
 <style scoped>
 .app-shell {
+  --resume-sidebar-width: 240px;
+
   min-height: 100vh;
   background: var(--ui-canvas);
+}
+
+/*
+ * 顶栏 + 二级导航这一组是全站唯一 sticky 的头部。`z-index` 沿用顶栏原来那一级（10），
+ * 阶梯值不因为换了个壳子就多出一档（守则 L3 的 10 / 30 / 100）。
+ */
+.app-chrome {
+  position: sticky;
+  top: 0;
+  z-index: 10;
 }
 
 .app-body {
@@ -183,20 +238,20 @@ function openCreate(): void {
 }
 
 /*
- * 常驻左栏。`top` 那个 63px 是顶栏的高度，由内容算出来而不是令牌：
- * 品牌方块 34 + 上下内缩 14×2 + 下边框 1 = 63（≥1100 档实测 63px，375 档 59px，
- * 但左栏只在 ≥1440 出现，所以只需要那一档）。顶栏是 sticky 的，左栏若不跟着
- * sticky 就会滚走——「常驻」的意思是不用点一下才出现，也不是滚两屏就没了。
- * 这个数没有令牌可取，所以它被 R2 的两档实测钉住：改顶栏内缩或品牌方块尺寸时要一起改。
+ * 常驻左栏。偏移与高度都从 `--chrome-h` 来（由 `measureChrome` 实测写进内联样式），
+ * 盒子底边正好落在视口下沿——贴在盒子底部的「新建简历」「回收站」因此在屏幕内。
+ * 原来这里是 `top: 63px` + `height: calc(100vh - 63px)`，那个 63 是品牌方块 34px 年代的
+ * 顶栏高度：Logo 放大到 40、又加了一条 41px 的二级导航之后，真实起点已经是 110，
+ * 盒子比可用高度长出 47px，两个按钮整条掉出视口（1440×900 实测 top 902 / bottom 937）。
  */
 .resume-sidebar {
   position: sticky;
-  top: 63px;
+  top: var(--chrome-h);
   display: flex;
-  flex: 0 0 240px;
+  flex: 0 0 var(--resume-sidebar-width);
   flex-direction: column;
-  width: 240px;
-  height: calc(100vh - 63px);
+  width: var(--resume-sidebar-width);
+  height: calc(100vh - var(--chrome-h));
   border-right: 1px solid var(--ui-border);
   background: var(--ui-surface);
 }
@@ -204,7 +259,6 @@ function openCreate(): void {
 /*
  * 收起态：宽度塌到 0、整栏 `display: none`。用宽度 + display 一起切，而不是只 `display: none`：
  * 只藏 display 会让内容区仍然以为左栏还在（flex 占位），那 240px 就白省了。
- * 过渡走 `width`，`.app-content` 的 `flex: 1` 会同步把多出来的宽度补给它——平滑且不跳。
  */
 .resume-sidebar--closed {
   flex-basis: 0;
@@ -215,8 +269,8 @@ function openCreate(): void {
 }
 
 /*
- * 左边缘拉出按钮：贴在视口左缘、垂直居中，不占文档流。
- * `z-index` 取 9（比顶栏的 10 低一格，滚动时从顶栏底下穿过而不盖住它）。
+ * 左边缘的收放按钮：贴在视口左缘（收起态）或侧栏右缘（展开态）、垂直居中，不占文档流。
+ * `z-index` 取 9（比外框的 10 低一格，滚动时从外框底下穿过而不盖住它）。
  */
 .sidebar-toggle {
   position: fixed;
@@ -234,6 +288,11 @@ function openCreate(): void {
   background: var(--ui-surface);
   cursor: pointer;
   transform: translateY(-50%);
+}
+
+/* 展开态：按钮跟着挪到侧栏右缘，箭头反向（见模板里那两个字），点它是收回而不是再拉一次。 */
+.sidebar-toggle--open {
+  left: var(--resume-sidebar-width);
 }
 
 .sidebar-toggle:hover {
@@ -274,7 +333,8 @@ function openCreate(): void {
     background: #fff;
   }
 
-  /* 打印只要纸面：左栏与拉出按钮都是导航，印出来是废纸。 */
+  /* 打印只要纸面：外框（顶栏 + 二级导航）、左栏与收放按钮都是导航，印出来是废纸。 */
+  .app-chrome,
   .resume-sidebar,
   .sidebar-toggle {
     display: none;

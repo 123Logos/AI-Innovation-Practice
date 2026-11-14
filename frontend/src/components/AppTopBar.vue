@@ -278,20 +278,24 @@ async function handleLogout(): Promise<void> {
 /* 品牌与工作区切换器同属左边一组：顶栏仍是「左一组 / 右一组」两个直接子项。 */
 .brand-side { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 12px; }
 .brand { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 12px; }
-.brand-mark { display: grid; width: 40px; height: 40px; color: var(--theme-on-primary); background: var(--theme-primary); font-family: "SF Mono", Consolas, monospace; font-size: var(--text-lg); place-items: center; }
+.brand-mark { display: grid; width: 44px; height: 44px; color: var(--theme-on-primary); background: var(--theme-primary); font-family: "SF Mono", Consolas, monospace; font-size: var(--text-xl); place-items: center; }
 /*
  * 品牌只留产品名一行（老板 2026-11-11 裁定，§6 第 9 条）：原来那行副标题写死「简历工作台」，
  * 而它右边的工作区切换器显示的是**当前**工作区——站在 /jobs 上时副标题就是事实错误。
  * 「跟着当前工作区走」被明确否掉（与切换器完全冗余），所以整行删掉，不是藏起来。
+ *
+ * 字号层级（2026-11-14 UI 收尾第 3 条）：品牌名 `--text-3xl`(20) > 用户名 `--text-xl`(17)
+ * > 正文 `--text-md`(14) 以下。品牌名比正文页标题（`--text-4xl` 22）低一档，
+ * 这一排是外框、不是当前页的标题，压过它就会跟内容抢视线。
  */
 .brand-text { display: grid; min-width: 0; }
-.brand-title { margin: 0; overflow: hidden; color: var(--ui-ink); font-size: var(--text-2xl); font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.brand-title { margin: 0; overflow: hidden; color: var(--ui-ink); font-size: var(--text-3xl); font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .user-area { display: flex; flex: 1 1 auto; flex-wrap: wrap; min-width: 0; align-items: center; justify-content: flex-end; gap: 10px 12px; }
 .dirty-dot { flex: 0 0 auto; border: 1px solid var(--ui-warning-border); border-radius: var(--ui-radius); padding: 2px 7px; color: var(--ui-warning); font-size: var(--text-xs); white-space: nowrap; }
 /*
- * 顶栏上的控件统一 32px 高（简历入口 / 账户 / 岗位库）：与 `el-button`（润色弹窗里）
- * 同一档高度，跨弹层看上去才是同一套控件。用 `height` 而不是靠 padding 堆，
- * 字号变了也不会互相错开。
+ * 顶栏控件的高度各自写死一个 `height`，不靠 padding 堆：字号变了控件之间不会互相错开。
+ * 2026-11-14 UI 收尾第 3 条把账户入口抬到 38px（名字 17px 那一档），
+ * 简历入口仍 32px——它与 `el-button`（润色弹窗里）同一档，跨弹层才是同一套控件。
  */
 /*
  * 账户入口。名字（`.account-name`）与「账户」二字（`.account-word`）恒在 DOM 里，
@@ -299,11 +303,11 @@ async function handleLogout(): Promise<void> {
  * 名字原来是一个不说话的 `<span class="user-name">`，现在它是按钮的一部分：
  * 点名字本来就该想到「这是我账号的地方」。
  */
-.account-trigger { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; height: 36px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 12px; color: var(--ui-ink); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-lg); white-space: nowrap; }
+.account-trigger { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; height: 38px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 12px; color: var(--ui-ink); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-xl); white-space: nowrap; }
 .account-trigger:hover { border-color: var(--theme-rule); color: var(--theme-primary); }
 .account-trigger:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
-.account-name { overflow: hidden; max-width: 16ch; color: var(--ui-ink-muted); font-size: var(--text-lg); text-overflow: ellipsis; white-space: nowrap; }
-.account-word { display: none; color: var(--ui-ink-muted); font-size: var(--text-lg); }
+.account-name { overflow: hidden; max-width: 16ch; color: var(--ui-ink-muted); font-size: var(--text-xl); text-overflow: ellipsis; white-space: nowrap; }
+.account-word { display: none; color: var(--ui-ink-muted); font-size: var(--text-xl); }
 .account-caret { flex: 0 0 auto; color: var(--ui-ink-faint); font-size: var(--text-xs); line-height: 1; transition: transform var(--motion-base) var(--motion-ease); }
 .account-caret--open { transform: rotate(180deg); }
 .ai-settings-status { margin: 0; color: var(--ui-ink-faint); font-size: var(--text-sm); }
