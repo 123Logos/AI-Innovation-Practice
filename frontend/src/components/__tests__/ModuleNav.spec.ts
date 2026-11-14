@@ -93,6 +93,33 @@ describe('页签来自模块表', () => {
   })
 })
 
+describe('手动收起（2026-11-14 UI 收尾第 1 条：显隐由人控制，不由滚动控制）', () => {
+  const trackHidden = (wrapper: VueWrapper): boolean =>
+    (wrapper.find('.module-nav__track').attributes('style') ?? '').includes('display: none')
+
+  it('默认展开；点一次页签整条藏起来，只留当前模块与展开入口；再点回来', async () => {
+    const wrapper = await mountAt('/jobs')
+    expect(trackHidden(wrapper)).toBe(false)
+    expect(wrapper.find('.module-nav__toggle').attributes('aria-expanded')).toBe('true')
+
+    await wrapper.find('.module-nav__toggle').trigger('click')
+    expect(trackHidden(wrapper)).toBe(true)
+    // 收起态仍然要说得出「你在哪个模块」，那句话来自模块表而不是第二份文案。
+    expect(wrapper.find('.module-nav__current').text()).toBe('岗位库')
+    expect(wrapper.find('.module-nav__toggle').attributes('aria-expanded')).toBe('false')
+
+    await wrapper.find('.module-nav__toggle').trigger('click')
+    expect(trackHidden(wrapper)).toBe(false)
+    expect(wrapper.findAll('.module-nav__track > li')).toHaveLength(APP_MODULES.length)
+  })
+
+  it('收起态那句模块名按「归属」算：详情页收起来仍写它所属的模块', async () => {
+    const wrapper = await mountAt('/jobs/job-under-test')
+    await wrapper.find('.module-nav__toggle').trigger('click')
+    expect(wrapper.find('.module-nav__current').text()).toBe('岗位库')
+  })
+})
+
 describe('高亮按「归属」判定', () => {
   it('一级页面：/jobs → 岗位库、/assessments → 能力测评', async () => {
     expect(activeTab(await mountAt('/jobs'))).toBe('岗位库')

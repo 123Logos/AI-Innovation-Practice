@@ -17,11 +17,12 @@
  *    `/jobs/new` 与 `/jobs/trash` 也归岗位库、`/trash`（简历回收站）归简历工作台。
  *    别名表 `ROUTE_OWNER` 是唯一需要额外维护的东西，且它是**显式**的——
  *    按路径前缀猜会在路由改名时静默失灵（页面照渲染，只是没有任何页签高亮）。
- * 3. **不做 sticky**。顶栏本身是 sticky，它的高度不是令牌（≥1100 档 63px、375 档 59px，
- *    窄屏还会整组换行），把本栏也 sticky 就要把那两个数再抄一遍、换行时还会互相穿插。
- *    放在正常流里，最差也只是滚走，永远不会遮住内容。
+ * 3. **显隐只由人控制，不由滚动控制**（2026-11-14 UI 收尾第 1 条改的）。本栏和顶栏一起
+ *    被 `AppLayout` 的那层 `.app-chrome` sticky 住，滚到哪都在；要腾地方就点右侧那颗
+ *    「收起导航」，收起后这一条只剩一行细栏：当前模块 + 展开入口。外框高度是
+ *    `AppLayout` 实测出来的（`measureChrome`），所以这一条变高变矮都不需要别处跟着改数字。
  */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 
 import { APP_MODULES, type AppModuleKey } from '@/config/modules'
@@ -45,11 +46,21 @@ const activeKey = computed<AppModuleKey | null>(() => {
   const direct = APP_MODULES.find((module) => module.routeName === name)
   return direct ? direct.key : (ROUTE_OWNER[name] ?? null)
 })
+
+/** 收起态也要能说出「你在哪个模块」，所以它读的是同一个 `activeKey`，不是第二份表。 */
+const activeModule = computed(() => APP_MODULES.find((module) => module.key === activeKey.value) ?? null)
+
+/** 手动收起（默认展开）：状态只在本地，刷新后回到展开——它是一次性的腾地方，不是偏好设置。 */
+const collapsed = ref(false)
 </script>
 
 <template>
   <nav class="module-nav" aria-label="模块导航">
-    <ul class="module-nav__track">
+    <!--
+      收起态用 `v-show` 而不是 `v-if`：这一棵是普通元素（不是 Teleport 根），
+      `display: none` 同时把它移出 Tab 序与读屏朗读，展开时又不用重新拉一遍模块表。
+    -->
+    <ul v-show="!collapsed" id="module-nav-track" class="module-nav__track">
       <li v-for="item in APP_MODULES" :key="item.key">
         <RouterLink
           class="module-tab"
@@ -75,6 +86,23 @@ const activeKey = computed<AppModuleKey | null>(() => {
         </RouterLink>
       </li>
     </ul>
+
+    <p v-show="collapsed" class="module-nav__current">
+      <RouterLink v-if="activeModule" :to="{ name: activeModule.routeName }">
+        {{ activeModule.name }}
+      </RouterLink>
+      <span v-else>全部模块</span>
+    </p>
+
+    <button
+      class="module-nav__toggle"
+      type="button"
+      :aria-expanded="!collapsed"
+      aria-controls="module-nav-track"
+      @click="collapsed = !collapsed"
+    >
+      {{ collapsed ? '展开导航' : '收起导航' }}
+    </button>
   </nav>
 </template>
 
@@ -82,17 +110,27 @@ const activeKey = computed<AppModuleKey | null>(() => {
 /*
  * 整条横幅：左右内缩与顶栏同一档（48px；窄屏 16px），底部分隔线把它与内容区分开。
  * 不用阴影——顶栏那层 `backdrop-filter` 与阴影叠在一起会脏。
+ *
+ * 内缩写在这一层而不是页签轨道上，是因为轨道右边多了一颗收起按钮：
+ * 各自加一次内缩会在窄屏与收起态下错位，而轨道自己要做横向滚动，`padding` 反而会
+ * 让滚过去的页签停在半格上。
  */
 .module-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   border-bottom: 1px solid var(--ui-border);
   background: var(--ui-surface);
+  padding: 0 48px;
 }
 
 .module-nav__track {
   display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
   gap: 4px;
   margin: 0;
-  padding: 0 48px;
+  padding: 0;
   overflow-x: auto;
   list-style: none;
   scrollbar-width: none;
@@ -100,6 +138,51 @@ const activeKey = computed<AppModuleKey | null>(() => {
 
 .module-nav__track::-webkit-scrollbar {
   display: none;
+}
+
+/*
+ * 收起态这一行只说「你在哪个模块」，名字仍从 `activeModule` 来（同一张表、同一条归属），
+ * 不是第二份导航。
+ */
+.module-nav__current {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--theme-primary-deep);
+  font-size: var(--text-md);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.module-nav__current a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.module-nav__toggle {
+  flex: 0 0 auto;
+  height: 24px;
+  border: 1px solid var(--ui-border-strong);
+  border-radius: var(--ui-radius);
+  padding: 0 8px;
+  color: var(--ui-ink-muted);
+  background: var(--ui-surface);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.module-nav__toggle:hover {
+  border-color: var(--theme-rule);
+  color: var(--theme-primary);
+}
+
+.module-nav__toggle:focus-visible {
+  outline: 2px solid var(--theme-rule);
+  outline-offset: 2px;
 }
 
 .module-tab {
@@ -134,7 +217,7 @@ const activeKey = computed<AppModuleKey | null>(() => {
 }
 
 @media (max-width: 760px) {
-  .module-nav__track {
+  .module-nav {
     padding: 0 16px;
   }
 
