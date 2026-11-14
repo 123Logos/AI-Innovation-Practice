@@ -9,7 +9,7 @@
  *
  * 1. 走 `/jobs`：一棵树里同时出现**恰好一个** `.app-topbar` 与岗位列表内容区，
  *    且顶栏那条「录入岗位」主操作仍在屏幕上（DOM 层面的在场与可点，不含像素）；
- * 2. 走 `/`（简历工作台）：外框与三列工作区同屏，纸面区没有被外框搬走时挤掉；
+ * 2. 走 `/resume`（简历工作台）：外框与三列工作区同屏，纸面区没有被外框搬走时挤掉；
  * 3. 走 `/login`：访客页**没有**外框——布局是嵌套出来的，不是全局糊上去的。
  *
  * 三条 jsdom 前提，都是既有先例，不是本文件新造的糊法：
@@ -33,7 +33,7 @@ import App from '@/App.vue'
 import { http } from '@/api/client'
 import type { ApiErrorBody } from '@/api/types'
 import router from '@/router'
-import { TOP_BAR_MODULES } from '@/config/modules'
+import { APP_MODULES } from '@/config/modules'
 import { useAuthStore } from '@/stores/auth'
 import { settled } from '@/__tests__/setup'
 
@@ -249,7 +249,7 @@ describe('外框只有一处定义（守则 L1）', () => {
     vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
       warnings.push(args.map(String).join(' '))
     })
-    const wrapper = await visit('/')
+    const wrapper = await visit('/resume')
 
     expect(wrapper.findAll('.app-topbar')).toHaveLength(1)
     // 批次 F6 显式改写（R1）：这一页原来是四个并列根，`<Transition>` 认不了多根，
@@ -283,24 +283,44 @@ describe('外框只有一处定义（守则 L1）', () => {
   })
 })
 
-describe('顶栏的一级导航来自模块表（守则 L4）', () => {
-  it('顶栏渲染出「岗位库」文字入口，href 指向 /jobs，且不在账户抽屉里', async () => {
+describe('模块导航在顶栏下方（守则 L4，2026-11-14 改版）', () => {
+  it('二级导航渲染出「岗位库」页签，href 指向 /jobs，且在顶栏之下、不在抽屉里', async () => {
     const wrapper = await visit('/jobs')
-    const entries = wrapper.findAll('.app-shell > .app-topbar .jobs-entry')
+    const nav = wrapper.find('.app-shell > .module-nav')
+    expect(nav.exists()).toBe(true)
 
-    // 期望值从模块表推导：加一条 `inTopBar` 模块时改的是表，不是这里。
-    // （原来这里写死「只有一条」，B5 加进「组织管理」时它红了一次——红得对，
-    //  但正确的修法是把判据改成跟表走，而不是再加一个数字。）
+    /*
+     * 入口从顶栏搬到了二级导航：判据跟着搬，而不是删掉。
+     * 名字仍从模块表推导（`APP_MODULES`），加模块改的是表、不是这里。
+     */
+    const entries = nav.findAll('.module-tab')
     expect(entries.map((entry) => entry.text())).toEqual(
-      TOP_BAR_MODULES.map((module) => module.name),
+      APP_MODULES.map((module) => module.name),
     )
     expect(entries.every((entry) => entry.element.tagName === 'A')).toBe(true)
-    expect(entries[0]?.attributes('href')).toBe('/jobs')
+    const jobsTab = entries.find((entry) => entry.text() === '岗位库')
+    expect(jobsTab?.attributes('href')).toBe('/jobs')
+    // 当前页高亮：站在 /jobs 上，岗位库那一格是 aria-current="page"。
+    expect(jobsTab?.attributes('aria-current')).toBe('page')
+
     // 判据要真的把抽屉打开再看：它 Teleport 到 body 且收起态根本不存在，
     // 不收时 `closest` 必然为 null，那是空检。
     await wrapper.find('.account-trigger').trigger('click')
     expect(document.body.querySelector('.drawer-root')).not.toBeNull()
-    expect(entries[0]?.element.closest('.drawer-root')).toBeNull()
+    expect(jobsTab?.element.closest('.drawer-root')).toBeNull()
+  })
+
+  it('二级导航在顶栏**之后**、内容区之前（顺序即层级）', async () => {
+    const wrapper = await visit('/jobs')
+    const shell = wrapper.find('.app-shell').element
+    const order = [...shell.children].map((node) => node.className.split(' ')[0])
+
+    const topbarAt = order.indexOf('app-topbar')
+    const navAt = order.indexOf('module-nav')
+    const bodyAt = order.indexOf('app-body')
+    expect(topbarAt).toBe(0)
+    expect(navAt).toBe(1)
+    expect(bodyAt).toBe(2)
   })
 })
 
@@ -340,18 +360,27 @@ describe('简历列表住哪（清单第 5 条：宽屏常驻左栏 / 其余宽�
     expect(bodyEl('#resume-drawer')).toBeNull()
   })
 
-  it('≥1440：左栏常驻在内容区左边，触发按钮整个不渲染', async () => {
+  it('≥1440：左栏默认收起，点左边缘按钮才展开；收起态不挤内容', async () => {
     setViewportWidth(1440)
     const wrapper = await visit('/jobs')
 
+    // 默认收起（2026-11-14 UI 收尾第 2 条）：侧栏带 --closed，内容区完整占满。
     const sidebar = wrapper.find('.app-body > .resume-sidebar')
     expect(sidebar.exists()).toBe(true)
-    expect(sidebar.attributes('aria-label')).toBe('我的简历')
-    // 列表在左栏里，且左栏与内容区是兄弟（不是把内容区套进左栏）。
-    expect(sidebar.find('.menu-sort').exists()).toBe(true)
+    expect(sidebar.classes()).toContain('resume-sidebar--closed')
     expect(wrapper.find('.app-body > .app-content > main.board-page').exists()).toBe(true)
     expect(wrapper.find('.resumes-trigger').exists()).toBe(false)
-    // 常驻的意思是「不用点一下才出现」：没有任何抽屉被打开。
+
+    // 拉出按钮在：点它展开侧栏。
+    const toggle = wrapper.find('.sidebar-toggle')
+    expect(toggle.exists()).toBe(true)
+    await toggle.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.resume-sidebar--closed').exists()).toBe(false)
+    expect(wrapper.find('.app-body > .resume-sidebar .menu-sort').exists()).toBe(true)
+    // 展开后拉出按钮消失（它只在收起态出现），没有任何抽屉被打开。
+    expect(wrapper.find('.sidebar-toggle').exists()).toBe(false)
     expect(bodyEl('#resume-drawer')).toBeNull()
   })
 
@@ -421,17 +450,21 @@ describe('简历列表住哪（清单第 5 条：宽屏常驻左栏 / 其余宽�
     expect(bodyEl('#create-profile-heading')).toBeNull()
   })
 
-  it('常驻左栏里的「新建简历」走同一个意图，开的是同一个弹窗', async () => {
+  it('展开后的左栏里「新建简历」走同一个意图，开的是同一个弹窗', async () => {
     setViewportWidth(1440)
     const wrapper = await visit('/jobs')
-    const createButton = wrapper.find('.resume-sidebar .menu-action')
 
+    // 侧栏默认收起，先点拉出按钮展开，再点「新建简历」。
+    await wrapper.find('.sidebar-toggle').trigger('click')
+    await flushPromises()
+
+    const createButton = wrapper.find('.resume-sidebar .menu-action')
     expect(createButton.text()).toBe('新建简历')
     await createButton.trigger('click')
     await flushPromises()
 
     expect(bodyEl('#create-profile-heading')).not.toBeNull()
-    // 左栏是常驻的，开弹窗不该把它收掉（它没有可收的东西）。
+    // 展开后开弹窗不该把左栏收掉（它没有可收的东西）。
     expect(wrapper.find('.resume-sidebar').exists()).toBe(true)
   })
 })

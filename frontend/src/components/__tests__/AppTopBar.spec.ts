@@ -28,7 +28,6 @@ import { authApi } from '@/api'
 import { REFRESH_TOKEN_STORAGE_KEY, TOKEN_STORAGE_KEY } from '@/api/client'
 import type { jobsApi as JobsContract } from '@/api'
 import AppTopBar from '@/components/AppTopBar.vue'
-import { TOP_BAR_MODULES } from '@/config/modules'
 import { useAuthStore } from '@/stores/auth'
 import { useJobStore } from '@/stores/job'
 import { useResumeStore } from '@/stores/resume'
@@ -322,56 +321,45 @@ describe('简历入口（清单第 5 条：列表搬去左栏 / 抽屉，顶栏�
   })
 })
 
-describe('窄屏的入口组织（结构判据，不测像素）', () => {
-  it('「岗位库」仍然是文字链接，而且没有被收进抽屉', async () => {
+describe('顶栏的入口组织（结构判据，不测像素）', () => {
+  it('顶栏不再有模块入口：没有任何 .jobs-entry，也没有切换器', async () => {
     const { wrapper } = await mountTopBar()
-    const entry = wrapper.find('.jobs-entry')
 
-    expect(entry.exists()).toBe(true)
-    // 是 `<a>`（RouterLink 渲染成锚点）而不是按钮或图标，文案就是那三个汉字。
-    expect(entry.element.tagName).toBe('A')
-    expect(entry.text()).toBe('岗位库')
-    expect(entry.attributes('href')).toBe('/jobs')
-    // 关键判据：展开抽屉后它也不在里面。收进抽屉的入口在手机上等于没有入口。
-    await wrapper.find('.account-trigger').trigger('click')
-    const drawer = drawerEl()
-    expect(drawer).not.toBeNull()
-    expect(drawer?.contains(entry.element)).toBe(false)
-    expect(entry.element.closest('.drawer-root')).toBeNull()
-    expect(drawerText()).toContain('AI 设置')
-    expect(drawerText()).toContain('退出登录')
-    expect(drawerText()).not.toContain('岗位库')
+    /*
+     * 2026-11-14（UI 收尾第 3/4 条）：顶栏上那两个文字入口（「岗位库」「组织管理」）
+     * 与 Logo 右侧的工作区切换器都删掉了，模块切换统一由顶栏下方的 `ModuleNav.vue` 承担。
+     * 这里断言「一个都没有」，而不是「换了个类名」——换类名会让同一条重复入口换个马甲留下。
+     */
+    expect(wrapper.findAll('.jobs-entry')).toHaveLength(0)
+    expect(wrapper.find('.workspace-trigger').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('岗位库')
+    expect(wrapper.text()).not.toContain('组织管理')
   })
 
-  it('.user-area 的一级项：窄屏 = 顶栏项 + 简历触发 + 账户；宽屏 = 顶栏项 + 账户（左栏常驻，不需要简历按钮）', async () => {
+  it('.user-area 的成员：窄屏 = 简历触发 + 账户；宽屏 = 账户（左栏常驻，不需要简历按钮）', async () => {
     // RouterLink 会自带 `router-link-active` / `aria-current`，所以按「已知入口类名」取值，
     // 而不是照抄整个 class 列表。
-    const KNOWN = ['jobs-entry', 'resumes-trigger', 'dirty-dot', 'account-trigger']
+    const KNOWN = ['resumes-trigger', 'dirty-dot', 'account-trigger']
     const items = (wrapper: TopBarWrapper): string[] =>
       wrapper
         .findAll('.user-area > *')
         .map((node) => KNOWN.find((cls) => node.classes().includes(cls)) ?? '(未知)')
 
     const narrow = await mountTopBar({ showResumesTrigger: true })
-    // 清单第 5 条之前这里是「岗位库 / 简历切换器 / 账户」，切换器自己带着一整个 Popover；
-    // 现在那一格只剩一个触发按钮，列表本体在左栏或抽屉里（`ResumeList.vue` 一份）。
-    // 顶栏一级项的数量与内容跟着模块表走（B5 加进「组织管理」后是两项），不在这里写死。
-    const topBarEntries = TOP_BAR_MODULES.map(() => 'jobs-entry')
-    expect(items(narrow.wrapper)).toEqual([...topBarEntries, 'resumes-trigger', 'account-trigger'])
+    expect(items(narrow.wrapper)).toEqual(['resumes-trigger', 'account-trigger'])
     // 账户按钮里两个标签恒在 DOM，显示谁由 CSS 决定（宽屏名字、窄屏「账户」）。
     expect(narrow.wrapper.find('.account-trigger .account-name').text()).toBe('tester')
     expect(narrow.wrapper.find('.account-trigger .account-word').text()).toBe('账户')
 
     const wide = await mountTopBar({ showResumesTrigger: false })
-    expect(items(wide.wrapper)).toEqual([...topBarEntries, 'account-trigger'])
+    expect(items(wide.wrapper)).toEqual(['account-trigger'])
 
-    // 收起态抽屉整个不在 DOM 里。这里不再对 `.ai-settings-button` / `.logout-button`
-    // 断言「不是直接子项」——那两个类已不存在，对不存在的类名断言 false 是恒绿空检。
+    // 收起态抽屉整个不在 DOM 里。
     expect(drawerRootEl()).toBeNull()
 
     await narrow.wrapper.find('.account-trigger').trigger('click')
     // 展开后一级项不变：抽屉 Teleport 到 body，不占顶栏的一格。
-    expect(items(narrow.wrapper)).toEqual([...topBarEntries, 'resumes-trigger', 'account-trigger'])
+    expect(items(narrow.wrapper)).toEqual(['resumes-trigger', 'account-trigger'])
     expect(drawerRootEl()?.parentElement).toBe(document.body)
     expect(document.querySelectorAll('#user-drawer .drawer-item')).toHaveLength(2)
 
@@ -388,54 +376,22 @@ describe('窄屏的入口组织（结构判据，不测像素）', () => {
   it('品牌只留产品名一行：副标题已按裁定删掉，不是藏起来（§6 第 9 条）', async () => {
     const { wrapper } = await mountTopBar()
 
-    // 原来那行写死「简历工作台」，站在 /jobs 上就是事实错误——右边的切换器已经
-    // 准确回答了「我在哪」。裁定是**去掉**，所以判据是 DOM 里没有这一行，
-    // 而不是 `display: none`（jsdom 不跑 CSS，藏起来在这里量不出来）。
+    // 原来那行写死「简历工作台」，站在 /jobs 上就是事实错误。裁定是**去掉**，
+    // 所以判据是 DOM 里没有这一行，而不是 `display: none`（jsdom 不跑 CSS，藏起来量不出来）。
     expect(wrapper.find('.brand-sub').exists()).toBe(false)
     expect(wrapper.find('.brand-text').text()).toBe('职业发展助手')
     expect(wrapper.findAll('.brand-text > *')).toHaveLength(1)
   })
 
-  it('工作区切换器在 Logo 右侧那一组里，不占 .user-area 的格子（清单第 6 条）', async () => {
+  it('顶栏仍是「左一组 / 右一组」两个直接子项，左边那组现在只有品牌', async () => {
     const { wrapper } = await mountTopBar()
 
-    // 顶栏仍是「左一组 / 右一组」两个直接子项：切换器并进左边那一组，
-    // 而不是变成第三个 flex 子项（那样 space-between 会把它甩到正中间）。
     expect(wrapper.findAll('.app-topbar > *').map((node) => node.classes()[0])).toEqual([
       'brand-side',
       'user-area',
     ])
-    expect(wrapper.findAll('.brand-side > *').map((node) => node.classes()[0])).toEqual([
-      'brand',
-      'workspace-switcher',
-    ])
-    expect(wrapper.find('.user-area .workspace-switcher').exists()).toBe(false)
-    // 它在品牌**之后**：清单第 6 条说的是「Logo 右侧」，顺序反了就是另一个设计。
-    const side = wrapper.find('.brand-side').element
-    expect(side.children[0]?.classList.contains('brand')).toBe(true)
-    expect(side.children[1]?.classList.contains('workspace-switcher')).toBe(true)
-  })
-
-  it('三个浮层两两互斥：开账户抽屉时切换器收起，开切换器时账户抽屉收起', async () => {
-    const { wrapper } = await mountTopBar()
-    const press = async (selector: string): Promise<void> => {
-      const node = wrapper.find(selector)
-      node.element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
-      await node.trigger('click')
-      await flushPromises()
-      await settled()
-    }
-
-    await press('.workspace-trigger')
-    expect(wrapper.find('.workspace-popover').exists()).toBe(true)
-
-    await press('.account-trigger')
-    expect(drawerEl()).not.toBeNull()
-    expect(wrapper.find('.workspace-popover').exists()).toBe(false)
-
-    await press('.workspace-trigger')
-    expect(wrapper.find('.workspace-popover').exists()).toBe(true)
-    expect(drawerEl()).toBeNull()
+    // 切换器删掉之后 `.brand-side` 只剩 `.brand`——留一条断言防止有人把模块入口又塞回来。
+    expect(wrapper.findAll('.brand-side > *').map((node) => node.classes()[0])).toEqual(['brand'])
   })
 })
 

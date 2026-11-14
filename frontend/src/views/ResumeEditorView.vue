@@ -20,7 +20,24 @@ const draftSavedAt = computed(() => {
   return new Date(at).toLocaleString('zh-CN', { hour12: false })
 })
 
+/*
+ * 已经完整加载过就不再重来（2026-11-14，UI 收尾第 5 条）。
+ *
+ * 从岗位库 / 测评切回工作台时，store 里还留着刚才那份草稿；再 `loadFromServer()`
+ * 等于用服务端版本覆盖它（手改到一半的内容会没），还白花两次请求（列表 + 详情）。
+ * `loadedFromServer` 由 store 在成功加载后置真、`reset()` 时置假，所以换账号、
+ * 登出回来仍会重新拉。
+ */
 onMounted(async () => {
+  if (store.loadedFromServer) {
+    // 草稿自动保存与本地草稿探测仍要接上：卸载时它们被解绑了。
+    const ownerId = auth.user?.id
+    if (ownerId) {
+      store.startDraftAutosave(ownerId)
+      store.detectLocalDraft(ownerId)
+    }
+    return
+  }
   try {
     await store.loadFromServer()
   } catch (error) {
@@ -86,9 +103,6 @@ onUnmounted(() => {
       <ResumeEditor class="editor" />
       <ResumePreview />
       <StylePanel class="style-panel" />
-      <p class="footer-hint">
-        表单与纸面的改动都要点「保存修改」才会保存 · 生成结果基于「已保存」的档案版本
-      </p>
     </div>
   </main>
 </template>
@@ -124,7 +138,6 @@ onUnmounted(() => {
 .resume-workspace { display: grid; grid-template-columns: minmax(0, var(--paper-a4-width)); justify-content: center; align-items: start; gap: 24px; width: min(1440px, 100%); margin: 0 auto; padding: 24px 28px 56px; }
 /* 两列时主题面板横跨整行摆在下面；三列时它才回到自己那一列。 */
 .style-panel { grid-column: 1 / -1; }
-.footer-hint { grid-column: 1 / -1; margin: 0; color: var(--ui-ink-faint); font-size: var(--text-sm); text-align: center; }
 /* 单列堆叠时横幅与下面那一列对齐（横幅内缩 48，所以宽度要补 96 而不是 56）。 */
 .load-error, .load-hint { width: min(calc(var(--paper-a4-width) + 96px), 100%); margin: 0 auto; padding: 12px 48px 0; font-size: var(--text-base); }
 /* 骨架与它替换掉的那行提示占同一块地方：宽度与内缩一致，数据到达时不横向跳动。 */
@@ -173,13 +186,12 @@ onUnmounted(() => {
 @container app-content (max-width: 760px) {
   .resume-workspace { grid-template-columns: 1fr; gap: 24px; padding: 20px 16px 48px; }
   .editor, .style-panel { grid-column: auto; }
-  .footer-hint { grid-column: auto; }
   .load-error, .load-hint, .load-skeleton, .draft-banner-shell { padding: 12px 16px 0; }
   .draft-banner { flex-direction: column; align-items: stretch; }
   .draft-banner__actions { justify-content: flex-end; }
 }
 @media print {
   .resume-workspace { display: block; padding: 0; }
-  .editor, .style-panel, .footer-hint, .load-error, .load-hint, .load-skeleton, .draft-banner-shell { display: none; }
+  .editor, .style-panel, .load-error, .load-hint, .load-skeleton, .draft-banner-shell { display: none; }
 }
 </style>

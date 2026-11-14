@@ -46,7 +46,14 @@ const routes: RouteRecordRaw[] = [
     component: AppLayout,
     children: [
       {
-        path: '',
+        /*
+         * 简历工作台（2026-11-14 从 `path: ''` 挪到 `/resume`）。
+         * 挪的理由是「默认落地」这件事：根路径 `/` 现在要按登录态分流
+         * （未登录 → `/welcome`，已登录 → `/dashboard`），它不能再同时是编辑器本身。
+         * 编辑器必须有自己的一条路径，否则 `{ name: 'resume-editor' }` 解析出来的还是 `/`，
+         * 分流规则会把它自己也劫走。
+         */
+        path: 'resume',
         name: 'resume-editor',
         component: ResumeEditorView,
         meta: { requiresAuth: true },
@@ -200,10 +207,6 @@ const routes: RouteRecordRaw[] = [
     component: RegisterView,
     meta: { guestOnly: true },
   },
-  {
-    path: '/:pathMatch(.*)*',
-    redirect: { name: 'resume-editor' },
-  },
 ]
 
 const router = createRouter({
@@ -220,6 +223,28 @@ const router = createRouter({
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
 
+  /*
+   * 默认落地（2026-11-14，UI 收尾第 1 条）：根路径按登录态分流。
+   *
+   * 判据放在守卫最前面、而不是给 `/` 写一个 `redirect` 函数：`redirect` 里读 store 要求
+   * Pinia 已经装好，而路由表是模块顶层代码（`main.ts` 里 `use(router)` 才装插件）；
+   * 守卫在导航时才执行，那一刻 store 一定可用。
+   *
+   * 为什么 `/` 不再直接是编辑器：老板要的是「未登录看访客页、已登录进工作台」，
+   * 而 `/` 同时当编辑器的话，这条分流就没有落脚点了。编辑器已挪到 `/resume`。
+   */
+  /*
+   * 根路径与未知路径走同一条分流：
+   * - `/` 已经不再是任何页面（编辑器挪到 `/resume`），它只表示「按登录态决定去哪」；
+   * - `to.matched.length === 0` 是敲错地址的情况，对用户来说与「打开应用首页」没有区别，
+   *   不该把他丢到登录页（原来通配路由 `redirect: resume-editor` 的副作用）。
+   *
+   * 两个分支都跳**具名路由**，不写 `redirect` 链，所以不会出现重定向成环。
+   */
+  if (to.path === '/' || to.matched.length === 0) {
+    return auth.isAuthenticated ? { name: 'dashboard' } : { name: 'welcome' }
+  }
+
   if (to.meta.requiresAuth) {
     if (!auth.isAuthenticated) {
       return { name: 'login', query: { redirect: to.fullPath } }
@@ -231,7 +256,8 @@ router.beforeEach(async (to) => {
   }
 
   if (to.meta.guestOnly && auth.isAuthenticated) {
-    return { name: 'resume-editor' }
+    // 已登录的人再去看登录/注册页：送回默认落地页（与 `/` 的分流同一个去向）。
+    return { name: 'dashboard' }
   }
 
   return true

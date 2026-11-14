@@ -33,6 +33,7 @@ import { ref } from 'vue'
 import { RouterView } from 'vue-router'
 
 import AppTopBar from '@/components/AppTopBar.vue'
+import ModuleNav from '@/components/ModuleNav.vue'
 import ResumeCreateDialog from '@/components/ResumeCreateDialog.vue'
 import ResumeDrawer from '@/components/ResumeDrawer.vue'
 import ResumeList from '@/components/ResumeList.vue'
@@ -56,9 +57,24 @@ import { useViewport } from '@/composables/useViewport'
 const { isSidebar } = useViewport()
 const resumesOpen = ref(false)
 const createVisible = ref(false)
+/**
+ * 左侧简历侧栏的开合（2026-11-14，UI 收尾第 2 条）：**默认收起**。
+ *
+ * 为什么要默认收起：宽屏常驻左栏会吃掉 240px，纸面会缩水（老板 2026-11-11 裁定的那条
+ * 「绝不能屏幕更宽、简历更小」）；而「常驻」又是清单第 5 条的原意——两者只能靠「默认收起、
+ * 点一下再展开」调和：想看列表就拉开，不看就让它让出宽度。
+ *
+ * 为什么放在外框而不是顶栏：这个开合只影响「≥1440 的左栏」，窄屏那份列表走右侧抽屉，
+ * 与它无关；顶栏不该知道「现在是常驻还是折叠」。
+ */
+const sidebarOpen = ref(false)
 
 function toggleResumes(): void {
   resumesOpen.value = !resumesOpen.value
+}
+
+function toggleSidebar(): void {
+  sidebarOpen.value = !sidebarOpen.value
 }
 
 /**
@@ -79,9 +95,24 @@ function openCreate(): void {
       @toggle-resumes="toggleResumes"
     />
 
+    <!--
+      二级导航（2026-11-14，UI 收尾第 4 条）：占满横向的模块页签，替代原来 Logo 右侧的
+      弹层式工作区切换器。放在**正常流**里而不是 sticky：顶栏本身是 sticky，它的高度不是
+      令牌（≥1100 档 63px、375 档 59px，窄屏还会整组换行），本栏再 sticky 就要把那两个数
+      抄一遍、换行时还会互相穿插；在流里最差只是滚走，永远不会遮住内容。
+    -->
+    <ModuleNav />
+
     <div class="app-body">
-      <!-- ≥1440：常驻左栏。它是内容（用户自己的简历），不是模块导航，所以不进模块表（L4）。 -->
-      <aside v-if="isSidebar" class="resume-sidebar" aria-label="我的简历">
+      <!--
+        ≥1440 的左侧简历栏（2026-11-14 UI 收尾第 1/2 条改版）：
+        - 默认**收起**，由左边缘一个常驻的拉出按钮展开；展开态仍是普通流里的 flex 列
+          （不是 fixed 悬浮层），所以不会盖住内容，也不会把「新建简历」「回收站」挤出屏幕；
+        - 内容区 `.app-content` 用 `flex: 1 1 auto; min-width: 0` 吸收挤压——侧栏收放
+          只是让内容变宽变窄，任何页面都不会因为多了一列而产生横向滚动或丢控件。
+        它是**内容**（用户自己的简历），不是模块导航，所以不进模块表（L4）。
+      -->
+      <aside v-if="isSidebar" class="resume-sidebar" :class="{ 'resume-sidebar--closed': !sidebarOpen }" aria-label="我的简历">
         <ResumeList @create="openCreate" />
       </aside>
 
@@ -99,7 +130,34 @@ function openCreate(): void {
       </div>
     </div>
 
-    <Transition name="ui-fade">
+    <!--
+      左边缘的「拉出侧栏」入口（2026-11-14 UI 收尾第 2 条）：只在 ≥1440（有常驻栏）且
+      侧栏收起时出现，悬浮在左边缘中间。它不参与 flex 布局，所以不占宽度、不挤内容。
+      用 `aria-expanded` + `aria-controls` 指向侧栏，展开后箭头反向。
+    -->
+    <button
+      v-if="isSidebar && !sidebarOpen"
+      class="sidebar-toggle"
+      type="button"
+      :aria-expanded="sidebarOpen"
+      aria-controls="resume-sidebar"
+      aria-label="展开简历列表"
+      @click="toggleSidebar"
+    >
+      <span class="sidebar-toggle__caret" aria-hidden="true">›</span>
+    </button>
+
+    <!--
+      抽屉仍然用 `v-if`（2026-11-14 UI 收尾第 5 条试过 `v-show`，放弃了，理由写在这里）：
+      `v-show` 是把 `display: none` 挂到组件**根元素**上的，而本组件的根是 `<Teleport>`
+      ——Vue 对 Teleport / fragment 根的 `v-show` 并不保证生效（真实内容已经被搬到 body，
+      根上那层壳没东西可藏）。要「保持挂载」就得让 `DrawerPanel` 自己接一个 `open` prop
+      去控制面板可见性，那是另一个改动面（还要改 `aria-hidden` / 遮罩 / 焦点圈定）。
+      **卡顿的真因不在挂载次数上**：抽屉每次开合都会重新挂载 `ResumeList`，而它原来在
+      `onMounted` 里无条件 `refreshProfiles()` ——一次多余网络请求 + 骨架闪一下。
+      那个已经修了（`profilesLoaded` 缓存，见 `ResumeList.vue`），开合现在是从内存渲染。
+    -->
+    <Transition name="ui-slide-right">
       <ResumeDrawer
         v-if="!isSidebar && resumesOpen"
         @close="resumesOpen = false"
@@ -143,6 +201,56 @@ function openCreate(): void {
   background: var(--ui-surface);
 }
 
+/*
+ * 收起态：宽度塌到 0、整栏 `display: none`。用宽度 + display 一起切，而不是只 `display: none`：
+ * 只藏 display 会让内容区仍然以为左栏还在（flex 占位），那 240px 就白省了。
+ * 过渡走 `width`，`.app-content` 的 `flex: 1` 会同步把多出来的宽度补给它——平滑且不跳。
+ */
+.resume-sidebar--closed {
+  flex-basis: 0;
+  width: 0;
+  border-right: 0;
+  overflow: hidden;
+  display: none;
+}
+
+/*
+ * 左边缘拉出按钮：贴在视口左缘、垂直居中，不占文档流。
+ * `z-index` 取 9（比顶栏的 10 低一格，滚动时从顶栏底下穿过而不盖住它）。
+ */
+.sidebar-toggle {
+  position: fixed;
+  left: 0;
+  top: 50%;
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  height: 56px;
+  border: 1px solid var(--ui-border);
+  border-left: 0;
+  border-radius: 0 var(--ui-radius) var(--ui-radius) 0;
+  padding: 0 6px;
+  color: var(--ui-ink-muted);
+  background: var(--ui-surface);
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.sidebar-toggle:hover {
+  color: var(--theme-primary);
+  border-color: var(--theme-rule);
+}
+
+.sidebar-toggle:focus-visible {
+  outline: 2px solid var(--theme-rule);
+  outline-offset: 2px;
+}
+
+.sidebar-toggle__caret {
+  font-size: var(--text-xl);
+  line-height: 1;
+}
+
 /* `min-width: 0` 是关键：不给它，flex 子项的最小尺寸是内容宽度，
    简历工作区那张三列网格会把整页撑出横向滚动条。
 
@@ -166,8 +274,9 @@ function openCreate(): void {
     background: #fff;
   }
 
-  /* 打印只要纸面：左栏是导航，印出来是一列废纸。 */
-  .resume-sidebar {
+  /* 打印只要纸面：左栏与拉出按钮都是导航，印出来是废纸。 */
+  .resume-sidebar,
+  .sidebar-toggle {
     display: none;
   }
 

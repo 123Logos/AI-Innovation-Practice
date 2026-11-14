@@ -223,7 +223,7 @@ onMounted(load)
 </script>
 
 <template>
-  <section class="org-page">
+  <main class="org-page">
     <header class="page-head">
       <h1>组织管理</h1>
       <p class="page-sub">查看你所在的组织、成员与操作记录。</p>
@@ -387,12 +387,12 @@ onMounted(load)
       <p v-if="redeemError" class="notice notice--error" role="alert">{{ redeemError }}</p>
       <p v-if="redeemNotice" class="notice" role="status">{{ redeemNotice }}</p>
     </div>
-  </section>
+  </main>
 </template>
 
 <style scoped>
-.org-page { display: flex; flex-direction: column; gap: var(--space-4); max-width: 960px; }
-.page-head h1 { margin: 0; color: var(--ui-ink); font-size: var(--text-2xl); font-weight: 700; }
+.org-page { display: flex; flex-direction: column; gap: var(--space-4); width: min(960px, 100%); margin: 0 auto; padding: 32px 48px 72px; }
+.page-head h1 { margin: 0; color: var(--ui-ink); font-size: var(--text-4xl); font-weight: 650; }
 .page-sub { margin: 6px 0 0; color: var(--ui-ink-muted); font-size: var(--text-base); }
 .card {
   border: 1px solid var(--ui-border);
@@ -499,4 +499,13 @@ onMounted(load)
 }
 .invite-code { color: var(--ui-ink); font-size: var(--text-base); font-weight: 600; }
 .invite-redeemers { color: var(--theme-primary-strong); }
+
+/* 窄屏自然堆叠：内缩收窄、表格可横向滚动（表格本身不能换行，压到 375 只能横滚）。 */
+@media (max-width: 760px) {
+  .org-page { padding: 20px 16px 48px; }
+  .card { padding: 16px; }
+  /* 成员表四列在手机上放不下，让表格容器横向滚动而不是把整页撑出横向滚动条。 */
+  .card:has(.table) { overflow-x: auto; }
+  .table { min-width: 480px; }
+}
 </style>

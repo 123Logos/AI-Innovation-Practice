@@ -61,7 +61,21 @@ function describeError(error: unknown, fallback: string): string {
   return fallback
 }
 
+/*
+ * 只在**没有缓存**时拉一次（2026-11-14，UI 收尾第 5 条）。
+ *
+ * 本组件有两个外壳（宽屏左栏 / 窄屏抽屉），抽屉开合、跨页返回都会重新挂载它；
+ * 每次挂载都发一次 `GET /profiles` 的代价不是流量，是「切回来先看到骨架再看到列表」
+ * 那一下闪烁。`profilesLoaded` 由 store 维护，任何一次成功的列表拉取都会把它置真
+ * （包括编辑器进门的 `loadFromServer()`），退出登录时置假。
+ *
+ * 排序切换仍然显式调 `refreshProfiles()`——那是用户主动要求的重排，必须重新问服务端。
+ */
 onMounted(async () => {
+  if (resume.profilesLoaded) {
+    booting.value = false
+    return
+  }
   try {
     await resume.refreshProfiles()
   } catch (error) {

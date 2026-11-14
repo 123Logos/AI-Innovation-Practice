@@ -115,16 +115,20 @@ describe('守则 M1：时长与缓动只从令牌来', () => {
 
   it('进入 / 退出真的接上了 <Transition>，而不是只有令牌没有动效', () => {
     const users = components
-      .filter((source) => /<Transition\s+name="ui-fade/.test(source.text))
+      .filter((source) => /<Transition\s+name="ui-(?:fade|slide-right|slide-left)/.test(source.text))
       .map((source) => source.rel)
-    // 浮层三种形态 + 页面切换都要在：抽屉（外框）、Popover（切换器）、
-    // 确认弹窗、AI 设置弹窗（顶栏）、页面内容（外框）。
+    /*
+     * 抽屉 / 弹层 / 页面切换都要在：抽屉与外框、AI 设置弹窗与账户抽屉（顶栏）、
+     * 确认弹窗、页面内容。
+     * 2026-11-14 起抽屉走 `ui-slide-right`（水平滑入），所以判据从「只认 ui-fade」
+     * 放宽到这三个前缀——否则「改了过渡名」会被当成「没有过渡」。
+     * `WorkspaceSwitcher.vue` 已删除（模块切换改成二级导航条），不再出现在名单里。
+     */
     expect(users).toEqual(
       expect.arrayContaining([
         'components/AppLayout.vue',
         'components/AppTopBar.vue',
         'components/ConfirmDialog.vue',
-        'components/WorkspaceSwitcher.vue',
       ]),
     )
     // 共享的那份过渡 CSS 必须真的用令牌，且位移不超过 M1 的 8px 上限。

@@ -434,6 +434,48 @@ button, input, textarea { font: inherit; }
   transform: translateY(calc(var(--motion-shift) * -1));
 }
 
+/* ---------------- 抽屉：水平滑入（2026-11-14，UI 收尾第 2 条） ---------------- */
+/*
+ * 抽屉是**贴着左/右边缘**的面板，用上下位移出入会让人以为它从天上掉下来。
+ * 这里拆成两层动效，各管一件事：
+ *
+ * 1. **遮罩淡入淡出**（挂在这个根元素上）——遮罩若跟着横移，滑出时会先露出一条
+ *    没被遮住的页面再整块消失，观感是「页面闪了一下」；
+ * 2. **面板横移**（挂在 `.drawer-panel` 上）——右侧抽屉从 `translateX(100%)` 滑入，
+ *    左侧用 `ui-slide-left` 从 `-100%` 滑入。位移用百分比而不是像素：
+ *    面板宽度是 `min(320px, 86vw)`，写死像素在两档下都会差一点。
+ *
+ * 面板的位移必须在 `.ui-slide-*-enter-active` 里单独声明 `transition`：
+ * 根元素只过渡 `opacity`，子元素不会自动继承；漏了这一行面板会直接跳到终点。
+ * 时长沿用 `--motion-slow` / `--motion-ease`，减弱动效时两者一起变成瞬时。
+ */
+.ui-slide-right-enter-active,
+.ui-slide-right-leave-active,
+.ui-slide-left-enter-active,
+.ui-slide-left-leave-active {
+  transition: opacity var(--fade-duration, var(--motion-slow)) var(--motion-ease);
+}
+.ui-slide-right-enter-from,
+.ui-slide-right-leave-to,
+.ui-slide-left-enter-from,
+.ui-slide-left-leave-to {
+  opacity: 0;
+}
+.ui-slide-right-enter-active .drawer-panel,
+.ui-slide-right-leave-active .drawer-panel,
+.ui-slide-left-enter-active .drawer-panel,
+.ui-slide-left-leave-active .drawer-panel {
+  transition: transform var(--fade-duration, var(--motion-slow)) var(--motion-ease);
+}
+.ui-slide-right-enter-from .drawer-panel,
+.ui-slide-right-leave-to .drawer-panel {
+  transform: translateX(100%);
+}
+.ui-slide-left-enter-from .drawer-panel,
+.ui-slide-left-leave-to .drawer-panel {
+  transform: translateX(-100%);
+}
+
 /* ---------------- 骨架屏（批次 F4，守则 M2） ---------------- */
 /*
  * 尺寸不写在这里：每个消费点用 `--skeleton-h` / `--skeleton-w` 传入**实测**的稳定态尺寸

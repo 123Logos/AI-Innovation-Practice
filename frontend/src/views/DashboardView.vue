@@ -220,10 +220,6 @@ function statText(state: LoadState, value: string): string {
       <section class="hero hero--member">
         <p class="eyebrow">工作台</p>
         <h1>{{ auth.displayName ? `${auth.displayName}，今天从哪一步接着走？` : '今天从哪一步接着走？' }}</h1>
-        <p class="intro">
-          下面四格都是你账号里的真实进度，点进去就能接着做。读不到的那一格会标成「—」，
-          不会拿 0 冒充。
-        </p>
       </section>
 
       <p v-if="loadError" class="page-error" role="alert">{{ loadError }}</p>
