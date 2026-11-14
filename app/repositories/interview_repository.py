@@ -65,6 +65,11 @@ class InterviewTurn(InterviewBase):
     speaker: Mapped[str] = mapped_column(String(16), nullable=False)
     #: 文本正文。
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    #: 这一轮是说的还是打的（B11b / `ADR-030` §2.5）。**不指向任何音频**——
+    #: 音频在浏览器里转写完即丢弃，库里没有它的落点。
+    input_mode: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="text", server_default="text"
+    )
     #: AI 失败时这一轮 interviewer 内容由本地降级模板产出，此处记录原因；
     #: 非空即代表「此轮非真 AI」（ADR-022 (b) 的数据层证据）。
     ai_degrade_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -106,6 +111,7 @@ class InterviewRepository:
         speaker: str,
         content: str,
         ai_degrade_reason: str | None = None,
+        input_mode: str = "text",
     ) -> InterviewTurn:
         now = utc_now()
         turn = InterviewTurn(
@@ -115,6 +121,7 @@ class InterviewRepository:
             speaker=speaker,
             content=content,
             ai_degrade_reason=ai_degrade_reason,
+            input_mode=input_mode,
             created_at=now,
         )
         self._session.add(turn)

@@ -10,6 +10,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.interview_modes import TurnInputMode
+
 #: 候选人单次作答的应用层长度上限（字符）。足够写一段项目经历，又不至于撑爆单轮上下文。
 ANSWER_MAX_LEN = 5000
 #: 创建会话时填写的目标岗位名长度上限，与迁移列宽 `target_role VARCHAR(200)` 对齐。
@@ -31,6 +33,12 @@ class InterviewMessageCreate(BaseModel):
     """发送一条候选人作答的请求体。"""
 
     content: str = Field(min_length=1, max_length=ANSWER_MAX_LEN, description="候选人的作答文本。")
+    #: 这一轮是说的还是打的（B11b / `ADR-030`）。**音频不在请求里**：语音路径先在浏览器
+    #: 直连 ASR 转写成文本，再把文本发到这里；默认 `text` 让 B11b 之前的客户端零改动。
+    input_mode: TurnInputMode = Field(
+        default=TurnInputMode.TEXT,
+        description="作答方式：text（打字）或 voice（语音转写）。音频本身不上传。",
+    )
 
 
 class InterviewTurnRead(BaseModel):
@@ -43,6 +51,8 @@ class InterviewTurnRead(BaseModel):
     sequence: int
     speaker: str
     content: str
+    #: `text` 或 `voice`。前端据此给候选人那一轮标一个「语音作答」的角标。
+    input_mode: str = TurnInputMode.TEXT.value
     #: AI 失败时这一轮内容由本地降级模板产出，此处非空即代表「此轮非真 AI」（可见降级）。
     ai_degrade_reason: str | None = None
     created_at: datetime

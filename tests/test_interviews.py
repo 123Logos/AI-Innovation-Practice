@@ -247,3 +247,100 @@ def test_end_session_then_reject_messages(client: TestClient, ai_coach: _FakeCoa
         headers=_key_headers(token),
     )
     assert resp.status_code == 400, resp.text
+
+
+# --------------------------------------------- 作答模式（B11b / ADR-030）
+
+
+def test_voice_turn_round_trips(client: TestClient, ai_coach: _FakeCoach) -> None:
+    """`input_mode="voice"` 的轮次落库，并按 `voice` 读回。
+
+    这一条守的是「标记真的进了库」：如果服务层忘了透传，读回来会变成默认的 `text`，
+    前端据此画的「语音作答」角标就静默消失——功能看起来正常，标记全丢。
+    """
+    token = _register_and_login(client)
+    session = _create_session(client, token, with_key=True)
+    session_id = session["session"]["id"]
+
+    resp = client.post(
+        f"{INTERVIEWS_URL}/{session_id}/messages",
+        json={"content": "我刚才说的是项目背景。", "input_mode": "voice"},
+        headers=_key_headers(token),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["candidate_turn"]["input_mode"] == "voice"
+
+    detail = client.get(f"{INTERVIEWS_URL}/{session_id}", headers=_headers(token))
+    turns = detail.json()["data"]["turns"]
+    candidate = next(turn for turn in turns if turn["speaker"] == "candidate")
+    assert candidate["input_mode"] == "voice"
+    # 面试官那一轮永远是文本：它是 AI 写的，与用户怎么作答无关。
+    interviewer = next(turn for turn in turns if turn["speaker"] == "interviewer")
+    assert interviewer["input_mode"] == "text"
+
+
+def test_input_mode_defaults_to_text(client: TestClient, ai_coach: _FakeCoach) -> None:
+    """不传 `input_mode` 时默认 `text`：B11b 之前的客户端零改动，存量语义不变。"""
+    token = _register_and_login(client)
+    session = _create_session(client, token, with_key=True)
+    session_id = session["session"]["id"]
+
+    resp = client.post(
+        f"{INTERVIEWS_URL}/{session_id}/messages",
+        json={"content": "这是打字发出来的。"},
+        headers=_key_headers(token),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["candidate_turn"]["input_mode"] == "text"
+
+
+def test_input_mode_rejects_unknown_value(client: TestClient, ai_coach: _FakeCoach) -> None:
+    """非法取值在应用层就被 422 挡住，不进库（`interview_turns` 上还有 CHECK 兜底）。"""
+    token = _register_and_login(client)
+    session = _create_session(client, token, with_key=True)
+    session_id = session["session"]["id"]
+
+    resp = client.post(
+        f"{INTERVIEWS_URL}/{session_id}/messages",
+        json={"content": "嗯。", "input_mode": "video"},
+        headers=_key_headers(token),
+    )
+    assert resp.status_code == 422, resp.text
+
+    detail = client.get(f"{INTERVIEWS_URL}/{session_id}", headers=_headers(token))
+    # 被挡下的那一条不该留下任何轮次：详情里只有开场那一轮。
+    assert [turn["speaker"] for turn in detail.json()["data"]["turns"]] == ["interviewer"]
+
+
+def test_no_endpoint_accepts_audio() -> None:
+    """**后端没有任何接收音频的入口**（`ADR-030` §2.1 不变量 A 的机械判据）。
+
+    三面都要查，缺一面都会让「音频不入库」退化成一句口头承诺：
+    ① 面试域的路由路径里没有 audio / record / transcribe / speech / voice 这类词；
+    ② 面试的请求体模型只有文本字段（`content` + `input_mode`）；
+    ③ 整份 OpenAPI 里，面试域没有任何 multipart / octet-stream 请求体。
+    """
+    from app.main import app
+    from app.schemas.interview import InterviewMessageCreate
+
+    forbidden = ("audio", "record", "transcribe", "speech", "voice")
+    offenders = [
+        route.path
+        for route in app.routes
+        if getattr(route, "path", "").startswith("/api/v1/interviews")
+        and any(word in getattr(route, "path", "").lower() for word in forbidden)
+    ]
+    assert offenders == []
+
+    assert set(InterviewMessageCreate.model_fields) == {"content", "input_mode"}
+
+    for path, operations in app.openapi().get("paths", {}).items():
+        if not path.startswith("/api/v1/interviews"):
+            continue
+        for operation in operations.values():
+            body = operation.get("requestBody")
+            if body is None:
+                continue
+            content = body.get("content", {})
+            assert "multipart/form-data" not in content, path
+            assert "application/octet-stream" not in content, path

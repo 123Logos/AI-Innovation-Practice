@@ -54,7 +54,7 @@ student_profiles ─ interview_sessions ─ interview_turns
 | 测评 | `assessments`, `assessment_questions`, `assessment_attempts`, `assessment_answers` | 题库版本、原始答案和评分 |
 | 匹配成长 | `match_runs`, `match_results`, `match_result_items`, `growth_plans`, `growth_tasks` | 版本化权重、解释项、缺口和行动任务 |
 | 简历 | `resumes`, `resume_versions`, `resume_shares` | 可编辑版本、岗位定制和字段白名单分享 |
-| 面试 | `interview_sessions`, `interview_turns`（B11a 已建）；`media_rooms`, `interview_reports`（B11b，本期未建） | 文本/音视频适配层及证据化复盘 |
+| 面试 | `interview_sessions`, `interview_turns`（B11a 已建；B11b 只加 `input_mode` 一列，**不建音频表**）；`media_rooms`, `interview_reports`（本期未建） | 文本/语音适配层及证据化复盘 |
 | 隐私治理 | `consents`, `files`, `audit_logs` | 授权、对象存储元数据和不可变审计 |
 
 ### 3.1 已落库的组织三表（批次 B5，2026-11-12，`ADR-021` §2.1）
@@ -157,6 +157,7 @@ B5 实际落库的是下面三张，迁移文件 `alembic/versions/20261112_0018
 | `sequence` | `INT` | NOT NULL | 轮次序号，从 1 递增，按它回放 |
 | `speaker` | `VARCHAR(16)` | NOT NULL, CHECK IN (`interviewer`,`candidate`) | 发言方；加取值只改代码不改表 |
 | `content` | `TEXT` | NOT NULL | 该轮文本（提问或作答） |
+| `input_mode` | `VARCHAR(8)` | NOT NULL, DEFAULT `text`, CHECK IN (`text`,`voice`) | 候选人那一轮是**说的还是打的**（B11b / `ADR-030` §2.5）。**不指向任何音频**——音频在浏览器里转写完即丢弃，库里没有它的落点；面试官轮恒为 `text` |
 | `ai_degrade_reason` | `TEXT` | NULL | **可见降级数据层证据**：非空即代表该轮面试官内容由本地离线模板产出、非真 AI（取值 `key_missing`/`key_invalid`/`timeout`/`upstream`/`bad_output`） |
 | `created_at` | `DATETIME(6)` | NOT NULL | 应用层写 UTC |
 | `ix_interview_turns_session_sequence` | 索引 | (`session_id`, `sequence`) | 回放 / 取最近 N 轮 |

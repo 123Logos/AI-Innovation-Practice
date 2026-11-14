@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 模拟面试详情（FR-07 / B11a，ADR-022）。
+ * 模拟面试详情（FR-07 / B11a，ADR-022；B11b 起支持回合制语音作答，ADR-030）。
  *
  * 一屏三块：顶部会话信息 + 中部问答回放（面试官在左、候选人在右）+ 底部作答框。
  * 多行作答框用共享的 `AutoTextarea`（守则 F1：全仓唯一的多行输入实现）。
@@ -8,14 +8,32 @@
  * **可见降级（守则 C4）**：后端的 `ai_degrade_reason` 非空代表这一轮是本地题库而非真 AI，
  * 必须在这一轮气泡里原样展示给用户（见 `interviewDegradeHint`），绝不能让用户误以为
  * 「AI 说了这句」。失败一律可见：`role="alert"` 的红字，不静默、不 console.error。
+ *
+ * **语音那条路（B11b）**：录音 → 直连转写 → **文本**进 draft → 用户确认后按
+ * `input_mode="voice"` 发出 → 面试官那段合成朗读。三处故意的设计：
+ *
+ * 1. **转写结果先进输入框，不直接发送**：识别错一个词就自动发出去，用户连纠正的机会
+ *    都没有，而这一轮会永久留在复盘记录里。
+ * 2. **音频对象出了 `stopRecordingAndTranscribe()` 就没人引用**：blob 是局部变量，
+ *    没有缓存、没有队列、没有 `URL.createObjectURL` 留给后续播放——「转写完毕即删」
+ *    在这一层就是作用域事实（`ADR-030` §2.1 不变量 A）。
+ * 3. **朗读失败不打扰**：`speak()` 里吞掉异常，只少了声音，文字照常可读
+ *    （`ADR-030` §2.1 不变量 D）。
  */
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { isApiError, interviewsApi } from '@/api'
-import type { InterviewSessionDetail, InterviewTurnRead } from '@/api/interviews'
+import type {
+  InterviewSessionDetail,
+  InterviewTurnRead,
+  TurnInputMode,
+} from '@/api/interviews'
 import { ANSWER_MAX_LEN, SPEAKER_LABELS, interviewDegradeHint } from '@/api/interviews'
+import { ASR_MAX_SECONDS, synthesizeSpeech, transcribeAudio } from '@/api/voice'
 import AutoTextarea from '@/components/AutoTextarea.vue'
+import { useVoiceRecorder } from '@/composables/useVoiceRecorder'
+import { playAudioBlob } from '@/utils/audioPlayback'
 import { formatDate } from '@/utils/datetime'
 import SkeletonList from '@/components/SkeletonList.vue'
 
@@ -29,6 +47,24 @@ const loadError = ref('')
 const draft = ref('')
 const sending = ref(false)
 const sendError = ref('')
+
+/**
+ * 这一次作答是说的还是打的。转写成功才置 `voice`，任何失败路径都退回 `text`——
+ * 带着 `voice` 标记却发出去一段用户手打的字，等于在复盘记录里写假话。
+ */
+const pendingMode = ref<TurnInputMode>('text')
+const transcribing = ref(false)
+const voiceNotice = ref('')
+
+const {
+  supported: voiceSupported,
+  recording,
+  elapsed,
+  message: recorderMessage,
+  start: startRecording,
+  stop: stopRecording,
+  cancel: cancelRecording,
+} = useVoiceRecorder()
 
 const isEnded = computed(() => detail.value?.session.status === 'ended')
 
@@ -51,20 +87,74 @@ async function load(): Promise<void> {
   }
 }
 
+/** 朗读面试官那一段；失败静默（`ADR-030` §2.1 不变量 D）。 */
+async function speak(text: string): Promise<void> {
+  if (!text.trim()) return
+  try {
+    await playAudioBlob(await synthesizeSpeech(text))
+  } catch {
+    // 只少了声音，内容照常可读——不弹红字，也不改这一轮的降级标记。
+  }
+}
+
 async function sendMessage(): Promise<void> {
   const content = draft.value.trim()
   if (!content || sending.value || isEnded.value) return
   sending.value = true
   sendError.value = ''
+  const mode = pendingMode.value
   try {
-    const result = await interviewsApi.sendInterviewMessage(sessionId.value, content)
+    const result = await interviewsApi.sendInterviewMessage(sessionId.value, content, mode)
     draft.value = ''
+    pendingMode.value = 'text'
+    voiceNotice.value = ''
     detail.value?.turns.push(result.candidate_turn, result.interviewer_turn)
+    void speak(result.interviewer_turn.content)
   } catch (error) {
     sendError.value = describeError(error, '没能把回答发出去，请稍后重试。')
   } finally {
     sending.value = false
   }
+}
+
+/**
+ * 停止录音并转写。
+ *
+ * `blob` 只在这个函数里活着：转写成功后它就不再被引用，等着被回收。
+ * 这是「音频不入库、不存盘」在前端的落地形态——不是「删掉」，而是**从来没有第二个持有者**。
+ */
+async function stopRecordingAndTranscribe(): Promise<void> {
+  const blob = await stopRecording()
+  if (!blob) {
+    pendingMode.value = 'text'
+    if (recorderMessage.value) voiceNotice.value = recorderMessage.value
+    return
+  }
+  transcribing.value = true
+  voiceNotice.value = ''
+  try {
+    const result = await transcribeAudio(blob)
+    if (!result.text) {
+      pendingMode.value = 'text'
+      voiceNotice.value = '这一段没有听清，请重说或直接打字。'
+      return
+    }
+    draft.value = result.text
+    pendingMode.value = 'voice'
+    voiceNotice.value = '已转成文字，确认无误后点「发送回答」。'
+  } catch {
+    // 识别失败 → 降级为手动输入，并明说（绝不假装识别成功）。
+    pendingMode.value = 'text'
+    voiceNotice.value = '语音识别失败，请手动输入。'
+  } finally {
+    transcribing.value = false
+  }
+}
+
+function discardRecording(): void {
+  cancelRecording()
+  pendingMode.value = 'text'
+  voiceNotice.value = ''
 }
 
 async function endInterview(): Promise<void> {
@@ -122,7 +212,10 @@ onMounted(load)
           :class="turn.speaker === 'candidate' ? 'chat-row--mine' : 'chat-row--theirs'"
         >
           <div class="bubble">
-            <p class="bubble-speaker">{{ SPEAKER_LABELS[turn.speaker] }}</p>
+            <p class="bubble-speaker">
+              {{ SPEAKER_LABELS[turn.speaker] }}
+              <span v-if="turn.input_mode === 'voice'" class="bubble-tag">语音作答</span>
+            </p>
             <p class="bubble-text">{{ turn.content }}</p>
             <p v-if="turnHint(turn)" class="bubble-hint" role="alert">{{ turnHint(turn) }}</p>
           </div>
@@ -134,6 +227,35 @@ onMounted(load)
       </p>
       <form v-else class="answer-form" @submit.prevent="sendMessage">
         <label class="field-label" for="answer">你的回答</label>
+
+        <!-- 语音作答（B11b / ADR-030 §2.2）：到 120 秒自动停，超体积当场丢弃。 -->
+        <div class="voice-bar">
+          <template v-if="voiceSupported">
+            <template v-if="recording">
+              <span class="voice-timer" role="status">
+                正在录音 {{ elapsed }} 秒 / 最长 {{ ASR_MAX_SECONDS }} 秒
+              </span>
+              <button class="primary-button" type="button" @click="stopRecordingAndTranscribe">
+                说完了，转成文字
+              </button>
+              <button class="text-button" type="button" @click="discardRecording">取消</button>
+            </template>
+            <button
+              v-else
+              class="ghost-button"
+              type="button"
+              :disabled="sending || transcribing"
+              @click="startRecording"
+            >
+              {{ transcribing ? '正在转成文字…' : '用语音说' }}
+            </button>
+          </template>
+          <p v-else class="voice-unsupported">这个浏览器不支持录音，请用文字作答。</p>
+        </div>
+        <p v-if="voiceNotice || recorderMessage" class="voice-notice" role="status">
+          {{ voiceNotice || recorderMessage }}
+        </p>
+
         <AutoTextarea
           id="answer"
           v-model="draft"
@@ -200,6 +322,16 @@ h1 { margin: 0; color: var(--ui-ink); font-size: var(--text-4xl); font-weight: 6
 .primary-button { flex: 0 0 auto; height: 34px; border: 1px solid var(--theme-primary); border-radius: var(--ui-radius); padding: 0 18px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: var(--text-sm); white-space: nowrap; }
 .primary-button:hover:not(:disabled) { background: var(--theme-primary-hover); }
 .primary-button:disabled { opacity: .6; cursor: progress; }
+
+/* ---- 语音作答（B11b） ---- */
+.voice-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.ghost-button { flex: 0 0 auto; height: 30px; border: 1px dashed var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 14px; color: var(--ui-ink-muted); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-sm); }
+.ghost-button:hover:not(:disabled) { border-color: var(--theme-rule); color: var(--theme-primary-deep); }
+.ghost-button:disabled { opacity: .6; cursor: progress; }
+.voice-timer { color: var(--theme-primary-deep); font-size: var(--text-sm); }
+.voice-unsupported { margin: 0; color: var(--ui-ink-faint); font-size: var(--text-sm); }
+.voice-notice { margin: 0; color: var(--ui-ink-muted); font-size: var(--text-sm); line-height: 1.5; }
+.bubble-tag { margin-left: 6px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 6px; color: var(--ui-ink-faint); font-size: var(--text-2xs); }
 
 @media (max-width: 760px) {
   .interview-detail { padding: 20px 16px 48px; }

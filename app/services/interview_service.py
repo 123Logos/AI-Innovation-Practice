@@ -148,12 +148,15 @@ class InterviewService:
         return session, turns
 
     def send_message(
-        self, user_id: str, session_id: str, content: str
+        self, user_id: str, session_id: str, content: str, input_mode: str = "text"
     ) -> tuple[InterviewTurn, InterviewTurn, str | None]:
         """发送一条候选人作答，并拿到面试官的下一段（真实或降级）。
 
         返回（候选人的轮次, 面试官的新轮次, 本轮降级原因）。会话不存在/非所有者 → 404，
         已结束 → 400。
+
+        `input_mode` 只是标记（`ADR-030` §2.5）：语音路径的音频在浏览器里转写完就丢了，
+        到达这里的永远只有文本。它不影响 AI 调用，也不参与上下文裁剪。
         """
         session = self._sessions.get_owned(session_id, user_id)
         if session is None:
@@ -163,7 +166,7 @@ class InterviewService:
 
         candidate_seq = self._sessions.next_sequence(session_id)
         candidate_turn = self._sessions.add_turn(
-            session_id, candidate_seq, SPEAKER_CANDIDATE, content
+            session_id, candidate_seq, SPEAKER_CANDIDATE, content, input_mode=input_mode
         )
 
         prior_turns = self._sessions.list_turns_recent(session_id, MAX_CONTEXT_TURNS)
