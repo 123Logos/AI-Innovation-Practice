@@ -267,6 +267,78 @@ function isDeepSeekKeyRequest(url: string | undefined, method?: string): boolean
   )
 }
 
+/* ------------------- BYOK 直连（B11b：语音两条，ADR-030 §2.4） ------------------- */
+
+/**
+ * 允许**由浏览器直连 DeepSeek**的路径白名单。
+ *
+ * 与上面那张 `BYOK_KEY_PATHS` / `BYOK_KEY_PATTERNS`（「哪些**我们的**端点带
+ * `X-DeepSeek-Key`」）是**两张表**，别合并：
+ *
+ * | 表 | 回答的问题 | Key 出现在哪里 |
+ * |---|---|---|
+ * | 上面那张 | 「这个请求会不会被我们转发给 DeepSeek」 | 请求头 `X-DeepSeek-Key`，发往我方域名 |
+ * | 这张 | 「哪个请求可以带着用户的 Key **离开**我方域名」 | 请求头 `Authorization`，发往 `api.deepseek.com` |
+ *
+ * 为什么语音要走直连而不是后端转发（`ADR-030` §2.1 不变量 A）：转写结果要立刻变成一轮
+ * `interview_turn`，而**音频本身不该离开用户设备**。若由后端转发，音频就要穿过我们的进程
+ * 与临时文件系统，「转写完毕即删、不入库、不存盘」立刻从结构性保证退化成一句纪律。
+ * 代价是 Key 出现在浏览器里（BYOK 本来如此），收益是音频从不上传。
+ *
+ * **只有这两条**：`/v1/chat/completions` 之类的文本能力一律走我们的后端（可审计、可降级、
+ * Key 不出服务端边界）。白名单是 fail-closed 的——不在表里就抛错，一个字节都不出网。
+ */
+export const DEEPSEEK_DIRECT_BASE_URL = 'https://api.deepseek.com'
+
+export const DEEPSEEK_DIRECT_PATHS = ['/v1/tools/asr', '/v1/tools/tts'] as const
+
+/** 路径不在白名单里：开发期错误，说明有人在尝试把用户的 Key 发往别处。 */
+export class ByokPathNotAllowedError extends Error {
+  readonly path: string
+
+  constructor(path: string) {
+    super(`这个地址不在语音服务的允许清单里：${path}`)
+    this.name = 'ByokPathNotAllowedError'
+    this.path = path
+  }
+}
+
+/** 没有 Key：与后端 `AI_KEY_MISSING` 同一个语义，只是这次是我们自己在出网前拦住。 */
+export class ByokKeyMissingError extends Error {
+  constructor() {
+    // ui-copy:allow C2 唯一豁免：这句话指向的就是用户自己去 DeepSeek 拿的那把凭据
+    super('请先在「AI 设置」里配置 DeepSeek API Key。')
+    this.name = 'ByokKeyMissingError'
+  }
+}
+
+/** 语音两个调用的超时：ASR 要上传音频、TTS 要合成，比文本接口放得宽一些。 */
+const DEEPSEEK_DIRECT_TIMEOUT_MS = 60_000
+
+/**
+ * 直连 DeepSeek 的实例。
+ *
+ * 三个刻意的差别（都不是疏忽）：
+ * 1. **没有注入我们会话令牌的拦截器**——`Authorization` 上只能出现用户自己的 Key；
+ * 2. `baseURL` 是绝对地址，请求不经过 Vite 代理 / 反代，所以也不会带上任何同域 Cookie；
+ * 3. 请求拦截器做白名单校验，**在出网之前**就把非法路径拒掉。
+ */
+export const deepseekHttp = axios.create({
+  baseURL: DEEPSEEK_DIRECT_BASE_URL,
+  timeout: DEEPSEEK_DIRECT_TIMEOUT_MS,
+})
+
+deepseekHttp.interceptors.request.use((config) => {
+  const path = (config.url ?? '').split('?')[0].replace(/\/+$/, '')
+  if (!(DEEPSEEK_DIRECT_PATHS as readonly string[]).includes(path)) {
+    throw new ByokPathNotAllowedError(path)
+  }
+  const key = getDeepSeekKey()
+  if (!key) throw new ByokKeyMissingError()
+  config.headers.Authorization = `Bearer ${key}`
+  return config
+})
+
 type UnauthorizedHandler = () => void
 let unauthorizedHandler: UnauthorizedHandler | null = null
 

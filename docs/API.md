@@ -1136,11 +1136,14 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 | `target_role` | string ≤200，可空 | ❌ | `app/schemas/interview.py::InterviewSessionCreate`、`app/schemas/interview.py::TARGET_ROLE_MAX_LEN` |
 
 `job_id` 若提供但不可见（不存在 / 未发布 / 回收站）→ 404（`app/services/interview_service.py::InterviewService.create_session`）。`target_role` 与 `resume_version_id` / `mode` / `round` / `question_count` **没有关系**——后四者本期不收、不存、不入路由。
-`POST /interviews/{id}/messages` 请求体（`InterviewMessageCreate`，`app/schemas/interview.py::InterviewMessageCreate`）只有一格：`content`（`str`，**1–5000**，应用层第一道闸，超长 422 不进库，上限常量 `ANSWER_MAX_LEN`）。
+`POST /interviews/{id}/messages` 请求体（`InterviewMessageCreate`，`app/schemas/interview.py::InterviewMessageCreate`）有两格：`content`（`str`，**1–5000**，应用层第一道闸，超长 422 不进库，上限常量 `ANSWER_MAX_LEN`）与 `input_mode`（`"text"` | `"voice"`，**默认 `text`**，B11b / `ADR-030`）。
+
+> **`input_mode` 不携带音频，也不指向音频**：语音路径是「浏览器录音 ≤120s → 直连 DeepSeek ASR 转写成文本 → 把**文本**发到这里」，音频转写完即被丢弃、不入库不存盘。`input_mode="voice"` 只是告诉服务端「这一轮是说的」，用于复盘时给那一轮加角标；它**不参与**打分、不影响 AI 调用。取值非法 → 422；存量客户端不传这一格，行为与 B11b 之前完全一致。
 
 ### 7.3 响应对象
 
 - `InterviewSessionRead`（`app/schemas/interview.py::InterviewSessionRead`）：`id` / `user_id` / `job_id`(可空) / `status`(`active`|`ended`) / `target_role`(可空) / `created_at` / `updated_at` / `ended_at`(可空)。
+- `InterviewTurnRead`（`app/schemas/interview.py::InterviewTurnRead`）：`id` / `session_id` / `sequence` / `speaker`(`interviewer`|`candidate`) / `content` / `input_mode`(`text`|`voice`，B11b 新增) / `ai_degrade_reason`(可空) / `created_at`。
 - `InterviewTurnRead`（`app/schemas/interview.py::InterviewTurnRead`，按 `sequence` 回放）：`id` / `session_id` / `sequence` / `speaker`(`interviewer`|`candidate`) / `content` / `ai_degrade_reason`(可空) / `created_at`。**`ai_degrade_reason` 非空即代表该轮内容由本地离线模板产出、不是真 AI**——这是「可见降级、绝不静默」的数据层证据（ADR-022 (b)）。
 - `InterviewMessageResult`（`app/schemas/interview.py::InterviewMessageResult`）：`candidate_turn` + `interviewer_turn` + `ai_degrade_reason`（本轮降级键，见 7.5）。
 - `InterviewListResult`（`app/schemas/interview.py::InterviewListResult`）：`sessions[]` + `page` + `page_size` + `total`。
@@ -1152,10 +1155,12 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 | `/interviews` | POST | **201** + `data.{session, opening_turn, ai_degrade_reason}` | 创建会话并立刻拿开场问题（sequence=1）；开场 AI 失败也不中断，改走离线模板并带 `ai_degrade_reason` |
 | `/interviews` | GET | 200 + `data.{sessions[], page, page_size, total}` | 自己的会话列表，按 `updated_at DESC` 倒序，分页参数 `page`(≥1) / `page_size`(1–50，默认 20) |
 | `/interviews/{id}` | GET | 200 + `data.{session, turns[]}` | 详情：元信息 + 全部轮次（按 sequence 顺序回放） |
-| `/interviews/{id}/messages` | POST | 200 + `data.{candidate_turn, interviewer_turn, ai_degrade_reason}` | 发一条候选人作答 → 拿面试官下一轮（真 AI 或降级）；已结束 → 400；这条 URL 进 BYOK 白名单、转发 `X-DeepSeek-Key` |
+| `/interviews/{id}/messages` | POST | 200 + `data.{candidate_turn, interviewer_turn, ai_degrade_reason}` | 发一条候选人作答 → 拿面试官下一轮（真 AI 或降级）；已结束 → 400；`input_mode` 可选（`text`/`voice`）；这条 URL 进 BYOK 白名单、转发 `X-DeepSeek-Key` |
 | `/interviews/{id}/end` | POST | 200 + `data.{session}` | 结束会话，`status`→`ended`、`ended_at`→now |
 
-**没有**独立的「提交单轮答案」`/turns` 端点（旧版设计意图），也没有 `/finish` / `/report` / `/media-room`——发送与接收都走 `/messages` 一个端点（候选人的轮次与面试官的轮次在同一个响应里成对返回），评估报告与媒体房间在 B11b。
+**没有**独立的「提交单轮答案」`/turns` 端点（旧版设计意图），也没有 `/finish` / `/report` / `/media-room`——发送与接收都走 `/messages` 一个端点（候选人的轮次与面试官的轮次在同一个响应里成对返回）。
+
+**B11b（`ADR-030`）也没有新增任何后端端点**：语音的两次外部调用（`POST https://api.deepseek.com/v1/tools/asr` 与 `/v1/tools/tts`）由**浏览器带着用户自己的 Key 直连**，音频因此一次都不上传——「转写完毕即删、不入库、不存盘」是网络路径上的事实。这两条 URL 在 `frontend/src/api/client.ts` 的 `DEEPSEEK_DIRECT_PATHS` 白名单里（与「哪些我方端点转发 `X-DeepSeek-Key`」是两张表），其余路径在拦截器里直接拒绝、一个字节都不出网。
 
 ### 7.5 AI 可见降级（本期核心红线）
 
@@ -1177,8 +1182,8 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 以下都是**旧版设计意图或 B11b 排期项**，本期不实现、不排期，标注 `# PHASE-2: not wired`（沿用 §4.11 口径）：
 
 - `POST /interviews/{id}/turns`（旧版「单独提交一轮答案」）：**不存在**，收发合并进 `/messages`。
-- `POST /interviews/{id}/finish` + `GET /interviews/{id}/report`：**不存在**，评估报告（含回答证据、建议、待练习技能）在 B11b / `interview_reports` 表，本期不建。
-- `POST /interviews/{id}/media-room`：**不存在**，WebRTC 房间与 `media_rooms` 表在 B11b，音视频模式本期不做。
+- `POST /interviews/{id}/finish` + `GET /interviews/{id}/report`：**不存在**；B11b 只做回合制语音（`ADR-030`），评估报告与 `interview_reports` 表仍未建、也没有排期。
+- `POST /interviews/{id}/media-room`：**不存在**，WebRTC 房间与 `media_rooms` 表仍未建；`ADR-030` §2.1 明确「不做流式、不做打断」，所以这一格不是「等下一批」，而是当前形态下不需要。
 - 请求体里的 `resume_version_id` / `mode` / `round` / `question_count`：**都不收、不存、不入路由**；`resume_version_id` 依赖的列本轮 `resumes` 表根本没有。
 - 教师端查看他人报告：`/teacher/...` 全局未接通（§8），面试报告授权同理冻结。
 

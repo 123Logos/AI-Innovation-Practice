@@ -25,6 +25,13 @@ export type InterviewSessionStatus = 'active' | 'ended'
 /** 一轮对话的发言人（`ck_interview_turns_speaker`）。 */
 export type InterviewSpeaker = 'interviewer' | 'candidate'
 
+/**
+ * 一轮候选人作答的进入方式（B11b / `ADR-030` §2.5，后端 `TurnInputMode`）。
+ *
+ * 它只解释「这一轮是说的还是打的」，**不指向任何音频**——音频在浏览器里转写完就丢了。
+ */
+export type TurnInputMode = 'text' | 'voice'
+
 /** 后端 `InterviewTurnRead.speaker` 的取值字典，前端只做展示不做判定。 */
 export const SPEAKER_LABELS: Readonly<Record<InterviewSpeaker, string>> = {
   interviewer: '面试官',
@@ -46,6 +53,8 @@ export interface InterviewTurnRead {
   sequence: number
   speaker: InterviewSpeaker
   content: string
+  /** 这一轮是说的还是打的（B11b / `ADR-030`）；**不指向任何音频**，音频不留存。 */
+  input_mode: TurnInputMode
   /** 非空 = 这一轮内容是本地降级模板产出的，不是真 AI（必须可见提示）。 */
   ai_degrade_reason: string | null
   /** 东八区 ISO 串。 */
@@ -176,9 +185,14 @@ export async function getInterview(id: string): Promise<InterviewSessionDetail> 
  * `ai_degrade_reason` 后照样返回 200——调用方必须把它展示出来，不能当失败处理。
  * 已结束的会话会 400（UI 上已先禁用输入框，正常走不到这里）。
  */
-export async function sendInterviewMessage(id: string, content: string): Promise<InterviewMessageResult> {
+export async function sendInterviewMessage(
+  id: string,
+  content: string,
+  inputMode: TurnInputMode = 'text',
+): Promise<InterviewMessageResult> {
   const response = await http.post<ApiSuccess<InterviewMessageResult>>(`/interviews/${id}/messages`, {
     content,
+    input_mode: inputMode,
   })
   return unwrap(response)
 }

@@ -30,8 +30,13 @@ import { jobsApi } from '@/api'
 import {
   ApiError,
   authHttp,
+  ByokKeyMissingError,
+  ByokPathNotAllowedError,
+  DEEPSEEK_DIRECT_BASE_URL,
   DEEPSEEK_KEY_STORAGE_KEY,
+  TOKEN_STORAGE_KEY,
   clearDeepSeekKey,
+  deepseekHttp,
   getDeepSeekKey,
   http,
   setDeepSeekKey,
@@ -531,5 +536,100 @@ describe('Key 注入：能力测评只让「生成概述」这一个 URL 带 Key
     await http.get(`/assessments/sessions/${SESSION_ID}/summary`)
 
     expect(sentHeaders.map((item) => item.key)).toEqual([undefined, undefined])
+  })
+})
+
+/**
+ * B11b（`ADR-030` §2.4）：**直连 DeepSeek** 的那两条。
+ *
+ * 这是本项目里唯一允许「用户的 Key 离开我方域名」的请求，所以两组断言都要有：
+ *
+ * - 正向：`/v1/tools/asr` 与 `/v1/tools/tts` 真的带上了 `Authorization: Bearer <用户 Key>`；
+ *   漏了 = 语音功能直接坏（服务端 401）。
+ * - 反向：别的路径**一个字节都不出网**。这条比正向更重要——白名单如果只写成
+ *   「命中就注入、其余照发」，那它就不是白名单，而是一个「顺便加个头」的装饰品。
+ *
+ * 还有一条容易被忽略的：直连实例**不许带我们的会话令牌**。带了就是把自己的 JWT
+ * 送给第三方域名，而且是静默发生的（现有 `http` 实例就是自动注入的，照抄就会中招）。
+ */
+describe('直连 DeepSeek 的白名单只有两条', () => {
+  let sent: Array<{ url: string; authorization: string | undefined; apiKeyHeader: unknown }>
+  let savedDirectAdapter: SavedAdapter
+
+  beforeEach(() => {
+    sent = []
+    savedDirectAdapter = deepseekHttp.defaults.adapter
+    deepseekHttp.defaults.adapter = async (config) => {
+      sent.push({
+        url: config.url ?? '',
+        authorization: config.headers.Authorization as string | undefined,
+        apiKeyHeader: config.headers['X-DeepSeek-Key'],
+      })
+      return response(config, { text: '你好', duration_ms: 1000 })
+    }
+    setDeepSeekKey(TEST_KEY)
+  })
+
+  afterEach(() => {
+    deepseekHttp.defaults.adapter = savedDirectAdapter
+  })
+
+  it('两条语音路径都带用户 Key，且不发往我们的域名', async () => {
+    await deepseekHttp.post('/v1/tools/asr', new FormData())
+    await deepseekHttp.post('/v1/tools/tts', { text: '你好' }, { responseType: 'blob' })
+
+    expect(sent.map((item) => item.url)).toEqual(['/v1/tools/asr', '/v1/tools/tts'])
+    for (const item of sent) {
+      expect(item.authorization).toBe(`Bearer ${TEST_KEY}`)
+      // 走的是直连实例自己的 baseURL，不是我们后端的 `/api/v1`。
+      expect(deepseekHttp.defaults.baseURL).toBe(DEEPSEEK_DIRECT_BASE_URL)
+    }
+  })
+
+  it('不在白名单里的路径当场抛错，一个字节都不出网', async () => {
+    await expect(deepseekHttp.post('/v1/chat/completions', { messages: [] })).rejects.toBeInstanceOf(
+      ByokPathNotAllowedError,
+    )
+    // 近似路径同样拒绝：白名单是逐条列举，不是前缀匹配。
+    await expect(deepseekHttp.post('/v1/tools/asr/extra', {})).rejects.toBeInstanceOf(
+      ByokPathNotAllowedError,
+    )
+
+    expect(sent).toEqual([])
+  })
+
+  it('没有 Key 时连白名单路径也不出网（错误与后端 AI_KEY_MISSING 同义）', async () => {
+    clearDeepSeekKey()
+
+    await expect(deepseekHttp.post('/v1/tools/asr', new FormData())).rejects.toBeInstanceOf(
+      ByokKeyMissingError,
+    )
+    expect(sent).toEqual([])
+  })
+
+  it('直连实例不带我们的会话令牌，也不带转发用的那个头', async () => {
+    // 先把「已登录」摆好：`http` 实例会自动注入这个令牌，直连实例绝不能跟着学。
+    localStorage.setItem(TOKEN_STORAGE_KEY, 'our-access-token')
+
+    await deepseekHttp.post('/v1/tools/tts', { text: '你好' })
+
+    expect(sent).toHaveLength(1)
+    expect(sent[0]?.authorization).toBe(`Bearer ${TEST_KEY}`)
+    expect(sent[0]?.authorization).not.toContain('our-access-token')
+    expect(sent[0]?.apiKeyHeader).toBeUndefined()
+  })
+
+  it('这两条不在「转发」白名单里：我们的 http 实例不会替它们带上 X-DeepSeek-Key', async () => {
+    const seen: Array<{ url: string; key: string | undefined }> = []
+    http.defaults.adapter = async (config) => {
+      seen.push({ url: config.url ?? '', key: config.headers['X-DeepSeek-Key'] as string | undefined })
+      return response(config, { data: null, meta: { request_id: 'r' } })
+    }
+
+    await http.post('/v1/tools/asr', {})
+    await http.post('/v1/tools/tts', {})
+
+    // 它们根本不是我方端点；真要让它们走 `http`，就是「同一个 Key 发两次、发往两个域名」。
+    expect(seen.map((item) => item.key)).toEqual([undefined, undefined])
   })
 })

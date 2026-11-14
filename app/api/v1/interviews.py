@@ -129,7 +129,7 @@ def send_interview_message(
     """
     try:
         candidate_turn, interviewer_turn, degrade_reason = service.send_message(
-            current_user.id, session_id, payload.content
+            current_user.id, session_id, payload.content, payload.input_mode.value
         )
     except InterviewNotFoundError as error:
         raise _not_found() from error
