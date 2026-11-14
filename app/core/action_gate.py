@@ -29,12 +29,17 @@ class OrganizationAction(StrEnum):
     以及个人版有没有被连带拦住（裁定 ① 的另一半：个人功能不因为没组织而不可用）。
 
     - `PUBLISH_JOB`：提交岗位审核（`ADR-024` §2.3）。裁定原文点名的动作；
-    - `BULK_DOWNLOAD`：组织批量下载（`FR-08`，批次 B10b）。占位：端点还没建，
-      但口径先钉在这里，免得开工时又各写一次 `if`。
+    - `BULK_DOWNLOAD`：组织批量下载（`FR-08`，批次 B10b）。B6 时占位，
+      `ADR-029` §2.1 起由真实端点启用——占位时写的口径没有改，这正是它的用处；
+    - `VIEW_DASHBOARD`：教师端学情看板（B10a）。「查看数据」也算动作，
+      因为会先读到本组织的聚合数据；
+    - `EXPORT_RESUME`：单份简历 PDF 导出（B10b）。
     """
 
     PUBLISH_JOB = "publish_job"
     BULK_DOWNLOAD = "bulk_download"
+    VIEW_DASHBOARD = "view_dashboard"
+    EXPORT_RESUME = "export_resume"
 
 
 class ActionRequiresOrganization(Exception):

@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     #: 否则同一分钟内反复注册/登录的用例会自己撞上 429。
     rate_limit_enabled: bool = True
     database_url: str | None = None
+    #: 批次 B10b（`ADR-029` §2.5）：PDF 导出用的无头 Chromium / Edge 可执行文件。
+    #: 这是**系统级工具**不是 Python 依赖，所以不放进 `dependencies`；没配时按候选路径找，
+    #: 找不到就明确报 `PDF_RENDERER_UNAVAILABLE`，绝不假装生成成功。
+    pdf_browser_path: str | None = None
     jwt_secret_key: str | None = None
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = Field(default=15, gt=0)

@@ -55,6 +55,8 @@ function makeRouter(): Router {
     // B9（ADR-028）起工作区切换器多一张「能力测评」卡片：模块表里每一项都要能在
     // 这份本地路由里解析到，否则 `RouterLink` 会抛 `No match`（不是断言失败，是整套挂载炸掉）。
     { path: '/assessments', name: 'assessment', component: BLANK },
+    // B10a（ADR-029）起工作区切换器又多一张「学情看板」卡片，同样要能解析到。
+    { path: '/teacher', name: 'teacher-dashboard', component: BLANK },
     { path: '/login', name: 'login', component: BLANK },
   ]
   return createRouter({ history: createMemoryHistory(), routes })

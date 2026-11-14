@@ -16,15 +16,22 @@ from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 
+from app.core.action_gate import (
+    ActionRequiresOrganization,
+    OrganizationAction,
+    require_organization,
+)
 from app.core.error_messages import ErrorMessage
+from app.core.teacher_tools_rules import teacher_audit_detail
 from app.integrations.copy_writer import DeepSeekCopyWriter
 from app.integrations.evidence_scorer import DeepSeekEvidenceScorer
 from app.integrations.interview_coach import DeepSeekInterviewCoach
+from app.integrations.pdf_renderer import HeadlessBrowserPdfRenderer
 from app.integrations.profile_summarizer import DeepSeekProfileSummarizer
 from app.integrations.resume_generator import TemplateResumeGenerator
 from app.integrations.skill_extractor import DeepSeekJobSkillExtractor
 from app.repositories.assessment_repository import AssessmentRepository
-from app.repositories.audit_log_repository import AuditLogRepository
+from app.repositories.audit_log_repository import AuditAction, AuditLogRepository, AuditResult
 from app.repositories.interview_repository import InterviewRepository
 from app.repositories.invitation_repository import InvitationRepository
 from app.repositories.job_repository import JobRepository
@@ -33,6 +40,7 @@ from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.resume_repository import ResumeRepository
 from app.repositories.skill_alias_repository import SkillAliasRepository
 from app.repositories.student_profile_repository import StudentProfileRepository
+from app.repositories.teacher_tools_repository import TeacherToolsRepository
 from app.repositories.user_repository import UserRepository, session_scope
 from app.schemas.auth import UserRead
 from app.services.assessment_service import AssessmentService
@@ -48,6 +56,7 @@ from app.services.match_service import MatchService
 from app.services.organization_service import OrganizationService
 from app.services.profile_service import ProfileService
 from app.services.resume_service import ResumeService
+from app.services.teacher_tools_service import TeacherToolsService
 
 UNAUTHORIZED_MESSAGE = "无效或已过期的访问令牌。"
 
@@ -92,6 +101,62 @@ def require_permission(permission: str) -> Callable[[Request], CurrentUserContex
 
     def guard(request: Request) -> CurrentUserContext:
         context = _context_from_request(request)
+        if permission not in context.permissions:
+            raise HTTPException(status_code=403, detail=ErrorMessage.FORBIDDEN)
+        return context
+
+    return guard
+
+
+#: B10 拒绝审计：动作 → 写进 `audit_logs.action` 的枚举（`ADR-029` §2.4）。
+_TEACHER_DENY_ACTIONS = {
+    OrganizationAction.VIEW_DASHBOARD: AuditAction.DASHBOARD_VIEW,
+    OrganizationAction.BULK_DOWNLOAD: AuditAction.RESUME_BATCH_DOWNLOAD,
+    OrganizationAction.EXPORT_RESUME: AuditAction.RESUME_EXPORT_PDF,
+}
+
+
+def teacher_permission(
+    permission: str, action: OrganizationAction
+) -> Callable[[Request], CurrentUserContext]:
+    """B10a / B10b 专用依赖：**动作闸先于权限闸**（`ADR-029` §2.1）。
+
+    为什么不直接复用 `require_permission()`：无组织账号按 `student` 处理
+    （`AuthService.get_current_context` 的既有边界），它没有 `dashboard:read` /
+    `resume:download`，先判权限会拿到 403「没有权限」——而第 18 轮裁定 ① 要的是
+    **「请先绑定组织」**。把 `require_organization` 放在第一条语句，散人才能拿到
+    那句能解决的话。
+
+    顺序不代表少判了一层：权限判据仍在这个依赖里、仍在后端、仍读同一张
+    `ROLE_PERMISSIONS`；只是位置在组织闸之后。服务层还会在自己方法里再过一次
+    `require_organization`（防直接调用），两次都通过才读业务表。
+    """
+
+    def guard(request: Request) -> CurrentUserContext:
+        context = _context_from_request(request)
+        try:
+            require_organization(
+                context.organization.id if context.organization is not None else None,
+                action=action,
+            )
+        except ActionRequiresOrganization as error:
+            # 拒绝也要留账（B5 `AuditResult.DENIED`）：「谁在试图用教师工具却没有组织」
+            # 是唯一证据。与服务层共用 `teacher_audit_detail()`，字段形状只有一份。
+            with session_scope() as session:
+                audit = AuditLogRepository(session)
+                audit.record(
+                    action=_TEACHER_DENY_ACTIONS[action],
+                    actor_user_id=context.user.id,
+                    organization_id=None,
+                    target_type="organization",
+                    result=AuditResult.DENIED,
+                    detail=teacher_audit_detail([], 0, 0, reason="no_organization"),
+                    ip=client_ip(request),
+                )
+                audit.commit()
+            raise HTTPException(
+                status_code=400, detail=ErrorMessage.ORGANIZATION_ACTION_REQUIRED
+            ) from error
         if permission not in context.permissions:
             raise HTTPException(status_code=403, detail=ErrorMessage.FORBIDDEN)
         return context
@@ -227,6 +292,25 @@ def get_assessment_service(request: Request) -> Iterator[AssessmentService]:
             repository=AssessmentRepository(session),
             profile_repository=StudentProfileRepository(session),
             summarizer=DeepSeekProfileSummarizer(api_key) if api_key else None,
+        )
+
+
+def get_teacher_tools_service() -> Iterator[TeacherToolsService]:
+    """装配教师端工具（FR-08 / B10a、B10b，`ADR-029`）。
+
+    一个 session、**三个仓储 + 一个渲染器**：看板读标签/技能/岗位，导出读简历，
+    两者都要在同一笔请求里写审计。分两次会话就会出现「文件发出去了、审计没写」
+    的窗口，而下载审计答不了「谁在什么时候带走了什么」。
+
+    `PdfRenderer` 走可注入的抽象：测试把装配点上的符号换成假实现（与
+    `tests/test_interviews.py` 的 `ai_coach` 同构），CI 不需要真的装浏览器。
+    """
+    with session_scope() as session:
+        yield TeacherToolsService(
+            repository=TeacherToolsRepository(session),
+            audit=AuditLogRepository(session),
+            organizations=OrganizationRepository(session),
+            renderer=HeadlessBrowserPdfRenderer(),
         )
 
 

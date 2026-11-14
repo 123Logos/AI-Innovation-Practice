@@ -33,6 +33,7 @@ export type AppModuleKey =
   | 'organization'
   | 'interview'
   | 'assessment'
+  | 'teacher-dashboard'
 
 export interface AppModule {
   /** 稳定 id（见 `AppModuleKey`）。 */
@@ -107,6 +108,16 @@ export const APP_MODULES: readonly AppModule[] = [
     requiresAuth: true,
     inTopBar: false,
     iconPaths: ['M9 12l2 2 4-4', 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0'],
+  },
+  {
+    // 批次 B10a / B10b（ADR-029）落地：教师端学情看板。与测评同一取舍，
+    // 不占顶栏一级，由工作区切换器呈现；可见性不在前端按角色藏，后端会判权限。
+    key: 'teacher-dashboard',
+    name: '学情看板',
+    routeName: 'teacher-dashboard',
+    requiresAuth: true,
+    inTopBar: false,
+    iconPaths: ['M4 20V10', 'M10 20V4', 'M16 20v-7', 'M22 20H2'],
   },
 ]
 
