@@ -2,31 +2,34 @@
 
 > 本文件描述的是“已实现并验证”的状态，不是“已设计”的状态。
 > 任何未附测试输出或手动复现步骤的条目，不得写入“已验证”。
-> 最后更新：2026-11-04（Phase 3.1 · AI 润色与生成解耦，ADR-010）
+> 最后更新：2026-11-15（Phase 4 已交付至 Beta 就绪；PR #43/#44/#45 = UI 收尾第 20/21/22 轮已合入 master `73b6f06`）
+>
+> **本文件的分工**：§1–§5 与 §8 是**现状**；§6 与 §7 是**截至 2026-11-04 的逐轮检查日志**，
+> 按时点真相保留、不回头改注（那些数字如 `213 passed` 是当时的实测值，不是今天的）。
+> 批次编号与开工顺序看 [ROADMAP.md](ROADMAP.md)，口径决策看 `docs/adr/`，界面判据看 [FRONTEND_DESIGN.md](FRONTEND_DESIGN.md)。
 
 ## 1. 一句话状态
 
-**T7.3 已实现前后端全链路联调（JWT 鉴权、Pinia 状态同步、A4 实时预览、真实数据库落库）**：
-注册/登录 → 保存学生档案（`student_profiles` + `skills` + `experiences` + `educations`）
-→ 生成简历写入 `resumes`，前端「实时预览」与「已生成简历」共用同一套版式与类名。
+**产品已经从「一条简历垂直切片」扩成 7 个模块的可用 MVP，且每一条主链路都有集成测试与 CI 守着**：
+注册/登录（双 Token + single-flight 静默续期）→ 档案（多值：技能 / 经历 / 教育 / 证书 / 作品链接 / 期望城市）
+→ 生成 A4 简历（纯模板、必然成功）→ 纸面就地编辑 + 显式保存 → 版本历史与差异对比 → 按岗位定制；
+外围三条支线：岗位库（录入 / 审核 / 回收站 / JD 技能提取 / 人岗匹配 + 逐条要求状态）、
+组织与角色（邀请码加入、成员角色调整、审计流水、教师端学情看板 + 批量 ZIP 下载 + PDF 导出）、
+能力测评（50 题标准题库 + 画像标签 + 概述生成）与模拟面试（文本回合制 + 录音转写回合制）。
 
-简历正文的**文案**可走真实 DeepSeek 润色，**排版与生成仍是模板**（ADR-010 把两者拆成两条互不调用的路）：
-「生成简历」= `POST /resumes/generate`，纯模板、不需要 Key、必然成功；
-「AI 润色」= `POST /resumes/polish`，四档（细节/中幅/大幅/扩写）只改写经历文案与技能排序，
-**服务端不落库**，用户在对照弹窗点「接受」才写进 Pinia 表单，之后仍需自己点「保存修改」。
-AI 全程不产出 HTML，注入面止于文本插值。真实 Key 下的端到端效果**尚未验证**（本轮不持有任何真实凭据）。
-已有一轮以上小范围人工测试反馈（时区、版式对齐、手机号校验、结束时间未来限制等）
-并已修复，但尚无规模化真实用户数据。
+**规模（2026-11-15 实测）**：23 张表 / 28 个 Alembic 修订；后端 `uv run pytest --collect-only -q` = **753 tests collected**；
+前端 `npx vitest run` = **450 passed / 39 个 spec 文件**；30 张 ADR；7 个模块、14 个页面视图。
+CI 只有一个 `test` job，**在 PR 上跑**（push 触发已删），含 ruff format/check、mypy、lint-imports、pytest、
+五道文档与文案闸（G1/G3/G4/G5 + 引用闸）与前端 lint/typecheck/test/build。
 
-> 历史说明：本节曾写“前端仍未接 API”，该描述截至 T7.3 已过期，现行事实以本节与 §3 为准。
+**AI 全部走 BYOK、同步、非流式**（`ADR-009` 起）：Key 由用户在「账户 → AI 设置」填入，只活在该标签页的
+`sessionStorage` 与请求头里，服务端不落库、不写日志；能带 Key 的端点是 `frontend/src/api/client.ts`
+里两张 fail-closed 白名单（同源 5 条 + 语音直连 2 条）。**真实凭据下的端到端效果只有老板本人能验**——
+自动化的会话永远走关键词回落分支。
 
-Phase 2 已启动，按 `docs/PHASE2_BACKLOG.md` 优先级推进：
-
-- **D1（已完成）**：用户名在应用层显式归一小写，存量数据由迁移回填；
-- **D3（已完成）**：保存入口合并为一个「保存修改」按钮；
-- **D2（进行中）**：D2.1 后端已支持双 Token（access 15 分钟 + refresh 7 天、落库可撤销、
-  每次刷新轮换），**D2.2 前端拦截器尚未接入**——当前前端仍只拿 access token，
-  到期即掉线，需重新登录。
+**真实用户门槛已过**：2026-11-07 完成 5 人测试，2026-11-08 老板裁定「10 名用户目标已达标」并
+**全面解除 `AGENTS.md` §3.2 的冻结清单**（`ADR-014`）。解除 ≠ 已做：Redis / ARQ / Celery / S3 /
+消息队列 / WebRTC / 指标系统 / E2E 至今**一件都没接线**，引入任何一件要先过 §4.6 的 ADR。
 
 ## 2. 资产分级
 
@@ -34,73 +37,98 @@ Phase 2 已启动，按 `docs/PHASE2_BACKLOG.md` 优先级推进：
 
 | 资产 | 状态 | 说明 |
 |---|---|---|
-| 分层目录 `api/services/repositories/integrations` | 已存在 | 依赖方向由 import-linter 5 个 contract 强制 |
+| 分层目录 `api/services/repositories/integrations` | 已实现 | 依赖方向由 import-linter 5 个 contract 强制，CI 跑 `lint-imports` |
+| 外框与导航（`AppLayout.vue` + `ModuleNav.vue` + `AppTopBar.vue`） | 已实现 | 守则 L1「一个布局一处定义」由 `layoutGuards.spec.ts` 钉住；模块入口只有 `config/modules.ts` 一张表（L4） |
+| 浮层基座 `OverlayPanel` / `DrawerPanel` | 已实现 | 点外面 / Esc / 焦点归还 / 按形态开关的焦点陷阱都在基座；三个消费者（账户抽屉、简历抽屉、二级导航无遮罩）共用 |
 | 健康检查接口 | 已实现 | 有测试 |
-| 配置管理骨架 | 已实现 | production fail-fast（DB / JWT 密钥）已有测试，`.env.example` 已提供 |
+| 配置管理骨架 | 已实现 | production fail-fast（`DATABASE_URL` / `JWT_SECRET_KEY`）+ Alembic 版本比对（生产不一致直接拒绝启动）|
+| 统一错误模型 + G3 文案表 | 已实现 | `app/core/error_messages.py` 是唯一文案出处，`scripts/check_error_copy.py` 在 CI 里守 |
+| 双 Token 会话（后端 + 前端） | 已实现 | D2.2 已落地：`client.ts` 提前 10 秒判过期 + single-flight 刷新 + 重放原请求，会话真相在 `localStorage` |
 
 ### 2.2 降级为设计稿（已设计，未实现，禁止当真相源）
 
 | 资产 | 新位置 | 说明 |
 |---|---|---|
-| 领域模型 SQL | `docs/design/schema-draft.sql` | **非迁移源**；Phase 1 只建 5 张表 |
-| Redis / ARQ / Celery 规划 | 文档 | Phase 1 不接入 |
-| S3 / 对象存储规划 | 文档 | Phase 1 不接入 |
-| WebRTC / 模拟面试规划 | 文档 | 冻结项 |
-| 教师端 / 学校端规划 | 文档 | 冻结项 |
+| 领域模型 SQL | `docs/design/schema-draft.sql` | **非迁移源**（`AGENTS.md` §1.2）；表结构真相在 `alembic/versions/` 的 28 个修订，现库 23 张表 |
+| Redis / ARQ / Celery / 消息队列规划 | 文档 | **一行都没写**；`ADR-014` 只是解除了禁令，没有引入任何东西 |
+| S3 / 对象存储规划 | 文档 | 未接线；批量导出是同步 ZIP，PDF 由宿主机浏览器渲染（`ADR-029`） |
+| WebRTC 音视频房间规划 | 文档 | 未实现。语音面试落的是 `ADR-030` 的**回合制录音 + 直连转写**，`media_rooms` / `interview_reports` 两张表已裁定**不建** |
+| SSE 长任务进度推送 | 文档 | 全仓没有一处 `text/event-stream` / `EventSource`，所有 AI 调用同步返回 |
+| 指标与可观测性系统 | 文档 | 有 `request_id` 与结构化错误码，**没有 Prometheus/OTel/APM**，「任务积压」这类指标不存在 |
+| E2E（Playwright） | 文档 | 无依赖、无脚本；主路径靠集成测试 + headless Edge + CDP 手工实测（守则 R2） |
 
-### 2.3 待补承重（Phase 1 必须完成）
+### 2.3 待补承重（Phase 1 那批 T1–T7 已全部交付，此表转为历史基线记录）
 
 | 项 | 对应任务 | 状态 |
 |---|---|---|
-| Alembic 基线 + 5 张表迁移 | T4 | 已验证（T7.5 追加第 6 张 `educations`、D2.1 追加第 7 张 `refresh_tokens`，见下） |
+| Alembic 基线 + 5 张表迁移 | T4 | 已验证；此后一路扩到 **23 张表 / 28 个修订**，每张新表都有 ADR（`AGENTS.md` §4.2 的口径没变：Phase 1 那 5 张是基线，不是上限） |
 | fake 垂直切片 + 集成测试 | T5 | 已验证；T7.2 起被真实仓储取代，`fake_resume_repository.py` 仅留存不再被路由引用 |
-| import-linter 架构约束 | T6 | 已验证（5 个 contract 全部通过） |
+| import-linter 架构约束 | T6 | 已验证（5 个 contract 全部通过，在 CI） |
 | 配置 fail-fast + `.env.example` | T6 | 已验证 |
-| 统一错误模型 + 测试 | T6 | 已验证（含 404/422/405/500） |
-| CI 四件套 | T6 | 已配置，未在 GitHub 运行 |
+| 统一错误模型 + 测试 | T6 | 已验证（含 404/422/405/500），并已扩成 G3 文案表 + 扫描闸 |
+| CI 四件套 | T6 | **已在 GitHub Actions 真实运行**（单个 `test` job，跑在 PR 上；见 §3 与 `docs/DEVELOPMENT.md` §10.0） |
 | T7.4 前端组件与本地状态流转 | T7 | 已验证（typecheck/build 通过） |
-| 注册/登录/JWT 鉴权基建 | T7.1 | 已验证（`tests/test_auth.py` 12 passed，连 `resume_mvp_test`） |
-| 真实档案仓储 + 档案接口 | T7.2 | 已验证（`tests/test_profiles.py` 14 passed，写满四张表） |
-| 简历生成落真实库 | T7.2 | 已验证（`tests/test_resumes_generate.py` 8 passed，写入 `resumes`） |
-| 多段教育经历（`educations` 子表） | T7.5 | 已验证：迁移 `20261102_0002`（upgrade/downgrade 可逆）；`tests/test_profiles.py` 覆盖「两段 → 一段」全量替换；生成器按入学时间倒序渲染教育区块 |
-| 前后端全链路联调 | T7.3 | **已验证**：JWT 鉴权、Pinia 状态同步、A4 实时预览、真实数据库落库（登录 → 保存档案 → 生成简历） |
-| 技术债清理与安全加固 | T7.7 | 已验证：废弃路由 `/me`、`/jobs` 下线；`utc_now()` 收敛到 `app/core/datetime_display.py`；CORS 白名单化；登录/注册 5 次/分钟限流并并入统一错误模型 |
-| 用户名大小写归一（D1） | Phase 2 | 已验证：模型层 + 业务层双重 `strip().lower()`；迁移 `20261103_0005` 用 `BINARY` 比较回填存量；`test_login_is_case_insensitive`、`test_register_lowercases_username` 守护 |
-| 显式保存按钮（D3） | Phase 2 | 已验证：保存语义合并为预览区工具栏唯一入口（三态：保存修改 / 保存中… / 已保存禁用），左侧「保存档案」按钮与相关样式删除；`typecheck` / `build` 通过 |
-| 双 Token + 刷新接口（D2.1 后端） | Phase 2 | 已验证：`refresh_tokens` 表（迁移 `20261103_0006`，`upgrade`/`downgrade` 可逆）；登录返回双 Token、库里只存 SHA-256；`POST /auth/refresh` 轮换、复用旧令牌 401；`POST /auth/logout` 撤销；`tests/test_auth.py` 9 项新用例 |
+| 注册/登录/JWT 鉴权基建 | T7.1 | 已验证（`tests/test_auth.py`，连 `resume_mvp_test`） |
+| 真实档案仓储 + 档案接口 | T7.2 | 已验证（`tests/test_profiles.py`） |
+| 简历生成落真实库 | T7.2 | 已验证（`tests/test_resumes_generate.py`） |
+| 多段教育经历（`educations` 子表） | T7.5 | 已验证：迁移 `20261102_0002`（upgrade/downgrade 可逆）；生成器按入学时间倒序渲染教育区块 |
+| 前后端全链路联调 | T7.3 | **已验证**：登录态（JWT）→ 档案保存 → A4 实时预览 → 生成简历落真实 `resumes` 表 |
+| 技术债清理与安全加固 | T7.7 | 已验证：废弃路由 `/me`、`/jobs` 下线（`/jobs` 后被 `ADR-011` 作为真实岗位库重新实现）；`utc_now()` 单点收敛；CORS 白名单化；登录/注册限流并入统一错误模型 |
+| 用户名大小写归一（D1） | Phase 2 | 已验证：模型层 + 业务层双重 `strip().lower()`；迁移 `20261103_0005` 用 `BINARY` 比较回填存量 |
+| 显式保存按钮（D3） | Phase 2 | 已验证：保存语义合并为预览区工具栏唯一入口（三态） |
+| 双 Token + 刷新接口（D2.1 后端 / D2.2 前端） | Phase 2 | 已验证：`refresh_tokens` 表 + 轮换 + 复用拒绝 + 登出撤销；前端拦截器已接（single-flight + 提前续期 + 重放） |
+
+> 下面这几条 T7.x 的逐轮数值（`12 passed` / `14 passed` / `迁移 20261102_0002` 等）是**那一轮的实测**，保留作证据链；
+> 全量口径看 §1（后端 753 collected / 前端 450 passed）。
 
 ## 3. 已验证 / 未验证
 
-| 项 | 状态 | 证据 |
+| 项 | 状态 | 证据（2026-11-15） |
 |---|---|---|
-| 进程可启动 | 未验证 | 本次未运行启动或健康检查命令 |
-| 数据库迁移可跑通 | **已验证** | `alembic/versions/20261023_0001_initial_phase1.py`、`tests/test_migrations.py`、`uv run pytest` 1 passed、MySQL 8.0.43、Ruff 0.17.1 全绿 |
-| 注册/登录写入真实 MySQL | **已验证** | `uv run pytest tests/test_auth.py -q` 23 passed（201 注册 + 库内记录断言、重复用户名/邮箱 400、登录 200 + Bearer、大小写不敏感登录、错密码/未知用户 401、`/auth/me` 200、六种无效令牌 401；D2.1 追加双 Token / 轮换 / 复用 401 / 登出 / 级联删除） |
-| 双 Token 与刷新 | **已验证** | `POST /auth/login` 返回 `access_token` + `refresh_token`（`expires_in` 仍为 access 的 900 秒）；库内 `refresh_tokens.token_hash` = `sha256(明文)`（64 位，明文不落库）；`POST /auth/refresh` 换发新双 Token 并把旧记录置 `revoked_at`；同一 refresh token 二次使用 401；`POST /auth/logout` 返回 204 且撤销后不可再刷新 |
-| JWT 生产 fail-fast | **已验证** | `Settings(environment="production")` 缺 `jwt_secret_key` 或不足 32 位均抛 `ValueError` |
-| 档案读写写入真实 MySQL | **已验证** | `uv run pytest tests/test_profiles.py -v` 14 passed：PUT 后 `student_profiles` 1 行 / `skills` 3 行 / `experiences` 1 行 / `educations` 1 行；教育经历 2 段再改 1 段时旧行被物理删除；二次 PUT 技能/经历全量替换且 profile id 不变；两用户互不可见 |
-| 简历生成写入真实 MySQL | **已验证** | `uv run pytest tests/test_resumes_generate.py -v` 8 passed（**历史记录：当时 8 例，现为 22 例** —— D4.1/D5.2/D5.3 陆续补了多简历、配色与排版用例；ADR-010 起这 22 例就是**纯模板路径**，`use_fallback` 开关已随解耦删除，润色另有 `tests/test_resume_ai_copywriting.py`）：注册→PUT 档案→生成，断言 `resumes` 行的 id / student_profile_id / title / content_html 与响应一致；教育区块含学校/专业/学历/起止时间且按入学时间倒序，无教育经历时整块不渲染；未登录 401；无档案 400 |
-| 业务链路可跑通 | **已验证（前端 + 后端）** | T7.3 起前后端全链路联调：登录态（JWT）→ 档案保存 → A4 实时预览 → 生成简历落真实 `resumes` 表；`uv run pytest -q` 69 passed 覆盖后端链路，前端 `typecheck` / `build` 通过 |
-| 手机/电脑可用 | **部分验证** | 已在小范围人工测试中跑通主流程（并据此修复 10 项体验问题）；无规模化真实用户数据 |
-| 生成简历（纯模板） | **已验证** | ADR-010：`POST /resumes/generate` 不再调用 AI，`ResumeGenerateRequest` 只剩 `title` / `profile_id`（`use_fallback` 已删除，OpenAPI 有用例钉住）。带 Key 生成也是零外呼——`tests/test_resume_ai_copywriting.py::test_generate_never_calls_deepseek_even_with_a_key` |
-| AI 润色（独立端点） | **已接入，真实调用未验证** | `POST /resumes/polish`：四档 Prompt、`expand` 的服务端字数硬上限、`index` 一一对应、技能不新增不丢、**不写任何表**、400/401/502/429 分流、Key 不进日志。`uv run pytest -q` 213 passed，其中 `tests/test_resume_ai_copywriting.py` 44 例用 `httpx2.MockTransport`（autouse，结构上不可能真出网）断言线级请求参数与档位指令；前端 `resume-polish.spec.ts` 11 例钉「确认前不改表单、接受才置 dirty、且不发保存」，`byok.spec.ts` 7 例盯 sessionStorage 与 Key 只挂润色。**用手测的缺口**：真实 Key 下的延迟、模型 JSON 输出的遵循度、429 的真实形态、以及两个弹窗在浏览器里的实际交互尚未验证（本轮不持有任何真实凭据） |
+| 全量测试 | **已验证** | 后端 `uv run pytest --collect-only -q` = 753 tests collected；前端 `npx vitest run` = Test Files 39 passed / Tests 450 passed |
+| CI 真实运行 | **已验证** | `.github/workflows/ci.yml` 单个 `test` job 在 PR 上跑；最近一次 PR #45 → `test pass 8m10s`（run 43612941070）。**push 触发已删，所以「没开 PR 就没跑过 CI」这句话现在仍然成立** |
+| 数据库迁移可跑通 | **已验证** | `tests/test_migrations.py` 覆盖「空库 → `upgrade head` → `downgrade base`」；28 个修订，多线并行时另有 `alembic merge`  revision |
+| 进程可启动 | **已验证** | PR #44 / #45 验收那两轮（2026-11-14/15）实测：`uv run uvicorn app.main:app` + `npm run dev` 起得来，`/api/v1/health` 返回 200，headless Edge + CDP 连上 5173 做完 375 / 1280 / 1440 三档量测。**本轮（11-15 文档刷新）按指令未起服务、未跑测试** |
+| 简历主线（注册→档案→生成→预览编辑→保存） | **已验证** | `tests/test_auth.py` / `test_profiles.py` / `test_resumes_generate.py` / `test_resume_versions*.py` 等 + 前端 store/spec 链路；纸面就地编辑 + 显式保存 + 版本差异 + 按岗位定制（`ADR-015`/`ADR-026`） |
+| 岗位库 + 审核 + 回收站 + JD 技能提取 + 人岗匹配 | **已验证** | `ADR-011`/`ADR-013`/`ADR-017`/`ADR-024`；`tests/test_jobs.py`、匹配与逐条要求状态端点各有契约测试；`matcher_version` 写法判据钉住 |
+| 组织 / 角色 / 邀请 / 审计 / 教师端 | **已验证** | `ADR-021`/`ADR-023`/`ADR-029`；`app/api/v1/teacher_tools.py` 四个端点（看板 / 简历清单 / 批量下载 / 技能确认）+ 跨组织 404 + 审计留痕 |
+| 能力测评 + 画像 | **已验证** | `ADR-028`；题库 v2 = 50 题 / 5 技能（v1 的 12 题原样保留）；刷新后恢复进行中作答 |
+| 模拟面试（文本 + 语音回合制） | **已验证（自动化层面）** | `ADR-022`/`ADR-030`；`interview_sessions` + `interview_turns` 落库，语音走浏览器录音 → 直连转写 → 立即丢弃音频。**未验证**：真机麦克风权限矩阵（Safari mp4 转换、iOS 行为）与真实凭据下的转写质量 |
+| BYOK 凭据链路 | **已验证（结构）/ 未验证（真实往返）** | `byok.spec.ts` 27 例盯 sessionStorage、两张白名单 fail-closed、Key 不进日志；真实 Key 的延迟 / JSON 遵循度 / 429 形态**只有老板本人在浏览器里粘 Key 才能验**，自动化会话永远走关键词回落 |
+| 界面与布局（375 / 1280 / 1440） | **已验证（本轮 CDP 实测）** | 第 22 轮 24 项 + 第 21 轮 30 项全过：外框高度实测（`--chrome-h` = 114px @1440）、侧栏展开时「新建简历」「回收站」在视口内（855..890）、导航手动收起 41→25、排序行单行、组织页两表单照面试页规范。**jsdom 不跑媒体查询，这类判据只能真浏览器量**（守则 R2） |
+| 规模化真实用户 | **已过门槛** | 2026-11-07 完成 5 人测试（数据在另一库归档），2026-11-08 老板裁定 10 人达标 → `ADR-014` 全面解冻冻结清单 |
+| E2E / 指标 / 对象存储 / 队列 / WebRTC | **未实现** | 见 §2.2，别在任何交付说明里写成已通过 |
 
-## 4. 当前阻塞项
+## 4. 当前阻塞项与已知局限
 
-1. `resumes` 表只有写入路径，缺列表 / 详情 / 编辑接口——「我的简历」还没有档案库视图；
-2. 纸面（`contenteditable`）上的就地编辑只写进 Pinia store，不写回已生成的 `content_html`；
-3. CI 四件套（ruff / mypy / pytest / lint-imports）仅在本地验证过，未在 GitHub Actions 实际运行；
-4. 登录/注册限流是**进程内内存计数**，多 worker 部署时每个进程各算一份，需换 Redis 存储才准确；
-5. **D2.2 未做**：后端已能签发/轮换 refresh token，但前端 `client.ts` 仍只持有 access token，
-   15 分钟后 401 直接清 Token 跳登录——双 Token 的价值要等前端拦截器接上才成立；
-6. `refresh_tokens` 没有清理任务：过期记录只会累积（每条登录会话一行，7 天后失效），
-   需要定时删除或「按用户保留最近 N 条」的策略（Phase 2 后续）。
+按「会不会咬人」排序，不是按发现顺序：
+
+1. **限流是进程内内存计数**（`app/core/rate_limit.py:11-12` 自己写明）：多 worker 部署时每个 worker 各算一份，
+   5 次/分钟会变成 5×N 次。换 Redis 存储要等真上多进程，且那是 `AGENTS.md` §4.6 的 ADR 事件。
+2. **`refresh_tokens` 没有清理任务**：过期记录只累积（每条登录会话一行，7 天后失效），
+   需要「定时删」或「按用户保留最近 N 条」的策略——没有队列，所以这件事现在只能靠人跑 SQL。
+3. **PDF 的真实几何验收依赖宿主机浏览器**：CI 用假 renderer 测契约，线上/本机必须真有 Chromium 或 Edge
+   （老板 2026-11-14 已裁定接受这条限制，见 ROADMAP §7 第 19 轮）。
+4. **Docker 那套件从未构建过**（`ADR-008`，每个文件头都有 `NOT VERIFIED`）：它不是可用部署路径，
+   日常只有 `start.bat`；第一次真跑通 `build` + `up` 之后要回来把 ADR-008 改成「已验证」。
+5. **T1 存量裸字号 / 裸色值的批量替换没做完**（守则 T1 的违例面）：G4 已进 CI，但它只拦**新增**，
+   存量替换需要一次专门批次 + 视觉回归，否则「零像素变化」的承诺守不住。
+6. **无 E2E**：主路径靠集成测试 + 手工 CDP 实测。这条在 `TESTING.md` 里仍是验收基线。
+
+> 历史阻塞项里这几条**已经不再是阻塞**，别照旧清单再列一遍：`resumes` 只有写入路径（现在有
+> `/current`、`/versions`、`/versions/diff`、`/customize` 与档案列表 + 回收站）；纸面就地编辑不写回
+> （已走「保存修改」闭环）；CI 未在 GitHub 运行（已在 PR 上跑绿）；D2.2 前端拦截器未接（已接）。
 
 ## 5. 下一步
 
-按 `AGENTS.md` 第 8 节 T1 → T7 顺序执行，一次一个任务，完成一个更新本文件一次。
+**不再按 `AGENTS.md` §8 的 T1→T7 顺序执行了**——那七条已全部交付并验证。当前下一步与批次顺序的唯一来源是
+[docs/ROADMAP.md](docs/ROADMAP.md)（§1 批次表、§4 建议顺序、§7 已入账裁定）。
 
 ## 6. 本轮检查记录
+
+> **这一节与 §7 是历史日志，时点截至 2026-11-04（Phase 3.1）。** 里面的用例数（`31 passed` / `69 passed` /
+> `213 passed` / 前端 `26 passed`）与「未 commit」都是**那一轮**的实测与状态，按 `AGENTS.md` 的口径
+> 不回头补注、不就地更新——今天的口径看 §1 与 §3。往后的逐轮记录写在 [ROADMAP.md](ROADMAP.md) §7。
 
 - 已完成：修正 `docs/AGENT_HANDOFF.md` 第 5 节，使代码块仅包含 git 状态输出；修正第 6 节，使优先级链条使用 `text` 代码块。
 - 已执行：未运行代码、测试、lint、类型检查或迁移命令；本轮仅涉及文档格式。
@@ -249,11 +277,14 @@ Phase 2 已启动，按 `docs/PHASE2_BACKLOG.md` 优先级推进：
 
 ## 8. 下一阶段
 
-Phase 1（MVP）核心开发已结束，已创建 `docs/PHASE2_BACKLOG.md` 规划下一阶段迭代。
+**Phase 2 → Phase 4 的账已经各自结在 ADR 与 ROADMAP 里，这一节只说「接下来干什么」。**
 
-Phase 2 进度：D1（用户名归一）完成 → D3（显式保存按钮）完成 →
-**D2.1（后端双 Token）完成** → 下一步 D2.2（前端 401 拦截器 + 静默续期）。
+已完成（按批次，编号权威在 `docs/ROADMAP.md` §1）：Phase 2 的 D1/D2.1/D2.2/D3 → Phase 3 的 BYOK 润色与生成解耦（`ADR-009`/`ADR-010`）→ Phase 4 的 B1–B11（岗位库、岗位审核、组织与角色、邀请码、多值档案与版本指针、技能别名层、过期岗位可见性、简历版本对比与按岗位定制、技能元数据、标准题库测评与画像、教师端看板与批量导出、文本面试、回合制语音面试）+ 前端轨 F1a–F7 与 UI 收尾第 20/21/22 轮（PR #43/#44/#45）。「Beta 就绪」这句话已经写在 ROADMAP 里，它的含义是**可以给真人用**，不是「上线就不用管」。
 
-Phase 3 进度：DeepSeek BYOK 接入（ADR-009）→ **Phase 3.1 生成与润色解耦 + 四档润色（ADR-010）完成**。
-下一步是给润色接一个**真实 Key** 做人工验收（延迟、JSON 遵循度、429 形态、两个弹窗在手机上的排版），
-再决定要不要把档位做成可配置项。
+接下来三件事，按依赖顺序：
+
+1. **把 Beta 交给真人用一轮**：`start.bat` 起得来就能投。先收「能不能走完一条主路径」的反馈，而不是继续加功能。UI 收尾那三批就是被真实用户实测打回来才修准的——侧栏那 47px 溢出、展开后收不回去、组织页排布不像其他页面，都不是我们自己想出来的。
+2. **部署与运维文档补真**：Docker 那套要么真跑一次、把 `ADR-008` 改成「已验证」，要么在部署说明里明确「不要用」；生产 runbook 里 Redis / 对象存储 / Worker 这三件不存在的东西已经从步骤里删掉（`docs/DEVELOPMENT.md` §11）。**多 worker 一上，§4 第 1 条限流那条会立刻咬人**。
+3. **还挂着的工程欠账**：T1 存量裸字号 / 裸色值的批量替换（G4 只拦新增）、`refresh_tokens` 的清理策略、E2E 主路径、PDF 真实几何验收依赖宿主机浏览器、Safari / iOS 录音兼容矩阵。
+
+**明确不在射程内**（除非老板重新拍）：小程序 / 原生 App（`ADR-001` 定响应式 Web）、WebRTC 音视频房间（`ADR-030` 已裁定不建 `media_rooms`）、任何后台任务框架（当前所有链路同步够用，引入要先过 `AGENTS.md` §4.6）。

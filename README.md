@@ -1,26 +1,45 @@
 # AI赋能职业发展和面试指导平台
 
-这是一个面向高校人工智能及相关专业的前后端分离职业成长平台设计项目，覆盖岗位洞察、能力证据、成长任务、人岗匹配、AI 简历、模拟面试和教学分析。
+这是一个面向高校人工智能及相关专业的前后端分离职业成长平台，覆盖岗位洞察、能力证据、成长任务、人岗匹配、AI 简历、模拟面试和教学分析。
+
+**仓库现在跑的是可使用的 MVP，不只是一份设计。** 注册/登录后有 7 个模块（工作台、简历工作台、岗位库、组织管理、模拟面试、能力测评、学情看板），简历主线「填写 → 生成 A4 → 预览编辑 → 保存」已闭环。上面那句是产品愿景的覆盖面；每一项的当前状态（已交付 / 已实现未接线 / 仅设计）写在 [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md)，口径决策在 `docs/adr/`，开工顺序在 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
 ## 文档入口
 
-- [产品需求文档](docs/PRD.md)：用户、范围、功能、创新点、指标和验收标准
-- [开发与架构文档](docs/DEVELOPMENT.md)：技术栈、目录、AI、安全、测试和部署
-- [接口文档](docs/API.md)：REST/SSE/WebRTC 适配层、数据格式、错误码和权限
-- [数据库设计](docs/DATABASE.md)：MySQL 逻辑模型、约束、索引原则和第一版 DDL
-- [测试文档](docs/TESTING.md)：测试策略、错误编号、用例、预期输出和发布门槛
-- [项目当前进度](docs/PROJECT_STATUS.md)：已实现范围、验证结果、待办事项和 AI 更新协议
-- [.env.example](.env.example)：不含真实密钥的配置模板
-- [产品设想文档](产品设想文档.md)：原始需求与扩展建议
+按「谁说了算」排，不是按字母：
+
+| 文档 | 管什么 |
+|---|---|
+| [AGENTS.md](AGENTS.md) | 工作协议与硬约束，优先级高于仓库里任何其他文档 |
+| [docs/MVP_SCOPE.md](docs/MVP_SCOPE.md) | Phase 1 范围基线（Phase 2 起被 ADR 与 ROADMAP 批次覆盖，文件里已注明） |
+| [docs/adr/](docs/adr/) | 30 张 ADR（ADR-001…ADR-030）：**口径与决策的唯一来源** |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | 批次编号（前端轨 F1a–F7、后端轨 B1–B11）与开工顺序的唯一来源 |
+| [docs/FRONTEND_DESIGN.md](docs/FRONTEND_DESIGN.md) | 用户可见物的判据：文案 C / 视觉 V / 动效 M / 布局 L / 表单 F / 状态 S / 令牌 T / 可测性 R + 六道闸门 G |
+| [产品需求文档](docs/PRD.md) | 用户、范围、功能、创新点、指标和验收标准 |
+| [开发与架构文档](docs/DEVELOPMENT.md) | 技术栈、目录、AI、安全、测试和部署 |
+| [接口文档](docs/API.md) | REST 接口、数据格式、错误码和权限。**SSE 与 WebRTC 是设计目标，代码里一条都没有** |
+| [数据库设计](docs/DATABASE.md) | MySQL 逻辑模型与约束原则；**表结构真相在 `alembic/versions/`**，`docs/design/schema-draft.sql` 不是迁移源 |
+| [测试文档](docs/TESTING.md) | 测试策略、错误编号、用例、预期输出和发布门槛 |
+| [项目当前进度](docs/PROJECT_STATUS.md) | 已实现范围、验证结果、待办事项和 AI 更新协议 |
+| [Phase 2 需求池](docs/PHASE2_BACKLOG.md) | Phase 2 逐条复核记录；后续交付已由 ROADMAP 批次承接 |
+| [约定摘要](docs/AGENT_CONVENTIONS.md) / [交接快照](docs/AGENT_HANDOFF.md) | 后者是 2026-10-23 的**历史快照**，只作时点记录，不代表现状 |
+| [.env.example](.env.example) | 不含真实密钥的配置模板 |
+| [产品设想文档](产品设想文档.md) | 原始需求与扩展建议 |
 
 ## 技术方案
 
-- 后端：`uv` + Python 3.13 + FastAPI + MySQL 8
-- 前端：Vue 3 + TypeScript + Vite + Element Plus
-- AI：后端服务端调用 DeepSeek API
-- 异步任务：Redis + Worker
-- 文件：S3 兼容私有对象存储
-- 部署：本地开发用 `start-local.ps1` 一键启动；`docker-compose.yml` 已入库但**未经验证**（见 [ADR-008](docs/adr/ADR-008-docker-configs-unverified.md)）
+下表刻意分成两列：**今天真的在跑的**与**设计里写着、代码里还没有的**。把右列当成现状读，是这个项目过去最容易误导人的地方（`AGENTS.md` §1 就是为这件事写的）。
+
+| 方面 | 现状（代码里可验证） | 设计目标（尚未接线，一行实现都没有） |
+|---|---|---|
+| 后端 | `uv` + Python 3.13 + FastAPI + SQLAlchemy + MySQL 8，同步请求 | Redis、ARQ/Celery、消息队列、任何后台任务框架 |
+| 前端 | Vue 3 + TypeScript + Vite + Element Plus，响应式 Web（`ADR-001`） | 小程序 / 原生 App |
+| AI | **BYOK**：用户在界面里填自己的 DeepSeek Key，后端携带它调用 DeepSeek（`ADR-009` 润色 / `ADR-011` JD 技能提取 / `ADR-013` 匹配 / `ADR-028` 画像概述），**非流式** | 服务端自持 Key 的调用形态（已废弃，`.env` 的 `DEEPSEEK_API_KEY` 不再被任何代码读取） |
+| 语音 | 浏览器 `MediaRecorder` 录音 + **直连** DeepSeek 语音工具做转写（`ADR-030`，回合制面试） | WebRTC 音视频房间（`media_rooms` 等表已裁定不建） |
+| 文件 | 不落对象存储：批量下载是同步生成的 ZIP（`ADR-029`），PDF 用宿主机浏览器渲染 | S3 兼容私有对象存储 |
+| 部署 | 本地 `start.bat` / `start-local.ps1` 一键启动；CI 在 GitHub Actions 的 **PR** 上跑 | `docker-compose.yml` 等 Docker 件已入库但**从未构建过**（见 [ADR-008](docs/adr/ADR-008-docker-configs-unverified.md)） |
+
+数据库里现在是 **23 张表 / 28 个 Alembic 修订**（Phase 1 基线那 5 张早已扩出，新增每张表都要先有 ADR——`AGENTS.md` §4.2）。
 
 当前项目本地与演示环境使用 MySQL 数据库 `resume_mvp_dev`，集成测试使用 `resume_mvp_test`
 （与 CI 的 MySQL service 同名）。本地配置请以 `.env.example` 为模板，并把 `DATABASE_URL`
@@ -40,21 +59,32 @@ CREATE DATABASE IF NOT EXISTS resume_mvp_test CHARACTER SET utf8mb4 COLLATE utf8
 Copy-Item .env.example .env
 ```
 
-开发环境可以使用本地配置；生产环境必须由部署平台注入环境变量，并至少替换：
+开发环境可以使用本地配置；生产环境**启动时真的会校验**的只有两项（`app/core/config.py::validate_production_database_url` 与 `::validate_jwt_secret_key`，缺一个就拒绝启动），清单如下：
 
-- `JWT_SECRET_KEY`：至少 32 位强随机字符串
-- `MYSQL_PASSWORD`、`DATABASE_URL`
-- `DEEPSEEK_API_KEY`
-- `S3_ACCESS_KEY_ID`、`S3_SECRET_ACCESS_KEY`
-- `FRONTEND_URL`、`ALLOWED_ORIGINS`
+- `JWT_SECRET_KEY`：至少 32 位强随机字符串（生产环境缺失或短于 32 位 = 启动即失败）
+- `DATABASE_URL`（含 `MYSQL_PASSWORD`）：生产环境缺失 = 启动即失败
+- `FRONTEND_URL`、`ALLOWED_ORIGINS`：跨域与回调地址，按部署域改
 
-真实 `.env`、数据库备份、对象存储密钥和 JWT 密钥不得提交到代码仓库。服务端配置里的 Key（如有）只允许后端使用，不能写入 Vue 环境变量或浏览器代码。
+下面这几项**不再是生产必换项**，别再照旧清单去轮换它们：
 
-**AI 润色的 Key 走 BYOK（ADR-009 + ADR-010）**：用户在顶栏「AI 设置」里填入自己的 DeepSeek Key，
-它只存在于浏览器 `sessionStorage`（关标签页即清除，不写 `localStorage`）和**润色请求**
-（`POST /api/v1/resumes/polish`）的 `X-DeepSeek-Key` 头里；服务端只在本次请求内存中持有，
-**不落库、不写日志**，因此 `.env` 里的 `DEEPSEEK_API_KEY` 已不再被任何代码读取。
-「生成简历」是纯模板路径，不需要也不发送这个 Key。
+- `DEEPSEEK_API_KEY`：BYOK 之后**没有任何代码读它**（`app/integrations/copy_writer.py:143` 就写着这件事）。留着它只会让人以为换掉它就换了 AI 的凭据。
+- `S3_ACCESS_KEY_ID`、`S3_SECRET_ACCESS_KEY`：对象存储一行代码都没接（`ADR-008` 之外，`AGENTS.md` §1.5），等真接入时再要求。
+
+真实 `.env`、数据库备份和 JWT 密钥不得提交到代码仓库。
+
+**AI 的 Key 走 BYOK（ADR-009 + ADR-010 + ADR-011 + ADR-013 + ADR-028 + ADR-030）**：用户在**顶栏右侧「账户」抽屉**里的「AI 设置」填入自己的 DeepSeek Key，
+它只存在于浏览器 `sessionStorage`（关标签页即清除，不写 `localStorage`），服务端只在本次请求内存中持有，
+**不落库、不写日志**，因此 `.env` 里的 `DEEPSEEK_API_KEY` 已不再被任何代码读取。「生成简历」是纯模板路径，不需要也不发送这个 Key。
+
+Key 能出现在哪，是 `frontend/src/api/client.ts` 里**两张 fail-closed 白名单**决定的，不在表里的请求一个字节都不发：
+
+| 表 | 端点 | Key 在哪个头 | 发往 |
+|---|---|---|---|
+| `BYOK_KEY_PATHS` | `POST /resumes/polish`、`POST /jobs/extract-skills` | `X-DeepSeek-Key` | 我方域名 |
+| `BYOK_KEY_PATTERNS` | `POST /jobs/{uuid}/match`、`POST /interviews/{uuid}/messages`、`POST /assessments/sessions/{uuid}/summary` | `X-DeepSeek-Key` | 我方域名 |
+| `DEEPSEEK_DIRECT_PATHS` | `/v1/tools/asr`、`/v1/tools/tts`（浏览器直连，音频不上传、转写即删，`ADR-030`） | `Authorization` | `api.deepseek.com` |
+
+**新增一条 URL 就是新增一个注入面，需要老板逐条书面同意**（`AGENTS.md` §3.2 末行，这条不在 2026-11-08 全面解冻的范围内）。
 
 ## 设计原则
 
@@ -121,6 +151,49 @@ Copy-Item .env.example .env
 - **页面打得开但接口报错**：先看后端窗口的报错，不要改前端代码。
 - 脚本里为什么要「导出 `DATABASE_URL`」：`alembic/env.py` 只读进程环境变量、不读 `.env`，
   不注入就会在第一步抛 `RuntimeError`（见下方「本地开发约定」）。
+
+## 界面结构（前端轨现状）
+
+判据本身归 [docs/FRONTEND_DESIGN.md](docs/FRONTEND_DESIGN.md)，这一节只说「打开页面看到的是什么」：
+
+- **外框只有一处定义**（守则 L1）：`frontend/src/components/AppLayout.vue`。视图里出现第二处手工摆的 `<AppTopBar />` 会被测试判红。
+- **顶部是一整块 sticky 外框** `.app-chrome`：品牌顶栏 + 二级导航 `ModuleNav.vue`。二级导航**不随滚动消失**，右侧有一颗「收起导航 / 展开导航」由人控制；收起后仍说出当前在哪个模块。
+- **模块入口只有一张表**（守则 L4）：`frontend/src/config/modules.ts` 的 `APP_MODULES`，7 个模块。顶栏里一个模块名都没有——入口重复是这个项目改过两遍的毛病。
+- **简历列表住哪按宽度换**：≥1440 是左侧常驻栏（240px，**默认收起**，左边缘那颗按钮拉出与收回都用它）；1100–1439 与窄屏走右侧抽屉。同一份内容组件 `ResumeList.vue`，两个外壳共用。
+- **账户的事在右边**：顶栏右侧「账户」按钮开 `UserDrawer.vue`，里面是「AI 设置」与「退出登录」。
+- **字号层级**：品牌名 20px > 用户名 17px > 正文与辅助文字。页面标题 22px 恒高于品牌名。
+- **每个页面同一套壳**：`min(900px, 100%)`（岗位库 1180px）+ 居中 + `32px 48px 72px` 内缩 + `.page-heading`（`.eyebrow` / `h1` / `.intro` 三行）。
+- **表单同一套排布**：输入框/选择框 `flex: 1 1 180~220px` 吃掉整行剩余宽度，按钮右对齐且与控件等高 34px。
+- **说明性小字不上屏**（守则 C5，2026-11-14 第 22 轮扩的）：解释「这东西是什么/怎么用」的淡灰小字已删掉 32 处；保留的四类豁免是校验与错误提示、数据与状态、花用户凭据与用量的告知、空态与不可逆后果。
+
+## 验证与闸门
+
+改完跑这些，全部在 CI 的 PR 检查里（`.github/workflows/ci.yml`；push 触发已删，所以**只有开 PR 才会跑**）：
+
+```bash
+# 后端（753 条 collected）
+uv run ruff format --check app tests alembic scripts
+uv run ruff check app tests scripts
+uv run mypy app scripts
+uv run lint-imports          # 分层闸：api → services → repositories → integrations
+uv run pytest -q             # 含「空库 upgrade head → downgrade base」那条迁移检查
+
+# 前端（450 条 / 39 个 spec）
+cd frontend
+npm run lint
+npm run typecheck            # vue-tsc --noEmit
+npm run test                 # vitest run
+npm run build
+
+# 文档与文案闸（五道，全在 scripts/）
+uv run python scripts/check_ui_copy.py            # G1 文案：emoji / 黑话 / 豁免标记
+uv run python scripts/check_error_copy.py         # G3 错误文案表
+uv run python scripts/check_design_tokens.py      # G4 令牌：裸 hex / 裸字号
+uv run python scripts/check_route_reachability.py # G5 路由可达性（孤儿视图）
+uv run python scripts/check_docs_citations.py     # 文档里的 file:line / path::symbol 指针
+```
+
+布局与视觉类改动**必须真浏览器实测 375px 与 1280px 两档**（守则 R2）：本机没有 Docker 也没有 Playwright，配方是 headless Edge + CDP，写在 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) §10.2。jsdom 不跑媒体查询，CSS 断点在单测里绿了不算验过。
 
 ## 本地开发约定
 

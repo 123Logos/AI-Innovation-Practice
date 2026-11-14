@@ -6,19 +6,19 @@
 
 本设计对应 MVP 范围，兼顾第二阶段的成长任务、音视频面试和教学分析：
 
-- 当前项目数据库：`ai_innovation_practice`；
+- 当前项目数据库：~~`ai_innovation_practice`~~ → **`resume_mvp_dev`**（本地/演示）与 **`resume_mvp_test`**（集成测试）。`ai_innovation_practice` 这个名字**在本机 `SHOW DATABASES` 里根本不存在**（2026-11-04 把 `.env` / `.env.example` / README 统一成 `resume_mvp_dev` 时漏改了本文件）；真正决定连哪个库的是 `DATABASE_URL`，`MYSQL_DATABASE` 没有任何代码读取；
 - MySQL 8.0+、`utf8mb4`、UTC 时间；
-- 所有租户业务数据带 `organization_id`，服务层所有查询必须带组织条件；
+- **设计目标**：所有租户业务数据带 `organization_id`，服务层所有查询必须带组织条件。**现状是渐进式而非全表**：今天带 `organization_id` 的只有 `jobs`（可空——散人也能录岗）与组织/邀请/审计三张表；学生侧档案/简历/测评/面试仍按 `user_id` 归属，跨组织隔离靠 `app/core/action_gate.py::require_organization` + 服务层成员校验。这条是老板第 18 轮 B6 裁定「散人 400 提示绑定组织且拒绝也留审计」的落点，不是全表加列；
 - API 对外使用 UUID 字符串；数据库第一版使用 `CHAR(36)`，便于 SQLAlchemy 和迁移调试；
 - 文件正文和音视频不进入 MySQL，只保存对象存储键及必要元数据；
 - AI 结果保留任务、模型、提示词版本、来源引用和结构化 JSON，禁止只保存不可解释的分数；
 - 用户资料、简历正文、面试内容通过 `consents` 和服务层权限联合控制；
 - 业务对象采用软删除时使用 `deleted_at`，审计和授权记录不做软删除。
 
-完整第一版 DDL 见 [`database/schema.sql`](../database/schema.sql)。
+完整第一版 DDL 见 [`docs/design/schema-draft.sql`](design/schema-draft.sql) —— **它是领域设计草案，不是迁移源**（`AGENTS.md` §1.2 原话：禁止把它当作数据库真相）。**表结构的唯一真相是 `alembic/versions/` 的 28 个修订**，今天库里实际存在 23 张表，逐张名单见下面 §3.2。
 
-> 数据库已由项目环境创建。执行 DDL 前请确认连接到 `ai_innovation_practice`；
-> `schema.sql` 保留 `CREATE DATABASE IF NOT EXISTS` 以支持新环境初始化，不会使用旧的数据库名称。
+> 执行迁移前先导出 `DATABASE_URL`（`alembic/env.py` 只读进程环境变量、不读 `.env`），并确认它指向 `resume_mvp_dev`；
+> `schema-draft.sql` 里那句 `CREATE DATABASE IF NOT EXISTS` 保留只为新环境初始化参考，**不要照着它去建库**——建库用 README 里那两条 `CREATE DATABASE`，建表用 `uv run alembic upgrade head`。
 
 ## 2. 领域关系
 
@@ -54,8 +54,22 @@ student_profiles ─ interview_sessions ─ interview_turns
 | 测评 | `assessments`, `assessment_questions`, `assessment_attempts`, `assessment_answers` | 题库版本、原始答案和评分 |
 | 匹配成长 | `match_runs`, `match_results`, `match_result_items`, `growth_plans`, `growth_tasks` | 版本化权重、解释项、缺口和行动任务 |
 | 简历 | `resumes`, `resume_versions`, `resume_shares` | 可编辑版本、岗位定制和字段白名单分享 |
-| 面试 | `interview_sessions`, `interview_turns`（B11a 已建；B11b 只加 `input_mode` 一列，**不建音频表**）；`media_rooms`, `interview_reports`（本期未建） | 文本/语音适配层及证据化复盘 |
+| 面试 | `interview_sessions`, `interview_turns`（B11a 已建；B11b 只加 `input_mode` 一列，**不建音频表**）；`media_rooms`, `interview_reports`（**已裁定永久退出射程**：`ADR-030` 定的是回合制录音 + 直连转写，音频不落库，WebRTC 房间不在产品形态里） | 文本/语音适配层及证据化复盘 |
 | 隐私治理 | `consents`, `files`, `audit_logs` | 授权、对象存储元数据和不可变审计 |
+
+### 3.0 库里现在真的有的 23 张表（2026-11-15 实测 `grep __tablename__ app/repositories/*.py`）
+
+| 组 | 表 |
+|---|---|
+| 账号与会话 | `users`、`refresh_tokens` |
+| 档案与内容 | `student_profiles`、`skills`、`experiences`、`educations`、`profile_certificates`、`portfolio_links`、`profile_city_preferences` |
+| 简历与画像标签 | `resumes`、`profile_tags` |
+| 岗位库 | `jobs`、`job_skills`、`skill_aliases` |
+| 组织与治理 | `organizations`、`organization_members`、`organization_invitations`、`audit_logs` |
+| 测评 | `assessment_questions`（参考数据，迁移 `0026` 种子）、`assessment_sessions`、`assessment_answers` |
+| 面试 | `interview_sessions`、`interview_turns` |
+
+**上面 §3 那张表里的这些名字今天没有建**：`memberships`、`roles`（角色落在 `organization_members.role`）、`departments`、`classes`、`class_members`、`companies`、`job_posts`、`job_skill_requirements`、`evidence_items`、`evidence_skills`、`student_skills`、`assessments`、`assessment_attempts`、`match_runs`、`match_results`、`match_result_items`、`growth_plans`、`growth_tasks`、`resume_versions`、`resume_shares`、`ai_prompt_versions`、`ai_jobs`、`ai_job_events`、`consents`、`files`、`media_rooms`、`interview_reports`。它们中的一部分被别的表**换了形态实现**：简历版本用 `resumes` 的同表自引用（`version_no` / `current_version_id` / `is_head`，`ADR-015`）而不是 `resume_versions`；可回溯证据是 `job_skills.evidence_text` + `origin` 两列（`ADR-011` 1.D）而不是 `evidence_items`；匹配是同步纯计算不落库（`ADR-013`）而不是 `match_runs`；授权范围走 `ADR-019` 的隐私检查而不是 `consents`。
 
 ### 3.1 已落库的组织三表（批次 B5，2026-11-12，`ADR-021` §2.1）
 
