@@ -36,12 +36,11 @@ VIEW_IMPORT = re.compile(r"@/views/([A-Za-z0-9_-]+\.vue)")
 
 #: 守则 §11 登记的规划期资产：文件名 → 「它是谁、为什么现在没挂路由、归哪一批」。
 #: 删掉一项 = 断言该视图已挂路由或已删除；加一项 = 必须同时去守则 §11 登记，两边不能各说各话。
-UNROUTED_PLANNED_ASSETS: dict[str, str] = {
-    "DashboardView.vue": (
-        "Dashboard 双态首屏（访客态 + 已登录态），老板 2026-11-09 定性「纳入路由，不要删」；"
-        "尚未与项目视觉体系对齐，改造归批次 F7（登记见 docs/FRONTEND_DESIGN.md §11）"
-    ),
-}
+#:
+#: **2026-11-14（批次 F7）已清空**：唯一那一项 `DashboardView.vue` 已经挂上
+#: `/dashboard`（登录态）与 `/welcome`（访客态）两条路由，G5 从此对全目录零豁免。
+#: 空名单不是「这道闸没用了」，恰恰相反——它现在对每一个孤儿视图都会立刻报红。
+UNROUTED_PLANNED_ASSETS: dict[str, str] = {}
 
 
 def _imports_in(path: Path) -> set[str]:

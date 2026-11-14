@@ -28,6 +28,7 @@
 
 /** 模块的稳定 id：给消费方当 key 用，不随文案变化，所以与 `routeName` 分开两个名字。 */
 export type AppModuleKey =
+  | 'dashboard'
   | 'resume-editor'
   | 'job-board'
   | 'organization'
@@ -59,6 +60,17 @@ export interface AppModule {
  * 并且没有第二份数组在别处描述同一件事（L4）。
  */
 export const APP_MODULES: readonly AppModule[] = [
+  {
+    // 批次 F7 落地：工作台首屏（双态）。老板 2026-11-09「纳入路由，不要删」。
+    // `inTopBar` 取 false：它是登录后的落点页之一，不是一级导航；
+    // 顶栏已经有 Logo 回首页，再摆一个「工作台」只会与它重复。
+    key: 'dashboard',
+    name: '工作台',
+    routeName: 'dashboard',
+    requiresAuth: true,
+    inTopBar: false,
+    iconPaths: ['M3 10.5 12 3l9 7.5', 'M5 9.5V21h14V9.5'],
+  },
   {
     key: 'resume-editor',
     name: '简历工作台',
