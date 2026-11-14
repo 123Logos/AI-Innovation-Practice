@@ -360,18 +360,27 @@ describe('简历列表住哪（清单第 5 条：宽屏常驻左栏 / 其余宽�
     expect(bodyEl('#resume-drawer')).toBeNull()
   })
 
-  it('≥1440：左栏常驻在内容区左边，触发按钮整个不渲染', async () => {
+  it('≥1440：左栏默认收起，点左边缘按钮才展开；收起态不挤内容', async () => {
     setViewportWidth(1440)
     const wrapper = await visit('/jobs')
 
+    // 默认收起（2026-11-14 UI 收尾第 2 条）：侧栏带 --closed，内容区完整占满。
     const sidebar = wrapper.find('.app-body > .resume-sidebar')
     expect(sidebar.exists()).toBe(true)
-    expect(sidebar.attributes('aria-label')).toBe('我的简历')
-    // 列表在左栏里，且左栏与内容区是兄弟（不是把内容区套进左栏）。
-    expect(sidebar.find('.menu-sort').exists()).toBe(true)
+    expect(sidebar.classes()).toContain('resume-sidebar--closed')
     expect(wrapper.find('.app-body > .app-content > main.board-page').exists()).toBe(true)
     expect(wrapper.find('.resumes-trigger').exists()).toBe(false)
-    // 常驻的意思是「不用点一下才出现」：没有任何抽屉被打开。
+
+    // 拉出按钮在：点它展开侧栏。
+    const toggle = wrapper.find('.sidebar-toggle')
+    expect(toggle.exists()).toBe(true)
+    await toggle.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.resume-sidebar--closed').exists()).toBe(false)
+    expect(wrapper.find('.app-body > .resume-sidebar .menu-sort').exists()).toBe(true)
+    // 展开后拉出按钮消失（它只在收起态出现），没有任何抽屉被打开。
+    expect(wrapper.find('.sidebar-toggle').exists()).toBe(false)
     expect(bodyEl('#resume-drawer')).toBeNull()
   })
 
@@ -441,17 +450,21 @@ describe('简历列表住哪（清单第 5 条：宽屏常驻左栏 / 其余宽�
     expect(bodyEl('#create-profile-heading')).toBeNull()
   })
 
-  it('常驻左栏里的「新建简历」走同一个意图，开的是同一个弹窗', async () => {
+  it('展开后的左栏里「新建简历」走同一个意图，开的是同一个弹窗', async () => {
     setViewportWidth(1440)
     const wrapper = await visit('/jobs')
-    const createButton = wrapper.find('.resume-sidebar .menu-action')
 
+    // 侧栏默认收起，先点拉出按钮展开，再点「新建简历」。
+    await wrapper.find('.sidebar-toggle').trigger('click')
+    await flushPromises()
+
+    const createButton = wrapper.find('.resume-sidebar .menu-action')
     expect(createButton.text()).toBe('新建简历')
     await createButton.trigger('click')
     await flushPromises()
 
     expect(bodyEl('#create-profile-heading')).not.toBeNull()
-    // 左栏是常驻的，开弹窗不该把它收掉（它没有可收的东西）。
+    // 展开后开弹窗不该把左栏收掉（它没有可收的东西）。
     expect(wrapper.find('.resume-sidebar').exists()).toBe(true)
   })
 })

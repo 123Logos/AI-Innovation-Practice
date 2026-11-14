@@ -278,14 +278,14 @@ async function handleLogout(): Promise<void> {
 /* 品牌与工作区切换器同属左边一组：顶栏仍是「左一组 / 右一组」两个直接子项。 */
 .brand-side { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 12px; }
 .brand { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 12px; }
-.brand-mark { display: grid; width: 34px; height: 34px; color: var(--theme-on-primary); background: var(--theme-primary); font-family: "SF Mono", Consolas, monospace; font-size: var(--text-base); place-items: center; }
+.brand-mark { display: grid; width: 40px; height: 40px; color: var(--theme-on-primary); background: var(--theme-primary); font-family: "SF Mono", Consolas, monospace; font-size: var(--text-lg); place-items: center; }
 /*
  * 品牌只留产品名一行（老板 2026-11-11 裁定，§6 第 9 条）：原来那行副标题写死「简历工作台」，
  * 而它右边的工作区切换器显示的是**当前**工作区——站在 /jobs 上时副标题就是事实错误。
  * 「跟着当前工作区走」被明确否掉（与切换器完全冗余），所以整行删掉，不是藏起来。
  */
 .brand-text { display: grid; min-width: 0; }
-.brand-title { margin: 0; overflow: hidden; color: var(--ui-ink); font-size: var(--text-md); font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.brand-title { margin: 0; overflow: hidden; color: var(--ui-ink); font-size: var(--text-2xl); font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .user-area { display: flex; flex: 1 1 auto; flex-wrap: wrap; min-width: 0; align-items: center; justify-content: flex-end; gap: 10px 12px; }
 .dirty-dot { flex: 0 0 auto; border: 1px solid var(--ui-warning-border); border-radius: var(--ui-radius); padding: 2px 7px; color: var(--ui-warning); font-size: var(--text-xs); white-space: nowrap; }
 /*
@@ -299,11 +299,11 @@ async function handleLogout(): Promise<void> {
  * 名字原来是一个不说话的 `<span class="user-name">`，现在它是按钮的一部分：
  * 点名字本来就该想到「这是我账号的地方」。
  */
-.account-trigger { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 12px; color: var(--ui-ink); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-sm); white-space: nowrap; }
+.account-trigger { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; height: 36px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 12px; color: var(--ui-ink); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-lg); white-space: nowrap; }
 .account-trigger:hover { border-color: var(--theme-rule); color: var(--theme-primary); }
 .account-trigger:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
-.account-name { overflow: hidden; max-width: 16ch; color: var(--ui-ink-muted); font-size: var(--text-base); text-overflow: ellipsis; white-space: nowrap; }
-.account-word { display: none; color: var(--ui-ink-muted); font-size: var(--text-base); }
+.account-name { overflow: hidden; max-width: 16ch; color: var(--ui-ink-muted); font-size: var(--text-lg); text-overflow: ellipsis; white-space: nowrap; }
+.account-word { display: none; color: var(--ui-ink-muted); font-size: var(--text-lg); }
 .account-caret { flex: 0 0 auto; color: var(--ui-ink-faint); font-size: var(--text-xs); line-height: 1; transition: transform var(--motion-base) var(--motion-ease); }
 .account-caret--open { transform: rotate(180deg); }
 .ai-settings-status { margin: 0; color: var(--ui-ink-faint); font-size: var(--text-sm); }
