@@ -1,48 +1,65 @@
 # 开发与架构文档
 
+> **读法**：本文写的是**架构意图**。今天真的跑起来的是什么，看下面两张「现状」列与
+> `docs/PROJECT_STATUS.md`；两者不一致时，**以代码 + `docs/adr/` 为准**，本文的右列就是用来防止有人把设计目标读成已交付（`AGENTS.md` §1、§7.9 同一条理由）。
+
 ## 1. 技术基线
 
-| 层 | 选型 |
-|---|---|
-| 前端 | Vue 3、TypeScript、Vite、Element Plus、Pinia、Vue Router |
-| 后端 | Python 3.13、uv、FastAPI、Pydantic v2、SQLAlchemy 2、Alembic |
-| 数据库 | MySQL 8.0+，字符集 `utf8mb4` |
-| 异步任务 | Redis + ARQ/Celery（二选一，MVP 推荐 ARQ） |
-| AI | 后端 DeepSeek API 适配器，结构化输出与提示词版本化 |
-| 文件 | S3 兼容对象存储；数据库只保存元数据 |
-| 部署 | Docker Compose + Nginx/Caddy + HTTPS |
+| 层 | 选型（设计） | 现状（代码里可验证，2026-11-15） |
+|---|---|---|
+| 前端 | Vue 3、TypeScript、Vite、Element Plus、Pinia、Vue Router | ✅ 全部在用；单文件组件在 `frontend/src/`，**没有 `layouts/` 与 `styles/` 目录**（外框是 `components/AppLayout.vue`，令牌在 `src/styles.css`） |
+| 后端 | Python 3.13、uv、FastAPI、Pydantic v2、SQLAlchemy 2、Alembic | ✅ 全部在用；包根是仓库根的 `app/`，**不是 `backend/app/`** |
+| 数据库 | MySQL 8.0+，字符集 `utf8mb4` | ✅ `resume_mvp_dev` / `resume_mvp_test`，23 张表 / 28 个 Alembic 修订 |
+| 异步任务 | Redis + ARQ/Celery（二选一，MVP 推荐 ARQ） | ❌ **一行都没写**：`pyproject.toml` 里没有 redis/arq/celery/boto3，所有链路同步 + 单库 + 应用时钟。引入任何一件要先过 `AGENTS.md` §4.6 的 ADR |
+| AI | 后端 DeepSeek API 适配器，结构化输出与提示词版本化 | ⚠️ 形态改了：**BYOK**（`ADR-009`）——Key 由用户逐请求携带（`X-DeepSeek-Key`），非流式，模型 `deepseek-flash`；服务端配置里那个 Key 不再被读取 |
+| 文件 | S3 兼容对象存储；数据库只保存元数据 | ❌ 未接线。批量导出是同步生成的 ZIP 直接回给浏览器（`ADR-029`），PDF 由宿主机浏览器渲染 |
+| 部署 | Docker Compose + Nginx/Caddy + HTTPS | ⚠️ Docker 件已入库但**从未构建过**（`ADR-008`，每个文件头都有 `NOT VERIFIED`）；日常用 `start.bat` |
 
 ## 2. 总体架构
 
-浏览器 → 反向代理 → Vue 静态资源 / FastAPI API → 领域服务 → MySQL、Redis、对象存储、DeepSeek、媒体适配器。
+**设计目标**：浏览器 → 反向代理 → Vue 静态资源 / FastAPI API → 领域服务 → MySQL、Redis、对象存储、DeepSeek、媒体适配器。
 
-前后端通过 JSON REST API 通信；长任务使用轮询或 SSE 推送状态；面试音视频使用 WebRTC，媒体流不经过业务 API，业务服务只保存房间、授权、转写和反馈元数据。
+**今天实际的那条线**：浏览器 → Vite dev（生产是静态资源 + 反代）→ FastAPI → services → repositories → **MySQL 一个库**；AI 那一支由浏览器把用户的 Key 交给后端（或语音直连 `api.deepseek.com`），**没有队列、没有对象存储、没有媒体服务**。
+
+前后端通过 JSON REST API 通信；**长任务用轮询还是 SSE 这条至今没有兑现**——全仓没有一处 `text/event-stream` 或 `EventSource`，所有 AI 调用都是同步非流式（`ADR-009` 的裁定理由：同步链路少一个失败面，且用户能立刻看到失败）。面试语音也不是 WebRTC：`ADR-030` 定的是**回合制**——浏览器 `MediaRecorder` 录音 → 直连转写 → 落一条 `interview_turn`，音频不上传、转写完毕即删。
 
 ## 3. 推荐目录
 
+**下面是设计推荐的结构**，与实际落地的差异列在每行右侧；实际树以仓库为准。
+
 ```text
-backend/
+backend/                     ← 实际是仓库根：app/ 与 tests/ 平级，没有 backend/ 这一层
   app/
-    api/              # 路由、依赖、鉴权
-    core/             # 配置、日志、安全、异常
-    db/               # session、迁移、模型基类
-    models/           # SQLAlchemy 模型
-    schemas/          # Pydantic 请求/响应
-    repositories/     # 数据访问
-    services/         # 业务用例
-    integrations/     # DeepSeek、对象存储、邮件、媒体
-    workers/          # 异步任务
-  tests/
+    api/              ✅ 存在（v1 路由与依赖）
+    core/             ✅ 存在（`config` 配置、`security`/`permissions`/`rate_limit`、`errors`/`error_messages`
+                          = G3 那张错误文案表、`responses` 统一信封、`action_gate` 组织与权限前置、
+                          `document_style` 主题与排版、`deadline`、`skill_names`、`datetime_display`、
+                          `assessment_rules`、`interview_modes`、`teacher_tools_rules`、`pdf_errors`）
+                          ——**没有独立的 logging 模块**，日志配置在 `app/main.py`
+    db/               ❌ 不存在——设计里给的那一层没有落地：`session_scope` 在
+                          `app/repositories/user_repository.py`，SQLAlchemy 模型与各仓储同文件
+                          （`app/repositories/*.py` 里 `__tablename__` 共 23 处），没有 `models/` 目录
+    schemas/          ✅ 存在（Pydantic 请求/响应）
+    repositories/     ✅ 存在
+    services/         ✅ 存在
+    integrations/     ✅ 存在，但只有 7 个模块：`copy_writer`（润色 BYOK 出口）、`skill_extractor`、
+                          `evidence_scorer`、`interview_coach`、`profile_summarizer`、
+                          `resume_generator`（模板）、`pdf_renderer`（调宿主机浏览器，不是对象存储）。
+                          **没有对象存储适配器、没有邮件、没有媒体适配器**
+    workers/          ❌ 不存在（异步任务未接线，见 §1）
+  tests/              ✅ 753 条 collected（含 scripts/tests 的闸门自测）
 frontend/
   src/
-    api/              # 按模块封装 API
-    components/       # 跨页面组件
-    layouts/
-    views/
-    stores/
-    router/
-    styles/           # token、主题、响应式
-docs/
+    api/              ✅ 按模块封装 + client.ts（BYOK 两张白名单在这里）
+    components/       ✅ 跨页面组件，**外框 `AppLayout.vue` 也在这一层**（不是 layouts/）
+    layouts/          ❌ 不存在，守则 L1 用路由嵌套把这件事收进 `AppLayout.vue` 一处
+    views/            ✅ 14 个页面
+    stores/           ✅ Pinia
+    router/           ✅ 嵌套路由 + 401 出口唯一那处（守则 S4）
+    composables/      ✅ `useViewport.ts` 是全站唯一发宽度 `matchMedia` 的地方（守则 L2）
+    config/           ✅ `modules.ts` 是模块入口唯一那张表（守则 L4）
+    styles.css        ← 设计里写的 styles/ 目录没有，令牌与全局样式集中在这一个文件
+docs/               ✅ 另有 adr/、design/，以及本文 + ROADMAP/FRONTEND_DESIGN/MVP_SCOPE 等
 ```
 
 ## 4. 后端分层规则
@@ -56,36 +73,41 @@ docs/
 
 ## 5. 核心数据模型
 
-- `users`、`organizations`、`memberships`、`roles`
-- `student_profiles`、`skills`、`student_skills`、`evidence_items`
-- `companies`、`job_posts`、`job_skill_requirements`
-- `assessments`、`assessment_questions`、`assessment_attempts`、`assessment_answers`
-- `match_runs`、`match_results`、`growth_plans`、`growth_tasks`
-- `resumes`、`resume_versions`、`resume_shares`
-- `interview_sessions`、`interview_turns`、`media_rooms`、`interview_reports`
-- `ai_jobs`、`ai_prompt_versions`、`consents`、`audit_logs`
+**库里现在真的有的 23 张表**（`grep __tablename__ app/repositories/*.py`，2026-11-15 实测；真相以 `alembic/versions/` 的 28 个修订为准，`docs/design/schema-draft.sql` 是设计草案、**不是迁移源**——`AGENTS.md` §1.2）：
 
-所有业务表包含 `id`、`created_at`、`updated_at`；软删除对象增加 `deleted_at`。敏感文本和媒体只保存必要版本，文件使用对象存储私有桶和短时签名 URL。
+| 组 | 表 |
+|---|---|
+| 账号与会话 | `users`、`refresh_tokens` |
+| 档案与内容 | `student_profiles`、`skills`、`experiences`、`educations`、`profile_certificates`、`portfolio_links`、`profile_city_preferences` |
+| 简历与版本 | `resumes`（版本用同表自引用表达：`version_no` + `current_version_id` + `is_head`，另带 `origin` 与 `target_job_id`，`ADR-015`/`ADR-026`）、`profile_tags` |
+| 岗位库 | `jobs`、`job_skills`、`skill_aliases` |
+| 组织与授权 | `organizations`、`organization_members`、`organization_invitations`、`audit_logs` |
+| 测评与画像 | `assessment_questions`（参考数据，由迁移 `0026` 种子建出）、`assessment_sessions`、`assessment_answers` |
+| 面试 | `interview_sessions`、`interview_turns` |
+
+**设计里写了、今天没有建的**：`memberships`/`roles`（角色落在 `organization_members.role` 与 `users` 的权限推导上）、`companies`/`job_posts`/`job_skill_requirements`（被 `jobs`/`job_skills` 取代）、`evidence_items`（**没有这张表**：可回溯证据是 `job_skills.evidence_text` 这一列，配合 `origin` 由服务层按 `ADR-011` 1.D 派生）、`assessments`/`assessment_attempts`（被 `assessment_sessions`/`assessment_answers` 取代）、`match_runs`/`match_results`、`growth_plans`/`growth_tasks`、`resume_versions`/`resume_shares`（版本用 `resumes` 的自引用 + `deleted_at` 表达）、`media_rooms`/`interview_reports`（`ADR-030` 明确**不建**，语音落 `interview_turns`）、`ai_jobs`/`ai_prompt_versions`/`consents`/`files`。
+
+所有业务表包含 `id`、`created_at`、`updated_at`；软删除对象增加 `deleted_at`。**「敏感文本与文件走对象存储私有桶 + 短时签名 URL」这一条还没落地**——今天没有对象存储适配器，简历导出是同步 ZIP/PDF 直接回浏览器（`ADR-029`）。
 
 ## 6. AI 集成方案
 
 ### 6.1 调用原则
 
-- DeepSeek Key 只存在后端环境变量或密钥管理服务。
-- 设置连接超时、读取超时、最大 token、并发上限和重试退避；不对 4xx 无限重试。
-- 对岗位解析、简历生成、面试反馈使用不同提示词版本和 Pydantic 输出模型。
-- 输入前做长度限制、敏感信息处理和提示注入隔离；模型输出后做 JSON 校验、事实引用检查和内容安全检查。
-- 记录 `provider`、模型名、prompt 版本、耗时、token 用量和结果状态，不记录完整密钥。
+- ~~DeepSeek Key 只存在后端环境变量或密钥管理服务。~~ → **已由 `ADR-009` 改为 BYOK（2026-11-04）**：Key 由用户自己在「账户 → AI 设置」里填入，只活在浏览器 `sessionStorage`（关标签页即清）与请求头里；服务端**不落库、不写日志、不进异常消息**，`.env` 的 `DEEPSEEK_API_KEY` 不再被任何代码读取。能带 Key 的端点由 `frontend/src/api/client.ts` 的两张 fail-closed 白名单决定（`BYOK_KEY_PATHS` 2 条 + `BYOK_KEY_PATTERNS` 3 条走我方域名；`DEEPSEEK_DIRECT_PATHS` 2 条语音直连 `api.deepseek.com`）。**新增一条 URL 需要老板逐条书面同意**（`AGENTS.md` §3.2 末行）。
+- 设置连接超时、读取超时、最大 token、并发上限和重试退避；不对 4xx 无限重试。⚠️ **现状**：只有超时与最大 token 落地（同步非流式，30 秒预算）；**没有并发上限与重试退避**——那两件属于 §1 里没接线的队列那一栏。
+- 对岗位解析、简历生成、面试反馈使用不同提示词版本和 Pydantic 输出模型。✅ 已兑现：`skill_extractor` / `copy_writer` / `interview_coach` / `profile_summarizer` / `evidence_scorer` 各自一个模块，输出走 Pydantic 校验；**提示词版本化没有独立表**（`ai_prompt_versions` 未建），版本写在代码常量里。
+- 输入前做长度限制、敏感信息处理和提示注入隔离；模型输出后做 JSON 校验、事实引用检查和内容安全检查。✅ 长度限制与注入隔离在 `ADR-011`/`ADR-019` 里落过；事实引用检查落成了「可回溯原文」标记（`job_skills.origin` + `evidence_text`），不是另建一张证据表。
+- 记录 `provider`、模型名、prompt 版本、耗时、token 用量和结果状态，不记录完整密钥。⚠️ **现状只到「不记密钥」这一半**：没有用量/耗时台账表，排障看的是应用日志与 `request_id`。
 
 ### 6.2 AI 任务状态
 
-`queued → running → succeeded | failed | cancelled`。任务应以业务对象和操作类型生成幂等键，例如 `job:{job_id}:analyze:v1`。
+`queued → running → succeeded | failed | cancelled`——**这是设计目标形态，今天没有这套状态机**。没有队列、没有 worker、没有任务表，所有 AI 调用都在**同一个 HTTP 请求内同步完成**并直接返回结果，所以界面上不存在「排队中」这种状态。幂等键那一条同样未落地。把它当现状读会写出等不到回调的前端代码，这是 `AGENTS.md` §7.9 禁的那类描述。
 
 ### 6.3 降级策略
 
-- AI 不可用：保留岗位和档案基础 CRUD，提示稍后重试。
-- AI 输出无法解析：保存原始响应的脱敏诊断摘要，进入重试/人工处理，不返回伪造成功。
-- 超过额度：返回明确的限流错误和预计重试时间。
+- AI 不可用：保留岗位和档案基础 CRUD，提示稍后重试。✅ 已兑现，且遵守「绝不静默降级」（`ADR-018`/守则 C4）：润色失败只提示重试、不动表单；概述没填凭据时回落模板文字**并在界面上说明是哪一种**。
+- AI 输出无法解析：保存原始响应的脱敏诊断摘要，进入重试/人工处理，不返回伪造成功。⚠️ 现状是**当场报错 + 原始串留在 `details.reason`**（批次 F1c 之后用户读的那句来自 G3 文案表），没有「人工处理」队列。
+- 超过额度：返回明确的限流错误和预计重试时间。⚠️ **一半落地**：限流在 `app/core/rate_limit.py`，429 带 `Retry-After: 60` 响应头（`app/main.py:270`，因为规则是「每分钟 N 次」），用户读的那句是 G3 表里的 `RATE_LIMITED`——**具体秒数只在响应头里，没上屏**。
 
 ### 6.4 证据检索与事实核验
 
@@ -108,16 +130,20 @@ MVP 不引入未经验证的全网爬虫；岗位变化雷达只使用合法来�
 
 ## 7. 前端统一设计规范
 
-- 统一使用 Element Plus，禁止同一业务功能引入第二套组件库。
-- 白色背景、浅灰分区、深色正文、单一主色；成功/警告/危险颜色全局 token 化。
-- 表格、筛选器、空状态、加载态、错误态、确认弹窗抽为共享组件。
-- 所有页面响应式：桌面侧栏布局，移动端底部导航/抽屉；操作顺序和文案一致。
-- AI 生成内容必须标注“AI 建议”，并提供编辑、接受、拒绝入口。
-- 颜色之外同时使用文字、图标或形状表达状态。
+> **这一节已被 [docs/FRONTEND_DESIGN.md](docs/FRONTEND_DESIGN.md) 取代**——那份是带判据与闸门的守则（C/V/M/L/F/S/T/R 八族 + G1…G6），这一节只留大原则。两者冲突以守则为准。
+
+- 统一使用 Element Plus，禁止同一业务功能引入第二套组件库。✅（Element 只在润色对照、对话框这几处；自绘基座 `OverlayPanel`/`DrawerPanel` 是浮层那一支的唯一实现，守则 L3）
+- 白色背景、浅灰分区、深色正文、单一主色；成功/警告/危险颜色全局 token 化。✅（`--ui-*` 与 `--theme-*` 两套分工见守则 T1；**存量裸字号/裸色值的批量替换仍未做完**，G4 已进 CI 但只拦新增）
+- 表格、筛选器、空状态、加载态、错误态、确认弹窗抽为共享组件。✅（`SkeletonList`、`ConfirmDialog` + `stores/dialog.ts`、`AutoTextarea` 是全仓唯一 `<textarea>`）
+- ~~所有页面响应式：桌面侧栏布局，移动端底部导航/抽屉~~ → **现状不是这样**：375px 到 1440px 同一套响应式 Web（`ADR-001`），**没有底部导航**。顶部是一整块 sticky 外框（品牌顶栏 + 二级导航，二级导航可手动收起、不随滚动消失）；≥1440 才有左侧简历栏且**默认收起**，1100–1439 与窄屏的列表走右侧抽屉。操作顺序与文案一致由 `AppLayout.vue` 一处保证（守则 L1）。
+- AI 生成内容必须标注「AI 建议」，并提供编辑、接受、拒绝入口。✅（润色走逐条对照弹窗，接受/拒绝都在；概述生成会说明是 AI 写的还是模板整理的）
+- 颜色之外同时使用文字、图标或形状表达状态。✅（SVG 图标 + 文字，禁 emoji/伪图标是守则 C1，G1 扫描）
 
 ## 8. 配置与密钥
 
-复制 `.env.example` 为本地 `.env`，生产环境由部署平台注入，不提交 `.env`。应用启动时校验 `ENVIRONMENT=production` 的强密钥、数据库连接和 `DEEPSEEK_API_KEY`；缺失或弱密钥直接失败，不使用静默默认值。
+复制 `.env.example` 为本地 `.env`，生产环境由部署平台注入，不提交 `.env`。
+
+**启动时真的会拦的只有两项**（`app/core/config.py`，2026-11-15 核对）：`ENVIRONMENT=production` 时缺 `DATABASE_URL` 直接 `ValueError`；缺 `JWT_SECRET_KEY` 或短于 32 位同样直接失败，开发期才回落那个显式命名的占位密钥。**~~和 `DEEPSEEK_API_KEY`~~ 这条已经不成立**——BYOK 之后没有任何代码读它（`app/integrations/copy_writer.py:143` 就写着），把它列进必换清单会让人以为换掉它就换了 AI 凭据。另有一条独立检查：`app/main.py` 的 lifespan 比对数据库 Alembic 版本与代码 head，不一致时开发/测试打印告警、**生产直接拒绝启动**（`DatabaseSchemaOutOfDateError`）。
 
 ## 9. 安全设计
 
@@ -278,18 +304,20 @@ uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 ```
 
-生产环境：
+生产环境（**下面是目标形态，今天还没有一次真实部署过**：开发主机没装 Docker，`ADR-008` 那批件全是 `NOT VERIFIED`，`AGENTS.md` §1.5 的 Redis / 对象存储 / Worker 也一件都没接线）：
 
 1. 构建前端静态资源和后端镜像；
-2. 由密钥管理系统注入环境变量；
-3. 启动 MySQL、Redis、对象存储、API、Worker、反向代理；
-4. 执行 Alembic 迁移和健康检查；
+2. 由密钥管理系统注入环境变量——**必注入的只有 `DATABASE_URL` 与 `JWT_SECRET_KEY`**（§8 那两个启动即拦的检查）；`DEEPSEEK_API_KEY` 不需要，AI 凭据是用户自己带的（BYOK）；
+3. 启动 MySQL、API、反向代理。~~Redis、对象存储、Worker~~ 这三件**当前没有对应代码**，把它们放进 runbook 只会让人去查一个不存在的进程；真要引入时按 §4.6 先写 ADR，再回来改这一节；
+4. 执行 Alembic 迁移和健康检查（`/api/v1/health`；迁移漏跑时开发/测试打印告警、**生产直接拒绝启动**）；
 5. 配置 HTTPS、备份、监控和告警；
 6. 先灰度，再开放企业和学生流量。
 
 ## 12. 可观测性
 
-结构化日志包含 request ID、用户/组织哈希、路由、状态码、耗时和错误码；指标包含 API 延迟、AI 成功率、任务积压、数据库连接、导出量和授权拒绝量。告警不得把敏感请求体直接发送到第三方。
+**设计**：结构化日志包含 request ID、用户/组织哈希、路由、状态码、耗时和错误码；指标包含 API 延迟、AI 成功率、任务积压、数据库连接、导出量和授权拒绝量。告警不得把敏感请求体直接发送到第三方。
+
+**现状（2026-11-15 核对）**：统一响应信封里确实带 `request_id`，错误也按枚举码归一（G3 那张 `app/core/error_messages.py`），日志配置在 `app/main.py`；**但没有任何指标系统**——没有 Prometheus/OTel/APM 依赖，「API 延迟 / AI 成功率 / 任务积压 / 导出量 / 授权拒绝量」这五个数今天只能从日志和库里手工统计，其中「任务积压」本来就不存在（没有队列）。这一节整段仍是验收基线，不是已交付能力。
 
 参考：[OWASP API Security Top 10 2023](https://api-security.owasp.org/editions/2023/en/0x11-t10/)、[W3C WebRTC Recommendation](https://www.w3.org/TR/webrtc/)、[ISO/IEC 25010:2023](https://www.iso.org/standard/78176.html)。
 所有文本文件统一 UTF-8 无 BOM；Windows 下用 Get-Content -Encoding utf8 查看，避免乱码。

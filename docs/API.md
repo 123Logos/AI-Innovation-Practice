@@ -635,8 +635,7 @@
 **前端调用**：`frontend/src/api/jobs.ts::matchJob(jobId)`，调用方是岗位详情页的匹配卡
 （`frontend/src/views/JobDetailView.vue`，状态与文案在 `frontend/src/stores/job.ts::runMatch` /
 `matchDegradeLines` / `matchFailureText`）。`X-DeepSeek-Key` 由
-`client.ts` 白名单注入——这是那条白名单里**唯一一条模式判据**（`POST ^/jobs/[^/]+/match$`，
-绑方法），为什么它不构成扩张、以及它的可辩护版本是路由表论证而不是「命中即转发」，
+`client.ts` 白名单注入——注入的是 `BYOK_KEY_PATTERNS` 那张表，**今天有三条模式判据**：`POST ^/jobs/{uuid}/match$`（本条）、`POST ^/interviews/{uuid}/messages$`（`ADR-022`）、`POST ^/assessments/sessions/{uuid}/summary$`（`ADR-028` §2.5）；另有 `BYOK_KEY_PATHS` 两条精确路径（`/resumes/polish`、`/jobs/extract-skills`）与 `DEEPSEEK_DIRECT_PATHS` 两条语音直连（`/v1/tools/asr`、`/v1/tools/tts`）。三条模式都要求 `{id}` 是 UUID 形状，为的是排掉 `/interviews/extra/messages` 这类「看着像但没有路由」的路径。为什么它不构成扩张、以及它的可辩护版本是路由表论证而不是「命中即转发」，
 见 `client.ts` 的注释与 ADR-013 §6.1。**必须由用户显式点击**，不得在详情页自动调用
 （`JobDetailView.spec.ts` 里有一条「mount 后匹配请求数为 0」的断言；
 卡片为什么排在 JD 前面见那个文件里的注释与 ADR-013 §10 第 8 步）。
@@ -702,7 +701,7 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 - 按 `location` / `salary` / `experience_required` 筛选：**存而不筛**，谓词函数里没有这三列（`app/repositories/job_repository.py:614-642`、ADR-011 1.G）。
 - 岗位收藏、投递记录、批量导出：无端点（ADR-011 议题 3.C）。
 - `/teacher/jobs/{job_id}/candidates` 与 `/export`（见本文件 §8）：候选人查询与导出**继续冻结**，本轮无实现。# PHASE-2: not wired
-- 岗位与学生技能字典的合并或外键：**不建**（ADR-011 1.E）。「你已具备」原先是**前端只读比对**、无后端端点（ADR-011 2.E）。**这半句已按 ADR-013 §10 第 3c 步作废**（2026-11-08）：判定收回后端 `GET /jobs/{job_id}/requirement-match`（§4.10.1），它同样不写任何表、不产匹配分数、不调 AI；本地那套 `normalizeSkillName` 只剩「提交前重名自检」一个用途。**「不建字典表/外键」那半句仍成立**（2026-11-07）：人岗匹配按 ADR-013 解冻并落地为 §4.10 的 `POST /jobs/{job_id}/match`，它是同步纯计算、不落库；而「你已具备」那条前端只读比对**原样保留**，两者不是同一件事，也没有合并。批量匹配（`/match-runs`）与教师端候选人仍在冻结清单。
+- 岗位与学生技能字典的合并或外键：**不建**（ADR-011 1.E）。「你已具备」原先是**前端只读比对**、无后端端点（ADR-011 2.E）。**这半句已按 ADR-013 §10 第 3c 步作废**（2026-11-08）：判定收回后端 `GET /jobs/{job_id}/requirement-match`（§4.10.1），它同样不写任何表、不产匹配分数、不调 AI；本地那套 `normalizeSkillName` 只剩「提交前重名自检」一个用途。**「不建字典表/外键」那半句仍成立**（2026-11-07）：人岗匹配按 ADR-013 解冻并落地为 §4.10 的 `POST /jobs/{job_id}/match`，它是同步纯计算、不落库；而「你已具备」那条前端只读比对**原样保留**，两者不是同一件事，也没有合并。**批量匹配（`/match-runs`）与教师端候选人仍在冻结清单** → 这句已过期两半：冻结清单已于 2026-11-08 由 `ADR-014` 全面解除（所以不再是「不许做」），而教师端**已经做了一半**——`ADR-029` 交付 `GET /teacher/dashboard`、`GET /teacher/resumes`、`POST /teacher/resumes/batch-download`、`POST /teacher/skills/confirm`；**仍未实现的是按岗位看候选人（`/teacher/jobs/{id}/candidates`）与批量匹配 `/match-runs`**，那是「没做」不是「禁做」。
 - `work_mode`（远程/驻场）列：**有意留下的缺口**，本轮只有 `employment_type`（ADR-011 1.G）；远程/驻场信息留在 `description` 文本里。
 
 
@@ -719,7 +718,7 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 > 保留这段说明是为了让读旧 PRD 的人知道它作废了，而不是「还没做」。
 >
 > **前端**：`frontend/src/api/assessments.ts` 是这八个端点的唯一封装；`AssessmentView.vue` 一屏三段
-> （目录 / 答题 / 结果），从工作区切换器进入。BYOK 白名单只扩
+> （目录 / 答题 / 结果），从**二级导航**（`ModuleNav.vue` 的「能力测评」页签）进入——「工作区切换器」那个弹层组件已于 2026-11-14 删除。BYOK 白名单只扩
 > `POST /assessments/sessions/{id}/summary`（唯一会转发用户凭据的一条），同组其余六个只碰自己库的
 > 端点在 `byok.spec.ts` 里各有反向断言；概述标题按 `source` 分流（`ai` → 「AI 分析」，
 > `fallback` → 「自动整理的概述」），不许把模板文案标成 AI。
@@ -893,8 +892,10 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 > | `POST /resumes/polish` | AI 润色，纯计算、不落库 | ADR-018 |
 > | `POST /resumes/privacy-check` | 导出前隐私检查，纯计算、不落库 | ADR-011 / B2 |
 >
-> 其余小节（`GET /resumes`、`GET /resumes/{id}`、`PATCH …/versions/{id}`、`POST …/export`、`POST …/share`）
-> **都没有实现**，标题已标「未实现 · 设计意图」，不要照着它们写客户端。
+> 其余小节（`GET /resumes`、`GET /resumes/{id}`、`PATCH …/versions/{id}`、`POST …/share`）**都没有实现**，
+> 标题已标「未实现 · 设计意图」，不要照着它们写客户端。**`POST …/export` 已从这份名单里移出**：
+> 导出由 `ADR-029`（批次 B10b）落地，但形态换了——是教师端的同步 ZIP / 单份 PDF + 下载审计，
+> 不是「异步任务 + 短时下载 URL」，详见下面该小节里的 2026-11-15 更正。
 > 特别注意：`PATCH …/versions/{id}` 与已实现的 `GET /resumes/versions` **不是同一件事**——
 > 前者是「编辑某一版」，后者是「读版本清单」，前者至今没有路由。
 
@@ -1068,9 +1069,11 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 
 更新编辑后的区块。保存新版本，禁止覆盖审计历史。
 
-### POST `/resumes/{resume_id}/export`（未实现 · 设计意图）
+### POST `/resumes/{resume_id}/export`（**设计意图已被 B10b 换了形态实现**）
 
-请求 `{"version_id":"uuid","format":"pdf"}`；返回异步任务。完成后返回短时下载 URL。
+原文写的是「返回异步任务 + 短时下载 URL」。**今天不是这样**：导出由 `ADR-029`（批次 B10b，2026-11-14）落地为
+`POST /teacher/resumes/batch-download`（教师端批量 ZIP）与 `GET /teacher/resumes` 清单里的单份导出，**同步生成、直接回文件流**，没有任务、没有对象存储、没有短时 URL；每次导出都写 `audit_logs`（与批量下载同一张表）。
+`docx` / 图片不在范围内；PDF 依赖宿主机无头浏览器渲染（CI 用假 renderer 只测契约）。
 
 ### POST `/resumes/polish` — 润色（同步、纯计算、BYOK）
 
@@ -1121,7 +1124,7 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 
 错误口径与 `/generate` 逐字对齐：`profile_id` 是别人的 / 不存在的 / 在回收站的 → `404 NOT_FOUND`；这个用户一份档案都没有 → `400 CLIENT_ERROR`；`profile_id` 超长 → `422 VALIDATION_ERROR`。
 
-**与上面那张「设计意图」表的关系**：`POST /resumes/{resume_id}/export` 至今**未实现**（`app/` 里 `export`/`pdf` 零命中，也没有任何 PDF 依赖），所以「导出前显示」这一格今天没有挂载点。B2 因此把检查做成一个**读同一份档案的纯计算端点**，等导出真落地时它才有地方挂——这不是把两件事做完了，是把其中可核的两格做完、把不可核的两格如实标出来。
+**与上面那张「设计意图」表的关系（2026-11-15 更正）**：B2 交付当时确实「`export`/`pdf` 零命中」，那句是当时的实测、按时点保留；**导出已由 B10b 落地**（`ADR-029`：同步 ZIP + 宿主机浏览器渲染 PDF + 下载审计），所以「导出前显示隐私检查」这一格现在**有挂载点了**，`ADR-019` §3 那条「B2 ≠ FR-06 完成」的账也随之结了一半——**服务端导出目前覆盖教师端**（批量 ZIP + 单份），学生侧那一格走的是界面上的「打印 / 导出 PDF」（浏览器打印，`ADR-029` 定的自然分页、溢出预警线不上纸）。B2 因此把检查做成一个**读同一份档案的纯计算端点**，等导出真落地时它才有地方挂——这不是把两件事做完了，是把其中可核的两格做完、把不可核的两格如实标出来。
 
 ### POST `/resumes/{resume_id}/share`（未实现 · 设计意图）
 
@@ -1239,13 +1242,14 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 
 ### GET `/teacher/jobs/{job_id}/candidates`
 
-`# PHASE-2: not wired` — 未接通：`app/` 下全量 grep `teacher` **零命中**（含路由、服务、仓储），`app/api/router.py` 只挂了 v1 聚合路由与 `/health`。
+**（2026-11-15 更正）这一节整段作废**：`app/api/v1/teacher_tools.py` 已挂载四个端点——`GET /teacher/dashboard`（标签分布 + 岗位技能覆盖率，只读、响应不含姓名/邮箱/手机号/简历正文）、`GET /teacher/resumes`（下载清单）、`POST /teacher/resumes/batch-download`（同步 ZIP + 审计）、`POST /teacher/skills/confirm`（技能确认，`ADR-029` / `ADR-027`）。
+**本节的候选人端点仍未实现**：`GET /teacher/jobs/{job_id}/candidates` 与它的导出没有对应代码——那是「没做」，不是「不许做」（冻结清单已由 `ADR-014` 解除）。原来那句「`app/` 下 grep `teacher` 零命中」是这条端点写下来当时的实测，按时点保留在下面一行，不再代表现状。
 
 只返回学生已授权摘要；支持 `min_score`、`class_id`、`skill_id`、分页。
 
 ### POST `/teacher/jobs/{job_id}/candidates/export`
 
-`# PHASE-2: not wired` — 未接通，同上；批量下载与候选人导出仍在 AGENTS.md §3.2 冻结清单内（ADR-011 议题 3.C）。
+**（2026-11-15 更正）**：批量下载已交付（`POST /teacher/resumes/batch-download`，`ADR-029`），「冻结清单内」那半句随 `ADR-014`（2026-11-08 全面解除）失效；**候选人导出仍未实现**。原文形态「异步导出任务 + 字段白名单」也没有落地——今天是同步 ZIP，字段范围由端点响应结构固定（不含简历正文），每次下载写 `audit_logs`。
 
 请求导出字段白名单；返回异步导出任务。每次导出记录审计。
 

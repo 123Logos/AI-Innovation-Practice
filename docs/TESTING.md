@@ -1,37 +1,51 @@
-> 【范围声明】本文件为测试设计参考，非 Phase 1 实现依据。Phase 1 测试范围以 docs/MVP_SCOPE.md 为准；本文件中属于 MVP_SCOPE.md 冻结清单的功能或依赖，Phase 1 不实现、不排期、不建表。与 docs/MVP_SCOPE.md 或 AGENTS.md 冲突时，以后两者为准；本文件不扩大 Phase 1 范围。
+> 【范围声明】本文件为测试设计参考，非 Phase 1 实现依据。Phase 1 测试范围以 docs/MVP_SCOPE.md 为准；本文件中属于 MVP_SCOPE.md 冻结清单的功能或依赖，Phase 1 不实现、不排期、不建表。**（2026-11-15 注：那张冻结清单已于 2026-11-08 由 `ADR-014` 全面解除，所以这一句今天只对「Phase 1 当时」成立；本文件的测试设计仍是验收基线，哪些已落地、哪些还没落地，见下面每节的「现状」标注。）**与 docs/MVP_SCOPE.md 或 AGENTS.md 冲突时，以后两者为准；本文件不扩大 Phase 1 范围。
 
 # 测试文档
 
 ## 1. 文档信息与目标
 
 - **版本**：1.0
-- **范围**：Vue 前端、FastAPI、MySQL、Redis、对象存储、DeepSeek 适配器、SSE、WebRTC 适配层和 Docker Compose 部署。
+- **范围**：Vue 前端、FastAPI、MySQL、DeepSeek 适配器（BYOK）为**现役被测面**；Redis、对象存储、SSE、WebRTC 适配层、Docker Compose 部署**至今没有一行实现代码**，它们出现在这里只表示「将来要测什么」，不表示「有东西可测」（`AGENTS.md` §1.5、`docs/PROJECT_STATUS.md` §2.2）。
 - **目标**：验证功能、组织隔离、AI 可追溯性、公平与隐私、性能、可用性及故障降级。
-- **环境**：Python 3.13 + uv、MySQL 8、Redis、S3 兼容对象存储，以及 Chrome/Edge/Safari 最新两个稳定版本。
+- **环境（现状）**：Python 3.13 + uv、MySQL 8（业务库 `resume_mvp_dev`、测试库 `resume_mvp_test`，`conftest.py` 拒绝两者同名）、Node 22 + npm、CI 用 GitHub Actions 的 MySQL service。**Redis 与 S3 兼容对象存储不在环境里**（没接线）。浏览器侧：布局与视觉改动用 headless Edge + CDP 实测 375px / 1280px 两档（配方见 `docs/DEVELOPMENT.md` §10.2，守则 R2）；Safari 仍是人工缺口，尤其是语音那一支的 `MediaRecorder` 兼容性矩阵。
 
 ## 2. 测试分层
 
 | 层级 | 工具/方式 | 重点 | 阻断级别 |
 |---|---|---|---|
-| 静态检查 | Ruff、Pyright、ESLint、TypeScript | 格式、类型、依赖和 API 类型 | P0/P1 |
+| 静态检查 | **实际用的**：Ruff（`ruff format --check` + `ruff check`）、mypy、import-linter（5 个 contract）、ESLint、vue-tsc。~~Pyright~~ 不在本仓库工具链里。 | 格式、类型、**分层依赖方向**和前端类型 | P0/P1 |
 | 单元测试 | Pytest、Vitest | 公式、状态机、schema、组件、错误映射 | P0/P1 |
-| 集成测试 | Pytest + MySQL/Redis/MinIO | 数据库、权限、任务、签名 URL | P0/P1 |
+| 集成测试 | Pytest + MySQL（~~Redis/MinIO~~ 未接线，故「任务」与「签名 URL」两类今天无从测起） | 数据库、鉴权、组织隔离、权限闸、审计 | P0/P1 |
 | 契约测试 | OpenAPI + Schemathesis/断言 | 状态码、响应结构、错误码 | P0/P1 |
-| E2E | Playwright | 主流程、移动端和错误态 | P0/P1 |
+| E2E | Playwright —— **未实施**：仓库里没有 playwright 依赖也没有脚本。主流程今天靠集成测试 + 真浏览器 CDP 手工实测兜住 | 主流程、移动端和错误态 | P0/P1（缺口） |
 | 安全测试 | OWASP 清单、依赖扫描、授权矩阵 | BOLA、认证、SSRF、限流和泄露 | P0 |
 | AI 评估 | 固定数据集 + 人工复核 | 事实支持、公平、注入、拒答和漂移 | P0/P1 |
 | 性能测试 | Locust/k6 | P95、吞吐、资源和降级 | P1 |
 
 建议命令：
 
+实际可跑的命令（与 `.github/workflows/ci.yml` 的 `test` job 一致；~~`uv run pyright`__、`npm run test:unit`、`npm run test:e2e`__ 这三个脚本名在本仓库不存在，照抄会直接报错）：
+
 ```powershell
-uv run pytest -q
-uv run ruff check .
-uv run pyright
+# 后端
+uv run ruff format --check app tests alembic scripts
+uv run ruff check app tests scripts
+uv run mypy app scripts
+uv run lint-imports
+uv run pytest -q                 # 2026-11-15 实测：753 tests collected
+
+# 文档与文案闸（五道，全在 scripts/）
+uv run python scripts/check_ui_copy.py            # G1
+uv run python scripts/check_error_copy.py         # G3
+uv run python scripts/check_design_tokens.py      # G4
+uv run python scripts/check_route_reachability.py # G5
+uv run python scripts/check_docs_citations.py     # 文档指针
+
+# 前端（frontend/ 下；2026-11-15 实测 450 passed / 39 spec）
 npm run lint
 npm run typecheck
-npm run test:unit
-npm run test:e2e
+npm run test
+npm run build
 ```
 
 ## 3. 错误编号与输出规范
@@ -89,6 +103,23 @@ npm run test:e2e
 | ERR-SYS-001 | 503 | 数据库/Redis 不可用 | `DEPENDENCY_UNAVAILABLE` | 重试并告警 |
 | ERR-SYS-002 | 500 | 未分类内部错误 | `INTERNAL_ERROR` | 返回 request_id |
 
+### 3.2 今天真的会发出去的 code（2026-11-15 按 `app/main.py` 实测核对）
+
+上面 3.1 那张表是**设计词汇表**，其中 `AUTH_INVALID_CREDENTIALS` / `CONSENT_REQUIRED` / `AI_PROVIDER_UNAVAILABLE` / `AI_QUOTA_EXCEEDED` / `MEDIA_UNAVAILABLE` / `FILE_TOO_LARGE` 这些**代码里没有**——照它写断言会永远红。真实信封只有这 8 个（`error.code`），文案一律取自 `app/core/error_messages.py`（G3 那张表），原始 detail 只进 `details.reason`：
+
+| code | HTTP | 什么时候发 |
+|---|---:|---|
+| `VALIDATION_ERROR` | 422 | FastAPI 请求体校验失败 |
+| `NOT_FOUND` | 404 | 资源不存在或不可见（含跨组织不泄露存在性那类） |
+| `CLIENT_ERROR` | 4xx 其他 | 业务层拒绝（凭据错、重名、状态冲突、无组织…） |
+| `RATE_LIMITED` | 429 | slowapi 限流，带 `Retry-After: 60` |
+| `AI_KEY_MISSING` | 401 | BYOK 端点没带用户凭据 |
+| `AI_KEY_INVALID` | 401 | 用户凭据被服务商拒绝 |
+| `AI_SERVICE_UNAVAILABLE` | 502 | AI 调用失败/超时/输出不可解析 |
+| `INTERNAL_ERROR` | 5xx | 未分类内部错误，细节只进日志 |
+
+401 的「凭据错误」与「令牌失效」今天**不靠 code 区分**，靠 `message` 与状态码；`SEC-*` / `PERF-*` / `AIQ-*` / `UX-*` 那四套编号是测试**用例编号**方案，不是响应里的 code。
+
 ## 4. 功能测试用例
 
 | 编号 | 场景与输入 | 预期 HTTP/输出 | 通过标准 |
@@ -109,6 +140,21 @@ npm run test:e2e
 | TC-MEDIA-001 | 房间 token 过期 | 409/503 | 可重建，长期密钥不下发 |
 | TC-FILE-001 | 上传 11MB 文件 | 413，`FILE_TOO_LARGE` | 无残留对象 |
 | TC-ASYNC-001 | 相同幂等键重复提交 | 同一任务 ID | 不重复调用模型 |
+
+### 4.1 上面那张用例表的现状标注（2026-11-15，避免有人照它写断言）
+
+今天所有 AI 相关端点都是**同步返回**，没有任务、没有 202、没有幂等键，所以这几行的「预期」要按现状改读：
+
+| 用例 | 设计预期 | **今天的真行为** |
+|---|---|---|
+| TC-MATCH-001 | `202` 后 `succeeded` | `POST /jobs/{job_id}/match` **同步 200** 直接给分数、来源与缺口（`ADR-013`） |
+| TC-RESUME-001 | `202` | `POST /resumes/generate` **同步返回**，纯模板必然成功；缺信息走「待补充标记」（`ADR-019`） |
+| TC-INTERVIEW-001 | `202` | 面试回合**同步返回**（`ADR-022` 文本 / `ADR-030` 语音转写后落 `interview_turns`） |
+| TC-ASYNC-001 | 相同幂等键 → 同一任务 ID | **不适用**：没有任务框架，这条要等引入队列后才能落地 |
+| TC-MEDIA-001 / SEC-011 / MEDIA-001…006 | 房间 token、WebRTC 媒体、授权撤回 | **不适用**：WebRTC 一行代码都没有；`ADR-030` 已裁定不建 `media_rooms` / `interview_reports` |
+| PERF-003 | Redis 暂停 → CRUD 可用 | **不适用**：没有 Redis 可停。等价测试是「DeepSeek 不可达」：润色 / 提取 / 匹配 / 概述各自返回 `AI_SERVICE_UNAVAILABLE` 且**不动已有数据**（`tests/test_resume_ai_copywriting.py`） |
+
+**已落地的等价覆盖在哪**：后端 753 条 collected 含鉴权、组织隔离、权限闸（`app/core/action_gate.py`）、审计、隐私检查、版本对比与按岗位定制、测评判分、邀请码兑换并发（`tests/test_invitations.py`）、教师端与批量导出（`tests/test_teacher_tools.py`）、限流（`tests/test_rate_limit.py`）；前端 450 条含 BYOK 两张白名单 fail-closed、抽屉互斥与焦点归还/圈定、分层与文案闸（`layoutGuards` / `motionGuards` / `formGuards` / `paperPaginationGuards`）。
 
 ## 5. 安全测试
 
@@ -154,6 +200,8 @@ npm run test:e2e
 | AIQ-008 | 过期岗位 | 标注时间或排除趋势统计 |
 
 ## 7. 性能、可靠性与 WebRTC
+
+> **本节现状（2026-11-15）**：性能与可靠性那一半有等价实现（同步链路的超时、限流、降级都有用例钉着，见 `tests/test_resume_ai_copywriting.py` 与 `tests/test_rate_limit.py`）；**WebRTC 那一整块没有可测对象**——没有房间、没有媒体服务、没有 `media_rooms` 表。语音面试今天测的是「录音 → 直连 ASR → 落一条回合 → 音频不留存」这条线（`ADR-030` 不变量 A）。
 
 | 编号 | 条件 | 目标/预期输出 |
 |---|---|---|

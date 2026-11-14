@@ -2,6 +2,13 @@
 
 > 本文件是 Phase 1 的唯一范围依据。与 Word 产品文档不一致时，以本文件为准。
 > 修改本文件需两人共同确认，并记录在文末“变更记录”。
+>
+> **⚠️ 阅读前提（2026-11-15 加）：本文件写的是 Phase 1 的基线，不是今天的范围边界。**
+> 从 Phase 2 起，范围由 `docs/adr/` 的 ADR 与 [docs/ROADMAP.md](ROADMAP.md) 的批次决定；
+> §5 那张「冻结清单」已在 **2026-11-08 被 [ADR-014](adr/ADR-014-global-unfreeze-of-frozen-list.md) 全面解除**，
+> 今天只有「还没做」，没有「不许做」。所以本文件里凡是写「Phase 1 不做 / 冻结 / 只服务这一群人」的句子，
+> 都要按下面各节现存的行内更正来读；**Phase 1 那 5 张表也早已扩到 23 张**（§6 已注明）。
+> 为什么不直接改写正文：这份文件是范围决策的证据链，把「当时怎么定的」抹掉，后面就没法解释为什么现在这样。
 
 ## 1. 一句话定义
 
@@ -11,11 +18,13 @@
 
 - 核心：大二、大三 AI 专业，有实习意向、但简历还没写或写不好 的学生。
 - 次要：负责推荐实习的任课老师（Phase 1 只作为旁观验收者，不做教师端功能）。
+  → **现状更正（B5 + B10a，2026-11-12 / 11-14）**：教师端**已经做了**——`ADR-021` 建组织与角色（`student` / `teacher` / `school_admin` / `platform_admin`），`ADR-029` 交付只读学情看板 `GET /teacher/dashboard`（标签分布 + 岗位技能覆盖率，响应不含姓名/邮箱/手机号/简历正文）、`GET /teacher/resumes` 下载清单、批量 ZIP 与单份 PDF 导出、`POST /teacher/skills/confirm` 技能确认端点；界面 `/teacher` 已挂路由。仍没做的是「学校课程反哺报告」与教师确认技能的那一屏界面（账在 ROADMAP §0b 第 1 条）。
 
 ## 3. 用户主路径（必须完整跑通）
 
 1. 学生用邮箱/用户名注册并登录；
 2. 填写：姓名、专业、年级、联系方式、3–8 项技能（含自评等级）、1–3 段项目/实践经历（标题、时间、描述、个人职责）；
+   → **现状更正**：字段已经不止这些，且**「专业」与「自评等级」两格都变了**——顶层 `major` 由迁移 `20261102_0003` 删除（专业只由每段教育经历携带，`educations.major` 保留），技能不再有 1–5 自评列（迁移 `0013` 起改为 `source` / `last_used_on` / `first_added_at` 三列元数据，`ADR-027`）。现在档案是六组：基本信息（姓名 / 邮箱 / 手机号 / 联系方式 / 目标岗位 / 年级）+ 技能 + 项目经历 + 教育经历 + **证书** + **作品链接** + **期望城市**（后三组是 `ADR-015` B4 加的多值子表，各上限 5 条）；技能与经历的条数上限见 `app/schemas/profile.py`，不再是 3–8 / 1–3 这两个数。
 3. 点击“生成简历”，系统按模板在 2 秒内返回一页 A4 简历预览；
 4. （可选）点击“AI 润色”，选档位后由 AI 改写经历文案，学生在对照弹窗里确认「接受」才填进表单，仍需自己点“保存修改”才会保存；
 5. 学生可在线编辑文字、调整模块顺序、重新生成；
@@ -26,8 +35,8 @@
 | 编号 | 功能 | 必须 | 说明 |
 |---|---|---|---|
 | F1 | 注册 / 登录 / 登出 | 是 | 邮箱或用户名 + 密码，密码哈希存储 |
-| F2 | 学生档案 CRUD | 是 | 姓名、专业、年级、联系方式 |
-| F3 | 技能 CRUD + 自评等级 | 是 | 等级 1–5，Phase 1 允许自评（题库测评属冻结项） |
+| F2 | 学生档案 CRUD | 是 | 姓名、专业、年级、联系方式 → **现状**：专业已下沉到每段教育经历（顶层 `major` 由迁移 `0003` 删），另加邮箱 / 手机号 / 目标岗位 / 纸张 / 主题 / 排版，以及证书、作品链接、期望城市三组多值子表（`ADR-015`） |
+| F3 | 技能 CRUD + 自评等级 | 是 | 等级 1–5，Phase 1 允许自评（题库测评属冻结项）→ **两条都已变**：自评列 `self_rating` 已由迁移 `0013` 删除，改成 `source` / `last_used_on` / `first_added_at` 三项元数据（`ADR-027`，「最近使用」由用户自己填、系统不替他猜）；题库测评也已上线（`ADR-028`，v2 = 50 题 / 5 技能），能力标签来自测评结果而不是自评 |
 | F4 | 项目/实践经历 CRUD | 是 | 标题、起止时间、描述、个人职责 |
 | F5 | 生成简历 | 是 | **纯模板**（Phase 3.1 起不调 AI，见 ADR-010）；输出 HTML，可导出 PDF |
 | F6 | 简历预览与在线编辑 | 是 | 文字可改、模块可排序 |
@@ -36,24 +45,30 @@
 | F9 | 响应式布局 | 是 | 375px 与 1280px 下主路径可用 |
 | F10 | 统一错误提示 | 是 | 表单校验失败、生成失败均有可读提示 |
 
-## 5. 冻结清单（Phase 1 一行实现代码都不写）
+## 5. 冻结清单（Phase 1 原文，**2026-11-08 已被 ADR-014 全面解除**）
 
-- 模拟面试（文字/电话/视频/WebRTC）
-- 人岗匹配、自动推荐、批量简历下载
-- ~~AI 爬虫采集岗位、企业需求自动解析~~ → **Phase 4 部分解除**（2026-11-05 人类负责人书面批准）：按 [ADR-011](adr/ADR-011-job-board-and-skill-extraction.md) 只解「企业需求自动解析」中的**岗位 JD 技能提取**这一步（`POST /jobs/extract-skills`），形态限 `deepseek-flash` + BYOK + 同步非流式 + 纯计算不落库；**AI 爬虫采集岗位保持冻结**；上一条人岗匹配与下一条模拟面试**保持冻结**（文字/电话/视频/WebRTC 全部）。AGENTS.md §3.2 的「5 名以上真实用户验证」前置门槛对这一项已获同一批准免除，其余冻结项一律未免除。
-- 标准化题库测评、AI 用户画像
-- 行业标杆人物库
-- 教师端学情看板、学校课程反哺报告
-- ~~真实 DeepSeek 或任何真实外部 AI 调用~~ → **Phase 2 已解除**：按 [ADR-009](adr/ADR-009-deepseek-byok-nonstream.md) 以 BYOK 模式接入真实 DeepSeek（模型 `deepseek-flash`、非流式、用户自带 Key、服务端不落库不写日志），业务流程按 [ADR-010](adr/ADR-010-decouple-ai-polish-from-generate.md) 定为**独立的润色步骤**（`POST /resumes/polish`，不落库、用户确认后才进表单），不掺进 F5 的模板生成。OpenAI 等其它任何外部 AI 服务仍在冻结之列。
-- Redis、ARQ、Celery、S3、消息队列、后台任务框架
-- 小程序 / 原生 App
+> **这一节的读法**：原文保留是为了能解释「当时为什么压着」。今天只有「还没做」，没有「不许做」。
+> 仍然一条不松的三件：新依赖 / 新表 / 外部服务 / 分层 / 范围变更要先写 ADR（`AGENTS.md` §4.6）、
+> BYOK 白名单**逐条**书面同意、完成定义不打折（§7 与 `AGENTS.md` §6）。
+> 逐项现状以 `docs/PROJECT_STATUS.md` §2–§3 与 `docs/ROADMAP.md` §1 为准，下面只标大方向。
 
-冻结项只允许以文档、接口占位、`# PHASE-2: not wired` 形式存在。
+- ~~模拟面试（文字/电话/视频/WebRTC）~~ → **两支已交付**：文本回合制 [ADR-022](adr/ADR-022-text-interview-sessions.md)（B11a）+ 录音转写回合制 [ADR-030](adr/ADR-030-turn-based-voice-interview.md)（B11b：浏览器 `MediaRecorder` → 直连 ASR 转写 → 落 `interview_turns`，音频不上传、转写即删）。**WebRTC 电话/视频那一支仍未实现**，且 `ADR-030` 已裁定**不建** `media_rooms` / `interview_reports`——它是「没做」，不再是「不许做」。
+- 人岗匹配、自动推荐、批量简历下载 → **人岗匹配已交付**（[ADR-013](adr/ADR-013-job-matching-and-evidence-scoring.md)：`POST /jobs/{job_id}/match` 证据加权 + `GET /jobs/{job_id}/requirement-match` 逐条要求状态，同步纯计算、不落库）；**批量下载已交付**（[ADR-029](adr/ADR-029-teacher-dashboard-and-batch-export.md) B10b：`POST /teacher/resumes/batch-download` 同步 ZIP + 下载审计走同一张 `audit_logs`）；**自动推荐仍未做**（缺的是数据源与产品口径，不是许可）。
+- ~~AI 爬虫采集岗位、企业需求自动解析~~ → **Phase 4 部分解除**（2026-11-05 人类负责人书面批准）：按 [ADR-011](adr/ADR-011-job-board-and-skill-extraction.md) 只解「企业需求自动解析」这一半（`POST /jobs/extract-skills`，`deepseek-flash` + BYOK + 同步非流式 + 纯计算不落库）。AI 爬虫采集岗位仍在冻结之列。 → **现状**：爬虫那一半**解禁了也还是没做**，做它要先回答数据源与合规。
+- ~~标准化题库测评、AI 用户画像~~ → **已交付**（[ADR-028](adr/ADR-028-standardized-assessment-and-ai-profile.md) B9：四张表 + 八个端点 + v2 50 题 / 5 技能题库 + 画像标签 + 概述生成；没填凭据时回落模板整理，**并在界面上说明是哪一种**）。
+- 行业标杆人物库 → 未实现（禁令已解除；做它要先补一条产品口径 + ADR）。
+- 教师端学情看板、学校课程反哺报告 → **看板已交付**（`ADR-029` B10a，只读、响应不含姓名/邮箱/手机号/简历正文）；教师确认技能**端点有了（`POST /teacher/skills/confirm`）、界面还没有**（ROADMAP §0b 第 1 条）；**课程反哺报告未做**。
+- ~~真实 DeepSeek 或任何真实外部 AI 调用~~ → **Phase 2 已解除**：按 [ADR-009](adr/ADR-009-deepseek-byok-nonstream.md) 以 BYOK 模式接入真实 DeepSeek（模型 `deepseek-flash`、非流式、用户自带 Key、服务端不落库不写日志），业务流程按 [ADR-010](adr/ADR-010-decouple-ai-polish-from-generate.md) 定为**独立的润色步骤**（`POST /resumes/polish`，不落库、用户确认后才进表单），不掺进 F5 的模板生成。OpenAI 等其它任何外部 AI 服务仍在冻结之列。 → **现状**：DeepSeek 已覆盖润色 / JD 技能提取 / 人岗匹配 / 面试（文本 + 语音 ASR/TTS）/ 画像概述；**其它服务商现在也能做，但接入任何一家仍是 §4.6 的 ADR 事件**，能带凭据的 URL 白名单要逐条书面同意。
+- Redis、ARQ、Celery、S3、消息队列、后台任务框架 → **禁令解除，但一件都没引入**：所有链路仍是同步 + 单库 + 应用时钟；批量下载是同步 ZIP（50 条以内可接受），PDF 靠宿主机浏览器渲染。引入任何一件，先回答「哪条已验证的行为因为它才成立」。
+- 小程序 / 原生 App → 未实现；产品形态仍归 [ADR-001](adr/ADR-001-mvp-responsive-web.md) 的响应式 Web。
+
+~~冻结项只允许以文档、接口占位、`# PHASE-2: not wired` 形式存在。~~ → 这句随 `ADR-014` 一起失效。今天代码里没有那类占位注释，未接线的能力在文档里如实列着（`PROJECT_STATUS.md` §2.2、`ROADMAP.md` §0b）。
 
 ## 6. 数据范围（Phase 1 建 5 张表；后续阶段新增表必须走 ADR）
 
 `users`、`student_profiles`、`skills`、`experiences`、`resumes`
 
+- **这 5 张是 Phase 1 基线，不是上限。** 库里现在是 **23 张表 / 28 个 Alembic 修订**（2026-11-15 实测：`grep __tablename__ app/repositories/*.py`）。另 18 张是 `educations`、`refresh_tokens`、`profile_certificates`、`portfolio_links`、`profile_city_preferences`、`profile_tags`、`jobs`、`job_skills`、`skill_aliases`、`organizations`、`organization_members`、`organization_invitations`、`audit_logs`、`assessment_questions`、`assessment_sessions`、`assessment_answers`、`interview_sessions`、`interview_turns`——**每张都有对应 ADR**（ADR-005/006/011/013/015/016/021/022/023/024/027/028/029/030）。逐张表名与「设计里有、今天没建」的对照见 `docs/DEVELOPMENT.md` §5 与 `docs/DATABASE.md` §3。
 - 只通过 Alembic 迁移创建，每个迁移必须有 downgrade；
 - 设计草案见 `docs/design/schema-draft.sql`（**非迁移源**）；
 - 新增表必须走 ADR。
@@ -69,17 +84,18 @@
 
 ## 8. 验收标准（Definition of Done）
 
-Phase 1 完成 = 同时满足：
+Phase 1 完成 = 同时满足。**下面这八格在 2026-11-07 全部勾上**（5 名真实用户测试完成，数据在另一库归档；2026-11-08 老板裁定 10 人目标达标并全面解除冻结清单，`ADR-014`），勾选状态与证据在 `docs/PROJECT_STATUS.md` §3 与 `docs/ROADMAP.md` §7 第 14–19 轮，本文件只把状态改准、不重述过程：
 
-- [ ] 一名真实学生能在手机上独立完成主路径，无需开发者口头指导；
-- [ ] 同一学生能在电脑上完成同一路径；
-- [ ] 生成结果不超过 1 页 A4（最多 1.5 页），字段完整；
-- [ ] 保存后重新打开，内容不丢失；
-- [ ] 集成测试覆盖主链路，CI 全绿；
-- [ ] `alembic upgrade head` 与 `downgrade base` 均可跑通；
-- [ ] 至少 5 名真实用户使用记录（姓名 + 截图/录屏 + 一句反馈 + 一个卡点）；
-- [ ] 未触碰冻结清单。
+- [x] 一名真实学生能在手机上独立完成主路径，无需开发者口头指导；
+- [x] 同一学生能在电脑上完成同一路径；
+- [x] 生成结果不超过 1 页 A4（最多 1.5 页），字段完整；
+- [x] 保存后重新打开，内容不丢失；
+- [x] 集成测试覆盖主链路，CI 全绿；
+- [x] `alembic upgrade head` 与 `downgrade base` 均可跑通；
+- [x] 至少 5 名真实用户使用记录（姓名 + 截图/录屏 + 一句反馈 + 一个卡点）；
+- [x] 未触碰冻结清单。（**Phase 1 交付当时成立**；该清单已于 2026-11-08 由 `ADR-014` 全面解除，此后各批次的解冻与授权逐条记在 ADR 里，这条判据因此不再约束后续批次，改为约束「没有 ADR 就不许动」——`AGENTS.md` §4.6。）
 
+**Phase 1 之后新增的两条硬判据**（不在这八格里，但今天同样算 DoD）：布局与视觉类改动必须真浏览器实测 375px 与 1280px 两档并附数值（`docs/FRONTEND_DESIGN.md` 守则 R2）；后端上屏字符串必须走 G3 那张文案表（守则 C3）。
 ## 9. 明确不做的事（防止范围蔓延）
 
 - 不追求“AI 写出文采好的简历”，只追求“整洁、规范、字段完整、可编辑”；
@@ -108,3 +124,4 @@ Phase 1 完成 = 同时满足：
 | 2026-11-04 | Phase 3.1 按 [ADR-010](adr/ADR-010-decouple-ai-polish-from-generate.md) 将生成与润色解耦：§3 主路径第 3 步回到「模板 ≤ 2 秒」，新增第 4 步「可选 AI 润色 + 对照确认，接受后仍需手动保存」；§4 F5 标注为纯模板；§5 冻结解除条目收窄为独立的 `POST /resumes/polish` 步骤（不再掺进 F5）；§7 拆成「生成 ≤ 2 秒 / 润色 ≤ 30 秒（前端超时 45 秒）」 | 人类负责人（Phase 3.1 指令）/ Agent |
 | 2026-11-05 | §5 将「AI 爬虫采集岗位、企业需求自动解析」**收窄解除**：仅「岗位 JD 技能提取」（`POST /jobs/extract-skills`）按 [ADR-011](adr/ADR-011-job-board-and-skill-extraction.md) 解冻，形态限 `deepseek-flash` + BYOK + 同步非流式 + 纯计算不落库；爬虫采集、人岗匹配、模拟面试保持冻结。同一批准免除 AGENTS.md §3.2 的「5 名以上真实用户验证」前置门槛（仅本项，Phase 4 据此提前开工）。另记 §6 标题口径（Phase 1 建 5 张表、后续新增表必须走 ADR）与 AGENTS.md §1「现库 7 张表」的归因修订已于 `565de48` 落地 | 人类负责人（书面授权）/ Agent |
 | 2026-11-09 | §3 主路径第 4 步跟着界面改准（批次 F1a 落地守则 C1/C2）：按钮名「✨ AI 智能润色」→「AI 润色」，同一句里「才落库」→「才会保存」。文档里的按钮名必须与屏幕上真实存在的那个一致——否则文档指着一个月亮上没有的按钮 | 人类负责人（第 6 轮开工指令）/ Agent |
+| 2026-11-15 | 文档刷新（不改代码）：§5 冻结清单逐项标出「已交付 / 仍未做」并挂上 ADR-014 全面解除的阅读前提；§6 数据范围补「现 23 张表 / 28 个修订」；§2 教师端、§3 第 2 步字段、§4 F2/F3 三格按现状更正（`major` 下沉、`self_rating` 由迁移 0013 删除、三组多值子表）；§8 八格 DoD 按 2026-11-07 真实用户测试完成勾上，并注明冻结判据转为 §4.6 的 ADR 前置；文件头加「本文件是 Phase 1 基线、不是今天的范围边界」的阅读前提 | Agent（老板指令：更新 README 及关联文档，不改代码、不跑测试） |
