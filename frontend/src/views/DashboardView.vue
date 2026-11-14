@@ -240,9 +240,7 @@ function statText(state: LoadState, value: string): string {
         <article class="stat-card">
           <span class="stat-label">能力标签</span>
           <strong class="stat-value">{{ statText(tagState, `${verifiedTags}`) }}</strong>
-          <p v-if="tagState === 'ready'" class="stat-hint">
-            {{ pendingTags ? `另有 ${pendingTags} 条待提升` : '已完成的能力测评结果' }}
-          </p>
+          <p v-if="tagState === 'ready' && pendingTags" class="stat-hint">另有 {{ pendingTags }} 条待提升</p>
           <p v-else-if="tagState === 'failed'" class="stat-hint">暂时读不到</p>
           <RouterLink class="card-link" :to="{ name: 'assessment' }">去做能力测评</RouterLink>
         </article>
@@ -250,16 +248,14 @@ function statText(state: LoadState, value: string): string {
         <article class="stat-card">
           <span class="stat-label">在招岗位</span>
           <strong class="stat-value">{{ statText(jobState, `${publishedJobs}`) }}</strong>
-          <p v-if="jobState === 'ready'" class="stat-hint">岗位库里当前可投的数量</p>
-          <p v-else-if="jobState === 'failed'" class="stat-hint">暂时读不到</p>
+          <p v-if="jobState === 'failed'" class="stat-hint">暂时读不到</p>
           <RouterLink class="card-link" :to="{ name: 'job-board' }">去看岗位</RouterLink>
         </article>
 
         <article class="stat-card">
           <span class="stat-label">模拟面试</span>
           <strong class="stat-value">{{ statText(interviewState, `${interviewTotal}`) }}</strong>
-          <p v-if="interviewState === 'ready'" class="stat-hint">已经练过的场次</p>
-          <p v-else-if="interviewState === 'failed'" class="stat-hint">暂时读不到</p>
+          <p v-if="interviewState === 'failed'" class="stat-hint">暂时读不到</p>
           <RouterLink class="card-link" :to="{ name: 'interview-list' }">去练一场</RouterLink>
         </article>
       </section>
@@ -267,7 +263,6 @@ function statText(state: LoadState, value: string): string {
       <RouterLink v-if="showTeacherEntry" class="teacher-entry" :to="{ name: 'teacher-dashboard' }">
         <span class="teacher-entry__label">教师工具</span>
         <h2>学情看板</h2>
-        <p>看本组织的标签分布与岗位技能覆盖率，并导出学生简历。</p>
       </RouterLink>
     </template>
 
@@ -275,7 +270,6 @@ function statText(state: LoadState, value: string): string {
     <section class="module-section" aria-label="全部模块">
       <div class="section-heading">
         <h2>{{ mode === 'guest' ? '登录后可以用这些' : '全部模块' }}</h2>
-        <p v-if="mode === 'guest'" class="section-hint">点进去会先请你登录，不会丢东西。</p>
       </div>
       <ul class="module-grid">
         <li v-for="module in entryModules" :key="module.key">
@@ -334,12 +328,10 @@ h2 { margin: 0 0 8px; font-size: var(--text-xl); }
 .teacher-entry { display: flex; flex-direction: column; gap: 4px; margin-top: 16px; border: 1px solid var(--ui-border); border-left: 3px solid var(--theme-rule); border-radius: var(--ui-radius); padding: 18px 20px; background: var(--ui-surface-soft); color: inherit; text-decoration: none; }
 .teacher-entry__label { color: var(--theme-rule); font-size: var(--text-sm); letter-spacing: .1em; }
 .teacher-entry h2 { margin: 0; font-size: var(--text-lg-plus); }
-.teacher-entry p { margin: 0; color: var(--ui-ink-muted); font-size: var(--text-base); }
 
 .module-section { margin-top: 36px; }
 .section-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-bottom: 12px; }
 .section-heading h2 { margin: 0; font-size: var(--text-xl); }
-.section-hint { margin: 0; color: var(--ui-ink-faint); font-size: var(--text-sm); }
 .module-grid { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
 .module-card { display: flex; align-items: center; gap: 10px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 14px 16px; color: var(--ui-ink); background: var(--ui-surface); font-size: var(--text-md); text-decoration: none; }
 .module-card:hover { border-color: var(--ui-border-strong); background: var(--ui-surface-soft); }

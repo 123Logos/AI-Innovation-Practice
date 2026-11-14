@@ -483,10 +483,6 @@ onBeforeUnmount(() => {
 
         <div v-if="canReview" class="review-panel">
           <h2 class="review-title">审核这条岗位</h2>
-          <p class="review-hint">
-            通过后它会立刻出现在广场；驳回时下面这句话会显示给创建者。
-            已过截止时间的岗位会被拦下（后端按同一个过期判据判断）。
-          </p>
           <label class="review-label" for="review-note">驳回理由（通过时不使用）</label>
           <!-- 守则 F1：多行输入只走 AutoTextarea，直写 <textarea> 会被 eslint 拦住。 -->
           <AutoTextarea
@@ -533,11 +529,7 @@ onBeforeUnmount(() => {
       -->
       <section class="detail-block match-block" data-testid="match-block">
         <h2 class="block-title">我和这个岗位的匹配度</h2>
-        <p class="block-hint">
-          匹配度是参考，不是录用概率：它只按你的简历与这个岗位的技能要求算重合，
-          不看经验年限、薪资与面试表现。
-          这一步会用到你自己的 AI 用量，所以只在你点下面这个按钮时才发生。
-        </p>
+        <p class="block-hint">这一步会用到你自己的 AI 用量，所以只在你点下面这个按钮时才发生。</p>
         <button
           class="row-button row-button--primary"
           type="button"
@@ -633,10 +625,6 @@ onBeforeUnmount(() => {
       -->
       <section class="detail-block customize-block" data-testid="customize-block">
         <h2 class="block-title">用这条岗位定制简历</h2>
-        <p class="block-hint">
-          定制<b>只调整顺序</b>：把这条岗位要的技能与相关经历提到前面，文字一个字都不改。
-          生成的版本会进版本历史，但<b>不会</b>取代你当前的简历——想用它导出时去版本历史里选。
-        </p>
         <button
           class="row-button row-button--primary"
           type="button"
@@ -683,10 +671,6 @@ onBeforeUnmount(() => {
 
       <section class="detail-block">
         <h2 class="block-title">岗位要求的技能</h2>
-        <p class="block-hint">
-          「可回溯原文」表示这条技能能在这份 JD 原文里逐字找到；
-          「未标注出处」表示当前没有可回溯的依据。
-        </p>
 
         <p v-if="!job.skills.length" class="empty">这个岗位还没有填写技能要求。</p>
 
@@ -806,7 +790,6 @@ onBeforeUnmount(() => {
 /* 审核面板：与「创建者动作区」同一条分隔线，但用虚线框表示「这是别人的工作面」。 */
 .review-panel { display: grid; gap: 8px; border: 1px dashed var(--ui-border-strong); border-radius: var(--ui-radius); padding: 14px 16px; }
 .review-title { margin: 0; color: var(--ui-ink); font-size: var(--text-md); font-weight: 650; }
-.review-hint { margin: 0; color: var(--ui-ink-faint); font-size: var(--text-xs); line-height: 1.6; }
 .review-label { color: var(--ui-ink-faint); font-size: var(--text-xs); letter-spacing: .04em; }
 .review-input { width: 100%; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 8px 10px; color: var(--ui-ink); font: inherit; font-size: var(--text-base); line-height: 1.6; }
 .review-actions { display: flex; flex-wrap: wrap; gap: 10px; }

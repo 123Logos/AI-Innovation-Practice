@@ -306,9 +306,6 @@ function printResume(): void {
           </button>
         </div>
       </div>
-      <p class="layout-hint">
-        顺序即纸面顺序；标题最多 {{ LAYOUT_TITLE_MAX_LENGTH }} 字（超过会折行挤乱版式）。
-      </p>
     </div>
 
     <div class="panel-section">
@@ -358,20 +355,6 @@ function printResume(): void {
       -->
       <button class="history-button" type="button" @click="versionsOpen = true">版本历史 / 对比</button>
       <p v-if="feedback" :class="['feedback', `feedback--${feedback.tone}`]">{{ feedback.text }}</p>
-    </div>
-
-    <div class="panel-section">
-      <p class="panel-label">编辑提示</p>
-      <p class="hint">
-        点击中央纸面上的文字块即可直接编辑，内容会同步到左侧表单；改完点上方「保存修改」才会保存。
-      </p>
-      <p class="hint">
-        「AI 润色」只改左侧表单里的描述与职责，不会自动保存，也不会自动替换——
-        对照弹窗里点「接受」才填进来，之后仍需点「保存修改」。
-      </p>
-      <p class="hint print-tip">
-        打印对话框里的纸张要与上方一致（{{ store.paperSpec.label }}），并取消勾选「页眉和页脚」
-      </p>
     </div>
 
     <button class="print-button" type="button" @click="printResume">打印 / 导出 PDF</button>
@@ -474,7 +457,6 @@ h2 { font-size: var(--text-2xl); }
 /* 到边界时禁用：一眼可见「已经到顶 / 到底」，不必点了才知道没反应。 */
 .layout-arrow:disabled { color: var(--el-text-color-disabled); cursor: not-allowed; }
 .layout-arrow:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 1px; }
-.layout-hint { color: var(--ui-ink-faint); font-size: var(--text-xs); line-height: 1.5; }
 /* 「为什么要点生成」那一行：琥珀色，与「未保存」同色系但不抢眼。不可关闭，故没有关闭按钮。 */
 .notice {
   margin: 0;
@@ -486,9 +468,6 @@ h2 { font-size: var(--text-2xl); }
   line-height: 1.5;
 }
 .panel-label { color: var(--theme-primary); font-size: var(--text-sm); }
-.hint { color: var(--ui-ink-muted); font-size: var(--text-base); line-height: 1.6; }
-/* 浏览器打印页眉/页脚（日期、URL）无法用代码关掉，只能提示用户自己取消勾选。 */
-.print-tip { color: var(--ui-warning); font-size: var(--text-sm); line-height: 1.5; }
 .warning { color: var(--ui-warning); font-size: var(--text-xs); line-height: 1.5; }
 .generate-button { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; border: 0; border-radius: var(--ui-radius); padding: 11px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: var(--text-base); line-height: 1.4; }
 .generate-button:hover:not(:disabled) { background: var(--theme-primary-hover); }

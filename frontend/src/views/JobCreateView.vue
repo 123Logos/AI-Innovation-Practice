@@ -331,7 +331,6 @@ void loadForEdit()
           <label class="field">
             <span>截止时间</span>
             <input v-model="form.deadline" type="date" />
-            <small class="field-hint">留空表示长期有效；填过去的日期也可以（补录用过的岗位）。</small>
           </label>
 
           <label class="field">
@@ -344,9 +343,6 @@ void loadForEdit()
             <input v-model="form.salary_max" type="text" inputmode="decimal" placeholder="如：6000" />
           </label>
         </div>
-        <p class="field-hint">
-          地点、薪资、经验都存下来备查，本轮列表不提供按它们筛选。
-        </p>
       </section>
 
       <section class="form-block">
@@ -477,10 +473,6 @@ void loadForEdit()
         <button class="row-button add-skill" type="button" :disabled="!canAddSkill" @click="addSkillRow">
           添加技能
         </button>
-        <p class="field-hint">
-          一行一个技能；留空的行不会被保存。同名技能（大小写、全半角不同也算同名）保存时会被拒绝，
-          所以 AI 候选里与已有技能重名的那些已经跳过、并在上面报了数。
-        </p>
       </section>
 
       <p v-if="formError" class="feedback feedback--error" role="alert">{{ formError }}</p>

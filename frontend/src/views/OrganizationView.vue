@@ -256,7 +256,6 @@ onMounted(load)
       <section class="card">
         <div class="card-head">
           <h2>成员</h2>
-          <span v-if="!canManage" class="hint">只有学校管理员可以调整成员角色。</span>
         </div>
         <p v-if="membersError" class="notice notice--error" role="alert">{{ membersError }}</p>
         <table v-else-if="members.length" class="table">
@@ -300,7 +299,6 @@ onMounted(load)
       <section v-if="canManage" class="card">
         <div class="card-head">
           <h2>邀请成员</h2>
-          <span class="hint">邀请码可设有效期与可用次数，可随时撤回。</span>
         </div>
         <p v-if="invitationError" class="notice notice--error" role="alert">{{ invitationError }}</p>
         <div class="invite-form">
@@ -351,7 +349,6 @@ onMounted(load)
       <section v-if="canReadAudit" class="card">
         <div class="card-head">
           <h2>操作记录</h2>
-          <span class="hint">最近 20 条，新的在前。</span>
         </div>
         <p v-if="auditError" class="notice notice--error" role="alert">{{ auditError }}</p>
         <ul v-else-if="auditLogs.length" class="log-list">
@@ -475,26 +472,45 @@ h1 { margin: 0; color: var(--ui-ink); font-size: var(--text-4xl); font-weight: 6
 .log-time { margin-left: auto; }
 .log-result { border: 1px solid var(--ui-warning-border); border-radius: var(--ui-radius); padding: 1px 8px; color: var(--ui-warning); font-size: var(--text-xs); }
 
-.invite-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin-top: 14px; }
+/*
+ * 两个表单照 `InterviewListView.vue` 的 `.start-row` 那一套排（2026-11-14 第 22 轮）：
+ * 控件 `flex: 1 1 180px` 吃掉整行剩余宽度、按钮 `flex: 0 0 auto` 右对齐，
+ * 两者同为 34px 高（`align-items: flex-end` 让按钮对齐到输入框底边，因为输入框上面还有一行标签）。
+ * 原来这里没有给 `.field` / `.input` 任何伸展规则，三个字段加一颗按钮全挤在左边一小撮。
+ *
+ * **basis 为什么是 180 而不是参照那条 220**：邀请表单是一行四个格子（角色 / 可用次数 /
+ * 有效天数 / 按钮）。卡片内宽实测 764，`220×3 + 按钮 100 + 间距 30 = 790` 超了 26px，
+ * 按钮会被折到第二行去；180 是让四格同行又能各自舒展的最大下限（分完每格约 211px）。
+ * 加入表单只有一格 + 一个按钮，同一句 `flex: 1 1 180px` 下输入框实测 654px（行宽 746 的 88%），
+ * 仍然是「占满整行剩余空间」。
+ */
+.invite-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin-top: 14px; }
 .redeem-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin-top: 14px; }
-.field { display: flex; flex-direction: column; gap: 4px; color: var(--ui-ink-faint); font-size: var(--text-xs); }
+.field { display: flex; flex: 1 1 180px; min-width: 0; flex-direction: column; gap: 4px; color: var(--ui-ink-faint); font-size: var(--text-xs); }
 .input {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
   border: 1px solid var(--ui-border-strong);
   border-radius: var(--ui-radius);
-  padding: 6px 9px;
+  padding: 0 12px;
   color: var(--ui-ink);
   background: var(--ui-surface);
   font: inherit;
-  font-size: var(--text-base);
+  font-size: var(--text-md);
 }
+.input:focus { border-color: var(--theme-rule); box-shadow: 0 0 0 2px var(--theme-fade); }
 .button {
+  flex: 0 0 auto;
+  height: 34px;
   border: 1px solid var(--theme-primary);
   border-radius: var(--ui-radius);
-  padding: 7px 14px;
+  padding: 0 16px;
   color: var(--ui-surface);
   background: var(--theme-primary);
   font: inherit;
-  font-size: var(--text-base);
+  font-size: var(--text-sm);
+  white-space: nowrap;
   cursor: pointer;
 }
 .button:disabled { opacity: 0.6; cursor: not-allowed; }

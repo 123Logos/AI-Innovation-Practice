@@ -215,9 +215,6 @@ function onCityInput(index: number, event: Event): void {
       >
         + 添加教育经历
       </button>
-      <p class="hint">
-        最多 {{ EDUCATION_LIMIT.max }} 段，按入学时间倒序展示；生成简历时至少需要 1 段完整的。
-      </p>
     </section>
 
     <section class="form-section">
@@ -277,7 +274,6 @@ function onCityInput(index: number, event: Event): void {
       >
         + 添加证书
       </button>
-      <p class="hint">最多 {{ MULTIVALUE_LIMIT.max }} 条，可先存草稿。</p>
     </section>
 
     <section class="form-section">
@@ -328,7 +324,6 @@ function onCityInput(index: number, event: Event): void {
       >
         + 添加作品链接
       </button>
-      <p class="hint">最多 {{ MULTIVALUE_LIMIT.max }} 条，可先存草稿。</p>
     </section>
 
     <section class="form-section">
@@ -388,10 +383,6 @@ function onCityInput(index: number, event: Event): void {
       <button class="text-button" type="button" :disabled="!store.canAddSkill" @click="store.addSkill">
         + 新增技能
       </button>
-      <p class="hint">
-        最多 {{ SKILL_LIMIT.max }} 条，名称不可重复；「最近使用」由你自己填，系统不替你猜。
-        可先存草稿。
-      </p>
     </section>
 
     <section class="form-section">
@@ -474,7 +465,6 @@ function onCityInput(index: number, event: Event): void {
       >
         + 新增经历
       </button>
-      <p class="hint">最多 {{ EXPERIENCE_LIMIT.max }} 条。</p>
     </section>
 
     <section class="form-section">
@@ -507,7 +497,6 @@ function onCityInput(index: number, event: Event): void {
       >
         + 添加期望城市
       </button>
-      <p class="hint">最多 {{ MULTIVALUE_LIMIT.max }} 个，只用于投递，不显示在简历里。</p>
     </section>
   </aside>
 </template>
@@ -543,8 +532,6 @@ textarea { line-height: 1.45; }
 .remove-button:disabled { color: var(--ui-border); cursor: not-allowed; }
 .experience-form, .education-form { display: grid; gap: 10px; border-top: 1px solid var(--ui-border); padding-top: 12px; }
 .required { color: var(--ui-danger); font-weight: 400; }
-/* 说明性小字：还留在「最多 N 条」「只用于投递」这类真有信息量的地方。 */
-.hint { color: var(--ui-ink-faint); font-size: var(--text-xs); line-height: 1.5; }
 .item-index { color: var(--theme-rule); font-family: "SF Mono", Consolas, monospace; font-size: var(--text-sm); }
 @media print {
   .editor-panel { display: none; }
