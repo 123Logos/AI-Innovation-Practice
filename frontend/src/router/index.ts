@@ -15,6 +15,7 @@ import ResumeEditorView from '@/views/ResumeEditorView.vue'
 import InterviewListView from '@/views/InterviewListView.vue'
 import InterviewDetailView from '@/views/InterviewDetailView.vue'
 import AssessmentView from '@/views/AssessmentView.vue'
+import DashboardView from '@/views/DashboardView.vue'
 import TeacherDashboardView from '@/views/TeacherDashboardView.vue'
 
 declare module 'vue-router' {
@@ -36,8 +37,9 @@ const routes: RouteRecordRaw[] = [
    * `stores/__tests__/job.spec.ts` 的「五条 jobs 路由全部 requiresAuth」读的就是这一格；
    * 而 `to.meta` 在守卫里是合并视图，所以守卫与路由表两边读到的是同一个事实。
    *
-   * `views/DashboardView.vue` 至今不在这棵树里：它是守则 §11 登记的规划期资产
-   * （批次 F7 才对齐视觉体系并挂路由），`scripts/check_route_reachability.py` 的豁免名单收着它。
+   * 批次 F7（2026-11-14）起，`views/DashboardView.vue` **已在这棵树里**：登录态是
+   * 下面的 `dashboard`，访客态是文件末尾的 `/welcome`。它不再是守则 §11 的规划期资产，
+   * `scripts/check_route_reachability.py` 的豁免名单已随之清空。
    */
   {
     path: '/',
@@ -154,7 +156,37 @@ const routes: RouteRecordRaw[] = [
         component: TeacherDashboardView,
         meta: { requiresAuth: true },
       },
+      /*
+       * 工作台首屏的**登录态**（批次 F7 / 守则 §11 那行的收口）。
+       *
+       * 与访客态用同一个组件、两条路由：状态由路由给（`props.mode`），组件不自己猜。
+       * `requiresAuth: true` 必须在路由上、而不是组件里 `v-if` 一下——
+       * 那样「未登录能进哪个 URL」就由渲染逻辑决定，守卫与模块表（`requiresAuth`）
+       * 都读不到它，`layoutGuards.spec.ts` 的两表一致断言也就失去意义。
+       */
+      {
+        path: 'dashboard',
+        name: 'dashboard',
+        component: DashboardView,
+        props: { mode: 'member' as const },
+        meta: { requiresAuth: true },
+      },
     ],
+  },
+  /*
+   * 工作台首屏的**访客态**（批次 F7）。老板 2026-11-09 第 5 轮：
+   * 「dashboard 也需要有已登录的状态」——反过来说，没登录时它也得有一屏可看的东西，
+   * 而不是把每个 URL 都当成「请先登录」。
+   *
+   * 为什么不挂在 `AppLayout` 下：那个外框顶栏的第一格就是工作区切换器与账户抽屉，
+   * 它们的前提都是「我知道你是谁」。给访客硬塞一个空顶栏，等于让他先看一堆点不动的
+   * 入口；访客要的是「这是什么、怎么开始」，本组件在 `mode="guest"` 下只画这些。
+   */
+  {
+    path: '/welcome',
+    name: 'welcome',
+    component: DashboardView,
+    props: { mode: 'guest' as const },
   },
   {
     path: '/login',

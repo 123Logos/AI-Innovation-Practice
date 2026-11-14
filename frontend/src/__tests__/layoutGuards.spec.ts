@@ -82,9 +82,10 @@ function templateOf(text: string): string {
 /**
  * 被路由真正引用的视图（从 `router/index.ts` 的 import 段读）。
  *
- * 只对这些文件提要求：`views/DashboardView.vue` 是守则 §11 登记的规划期资产
- * （批次 F7 才对齐），它现在还自带 `app-shell`，把它算进来等于本批偷偷改了它的范围。
- * 未被路由引用的视图由 G5 那条脚本负责，不在这里判。
+ * 只对这些文件提要求：没挂路由的视图由 G5 那条脚本负责，不在这里判。
+ * 批次 F7 之前 `views/DashboardView.vue` 不在这份名单里（它是守则 §11 的规划期资产、
+ * 自带 `app-shell`）；F7 给它挂了 `/dashboard` 与 `/welcome` 两条路由，它从此与其余视图
+ * 同一条尺子——判据见下面 L1 那组用例里「必须包含它」那条。
  */
 function routedViewFiles(): string[] {
   const imports = [...file('router/index.ts').text.matchAll(/from '@\/views\/([\w.-]+\.vue)'/g)]
@@ -106,16 +107,19 @@ describe('守则 L1：一个布局，一处定义', () => {
     expect(layout.match(/<RouterView/g) ?? []).toHaveLength(1)
   })
 
-  it('被路由引用的 13 个视图里既不摆顶栏，也不自带 app-shell 外框', () => {
+  it('被路由引用的 14 个视图里既不摆顶栏，也不自带 app-shell 外框', () => {
     const views = [...new Set(routedViewFiles())]
-    // 反向护栏：路由表读空了上面几条也会绿，所以先确认真的读到了 13 个视图
-    // （11 个带外框的 + 登录 + 注册；`job-create` 与 `job-edit` 共用一个组件，
-    //  所以是 13 不是 14）。原始 8 → B5 加「组织管理」= 9 → B11a 加列表/详情 = 11
-    // → B9 加「能力测评」= 12 → B10a 加「学情看板」= 13。
-    // 这个数字是**合并后**重算的：两边各自的版本（9 / 10 / 11 / 12）都不是最终值。
-    expect(views).toHaveLength(13)
-    // DashboardView 不在这 13 个里，正是本用例**不**扫它的原因（它是 G5 的豁免项，批次 F7 才对齐）。
-    expect(views).not.toContain('views/DashboardView.vue')
+    // 反向护栏：路由表读空了上面几条也会绿，所以先确认真的读到了 14 个视图
+    // （12 个带外框的 + 登录 + 注册；`job-create` 与 `job-edit` 共用一个组件，
+    //  所以是 14 不是 15）。原始 8 → B5 加「组织管理」= 9 → B11a 加列表/详情 = 11
+    // → B9 加「能力测评」= 12 → B10a 加「学情看板」= 13 → F7 加「工作台」= 14。
+    // 这个数字是**合并后**重算的：两边各自的版本（9 / 10 / 11 / 12 / 13）都不是最终值。
+    expect(views).toHaveLength(14)
+    // 批次 F7（2026-11-14）起 DashboardView 挂了两条路由，所以它被这条用例覆盖了：
+    // 它现在必须像其他视图一样「只渲染内容区」，外框归 `AppLayout`（登录态）/
+    // 自己的 `.dashboard-page` 铺底（访客态）。这条断言从「不许包含」翻成「必须包含」，
+    // 翻的就是 F7 的账：以前它自带 `app-shell`，正因为不在这份名单里才没人管。
+    expect(views).toContain('views/DashboardView.vue')
 
     for (const rel of views) {
       const text = withoutHtmlComments(templateOf(file(rel).text))
@@ -294,19 +298,24 @@ describe('守则 L4：导航条目只有一张表', () => {
    * L4 的「只有一张表」由上面两条合起来钉住：能当导航用的描述符形状（带 `routeName`）
    * 全仓只有一处声明，而顶栏渲染的那几个名字在标记里没有字面量。
    *
-   * 已知没被本文件钉住的一格：`views/DashboardView.vue:7-13` 那份硬编码模块数组
-   * （守则 L4 违例、§11 登记在册）。它归批次 F7，本批不许动那个文件，
-   * 所以也不在这里为它写豁免——登记在交付说明的「未解决」里。
+   * 批次 F7 起 `views/DashboardView.vue` 是**第三个**消费者：它把登录态/访客态的模块入口
+   * 从 `APP_MODULES` 读出来渲染成卡片，原来那份硬编码数组（曾经的 L4 违例、§11 登记在册）
+   * 已删除。第三个消费者在这里显式记账，是因为「消费者名单」本身就是这条守则的判据：
+   * 名单外的文件一旦 import 那张表，说明有人开始抄第二份数组了。
    */
   it('除顶栏外，没有任何组件把模块表再抄一份成自己的数组', () => {
     const consumers = sources
       .filter((source) => /from '@\/config\/modules'/.test(source.text))
       .map((source) => source.rel)
 
-    // 两个消费者，都是**读表**而不是抄表：顶栏取 `TOP_BAR_MODULES`（`inTopBar` 过滤），
-    // 工作区切换器取 `APP_MODULES` 渲染卡片。F3 第四片按原计划改的就是这一格
-    // （原注释：「F3 的抽屉 / 切换器进来时改这一格」）。再多一个消费者要在这里显式记账。
-    expect(consumers).toEqual(['components/AppTopBar.vue', 'components/WorkspaceSwitcher.vue'])
+    // 三个消费者，都是**读表**而不是抄表：顶栏取 `TOP_BAR_MODULES`（`inTopBar` 过滤），
+    // 工作区切换器取 `APP_MODULES` 渲染卡片，工作台首屏取 `APP_MODULES` 渲染入口卡片。
+    // 再多一个消费者要在这里显式记账。
+    expect(consumers).toEqual([
+      'components/AppTopBar.vue',
+      'components/WorkspaceSwitcher.vue',
+      'views/DashboardView.vue',
+    ])
   })
 
   it('工作区切换器的卡片文案也一律来自表，模板里没有写死的模块名', () => {

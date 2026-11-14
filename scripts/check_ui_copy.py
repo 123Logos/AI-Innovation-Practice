@@ -127,7 +127,11 @@ STRING_LITERAL_RE = re.compile(r"'([^'\n]*)'|\"([^\"\n]*)\"|`([^`\n]*)`")
 
 #: 守则 §11 登记的**规划期资产**：老板 2026-11-09 明令「纳入路由、不要删、当前不动这个文件」，
 #: 所以本闸对它跳过。跳过是**有账的**——批次 F7 改造它那天必须把这一行删空，留着就是欠账。
-PLANNING_ASSETS = ("frontend/src/views/DashboardView.vue",)
+#:
+#: **2026-11-14（批次 F7）已清空**：`DashboardView.vue` 重写并挂上路由，它现在和其余视图
+#: 一样受 G1 管。空元组不是「本条规则作废」——机制留着，是为了下一次真有规划期资产时
+#: 有一个必须记账的入口，而不是让人去注释掉整个扫描。
+PLANNING_ASSETS: tuple[str, ...] = ()
 
 
 def iter_files() -> list[Path]:

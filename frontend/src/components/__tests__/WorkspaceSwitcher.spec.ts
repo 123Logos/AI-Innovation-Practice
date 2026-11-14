@@ -203,10 +203,14 @@ describe('关闭只有基座那一条路径', () => {
   it('点卡片 → 跳过去，并且弹层收起', async () => {
     const wrapper = await mountSwitcher('/')
     await tap(wrapper, '.workspace-trigger')
-    const target = cards(wrapper)[1]
+    // 序号从表里算，不写死「第 2 张」：批次 F7 把「工作台」插到表头之后，
+    // 原来那句 `cards[1]` 指的已经不是岗位库了——写死序号的红会是抄件，不是产品。
+    const index = APP_MODULES.findIndex((module) => module.routeName === 'job-board') + 1
+    expect(index).toBeGreaterThan(0)
+    const target = cards(wrapper)[index - 1]
     expect(target?.text()).toBe('岗位库')
 
-    await tap(wrapper, '.workspace-card:nth-child(2)')
+    await tap(wrapper, `.workspace-card:nth-child(${index})`)
 
     expect(router.currentRoute.value.name).toBe('job-board')
     expect(wrapper.find('.workspace-popover').exists()).toBe(false)
