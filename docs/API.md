@@ -31,6 +31,8 @@
 {"error": {"code": "NOT_FOUND", "message": "资源不存在。", "details": {}}, "meta": {"request_id": "req_123"}}
 ```
 
+**`message` 的来源（2026-11-15 第 26 轮补了一条出口）**：4xx 依次试「枚举实例 → 别名表 → 枚举值 → **人写的中文原句** → 按状态码兜底」。中文原句要同时满足「含汉字、单行、≤200 字、无花括号」才原样放行（`app/core/error_messages.py::is_human_prose`）——压成通用句会把一句「用户修得动的话」换成「去问维护人员」；英文 detail（`Not Found`、`invalid token`）与多行异常文本仍然落到通用句，并在 `details.reason` 里记 `UNMAPPED`（原句直传不记）。**5xx 永远只有一句固定文案**，detail 一个字都不进响应。
+
 实际由代码发出的错误码（以 `app/` 全量 grep 这些字面量为准，不含测试）：`VALIDATION_ERROR`（`app/main.py::validation_exception`）、`RATE_LIMITED`（`app/main.py::rate_limit_exceeded`）、`NOT_FOUND`（`app/main.py::http_exception`）、`CLIENT_ERROR`（同上，`http_exception` 的兜底档）、`INTERNAL_ERROR`（`app/main.py::unhandled_exception`，以及 `::http_exception` 的 5xx 档）、`AI_KEY_MISSING`（`app/main.py::resume_api_key_missing`）、`AI_KEY_INVALID`（`app/main.py::resume_copy_rejected`）、`AI_SERVICE_UNAVAILABLE`（`app/main.py::resume_copy_unavailable`、`app/api/v1/jobs.py` 的提取端点）。三个 `AI_*` 码只在 `/resumes/polish` 与 `/jobs/extract-skills` 上可达（`app/main.py:239-240` 的注释写明这一沿革；`POST /jobs/{job_id}/match` **不在这个集合里**——它 AI 失败也返回 `200`，见 §4.10；`GET /jobs/{job_id}/requirement-match` 同样不在——它按定义不调 AI，见 §4.10.1），且处理器文案要求作用域中性——不得出现「润色」或「简历」（`docs/adr/ADR-011-job-board-and-skill-extraction.md` 2.F）。
 
 以下码目前**只是本文件的设计意图**，`app/` 下没有任何一处产生它们：`AUTH_REQUIRED`、`AUTH_INVALID_CREDENTIALS`、`AUTH_FORBIDDEN`、`RESOURCE_NOT_FOUND`、`CONSENT_REQUIRED`、`CONFLICT`。未登录与令牌失效实际走 `HTTPException(401)`（`app/services/dependencies.py::_context_from_request`、`app/services/dependencies.py::_bearer_token`），被通用 4xx 处理器压成 `CLIENT_ERROR`（`app/main.py:192-194`），message 取 `UNAUTHORIZED_MESSAGE`（`app/services/dependencies.py::UNAUTHORIZED_MESSAGE`）。
@@ -272,7 +274,7 @@
 | 请求体或查询参数不合模型 | 422 | `VALIDATION_ERROR` | `app/main.py:203-215` |
 | 无 `Authorization` 头 / 令牌无效或过期 | 401 | `CLIENT_ERROR`，message 为 `UNAUTHORIZED_MESSAGE` | 抛出 `app/services/dependencies.py::_context_from_request`、`app/services/dependencies.py::_bearer_token`；映射 `app/main.py:192-194` |
 | 岗位不存在 / 不属于当前用户 / 已在回收站 | 404 | `NOT_FOUND`（处理器的固定文案「资源不存在。」） | 抛出 `app/api/v1/jobs.py:116-118`；映射 `app/main.py::http_exception` |
-| 有登录但缺 `job:review`（只出现在 `GET /jobs/review-queue` 与 `POST /jobs/{job_id}/review`） | 403 | `CLIENT_ERROR`，`details.reason = "FORBIDDEN"` | `app/services/dependencies.py:83`；映射 `app/main.py:210-233` |
+| 有登录但缺 `job:review`（只出现在 `GET /jobs/review-queue` 与 `POST /jobs/{job_id}/review`） | 403 | `CLIENT_ERROR`，`details.reason = "FORBIDDEN"` | `app/services/dependencies.py:83`；映射 `app/main.py:214-234` |
 | 提取请求缺 `X-DeepSeek-Key` | 400 | `AI_KEY_MISSING`，`retryable: false` | `app/services/job_service.py:281-282` → `app/main.py:259-264` |
 | DeepSeek 拒绝该 Key（鉴权失败） | 401 | `AI_KEY_INVALID` | `app/integrations/skill_extractor.py:294-298` → `app/services/job_service.py::JobService.extract_skills` → `app/main.py:266-275` |
 | 上游不可用 / 输出不是可解析 JSON / 内容为空 / 无一可回溯 | 502 | `AI_SERVICE_UNAVAILABLE`，`retryable: true` | `app/main.py:277-290`（异常族 `app/services/job_service.py:281-290`、`:270-281`） |

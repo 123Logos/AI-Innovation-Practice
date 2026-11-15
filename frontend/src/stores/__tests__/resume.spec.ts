@@ -38,6 +38,8 @@ const profilesApi = vi.hoisted(() => ({
   listTrashProfiles: vi.fn(),
   restoreProfile: vi.fn(),
   purgeProfile: vi.fn(),
+  // 第 26 轮：空白新建时若还没加载过简历，会退回到 `GET /profiles/me` 取种子。
+  getMyProfile: vi.fn(),
 }))
 vi.mock('@/api/profiles', () => profilesApi)
 
@@ -361,3 +363,125 @@ function profileFixture(id: string): ProfileRead {
     city_preferences: [],
   }
 }
+
+describe('新建空白简历带入个人档案（2026-11-15 第 26 轮）', () => {
+  /**
+   * 老板原话：点「新建空白简历」时，把已经填过的姓名 / 联系方式 / 目标岗位 /
+   * 教育经历 / 技能「等」带进新草稿；某项为空就保持空；**不自动保存**。
+   *
+   * 这里钉四件事：带入的是内容、排版各格不被带、`dirty` 点亮（用户知道还没落库）、
+   * 而且**一次 PUT 都没发**——带入只写草稿。
+   */
+  function sourceProfile(): ProfileRead {
+    return {
+      ...profileFixture('profile-src'),
+      full_name: '林小满',
+      email: 'lin@example.com',
+      contact: '13800000000',
+      target_role: '前端工程师',
+      theme: 'navy',
+      skills: [
+        { name: 'Vue', source: 'self_reported', last_used_on: '2026-09' } as ProfileRead['skills'][number],
+      ],
+      educations: [
+        { school: '示例大学', major: '计算机', degree: '本科', edu_start: '2021-09-01', edu_end: null } as ProfileRead['educations'][number],
+      ],
+    }
+  }
+
+  function blankProfile(): ProfileRead {
+    return {
+      ...profileFixture('profile-new'),
+      full_name: '',
+      contact: '',
+      title: '我的简历 2',
+      is_default: false,
+    }
+  }
+
+  beforeEach(() => {
+    const auth = useAuthStore()
+    auth.user = {
+      id: OWNER_ID,
+      username: 'tester',
+      email: null,
+      phone: null,
+      created_at: '2026-11-10T10:00:00+08:00',
+    }
+    profilesApi.listProfiles.mockResolvedValue([sourceProfile(), blankProfile()])
+    profilesApi.getProfile.mockResolvedValue(blankProfile())
+    profilesApi.createProfile.mockResolvedValue(blankProfile())
+    profilesApi.updateProfile.mockReset()
+    profilesApi.getMyProfile.mockReset()
+  })
+
+  it('空白新建：内容五格与子表都带进来，排版三格仍是默认', async () => {
+    const store = useResumeStore()
+    store.savedProfile = sourceProfile()
+
+    await store.createProfile({ title: '我的简历 2', copyCurrent: false })
+
+    expect(store.draft.full_name).toBe('林小满')
+    expect(store.draft.contact).toBe('13800000000')
+    expect(store.draft.email).toBe('lin@example.com')
+    expect(store.draft.target_role).toBe('前端工程师')
+    expect(store.draft.skills.map((skill) => skill.name)).toEqual(['Vue'])
+    expect(store.draft.educations.map((education) => education.school)).toEqual(['示例大学'])
+
+    // 排版三格不从源档案抄：新简历从服务端默认开始（否则就和「复制当前」撞了）。
+    expect(store.draft.theme).toBe(DEFAULT_THEME)
+    expect(store.draft.paper_size).toBe('A4')
+  })
+
+  it('带入只写草稿：dirty 点亮，但一个保存请求都不发', async () => {
+    const store = useResumeStore()
+    store.savedProfile = sourceProfile()
+
+    await store.createProfile({ copyCurrent: false })
+
+    expect(store.dirty).toBe(true)
+    expect(profilesApi.updateProfile).not.toHaveBeenCalled()
+  })
+
+  it('还没加载过简历时，退回到 `GET /profiles/me` 取种子', async () => {
+    const store = useResumeStore()
+    store.savedProfile = null
+    profilesApi.getMyProfile.mockResolvedValue(sourceProfile())
+
+    await store.createProfile({ copyCurrent: false })
+
+    expect(profilesApi.getMyProfile).toHaveBeenCalledTimes(1)
+    expect(store.draft.full_name).toBe('林小满')
+  })
+
+  it('拿不到任何源档案时保持空白，不点亮 dirty，也不让新建失败', async () => {
+    const store = useResumeStore()
+    store.savedProfile = null
+    profilesApi.getMyProfile.mockResolvedValue(null)
+
+    const created = await store.createProfile({ copyCurrent: false })
+
+    expect(created.id).toBe('profile-new')
+    expect(store.draft.full_name).toBe('')
+    expect(store.draft.skills).toEqual([])
+    expect(store.dirty).toBe(false)
+  })
+
+  it('「复制当前」不走前端带入：后端深拷贝，前端不读种子', async () => {
+    const store = useResumeStore()
+    store.savedProfile = sourceProfile()
+    store.currentProfileId = 'profile-src'
+    profilesApi.createProfile.mockResolvedValue({ ...sourceProfile(), id: 'profile-copy' })
+    profilesApi.getProfile.mockResolvedValue({ ...sourceProfile(), id: 'profile-copy' })
+
+    await store.createProfile({ title: '复制版', copyCurrent: true })
+
+    expect(profilesApi.getMyProfile).not.toHaveBeenCalled()
+    expect(profilesApi.createProfile).toHaveBeenCalledWith({
+      title: '复制版',
+      copy_from_id: 'profile-src',
+    })
+    expect(store.draft.full_name).toBe('林小满')
+  })
+})
+

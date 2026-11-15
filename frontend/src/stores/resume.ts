@@ -618,6 +618,28 @@ export function draftFromProfile(profile: ProfileRead): ProfileDraft {
   }
 }
 
+/**
+ * 只抄**内容**、不抄「长什么样」（第 26 轮，`createProfile` 的空白新建用）。
+ *
+ * 内容格：表头五格 + 五个子表。`paper_size` / `theme` / `layout_config` 刻意不在名单里——
+ * 它们是这份简历的排版与配色，新简历应当从服务端默认开始；抄过去会让「新建一份空白」
+ * 变成「原样复制一份」，与「复制当前」这个已有选项撞在一起。
+ *
+ * 深拷贝子表（`{...row}`）而不是共享引用：两份草稿共用一个数组，改 B 会带动 A。
+ */
+function copyContentInto(target: ProfileDraft, source: ProfileDraft): void {
+  target.full_name = source.full_name
+  target.email = source.email
+  target.contact = source.contact
+  target.target_role = source.target_role
+  target.skills = source.skills.map((skill) => ({ ...skill }))
+  target.experiences = source.experiences.map((experience) => ({ ...experience }))
+  target.educations = source.educations.map((education) => ({ ...education }))
+  target.certificates = source.certificates.map((certificate) => ({ ...certificate }))
+  target.portfolio_links = source.portfolio_links.map((link) => ({ ...link }))
+  target.city_preferences = source.city_preferences.map((city) => ({ ...city }))
+}
+
 /* ------------------------------ 本地草稿工具 ------------------------------ */
 
 /** 渲染层用：空标题不能让纸面上出现一个空 `h2`（第 25 轮从 store 提出来，`payloadFromDraft` 也要用）。 */
@@ -1789,12 +1811,22 @@ export const useResumeStore = defineStore('resume', () => {
    *
    * `copy_from_id` 交给后端深拷贝，**不要**前端 GET 再 PUT：两次请求之间源简历
    * 可能被改，拼出来会是一份「半新半旧」的混合体。
+   *
+   * **空白新建会先把「已经有的一份档案」里的个人信息带过来**（2026-11-15 第 26 轮）：
+   * 姓名、联系方式、邮箱、期望职位、技能、经历、教育、证书、作品链接、期望城市。
+   * 纸张 / 配色 / 排版**不带**——那三格是「这份简历长什么样」，新简历从默认开始才说得通。
+   * 带入的内容只写进草稿（`dirty = true`），**不发任何保存请求**：用户在上面继续改，
+   * 存不存仍由他点「保存修改」决定。
    */
   async function createProfile(
     options: { title?: string; copyCurrent?: boolean } = {},
   ): Promise<ProfileRead> {
     const ready = await ensureSavedBeforeSwitch()
     if (!ready) throw new Error('已取消：当前简历的修改尚未保存。')
+
+    // 复制当前由后端深拷贝，不需要种子；只有空白新建才先去拿源档案。
+    // 必须在 `createProfile` **之前**取：新简历一旦成为默认，`/profiles/me` 就是它自己了。
+    const seedSource = options.copyCurrent ? null : await resolveSeedProfile()
 
     const created = await profilesApi.createProfile({
       title: options.title?.trim() ? options.title.trim() : null,
@@ -1803,7 +1835,28 @@ export const useResumeStore = defineStore('resume', () => {
 
     await refreshProfiles()
     await activateProfile(created.id)
+    if (seedSource) seedBlankDraftFrom(seedSource)
     return created
+  }
+
+  /**
+   * 「新建空白简历」从哪份档案里带内容：优先已经加载的当前简历，
+   * 没有（例如还没进过编辑器）就按老板说的去问 `GET /profiles/me`。
+   * 读不到就返回 `null`——带不动只是少省一步，不该让「新建」失败。
+   */
+  async function resolveSeedProfile(): Promise<ProfileRead | null> {
+    if (savedProfile.value) return savedProfile.value
+    try {
+      return await profilesApi.getMyProfile()
+    } catch {
+      return null
+    }
+  }
+
+  /** 把源档案的内容格抄进刚激活的空草稿；一格为空就是保持空（老板原话）。 */
+  function seedBlankDraftFrom(source: ProfileRead): void {
+    copyContentInto(draft, draftFromProfile(source))
+    markContentChanged('已从个人档案带入基本信息，点击生成最新简历。')
   }
 
   /** 设为默认：后端会把其余未删除简历的 `is_default` 一起清掉。 */
