@@ -27,8 +27,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
 
 import { authHttp, http } from '@/api/client'
-import type { ApiErrorBody, ProfileRead } from '@/api/types'
-import { APP_MODULES } from '@/config/modules'
+import type { ApiErrorBody, ProfileRead, UserRole } from '@/api/types'
+import { APP_MODULES, staffOnlyModules } from '@/config/modules'
 import { useAuthStore } from '@/stores/auth'
 import DashboardView from '@/views/DashboardView.vue'
 
@@ -98,6 +98,15 @@ let jobStatus = 200
 let interviewStatus = 200
 let jobTotal = 7
 let interviewTotal = 3
+/*
+ * 「加入班级」横幅的两格开关（第 24 轮）：
+ * `orgStatus` 决定 `GET /organizations/me` 回答 200（已在班级）还是 404（还没有班级）——
+ * 后端只有这两种答案，500 那一支另有一条用例单独验「什么都不画」。
+ * 默认 200：本轮之前写好的用例都不关心这条横幅，让它们的 `calls` 与画面保持原样。
+ */
+let orgStatus = 200
+let redeemStatus = 200
+let redeemMessage = ''
 
 function envelope(config: InternalAxiosRequestConfig, data: unknown, status = 200): AxiosResponse {
   return { data, status, statusText: 'OK', headers: {}, config } as AxiosResponse
@@ -165,13 +174,49 @@ function fakeAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse>
       }),
     )
   }
+  if (method === 'get' && url === '/organizations/me') {
+    if (orgStatus === 404) {
+      // 后端对「账号还没有组织」的正面答复（ADR-021 §2.6），不是故障。
+      return Promise.reject(failure(config, 404, '你的账号还没有加入组织。'))
+    }
+    if (orgStatus !== 200) {
+      return Promise.reject(failure(config, orgStatus, '组织信息暂时无法读取，请稍后重试。'))
+    }
+    return Promise.resolve(
+      envelope(config, {
+        data: {
+          organization: { id: 'org-1', code: 'CJLU2026', name: '中国计量大学', kind: 'school' },
+          member: { user_id: 'user-1', role: 'student' },
+        },
+        meta: { request_id: 'r' },
+      }),
+    )
+  }
+  if (method === 'post' && url === '/invitations/redeem') {
+    if (redeemStatus !== 200) {
+      return Promise.reject(
+        failure(config, redeemStatus, redeemMessage || '邀请码无效或已过期。'),
+      )
+    }
+    return Promise.resolve(
+      envelope(config, {
+        data: {
+          organization: { id: 'org-1', code: 'CJLU2026', name: '中国计量大学', kind: 'school' },
+          role: 'student',
+        },
+        meta: { request_id: 'r' },
+      }),
+    )
+  }
   return Promise.reject(failure(config, 404, `未桩住的请求：${method.toUpperCase()} ${url}`))
 }
 
 /** 只为 `RouterLink` 能解析出 `href`：目标页本身不挂载，所以组件桩成空壳。 */
+let viewRouter: ReturnType<typeof createRouter>
+
 function makeRouter() {
   const blank = { template: '<div />' }
-  return createRouter({
+  viewRouter = createRouter({
     history: createMemoryHistory(),
     routes: [
       { path: '/', name: 'resume-editor', component: blank },
@@ -186,14 +231,27 @@ function makeRouter() {
       { path: '/register', name: 'register', component: blank },
     ],
   })
+  return viewRouter
 }
 
-async function mountView(mode: 'guest' | 'member', permissions: string[] = []) {
+async function mountView(mode: 'guest' | 'member', role: UserRole | null = 'student') {
   const pinia = createPinia()
   setActivePinia(pinia)
-  // `hasPermission()` 读的是 store 里那份权限表（登录后由 `/auth/me` 写进来），
-  // 这里直接灌进去——测的是「有权限时画不画这张卡」，不是登录流程。
-  useAuthStore().permissions = permissions
+  /*
+   * 显式改写（2026-11-15，守则 R1）：原来这里灌的是 `permissions`（配合
+   * `auth.hasPermission('dashboard:read')` 那张教师入口卡），现在工作台按**角色**分流，
+   * 判据换成直接写 `auth.role`——它与 `/auth/me` 顶层那一格同源，
+   * 而「谁能看到哪个入口」的唯一出处仍是 `config/modules.ts::visibleToRoles`。
+   */
+  const auth = useAuthStore()
+  auth.role = role
+  auth.user = {
+    id: 'user-1',
+    username: 'tester',
+    email: null,
+    phone: null,
+    created_at: '2026-11-01T09:00:00+08:00',
+  }
 
   const wrapper = mount(DashboardView, {
     props: { mode },
@@ -212,6 +270,9 @@ beforeEach(() => {
   interviewStatus = 200
   jobTotal = 7
   interviewTotal = 3
+  orgStatus = 200
+  redeemStatus = 200
+  redeemMessage = ''
   savedAdapters = [
     [http, http.defaults.adapter],
     [authHttp, authHttp.defaults.adapter],
@@ -253,9 +314,20 @@ describe('工作台 · 登录态', () => {
   it('四张卡的数字全部来自各自端点', async () => {
     const wrapper = await mountView('member')
 
-    // 四个端点各发一次，一个不多一个不少。
+    // 五个请求各发一次，一个不多一个不少。
+    /*
+     * 显式改写（2026-11-15 第 24 轮，守则 R1）：原来钉的是四个端点，第五个是
+     * 「加入班级」横幅的判据 `GET /organizations/me`。加一个而不是换判据——
+     * 那条横幅只有真的问到后端 404 才允许出现，所以这一次读必须在。
+     */
     expect(calls.sort()).toEqual(
-      ['get /assessments/profile', 'get /interviews', 'get /jobs', 'get /profiles/me'].sort(),
+      [
+        'get /assessments/profile',
+        'get /interviews',
+        'get /jobs',
+        'get /organizations/me',
+        'get /profiles/me',
+      ].sort(),
     )
 
     const cards = wrapper.findAll('.stat-card')
@@ -288,13 +360,184 @@ describe('工作台 · 登录态', () => {
     expect(wrapper.get('.page-error').text()).toContain('能力标签读不到')
   })
 
-  it('教师入口按权限出现：有 dashboard:read 才画', async () => {
-    const without = await mountView('member')
-    expect(without.find('.teacher-entry').exists()).toBe(false)
+  /*
+   * 显式改写（2026-11-15）：原来这一条叫「教师入口按权限出现：有 dashboard:read 才画」，
+   * 判据是权限字符串。工作台改成按角色分流之后，这一条拆成三格，
+   * 每格都还在验同一件事——**教师不该看到学生那四张空统计卡，且要有一眼能走进去的入口**。
+   */
+  it('教师侧角色：四张统计卡不渲染，改成教师工具入口卡', async () => {
+    const wrapper = await mountView('member', 'teacher')
 
-    const withPermission = await mountView('member', ['dashboard:read'])
-    expect(withPermission.find('.teacher-entry').exists()).toBe(true)
-    expect(withPermission.get('.teacher-entry').text()).toContain('学情看板')
+    expect(wrapper.find('.stat-grid').exists()).toBe(false)
+    expect(wrapper.findAll('.stat-card')).toHaveLength(0)
+
+    const cards = wrapper.findAll('.staff-entry')
+    const expected = staffOnlyModules()
+    expect(cards).toHaveLength(expected.length)
+    // 名字仍从模块表来（守则 L4）：写死一份也会「有 N 张卡」，比对名字才证明读的是那张表。
+    // 取 h2 而不是整张卡的 text()——卡里还有一格「教师工具」的标签，整卡文案会把比对变成
+    // 「教师工具组织管理」这种拼出来的东西，看着像通过了其实没比对名字。
+    expect(cards.map((card) => card.get('h2').text())).toEqual(
+      expected.map((module) => module.name),
+    )
+    // href 由路由表解析：入口指向的必须是那条真路由。
+    for (const [index, module] of expected.entries()) {
+      expect(cards[index]?.attributes('href')).toBe(
+        viewRouter.resolve({ name: module.routeName }).fullPath,
+      )
+    }
+  })
+
+  it('教师侧不发那四个读请求：卡片不渲染，请求也不该照发', async () => {
+    await mountView('member', 'teacher')
+
+    expect(calls).toEqual([])
+  })
+
+  it('教师侧欢迎语带「老师」二字，学生侧不带', async () => {
+    const teacher = await mountView('member', 'teacher')
+    expect(teacher.get('.hero--member h1').text()).toBe('tester老师，今天从哪一步接着走？')
+
+    const student = await mountView('member', 'student')
+    expect(student.get('.hero--member h1').text()).toBe('tester，今天从哪一步接着走？')
+    // 学生侧那四张卡照常（这一句防止「教师分流」把学生页也一起改坏）。
+    expect(student.findAll('.stat-card')).toHaveLength(4)
+  })
+
+  it('school_admin 也走教师侧那一支', async () => {
+    const wrapper = await mountView('member', 'school_admin')
+
+    expect(wrapper.find('.stat-grid').exists()).toBe(false)
+    expect(wrapper.findAll('.staff-entry').length).toBe(staffOnlyModules().length)
+  })
+})
+
+describe('工作台 · 学生「加入班级」横幅（第 24 轮）', () => {
+  /*
+   * jsdom 里点 `type="submit"` 的按钮不会走表单提交（它不实现浏览器的隐式提交），
+   * 所以下面几支都直接对 `<form>` 发 `submit`——那正是组件绑的 `@submit.prevent`，
+   * 也是用户按回车时真实走到的一步。
+   */
+
+  it('后端回答 404（还没有组织）才画横幅，而且画在四张统计卡之上', async () => {
+    orgStatus = 404
+    const wrapper = await mountView('member', 'student')
+
+    const banner = wrapper.get('.join-card')
+    expect(banner.text()).toContain('加入班级')
+    // 「最显眼的位置」是可判的：横幅必须排在统计卡之前（老板指令「顶部或四大卡片上方」）。
+    const grid = wrapper.get('.stat-grid').element
+    // DOCUMENT_POSITION_FOLLOWING = 4：网格在横幅之后，即横幅在前。
+    expect(Boolean(banner.element.compareDocumentPosition(grid) & 4)).toBe(true)
+  })
+
+  it('后端回答 200（已在班级）时一条都不画', async () => {
+    const wrapper = await mountView('member', 'student')
+
+    expect(wrapper.find('.join-card').exists()).toBe(false)
+    // 那次读照发——它同时是「确认不用再画」的依据，不是为了画横幅才发的。
+    expect(calls).toContain('get /organizations/me')
+  })
+
+  it('组织信息读失败（500）时什么都不画：不替学生编一个「你还没加入班级」', async () => {
+    orgStatus = 500
+    const wrapper = await mountView('member', 'student')
+
+    expect(wrapper.find('.join-card').exists()).toBe(false)
+    // 四张统计卡不受影响：横幅的判据失败不该把整页拖成错误态。
+    expect(wrapper.findAll('.stat-card')).toHaveLength(4)
+  })
+
+  it('教师侧不画横幅，也一次都不读组织', async () => {
+    orgStatus = 404
+    const wrapper = await mountView('member', 'teacher')
+
+    expect(wrapper.find('.join-card').exists()).toBe(false)
+    // `organization` 本来就是教师的可见入口（模块表），这里再挂一条横幅是第二条路。
+    expect(calls).toEqual([])
+  })
+
+  it('空邀请码：校验提示上屏、面板不关、一次兑换都不发', async () => {
+    orgStatus = 404
+    const wrapper = await mountView('member', 'student')
+    await wrapper.get('.join-card__trigger').trigger('click')
+
+    const panel = wrapper.get('.join-panel')
+    expect(wrapper.get('.join-card__trigger').attributes('aria-expanded')).toBe('true')
+    // 浮层归基座（守则 L3）：`role="group"` + `aria-label` 都在面板那一个元素上。
+    expect(panel.attributes('role')).toBe('group')
+    expect(panel.attributes('aria-label')).toBe('邀请码')
+
+    await wrapper.get('form.join-panel__form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('.join-panel__error').text()).toBe('请填写老师给的邀请码。')
+    expect(wrapper.find('.join-panel').exists()).toBe(true)
+    expect(calls).not.toContain('post /invitations/redeem')
+  })
+
+  it('后端拒绝：原因原样上屏，面板不关（守则 C3）', async () => {
+    orgStatus = 404
+    redeemStatus = 400
+    redeemMessage = '邀请码无效或已过期。'
+    const wrapper = await mountView('member', 'student')
+    await wrapper.get('.join-card__trigger').trigger('click')
+    await wrapper.get('#join-code-input').setValue('WRONG123')
+    await wrapper.get('form.join-panel__form').trigger('submit')
+    await flushPromises()
+    await flushPromises()
+
+    expect(calls).toContain('post /invitations/redeem')
+    expect(wrapper.get('.join-panel__error').text()).toBe('邀请码无效或已过期。')
+    expect(wrapper.find('.join-panel').exists()).toBe(true)
+    expect(wrapper.find('.page-notice').exists()).toBe(false)
+  })
+
+  it('兑换成功：调现有 redeem 接口，然后重读这一页——横幅消失、回执留下', async () => {
+    orgStatus = 404
+    const wrapper = await mountView('member', 'student')
+    await wrapper.get('.join-card__trigger').trigger('click')
+    await wrapper.get('#join-code-input').setValue('CJLU2026')
+    // 这一次提交之后后端改成「已经有组织」，横幅的判据才跟着翻面。
+    calls = []
+    orgStatus = 200
+    await wrapper.get('form.join-panel__form').trigger('submit')
+    await flushPromises()
+    await flushPromises()
+
+    expect(calls).toContain('post /invitations/redeem')
+    // 回执写的是后端给的组织名，不是页面自己编的。
+    expect(wrapper.get('.page-notice').text()).toBe('已加入「中国计量大学」')
+    expect(wrapper.find('.join-card').exists()).toBe(false)
+    // 「刷新页面」落在重读上：横幅判据 + 四张卡各再读一次（`loadMembership` 在 `redeemOpen = false`
+    // 之前已经把 orgStatus 读成 200，所以横幅当场就消失）。
+    expect(calls.filter((call) => call === 'get /organizations/me')).toHaveLength(1)
+    expect(calls.filter((call) => call === 'get /profiles/me')).toHaveLength(1)
+  })
+
+  it('按 Esc 关掉面板：开合归基座，不是这里自己写的监听', async () => {
+    orgStatus = 404
+    const wrapper = await mountView('member', 'student')
+    await wrapper.get('.join-card__trigger').trigger('click')
+    expect(wrapper.find('.join-panel').exists()).toBe(true)
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await flushPromises()
+    expect(wrapper.find('.join-panel').exists()).toBe(false)
+    expect(wrapper.get('.join-card__trigger').attributes('aria-expanded')).toBe('false')
+  })
+
+  it('点「取消」也收起面板，且不发明任何请求', async () => {
+    orgStatus = 404
+    const wrapper = await mountView('member', 'student')
+    await wrapper.get('.join-card__trigger').trigger('click')
+    calls = []
+
+    await wrapper.get('.join-panel__cancel').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.join-panel').exists()).toBe(false)
+    expect(calls).toEqual([])
   })
 })
 
@@ -334,9 +577,18 @@ describe('工作台 · 不许有假数据（源码级）', () => {
   })
 
   it('没有写死的占位数字：失败用「—」，未读用「…」', () => {
-    // `0%` / `未设置` 是改造前那三张假卡的字面量；现在百分比由档案真实字段算出。
-    expect(code).not.toContain('0%')
-    expect(code).not.toContain('未设置')
+    /*
+     * 显式改写（2026-11-15 第 24 轮，守则 R1）：这条原来直接扫 `code`，于是它管的其实是
+     * 「整个文件里不许出现 `0%` 这两个字符」。本仓一直没有撞上这件事，是因为这一页以前
+     * 没有任何百分比 CSS；本轮邀请码面板写了 `width: 100%`，那条 CSS 与「假卡上写死 0%」
+     * 没有半点关系。判据因此收窄到它真正想管的地方——**会渲染上屏的标记与脚本**：
+     * 剥掉 `<style>` 之后仍然一处都不许有 `0%` / `未设置`，强度没有放宽（模板里再写死
+     * 一个 `0%` 照样红），只是不再把样式表里的百分比误当成占位数字。
+     */
+    const markup = code.replace(/<style[\s\S]*?<\/style>/g, '')
+    expect(markup).not.toBe(code) // 反向护栏：真的扫到了那个 CSS 块，不是剥了个空
+    expect(markup).not.toContain('0%')
+    expect(markup).not.toContain('未设置')
     expect(code).toContain("if (state === 'failed') return '—'")
   })
 })

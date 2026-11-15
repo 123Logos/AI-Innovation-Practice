@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 
+import type { UserRole } from '@/api/types'
 import { armSessionExpiredNotice, setUnauthorizedHandler } from '@/api/client'
 import AppLayout from '@/components/AppLayout.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -48,8 +49,9 @@ const routes: RouteRecordRaw[] = [
       {
         /*
          * 简历工作台（2026-11-14 从 `path: ''` 挪到 `/resume`）。
-         * 挪的理由是「默认落地」这件事：根路径 `/` 现在要按登录态分流
-         * （未登录 → `/welcome`，已登录 → `/dashboard`），它不能再同时是编辑器本身。
+         * 挪的理由是「默认落地」这件事：根路径 `/` 现在要按登录态与角色分流
+         * （未登录 → `/welcome`；登录后按角色去工作台 / 学情看板 / 组织管理，
+         * 见 `landingRouteForRole`），它不能再同时是编辑器本身。
          * 编辑器必须有自己的一条路径，否则 `{ name: 'resume-editor' }` 解析出来的还是 `/`，
          * 分流规则会把它自己也劫走。
          */
@@ -215,6 +217,34 @@ const router = createRouter({
 })
 
 /**
+ * 登录后的落点页按角色分流（2026-11-15，老板指令）。
+ *
+ * 判据是 `auth.role`（`/auth/me` 顶层那一格），不是权限字符串——与
+ * `config/modules.ts::visibleToRoles` 用同一支角色，两处才不会打架。
+ *
+ * - `student` → 工作台（那四张统计卡就是给它的）；
+ * - `teacher` → 学情看板（他每天打开要看的第一个东西是班情，不是自己的简历）；
+ * - `school_admin` → 组织管理（成员与审计是他的日常，看板对他和教师等价）；
+ * - `platform_admin` → 学情看板。**这一支老板 2026-11-15 已批**（第 24 轮原话：「按你定的，
+ *   暂落到 /teacher。因为目前系统还没有跨组织的全局管理后台，平台管理员看学情看板/组织管理
+ *   是没问题的」）。所以今天它是「教师侧超集」的落点，不是跨组织总控台——那两个入口对他都可达，
+ *   等真有全局后台时这一格要重新拍，届时改的是这一个 `case`。
+ *
+ * 默认分支（角色还没读到）落工作台：它对所有登录角色都可见，不会白屏。
+ */
+function landingRouteForRole(role: UserRole | null): { name: string } {
+  switch (role) {
+    case 'teacher':
+    case 'platform_admin':
+      return { name: 'teacher-dashboard' }
+    case 'school_admin':
+      return { name: 'organization' }
+    default:
+      return { name: 'dashboard' }
+  }
+}
+
+/**
  * 路由守卫：所有受保护页面在进入前确认「有 Token 且 Token 仍有效」。
  *
  * 刷新页面后 Pinia 是空的，但 Token 还在 localStorage，
@@ -224,7 +254,7 @@ router.beforeEach(async (to) => {
   const auth = useAuthStore()
 
   /*
-   * 默认落地（2026-11-14，UI 收尾第 1 条）：根路径按登录态分流。
+   * 默认落地（2026-11-14 建，2026-11-15 起按角色分流）：根路径按「登录态 + 角色」分流。
    *
    * 判据放在守卫最前面、而不是给 `/` 写一个 `redirect` 函数：`redirect` 里读 store 要求
    * Pinia 已经装好，而路由表是模块顶层代码（`main.ts` 里 `use(router)` 才装插件）；
@@ -242,7 +272,11 @@ router.beforeEach(async (to) => {
    * 两个分支都跳**具名路由**，不写 `redirect` 链，所以不会出现重定向成环。
    */
   if (to.path === '/' || to.matched.length === 0) {
-    return auth.isAuthenticated ? { name: 'dashboard' } : { name: 'welcome' }
+    if (!auth.isAuthenticated) return { name: 'welcome' }
+    // 按角色分流要先知道角色：刷新后 Pinia 是空的，`ensureUser()` 用本地 Token 换回
+    // `/auth/me`。换不回来就是会话已失效——送去登录页，并保住「我本来要去首页」这一格。
+    if (!(await auth.ensureUser())) return { name: 'login', query: { redirect: '/' } }
+    return landingRouteForRole(auth.role)
   }
 
   if (to.meta.requiresAuth) {
@@ -256,8 +290,9 @@ router.beforeEach(async (to) => {
   }
 
   if (to.meta.guestOnly && auth.isAuthenticated) {
-    // 已登录的人再去看登录/注册页：送回默认落地页（与 `/` 的分流同一个去向）。
-    return { name: 'dashboard' }
+    // 已登录的人再去看登录/注册页：送回默认落地页（与 `/` 的分流同一个去向、同一支判据）。
+    if (!(await auth.ensureUser())) return true
+    return landingRouteForRole(auth.role)
   }
 
   return true

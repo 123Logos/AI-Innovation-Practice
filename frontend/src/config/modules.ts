@@ -25,7 +25,15 @@
  * 与 `frontend/src/router/index.ts` 的分工：那张表管「叫什么、去哪、什么条件可见」，
  * 路由表管「挂哪个组件、要不要登录守卫、传什么 props」。两份的交点由测试核对
  * （`requiresAuth` 与 `routeName` 必须两边一致），不靠人记。
+ *
+ * **2026-11-15 加了第四格 `visibleToRoles`**（老板指令：基于角色的导航过滤）。
+ * 这一格只决定**入口画不画**，不是权限边界——后端每个端点自己再判一次
+ * （无权限 403、无组织 400），与 `stores/auth.ts::hasPermission` 上面那段纪律同一句话。
+ * 判据用角色而不是权限字符串，是因为老板给的分派规则就是按角色写的；
+ * 两边今天等价：`app/core/permissions.py::ROLE_PERMISSIONS` 里 `teacher` / `school_admin` /
+ * `platform_admin` 都含 `dashboard:read`，与下面 `STAFF_ROLES` 三支一模一样。
  */
+import type { UserRole } from '@/api/types'
 
 /** 模块的稳定 id：给消费方当 key 用，不随文案变化，所以与 `routeName` 分开两个名字。 */
 export type AppModuleKey =
@@ -48,7 +56,24 @@ export interface AppModule {
   readonly requiresAuth: boolean
   /** 24×24 描边图标的 `path d` 列表（C1：图标必须是 SVG，不许是字符）。 */
   readonly iconPaths: readonly string[]
+  /**
+   * 哪些角色能在二级导航 / 工作台入口里看到这一项。
+   *
+   * 空数组是不允许的（`layoutGuards.spec.ts` 钉住「每一项至少对一个角色可见」）——
+   * 一个谁都看不见的入口等于 L5 禁的那种「写了但到不了」的孤儿。
+   */
+  readonly visibleToRoles: readonly UserRole[]
 }
+
+/**
+ * 教师侧三支角色。**不是**「学生那一支的反面」写出来的表达式，而是明写出来：
+ * 它与 `app/core/permissions.py::ROLE_PERMISSIONS` 里拿到 `dashboard:read` 的那三支同源，
+ * `platform_admin` 由运维在库里授予，不给它任何入口会让它登录后面对一条空白导航。
+ */
+export const STAFF_ROLES: readonly UserRole[] = ['teacher', 'school_admin', 'platform_admin']
+
+/** 全部登录角色（学生 + 教师侧三支）。 */
+export const ALL_LOGGED_IN_ROLES: readonly UserRole[] = ['student', ...STAFF_ROLES]
 
 /**
  * 唯一的模块数组。新增一项之前先确认它已经能到达（L5），
@@ -63,6 +88,9 @@ export const APP_MODULES: readonly AppModule[] = [
     name: '工作台',
     routeName: 'dashboard',
     requiresAuth: true,
+    // 工作台是登录后的落点页本身，两支角色都要有回去的路。
+    // 页面内容按角色换（学生看四张统计卡，教师侧看入口卡），见 DashboardView。
+    visibleToRoles: ALL_LOGGED_IN_ROLES,
     iconPaths: ['M3 10.5 12 3l9 7.5', 'M5 9.5V21h14V9.5'],
   },
   {
@@ -70,6 +98,7 @@ export const APP_MODULES: readonly AppModule[] = [
     name: '简历工作台',
     routeName: 'resume-editor',
     requiresAuth: true,
+    visibleToRoles: ALL_LOGGED_IN_ROLES,
     iconPaths: ['M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z', 'M14 3v5h5'],
   },
   {
@@ -77,18 +106,29 @@ export const APP_MODULES: readonly AppModule[] = [
     name: '岗位库',
     routeName: 'job-board',
     requiresAuth: true,
+    visibleToRoles: ALL_LOGGED_IN_ROLES,
     iconPaths: ['M3 8h18v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z', 'M9 8V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v3'],
   },
   /*
-   * 批次 B5（ADR-021）起可见。**对所有登录用户开放**，不按角色隐藏：
-   * 学生进来看到的是「我在哪个组织」与「你没有查看成员名单的权限」，
-   * 这比一个凭空消失的入口更容易解释——而真正的拦截在后端（403），不靠这里少画一个入口。
+   * 批次 B5（ADR-021）起可见。
+   *
+   * **2026-11-15 起只对教师侧三支角色可见**（老板指令：基于角色的导航过滤）。
+   * 这里改的只是「入口画不画」——后端那三道闸一格没动：成员名单要 `org:member:read`、
+   * 改角色要 `org:member:manage`、审计要 `audit:read`，越权仍是 403。
+   *
+   * 一条连带后果与它的定案（2026-11-15 第 24 轮）：学生「凭邀请码加入班级」的那一屏本来在
+   * 本页（`OrganizationView.vue` 的 `hasNoOrganization` 分支），入口对学生隐藏之后发现路径断了。
+   * 老板裁定**不把本页签加回学生导航**，改在学生工作台补一条「加入班级」横幅
+   * （判据 `GET /organizations/me` 的 404，走的还是 `POST /invitations/redeem`）。
+   * 所以今天学生的路是「工作台 → 横幅 → 输码」，而不是「工作台 → 组织管理」；
+   * 直接访问 `/organization` 仍然可用、后端仍然接受兑换——改的一直是入口，不是能力。
    */
   {
     key: 'organization',
     name: '组织管理',
     routeName: 'organization',
     requiresAuth: true,
+    visibleToRoles: STAFF_ROLES,
     iconPaths: ['M3 21h18', 'M5 21V7l7-4 7 4v14', 'M9 21v-6h6v6'],
   },
   {
@@ -99,6 +139,7 @@ export const APP_MODULES: readonly AppModule[] = [
     name: '模拟面试',
     routeName: 'interview-list',
     requiresAuth: true,
+    visibleToRoles: ALL_LOGGED_IN_ROLES,
     iconPaths: ['M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'],
   },
   {
@@ -108,15 +149,19 @@ export const APP_MODULES: readonly AppModule[] = [
     name: '能力测评',
     routeName: 'assessment',
     requiresAuth: true,
+    visibleToRoles: ALL_LOGGED_IN_ROLES,
     iconPaths: ['M9 12l2 2 4-4', 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0'],
   },
   {
-    // 批次 B10a / B10b（ADR-029）落地：教师端学情看板。与测评同一取舍，
-    // 不占顶栏一级，由工作区切换器呈现；可见性不在前端按角色藏，后端会判权限。
+    // 批次 B10a / B10b（ADR-029）落地：教师端学情看板。由二级导航呈现。
+    // 2026-11-15 起只对教师侧三支角色可见（老板指令）；「前端少画一张卡不构成任何保护」
+    // 这句话仍然成立——真正的边界是 `GET /teacher/dashboard` 上的 `dashboard:read`（403）
+    // 与 `action_gate::require_organization`（400），两者都在后端。
     key: 'teacher-dashboard',
     name: '学情看板',
     routeName: 'teacher-dashboard',
     requiresAuth: true,
+    visibleToRoles: STAFF_ROLES,
     iconPaths: ['M4 20V10', 'M10 20V4', 'M16 20v-7', 'M22 20H2'],
   },
 ]
@@ -129,4 +174,35 @@ export function moduleByKey(key: AppModuleKey): AppModule {
   const found = APP_MODULES.find((module) => module.key === key)
   if (!found) throw new Error(`模块表里没有这一项：${key}`)
   return found
+}
+
+/**
+ * 这个角色算不算「教师侧」。判据就是 `STAFF_ROLES` 那一支，
+ * 不在别处再写一遍 `role === 'teacher' || role === 'school_admin'`——
+ * 那是第二套真相，将来加一支角色就会漏。
+ */
+export function isStaffRole(role: UserRole | null): boolean {
+  return role !== null && STAFF_ROLES.includes(role)
+}
+
+/**
+ * 某个角色能看到的模块入口。**这是入口可见性的唯一过滤器**：
+ * `ModuleNav.vue` 与 `DashboardView.vue` 都调它，两边不许各写一份 `filter`。
+ *
+ * `role` 为 `null`（还没 `/auth/me` 回来，或未登录）时返回空数组：
+ * 二级导航只在 `AppLayout` 之下渲染，而那一层全部是 `requiresAuth` 页面，
+ * 守卫已经保证那一刻角色拿到了；真拿到 null 也只是暂时不画页签，
+ * 比按「猜出来的学生身份」多画几个入口要好（fail-closed，与 BYOK 白名单同一取向）。
+ */
+export function modulesVisibleTo(role: UserRole | null): AppModule[] {
+  if (!role) return []
+  return APP_MODULES.filter((module) => module.visibleToRoles.includes(role))
+}
+
+/**
+ * 只有教师侧才看得见的模块——工作台用它给教师拼「进入学情看板 / 进入组织管理」那两张卡，
+ * 名字仍从模块表来（守则 L4：视图里不许出现写死的模块名）。
+ */
+export function staffOnlyModules(): AppModule[] {
+  return APP_MODULES.filter((module) => !module.visibleToRoles.includes('student'))
 }
