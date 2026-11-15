@@ -291,7 +291,16 @@ describe('外框只有一处定义（守则 L1）', () => {
   })
 })
 
-describe('登录后落地页按角色分流（2026-11-15，老板指令）', () => {
+describe('登录后落地页：四个角色都是工作台（2026-11-15 第 27 轮，老板裁定改回）', () => {
+  /*
+   * 显式改写（守则 R1）：第 23 轮这一组钉的是「按角色分到不同页」，
+   * 老板第 27 轮的原话是「把管理员、教师的默认页面改回工作台，否则此次 pr 依旧不通过」。
+   * 判据跟着翻面：现在钉的是**四个角色都落 `/dashboard`**——
+   * 有人再把某个角色分到看板 / 组织管理，这几条会直接红，分流不会悄悄回来。
+   * 教师侧在工作台看到的「教师工具」入口卡由 `DashboardView.spec.ts` 钉住，
+   * 落点回到工作台不等于教师进不去看板。
+   */
+
   /** 走一次 `/`，返回守卫最终把人放到了哪条路由。 */
   async function land(role: string | null): Promise<string | undefined> {
     const auth = useAuthStore()
@@ -300,29 +309,17 @@ describe('登录后落地页按角色分流（2026-11-15，老板指令）', () 
     return router.currentRoute.value.name as string | undefined
   }
 
-  it('学生 → 工作台', async () => {
-    expect(await land('student')).toBe('dashboard')
-  })
+  for (const role of ['student', 'teacher', 'school_admin', 'platform_admin']) {
+    it(`${role} → 工作台`, async () => {
+      expect(await land(role)).toBe('dashboard')
+    })
+  }
 
-  it('教师 → 学情看板（他每天打开要看的第一个东西不是自己的简历）', async () => {
-    expect(await land('teacher')).toBe('teacher-dashboard')
-  })
-
-  it('学校管理员 → 组织管理', async () => {
-    expect(await land('school_admin')).toBe('organization')
-  })
-
-  it('平台管理员落学情看板，不落一张空白导航', async () => {
-    // 这一格是**我替他定的**（老板指令里没点名 platform_admin）：它在 ROLE_PERMISSIONS
-    // 里拿得到 dashboard:read，落看板不会 403。判据写下来是为了这条以后被改时能红。
-    expect(await land('platform_admin')).toBe('teacher-dashboard')
-  })
-
-  it('角色还没读到（null）时落工作台，不白屏', async () => {
+  it('角色还没读到（null）时也落工作台，不白屏', async () => {
     expect(await land(null)).toBe('dashboard')
   })
 
-  it('未登录访问 `/` 仍然是访客首屏，不被角色分流劫走', async () => {
+  it('未登录访问 `/` 仍然是访客首屏，不被落地逻辑劫走', async () => {
     const auth = useAuthStore()
     auth.token = null
     auth.user = null
@@ -332,20 +329,20 @@ describe('登录后落地页按角色分流（2026-11-15，老板指令）', () 
     expect(router.currentRoute.value.name).toBe('welcome')
   })
 
-  it('敲错地址与 `/` 走同一条分流：教师同样落到学情看板', async () => {
+  it('敲错地址与 `/` 走同一条规则：教师也落工作台', async () => {
     const auth = useAuthStore()
     auth.role = 'teacher'
     await visit('/no-such-page')
 
-    expect(router.currentRoute.value.name).toBe('teacher-dashboard')
+    expect(router.currentRoute.value.name).toBe('dashboard')
   })
 
-  it('已登录的人再去看登录页：送回自己角色的落点，不再统一塞工作台', async () => {
+  it('已登录的人再去看登录页：送回工作台，不再按角色分叉', async () => {
     const auth = useAuthStore()
     auth.role = 'school_admin'
     await visit('/login')
 
-    expect(router.currentRoute.value.name).toBe('organization')
+    expect(router.currentRoute.value.name).toBe('dashboard')
   })
 })
 
