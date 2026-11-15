@@ -52,6 +52,19 @@ const props = defineProps<{
   focusFallback?: string
   /** 模态形态（带遮罩的抽屉）才开：Tab / Shift+Tab 圈在面板里。Popover 不开。 */
   trapFocus?: boolean
+  /**
+   * **挂起**（2026-11-15 第 25 轮）：上面还压着一层模态时置真，本面板暂时不响应
+   * 外部点击与 Esc。
+   *
+   * 为什么需要它：大弹窗（`.ui-overlay`，z-index 100）打开时，用户在弹窗里点一下，
+   * 那一次 `pointerdown` 照样会冒到 `document`，本基座看见「target 不在我这」，就把
+   * 背后的抽屉关掉了——用户只是想改个资料，抽屉却没了。**关掉它也等于关掉打开它的
+   * 那个入口**，再找回来要重新点一次顶栏。
+   *
+   * 判据归调用方（谁知道上面有没有弹窗谁知道）：`AppTopBar` 传 `ui.modalOpen`。
+   * 挂起期间 `Escape` 也不处理——那一下归弹窗，否则一次 Esc 会连关两层。
+   */
+  suspended?: boolean
 }>()
 
 const emit = defineEmits<{ close: [] }>()
@@ -81,6 +94,8 @@ function restoreFocus(): void {
 }
 
 function onPointerDown(event: PointerEvent): void {
+  // 上面压着模态：这一下归那一层，本面板不许跟进（否则「点弹窗里的空白」会连关抽屉）。
+  if (props.suspended) return
   const el = root.value
   if (!el) return
   const target = event.target as Node
@@ -103,6 +118,8 @@ function onPointerDown(event: PointerEvent): void {
 }
 
 function onKeydown(event: KeyboardEvent): void {
+  // 挂起期间 Esc 归上面那层模态：两边都响的话一次按键会连关两层。
+  if (props.suspended) return
   if (event.key === 'Escape') {
     emit('close')
     return

@@ -73,6 +73,22 @@ export function formatMonth(value: string | null | undefined): string {
   return `${parts.year}.${pad(parts.month)}`
 }
 
+/**
+ * `2026-11-02T21:25:00+08:00` → `2026-11-02 21:25`（横线版，精确到分钟）。
+ *
+ * 2026-11-15 第 25 轮：老板要求组织管理页的时间**统一**成 `YYYY-MM-DD HH:mm`
+ * 且强制东八区。时区这一半本来就归 `Intl`（`TIME_ZONE` 常量），这里只换分隔符——
+ * 另外五个页面仍用斜杠版 `formatDateTime()`，没有跟着改：那是另一批的视觉决定，
+ * 而「组织页的日志行」是这一批被点名的对象。
+ */
+export function formatDateTimeMinute(value: string | null | undefined): string {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const parts = partsOf(dateTimeFormatter, date)
+  return `${parts.year}-${pad(parts.month)}-${pad(parts.day)} ${pad(parts.hour)}:${pad(parts.minute)}`
+}
+
 /** `2026-11-02T21:25:00+08:00` → `2026/11/02 21:25`，用于「上次保存」这类提示。 */
 export function formatDateTime(value: string | null | undefined): string {
   if (!value) return ''

@@ -1082,13 +1082,14 @@ describe('提取失败的分支文案（禁止静默降级）', () => {
     const invalid = new ApiError('Key 无效。', 401, 'AI_KEY_INVALID')
     const unavailable = new ApiError('AI 暂时不可用。', 502, 'AI_SERVICE_UNAVAILABLE')
 
-    // 缺 Key 与 Key 无效都要把用户送去「AI 设置」，但不能是同一句话（一个是去填，一个是去修）。
-    expect(extractFailureText(missing)).toContain('AI 设置')
-    expect(extractFailureText(invalid)).toContain('AI 设置')
+    // 缺 Key 与 Key 无效都要把用户送去「设置」，但不能是同一句话（一个是去填，一个是去修）。
+    // 2026-11-15 第 25 轮（R1）：界面里的「AI 设置」并进了「设置」弹窗，文案跟着改口径，判据不变。
+    expect(extractFailureText(missing)).toContain('「设置」')
+    expect(extractFailureText(invalid)).toContain('「设置」')
     expect(extractFailureText(missing)).not.toBe(extractFailureText(invalid))
     // 上游挂了只该让他重试，**不该**让他去动 Key 或重新登录。
     expect(extractFailureText(unavailable)).toContain('稍后重试')
-    expect(extractFailureText(unavailable)).not.toContain('AI 设置')
+    expect(extractFailureText(unavailable)).not.toContain('「设置」')
     expect(extractFailureText(unavailable)).not.toContain('重新登录')
   })
 
@@ -1322,11 +1323,11 @@ describe('人岗匹配（显式点击、纯计算、退化可归因）', () => {
     )
     expect(new Set(texts).size).toBe(5)
     for (const text of texts) expect(text).toContain('关键词')
-    expect(texts[0]).toContain('AI 设置')
-    expect(texts[1]).toContain('AI 设置')
+    expect(texts[0]).toContain('「设置」')
+    expect(texts[1]).toContain('「设置」')
     // 后三种只能等：把用户支去改一个本来没坏的 Key 是最坏的那种「有帮助的文案」。
     for (const text of texts.slice(2)) {
-      expect(text).not.toContain('AI 设置')
+      expect(text).not.toContain('「设置」')
       expect(text).not.toContain('API Key')
       expect(text).toContain('稍后再算一次')
     }

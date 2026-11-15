@@ -536,10 +536,10 @@ export function extractFailureText(error: unknown): string {
   switch (error.code) {
     case 'AI_KEY_MISSING':
       // ui-copy:allow C2 唯一豁免：这句话指向用户自己去 DeepSeek 复制的那串凭据
-      return '请先在右上角「AI 设置」里填好你的 DeepSeek API Key，再点一次「AI 提取技能」。'
+      return '请先在右上角账户里的「设置」中填好你的 DeepSeek API Key，再点一次「AI 提取技能」。'
     case 'AI_KEY_INVALID':
-      // ui-copy:allow 同上：他能修的只有「去 AI 设置里换一把」这一件事
-      return '你的 DeepSeek API Key 无效或已欠费，请打开「AI 设置」检查后再试。（与登录状态无关，不需要重新登录。）'
+      // ui-copy:allow 同上：他能修的只有「去设置里换一把」这一件事
+      return '你的 DeepSeek API Key 无效或已欠费，请打开右上角账户里的「设置」检查后再试。（与登录状态无关，不需要重新登录。）'
     case 'AI_SERVICE_UNAVAILABLE':
       if (error.finishReason === 'length') {
         return '这份 JD 太长或要提取的技能太多，AI 写满了长度上限还是装不下。把真正想要的技能写清楚（或者只粘核心那几段）再试一次。'
@@ -601,12 +601,12 @@ export function matchDegradeLines(result: MatchResult): string[] {
   switch (meta.degrade_reason) {
     case 'key_missing':
       // ui-copy:allow C2 唯一豁免：用户必须亲手去 DeepSeek 拿这把凭据，界面里的原词可以出现
-      lines.push('还没有填你的 DeepSeek API Key：点右上角「AI 设置」填好，再算一次会更准。')
+      lines.push('还没有填你的 DeepSeek API Key：点右上角账户里的「设置」填好，再算一次会更准。')
       break
     case 'key_invalid':
       // ui-copy:allow 同上：这句话指向的就是他自己粘 Key 的那个输入框
       lines.push(
-        '你的 DeepSeek API Key 无效或已欠费：打开「AI 设置」检查后再算一次。（与登录状态无关，不需要重新登录。）',
+        '你的 DeepSeek API Key 无效或已欠费：打开右上角账户里的「设置」检查后再算一次。（与登录状态无关，不需要重新登录。）',
       )
       break
     case 'timeout':

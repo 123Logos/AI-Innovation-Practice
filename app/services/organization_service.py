@@ -153,8 +153,8 @@ class OrganizationService:
         *,
         limit: int,
         offset: int,
-    ) -> tuple[list[AuditLog], int]:
-        """当前组织的审计日志。
+    ) -> tuple[list[tuple[AuditLog, str | None]], int]:
+        """当前组织的审计日志（每行带上操作人用户名，见仓储那一层的 LEFT JOIN）。
 
         `platform_admin` 没有组织归属，本批也不给它跨组织视图：
         给一个能读全校日志的入口，却没有「谁批准了这次读取」的记录，本身就是风险。

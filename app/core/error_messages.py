@@ -1,5 +1,12 @@
-"""受信上屏错误目录；异常文本只能作为精确匹配键，不能直接输出。"""
+"""受信上屏错误目录；异常文本只能作为精确匹配键，不能直接输出。
 
+**2026-11-15 第 26 轮补了一条出口**：4xx 的 detail 若是一段人写的中文句子（不在表里），
+允许**原样上屏**——它和「把异常文本当文案」不是一回事。判据在 `is_human_prose()`，
+四条缺一不可（汉字、单行、长度上限、无模板花括号），5xx 仍然只发固定文案。
+"""
+
+import re
+from dataclasses import dataclass
 from enum import StrEnum
 
 
@@ -300,28 +307,82 @@ VALIDATION_TYPES = {
 }
 
 
-def http_error_message(status_code: int, detail: object) -> ErrorMessage:
+#: 原句直传的长度上限：超过它多半不是一句产品话（整段 payload / HTML / 日志）。
+PROSE_MAX_LENGTH = 200
+
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def is_human_prose(detail: object) -> bool:
+    """detail 是不是一段**可以原样上屏**的中文句子（4xx 专用，5xx 不走这里）。
+
+    四条同时成立才算，每一条都对着一种事故：
+
+    1. 是 `str` 且含汉字——英文 detail（`"Not Found"`、`"invalid token"`、上游透传的
+       英文句子）仍然落到通用句，F1c 收口要防的就是它们被原样上屏；
+    2. 没有换行——多行 detail 通常是把异常文本 / traceback 整段塞进来；
+    3. 不超过 `PROSE_MAX_LENGTH` 字——防止整段请求体或 HTML 被当成文案；
+    4. 不含花括号——`{bound}` 这类模板占位符原样上屏会直接露在用户面前。
+    """
+    if type(detail) is not str or not detail:
+        return False
+    if len(detail) > PROSE_MAX_LENGTH:
+        return False
+    if "\n" in detail or "\r" in detail:
+        return False
+    if "{" in detail or "}" in detail:
+        return False
+    return _CJK_RE.search(detail) is not None
+
+
+@dataclass(frozen=True)
+class HttpErrorMessage:
+    """`http_error_message()` 的解析结果。
+
+    `reason` 是命中的枚举名，供 `details.reason` 排障；`passed_through` 表示这段话
+    是 detail **原句直传**的（不在表里，但允许上屏）。两者都为空 = 走了按状态码兜底，
+    那时才记 `UNMAPPED`——「表里少了一条」的信号只留给真正没人管的那一类。
+    """
+
+    message: str
+    reason: str | None = None
+    passed_through: bool = False
+
+
+def http_error_message(status_code: int, detail: object) -> HttpErrorMessage:
+    """4xx 的 detail → 上屏文案。
+
+    顺序是有意的：**5xx 先挡掉**（那里只有一句固定文案，detail 一律不进响应），
+    再依次试 枚举实例 → 别名表 → 枚举值 → 人话直传 → 按状态码兜底。
+    """
     if status_code >= 500 or status_code < 400:
-        return ErrorMessage.INTERNAL
+        return HttpErrorMessage(str(ErrorMessage.INTERNAL))
     if isinstance(detail, ErrorMessage):
-        return detail
+        return HttpErrorMessage(str(detail), reason=detail.name)
     if type(detail) is str:
         if detail in HTTP_DETAIL_ALIASES:
-            return HTTP_DETAIL_ALIASES[detail]
+            alias = HTTP_DETAIL_ALIASES[detail]
+            return HttpErrorMessage(str(alias), reason=alias.name)
         try:
             message = ErrorMessage(detail)
         except ValueError:
             pass
         else:
             if "{" not in message:
-                return message
-    return {
+                return HttpErrorMessage(str(message), reason=message.name)
+        # 表里没有，但这就是一句人写的中文 → 原样放行（2026-11-15 第 26 轮）。
+        # 压成「请求未能完成，暂时无法确认原因」等于把「修得动的一句话」换成
+        # 「去问维护人员」，用户读到的下一步完全变了。
+        if is_human_prose(detail):
+            return HttpErrorMessage(detail, passed_through=True)
+    fallback = {
         401: ErrorMessage.UNAUTHORIZED,
         403: ErrorMessage.FORBIDDEN,
         404: ErrorMessage.NOT_FOUND,
         405: ErrorMessage.METHOD_NOT_ALLOWED,
         429: ErrorMessage.RATE_LIMITED,
     }.get(status_code, ErrorMessage.CLIENT)
+    return HttpErrorMessage(str(fallback))
 
 
 #: 模板里 `{bound}` 该填哪个 `ctx` 键。顺序即优先级：同一个错误类型只会有其中一个。

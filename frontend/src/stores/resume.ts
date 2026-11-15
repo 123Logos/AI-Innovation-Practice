@@ -562,7 +562,14 @@ function createEmptyDraft(): ProfileDraft {
   }
 }
 
-function draftFromProfile(profile: ProfileRead): ProfileDraft {
+/**
+ * `ProfileRead` → 草稿（**导出**给 `ProfileModal.vue` 复用）。
+ *
+ * 导出而不是在别处再写一份：草稿的形状与后端的写契约绑得很紧（`edu_start` 要
+ * `YYYY-MM`、`source` 原样保留、`layout_config` 读侧恒为解析后的快照），
+ * 抄一份到第二个文件，下一次后端改字段时就会有一处静默失配——保存 422 或清掉子表。
+ */
+export function draftFromProfile(profile: ProfileRead): ProfileDraft {
   return {
     full_name: profile.full_name,
     email: profile.email ?? '',
@@ -611,7 +618,113 @@ function draftFromProfile(profile: ProfileRead): ProfileDraft {
   }
 }
 
+/**
+ * 只抄**内容**、不抄「长什么样」（第 26 轮，`createProfile` 的空白新建用）。
+ *
+ * 内容格：表头五格 + 五个子表。`paper_size` / `theme` / `layout_config` 刻意不在名单里——
+ * 它们是这份简历的排版与配色，新简历应当从服务端默认开始；抄过去会让「新建一份空白」
+ * 变成「原样复制一份」，与「复制当前」这个已有选项撞在一起。
+ *
+ * 深拷贝子表（`{...row}`）而不是共享引用：两份草稿共用一个数组，改 B 会带动 A。
+ */
+function copyContentInto(target: ProfileDraft, source: ProfileDraft): void {
+  target.full_name = source.full_name
+  target.email = source.email
+  target.contact = source.contact
+  target.target_role = source.target_role
+  target.skills = source.skills.map((skill) => ({ ...skill }))
+  target.experiences = source.experiences.map((experience) => ({ ...experience }))
+  target.educations = source.educations.map((education) => ({ ...education }))
+  target.certificates = source.certificates.map((certificate) => ({ ...certificate }))
+  target.portfolio_links = source.portfolio_links.map((link) => ({ ...link }))
+  target.city_preferences = source.city_preferences.map((city) => ({ ...city }))
+}
+
 /* ------------------------------ 本地草稿工具 ------------------------------ */
+
+/** 渲染层用：空标题不能让纸面上出现一个空 `h2`（第 25 轮从 store 提出来，`payloadFromDraft` 也要用）。 */
+function sectionTitle(section: LayoutSection): string {
+  return section.title.trim() || DEFAULT_SECTION_TITLES[section.id]
+}
+
+/**
+ * 草稿 → 请求体（**纯函数**，2026-11-15 第 25 轮从 store 里提出来）。
+ *
+ * 规则与注释全在下面对应那一格上；提出来是为了让 `ProfileModal.vue` 能用**同一支**
+ * 组装逻辑保存「个人资料」——它在 PUT 语义下必须随请求体带上子表（技能 / 经历 / …），
+ * 少带一格就是清空一格。副本写法迟早会漂，所以这里导出而不是复制。
+ */
+export function payloadFromDraft(draft: ProfileDraft): ProfileUpsertRequest {
+  return {
+    full_name: draft.full_name.trim(),
+    // 空串等同「没填」，交给后端存 NULL。
+    email: draft.email.trim() || null,
+    contact: draft.contact.trim(),
+    // 必须显式带上：`PUT` 是整体覆盖，省略这一格会清掉用户已填的偏好。
+    target_role: draft.target_role.trim() || null,
+    // 显式传值（而不是省略）：前端永远知道当前选的是哪档纸，
+    // 省略只会让后端走「保留原值」分支，万一本地和服务端不同步就再也改不回来。
+    paper_size: draft.paper_size,
+    // 同上：配色也显式传，理由与纸张一致。
+    theme: draft.theme,
+    /*
+     * 排版（D5.3）：**是默认顺序就发 null，否则发完整快照**。
+     *
+     * 不一律发快照的理由：`layout_config = NULL` 的语义是「从未自定义」，
+     * 将来默认顺序升级（新增第 4 个模块）时这类简历能自动跟上；
+     * 而「自定义成今天的默认顺序」会被钉死。用户只是顺手保存一次就永久失去
+     * 这条升级路径，代价和收益完全不成比例。
+     *
+     * 标题在这里兜底成默认值：输入框允许暂时为空（正在删改），
+     * 但库里的标题不能为空——后端 `LayoutSectionInput.title` 会 422。
+     */
+    layout_config: isDefaultLayout(draft.layout_config)
+      ? null
+      : {
+          version: LAYOUT_VERSION,
+          sections: draft.layout_config.sections.map((section) => ({
+            id: section.id,
+            title: sectionTitle(section),
+          })),
+        },
+    skills: meaningfulSkills(draft).map((skill) => ({
+      name: skill.name.trim(),
+      // `assessment` 整格省略 = 「沿用库里那一档」（后端 `ADR-027` §2.3）：
+      // 客户端没有资格重新声明服务端写入的来源，传过去只会 422。
+      ...(skill.source === 'assessment' ? {} : { source: skill.source }),
+      last_used_on: toIsoDate(skill.last_used_on),
+    })),
+    experiences: meaningfulExperiences(draft).map((experience) => ({
+      title: experience.title.trim(),
+      start_date: experience.start_date,
+      end_date: experience.end_date === '' ? null : experience.end_date,
+      description: experience.description.trim(),
+      responsibility: experience.responsibility.trim(),
+    })),
+    educations: meaningfulEducations(draft).map((education) => ({
+      school: education.school.trim(),
+      major: education.major.trim(),
+      degree: education.degree,
+      // 后端是 DATE：`YYYY-MM` 补成当月 1 号；空值由生成前校验拦住。
+      edu_start: toIsoDate(education.edu_start) ?? '',
+      edu_end: toIsoDate(education.edu_end),
+    })),
+    // ADR-015 §5：三格按后端契约发出，空行必须剔除——后端 `name`/`label`/`url`/`city`
+    // 都要求 min_length=1，发空串会 422。`issued_on` 空串转 null（至今 / 没填）。
+    certificates: meaningfulCertificates(draft).map((certificate) => ({
+      name: certificate.name.trim(),
+      issuer: certificate.issuer.trim() || null,
+      issued_on: certificate.issued_on ? certificate.issued_on : null,
+    })),
+    portfolio_links: meaningfulPortfolioLinks(draft).map((link) => ({
+      label: link.label.trim(),
+      url: link.url.trim(),
+    })),
+    city_preferences: meaningfulCityPreferences(draft).map((city) => ({
+      city: city.city.trim(),
+    })),
+  }
+}
 
 /** 写入 `localStorage` 的草稿信封，带版本号以便未来结构升级时安全丢弃旧草稿。 */
 export interface LocalDraft {
@@ -1219,11 +1332,6 @@ export const useResumeStore = defineStore('resume', () => {
     markContentChanged('排版已修改，需重新生成简历。')
   }
 
-  /** 渲染层用：空标题不能让纸面上出现一个空 `h2`。 */
-  function sectionTitle(section: LayoutSection): string {
-    return section.title.trim() || DEFAULT_SECTION_TITLES[section.id]
-  }
-
   function updateSkill(index: number, value: string): void {
     const skill = draft.skills[index]
     if (!skill) return
@@ -1382,75 +1490,7 @@ export const useResumeStore = defineStore('resume', () => {
    * 后端已去掉技能/经历的下限，这种「空档案」可以正常保存。
    */
   function toUpsertPayload(): ProfileUpsertRequest {
-    return {
-      full_name: draft.full_name.trim(),
-      // 空串等同「没填」，交给后端存 NULL。
-      email: draft.email.trim() || null,
-      contact: draft.contact.trim(),
-      // 必须显式带上：`PUT` 是整体覆盖，省略这一格会清掉用户已填的偏好。
-      target_role: draft.target_role.trim() || null,
-      // 显式传值（而不是省略）：前端永远知道当前选的是哪档纸，
-      // 省略只会让后端走「保留原值」分支，万一本地和服务端不同步就再也改不回来。
-      paper_size: draft.paper_size,
-      // 同上：配色也显式传，理由与纸张一致。
-      theme: draft.theme,
-      /*
-       * 排版（D5.3）：**是默认顺序就发 null，否则发完整快照**。
-       *
-       * 不一律发快照的理由：`layout_config = NULL` 的语义是「从未自定义」，
-       * 将来默认顺序升级（新增第 4 个模块）时这类简历能自动跟上；
-       * 而「自定义成今天的默认顺序」会被钉死。用户只是顺手保存一次就永久失去
-       * 这条升级路径，代价和收益完全不成比例。
-       *
-       * 标题在这里兜底成默认值：输入框允许暂时为空（正在删改），
-       * 但库里的标题不能为空——后端 `LayoutSectionInput.title` 会 422。
-       */
-      layout_config: isDefaultLayout(draft.layout_config)
-        ? null
-        : {
-            version: LAYOUT_VERSION,
-            sections: draft.layout_config.sections.map((section) => ({
-              id: section.id,
-              title: sectionTitle(section),
-            })),
-          },
-      skills: meaningfulSkills(draft).map((skill) => ({
-        name: skill.name.trim(),
-        // `assessment` 整格省略 = 「沿用库里那一档」（后端 `ADR-027` §2.3）：
-        // 客户端没有资格重新声明服务端写入的来源，传过去只会 422。
-        ...(skill.source === 'assessment' ? {} : { source: skill.source }),
-        last_used_on: toIsoDate(skill.last_used_on),
-      })),
-      experiences: meaningfulExperiences(draft).map((experience) => ({
-        title: experience.title.trim(),
-        start_date: experience.start_date,
-        end_date: experience.end_date === '' ? null : experience.end_date,
-        description: experience.description.trim(),
-        responsibility: experience.responsibility.trim(),
-      })),
-      educations: meaningfulEducations(draft).map((education) => ({
-        school: education.school.trim(),
-        major: education.major.trim(),
-        degree: education.degree,
-        // 后端是 DATE：`YYYY-MM` 补成当月 1 号；空值由生成前校验拦住。
-        edu_start: toIsoDate(education.edu_start) ?? '',
-        edu_end: toIsoDate(education.edu_end),
-      })),
-      // ADR-015 §5：三格按后端契约发出，空行必须剔除——后端 `name`/`label`/`url`/`city`
-      // 都要求 min_length=1，发空串会 422。`issued_on` 空串转 null（至今 / 没填）。
-      certificates: meaningfulCertificates(draft).map((certificate) => ({
-        name: certificate.name.trim(),
-        issuer: certificate.issuer.trim() || null,
-        issued_on: certificate.issued_on ? certificate.issued_on : null,
-      })),
-      portfolio_links: meaningfulPortfolioLinks(draft).map((link) => ({
-        label: link.label.trim(),
-        url: link.url.trim(),
-      })),
-      city_preferences: meaningfulCityPreferences(draft).map((city) => ({
-        city: city.city.trim(),
-      })),
-    }
+    return payloadFromDraft(draft)
   }
 
   /** 宽松的邮箱格式检查：只拦明显不是邮箱的输入，不做 RFC 全量校验。 */
@@ -1771,12 +1811,22 @@ export const useResumeStore = defineStore('resume', () => {
    *
    * `copy_from_id` 交给后端深拷贝，**不要**前端 GET 再 PUT：两次请求之间源简历
    * 可能被改，拼出来会是一份「半新半旧」的混合体。
+   *
+   * **空白新建会先把「已经有的一份档案」里的个人信息带过来**（2026-11-15 第 26 轮）：
+   * 姓名、联系方式、邮箱、期望职位、技能、经历、教育、证书、作品链接、期望城市。
+   * 纸张 / 配色 / 排版**不带**——那三格是「这份简历长什么样」，新简历从默认开始才说得通。
+   * 带入的内容只写进草稿（`dirty = true`），**不发任何保存请求**：用户在上面继续改，
+   * 存不存仍由他点「保存修改」决定。
    */
   async function createProfile(
     options: { title?: string; copyCurrent?: boolean } = {},
   ): Promise<ProfileRead> {
     const ready = await ensureSavedBeforeSwitch()
     if (!ready) throw new Error('已取消：当前简历的修改尚未保存。')
+
+    // 复制当前由后端深拷贝，不需要种子；只有空白新建才先去拿源档案。
+    // 必须在 `createProfile` **之前**取：新简历一旦成为默认，`/profiles/me` 就是它自己了。
+    const seedSource = options.copyCurrent ? null : await resolveSeedProfile()
 
     const created = await profilesApi.createProfile({
       title: options.title?.trim() ? options.title.trim() : null,
@@ -1785,7 +1835,28 @@ export const useResumeStore = defineStore('resume', () => {
 
     await refreshProfiles()
     await activateProfile(created.id)
+    if (seedSource) seedBlankDraftFrom(seedSource)
     return created
+  }
+
+  /**
+   * 「新建空白简历」从哪份档案里带内容：优先已经加载的当前简历，
+   * 没有（例如还没进过编辑器）就按老板说的去问 `GET /profiles/me`。
+   * 读不到就返回 `null`——带不动只是少省一步，不该让「新建」失败。
+   */
+  async function resolveSeedProfile(): Promise<ProfileRead | null> {
+    if (savedProfile.value) return savedProfile.value
+    try {
+      return await profilesApi.getMyProfile()
+    } catch {
+      return null
+    }
+  }
+
+  /** 把源档案的内容格抄进刚激活的空草稿；一格为空就是保持空（老板原话）。 */
+  function seedBlankDraftFrom(source: ProfileRead): void {
+    copyContentInto(draft, draftFromProfile(source))
+    markContentChanged('已从个人档案带入基本信息，点击生成最新简历。')
   }
 
   /** 设为默认：后端会把其余未删除简历的 `is_default` 一起清掉。 */
@@ -2038,7 +2109,7 @@ export const useResumeStore = defineStore('resume', () => {
   async function polish(options: { mode: PolishMode; maxWords?: number | null }): Promise<PolishResult> {
     if (!hasDeepSeekKey()) {
       // ui-copy:allow C2 唯一豁免：用户必须亲手去 DeepSeek 拿这把凭据，界面里的原词可以出现
-      throw new ApiError('请先在右上角「AI 设置」中填写你的 DeepSeek API Key。', 400, 'AI_KEY_MISSING')
+      throw new ApiError('请先在右上角账户里的「设置」中填写你的 DeepSeek API Key。', 400, 'AI_KEY_MISSING')
     }
 
     // 只发「有效行」：空技能行与没填标题的经历行对模型没有意义，还会白烧额度。

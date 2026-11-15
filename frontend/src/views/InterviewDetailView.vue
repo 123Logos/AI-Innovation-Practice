@@ -32,6 +32,7 @@ import type {
 import { ANSWER_MAX_LEN, SPEAKER_LABELS, interviewDegradeHint } from '@/api/interviews'
 import { ASR_MAX_SECONDS, synthesizeSpeech, transcribeAudio } from '@/api/voice'
 import AutoTextarea from '@/components/AutoTextarea.vue'
+import AiKeyHint from '@/components/AiKeyHint.vue'
 import { useVoiceRecorder } from '@/composables/useVoiceRecorder'
 import { playAudioBlob } from '@/utils/audioPlayback'
 import { formatDate } from '@/utils/datetime'
@@ -218,6 +219,11 @@ onMounted(load)
             </p>
             <p class="bubble-text">{{ turn.content }}</p>
             <p v-if="turnHint(turn)" class="bubble-hint" role="alert">{{ turnHint(turn) }}</p>
+            <!--
+              开场轮（sequence=1）刻意不带凭据走内置题库，那不是「用户没配」，
+              所以这里同 `turnHint` 一样把开场轮的 `key_missing` 挡掉。
+            -->
+            <AiKeyHint :reason="turn.sequence === 1 ? null : turn.ai_degrade_reason" />
           </div>
         </li>
       </ol>

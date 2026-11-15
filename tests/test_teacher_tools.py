@@ -555,6 +555,43 @@ def test_downloadable_list_only_contains_own_organization(
     assert "content_html" not in response.text
 
 
+def test_downloadable_list_keeps_only_the_latest_version(
+    client: TestClient, renderer: _FakeRenderer
+) -> None:
+    """只导最新版（2026-11-15 第 25 轮，老板指令）。
+
+    `resumes` 的每一行是一个版本，学生每保存一次就多一行；清单里同一个名字出现三次
+    时，导出的人分不清哪份是「现在的」。判据是 `is_head`（生成列，一个档案只有一个
+    满足它的版本），而且**名单与下载走同一条 SQL**——靠猜 id 也导不出历史版本。
+    """
+    headers, org_id = _school(client, "b10head")
+    student, _ = _user(
+        client, f"b10_head_{uuid4().hex[:6]}", organization_id=org_id, role="student"
+    )
+    _profile(client, student, name="多版本学生", skills=["Python"])
+    first = _resume(client, student)
+    second = _resume(client, student)
+    assert first != second
+
+    response = client.get(RESUMES_URL, headers=headers)
+
+    assert response.status_code == 200, response.text
+    items = response.json()["data"]["items"]
+    assert [item["resume_id"] for item in items] == [second]
+    assert items[0]["version_no"] == 2
+
+    # 历史版本：单份导出 404，批量下载被跳过（不是静默成功）。
+    old_export = client.post(EXPORT_URL.format(id=first), headers=headers)
+    assert old_export.status_code == 404, old_export.text
+    batch = client.post(BATCH_URL, json={"resume_ids": [first, second]}, headers=headers)
+    assert batch.status_code == 200, batch.text
+    with zipfile.ZipFile(io.BytesIO(batch.content)) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+    assert [entry["resume_id"] for entry in manifest["skipped"]] == [first]
+    assert manifest["item_count"] == 1
+    assert second in json.dumps(manifest["items"])
+
+
 def test_zip_layout_and_manifest(client: TestClient, renderer: _FakeRenderer) -> None:
     """ZIP 三层结构、sha256 对得上字节、危险字符被从文件名里清掉。"""
     headers, org_id = _school(client, "b10zip")

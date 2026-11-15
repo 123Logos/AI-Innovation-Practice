@@ -307,7 +307,7 @@ export class ByokPathNotAllowedError extends Error {
 export class ByokKeyMissingError extends Error {
   constructor() {
     // ui-copy:allow C2 唯一豁免：这句话指向的就是用户自己去 DeepSeek 拿的那把凭据
-    super('请先在「AI 设置」里配置 DeepSeek API Key。')
+    super('请先在右上角账户里的「设置」中配置 DeepSeek API Key。')
     this.name = 'ByokKeyMissingError'
   }
 }

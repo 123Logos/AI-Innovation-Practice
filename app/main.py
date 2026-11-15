@@ -22,7 +22,6 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.router import router
 from app.core.config import Settings, get_settings
 from app.core.error_messages import (
-    HTTP_DETAIL_ALIASES,
     ErrorMessage,
     http_error_message,
     validation_details,
@@ -192,41 +191,53 @@ def create_app() -> FastAPI:
         request: Request,
         exc: StarletteHTTPException,
     ) -> JSONResponse:
-        """4xx 的 message **只从 `app/core/error_messages.py` 那张表来**（批次 F1c / G3）。
+        """4xx 的 message **默认只从 `app/core/error_messages.py` 那张表来**（批次 F1c / G3）。
+
+        第 26 轮为「表外的人话」开了一个**受控出口**（见下面第三档）：表内一条都没松，
+        松的只是「一句用户读得懂、且不来自英文异常文本」的中文 detail。
 
         改动前这里对 4xx 直接 `message = str(exc.detail)`：路由里任何一条英文 detail
         （`"Not Found"`、`"invalid token"`、上游透传的一句英文）都会原样上屏，
         而 G1 只扫前端，这道洞在闸门眼里是看不见的（`ROADMAP.md` §3 X2）。
 
-        现在三档：
+        现在四档（第 26 轮补了第三档）：
 
         - **表里认得的** detail（或直接抛 `ErrorMessage` 的）→ 换成表里那句人话；
-        - **认不得的** → 落到按状态码兜底的通用句（401/403/404/405/429 各有专属，其余
-          `CLIENT_ERROR`），原始 detail 只进 `details.reason` 供排障，**不再当消息**；
-        - **5xx** → 固定一句 `INTERNAL`，细节只进日志。
+        - **表里没有、但是一句人写的中文** → **原样放行**（`is_human_prose()` 四条判据：
+          含汉字、单行、≤200 字、无花括号）。压成通用句会把「修得动的一句话」换成
+          「去问维护人员」，用户读到的下一步完全变了；
+        - **认不得的**（英文 detail、多行异常文本、模板串）→ 落到按状态码兜底的通用句
+          （401/403/404/405/429 各有专属，其余 `CLIENT_ERROR`），原始 detail 只进
+          `details.reason` 供排障，**不再当消息**；
+        - **5xx** → 固定一句 `INTERNAL`，细节只进日志——放行只针对 4xx。
 
         原始字符串仍按枚举名留在 `details.reason` 里：排障需要知道是哪一条，
         但它已经不再是「用户要读的那句话」。
         """
         status_code = exc.status_code
-        message = http_error_message(status_code, exc.detail)
+        resolved = http_error_message(status_code, exc.detail)
         code = {
             404: "NOT_FOUND",
         }.get(status_code) or ("INTERNAL_ERROR" if status_code >= 500 else "CLIENT_ERROR")
-        # `details.reason` 只放**枚举名**，不放原始句子：认得的 detail 走别名表，
-        # 认不得的记 `UNMAPPED`——这样「表里少了一条」在响应里看得见，而原始英文
-        # 只留在服务端日志里（本函数所在的请求日志会带 request_id）。
+        # `details.reason` 只放**枚举名**，不放原始句子：命中的写枚举名；
+        # 表里没有、也不是人话的记 `UNMAPPED`——「表里少了一条」这个信号只留给
+        # 真正没人管的那一类。原句直传不算「少了一条」，把「请求未能完成」这类
+        # 通用句也算进去会让排障时看不出差别。
         details: dict[str, object] = {}
         if isinstance(exc.detail, ErrorMessage):
+            # 5xx 里也有**表内**的错误码（例如 PDF 渲染器不可用的 503）：它的枚举名
+            # 是排障要读的 `details.reason`，与「把 detail 当文案」是两件事。
             details["reason"] = exc.detail.name
         elif status_code < 500:
-            known = type(exc.detail) is str and exc.detail in HTTP_DETAIL_ALIASES
-            details["reason"] = HTTP_DETAIL_ALIASES[exc.detail].name if known else "UNMAPPED"
+            if resolved.reason is not None:
+                details["reason"] = resolved.reason
+            elif not resolved.passed_through:
+                details["reason"] = "UNMAPPED"
         elif exc.detail not in (None, ""):
             logger.warning("http %s 未映射的 detail: %r", status_code, exc.detail)
         return JSONResponse(
             status_code=status_code,
-            content=error_response(request, code, str(message), details=details or None),
+            content=error_response(request, code, resolved.message, details=details or None),
         )
 
     @app.exception_handler(RequestValidationError)

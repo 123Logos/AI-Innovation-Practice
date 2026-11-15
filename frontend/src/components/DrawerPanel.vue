@@ -28,6 +28,8 @@ const props = defineProps<{
   panelId?: string
   /** 面板语义：一组动作是 `group`，可方向键走的列表才用 `menu`。默认 `group`。 */
   role?: 'menu' | 'group'
+  /** 上面压着一层大弹窗时置真：见 `OverlayPanel.suspended`（第 25 轮的层级修复）。 */
+  suspended?: boolean
 }>()
 
 const emit = defineEmits<{ close: [] }>()
@@ -43,6 +45,7 @@ const emit = defineEmits<{ close: [] }>()
         panel-class="drawer-panel ui-scroll"
         :role="props.role ?? 'group'"
         :label="props.label"
+        :suspended="props.suspended"
         trap-focus
         @close="emit('close')"
       >

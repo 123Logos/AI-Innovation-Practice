@@ -346,8 +346,8 @@ describe('录入页的「AI 提取技能」', () => {
 
   it('失败一定显式提示，并按 code 给不同的下一步', async () => {
     const cases: Array<[typeof extractResponse, string, string]> = [
-      ['key-missing', 'AI 设置', '填好'],
-      ['key-invalid', 'AI 设置', '无效'],
+      ['key-missing', '「设置」', '填好'],
+      ['key-invalid', '「设置」', '无效'],
       ['unavailable', '稍后重试', '没有被保存'],
       ['truncated', '把真正想要的技能写清楚', '长度上限'],
     ]

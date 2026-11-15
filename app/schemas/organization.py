@@ -14,8 +14,9 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
+from app.core.datetime_display import format_shanghai_datetime
 from app.core.permissions import UserRole
 from app.schemas.auth import OrganizationBrief
 
@@ -37,6 +38,16 @@ class MemberRead(BaseModel):
     #: 加入时间。管理页要能回答「这个人是什么时候进来的」。
     joined_at: datetime
 
+    @field_serializer("joined_at")
+    def serialize_joined_at(self, value: datetime) -> str:
+        """库里是 naive UTC，返回前转东八区（同 `ProfileRead` / `JobRead` 的口径）。
+
+        少了这一步，前端 `new Date('2026-11-15T07:06:28')` 会按**浏览器本地时区**解析，
+        东八区用户看到的入组时间会比真实时间早 8 小时——组织页三个时间字段
+        （入组 / 邀请码到期 / 日志时间）都是这个坑，2026-11-15 第 25 轮一并补上。
+        """
+        return format_shanghai_datetime(value)
+
 
 class RoleUpdateRequest(BaseModel):
     #: 同样 `extra="forbid"`：多塞一个 `organization_id` 就 422，
@@ -52,12 +63,21 @@ class AuditLogRead(BaseModel):
     id: int
     action: str
     actor_user_id: str | None = None
+    #: 操作人用户名（2026-11-15 第 25 轮）：界面上那句「谁在什么时候做了什么」要的是名字，
+    #: 不是一串 UUID。由 `AuditLogRepository.list_recent()` 的 LEFT JOIN 带出；
+    #: 系统动作（建组织、被拒绝的越权请求）没有操作人，这里是 `None`。
+    actor_username: str | None = None
     target_type: str | None = None
     target_id: str | None = None
     result: str
     detail: str | None = None
     ip: str | None = None
     created_at: datetime
+
+    @field_serializer("created_at")
+    def serialize_created_at(self, value: datetime) -> str:
+        """同 `MemberRead.serialize_joined_at`：naive UTC → 带 `+08:00` 的绝对时刻。"""
+        return format_shanghai_datetime(value)
 
 
 class AuditLogListData(BaseModel):

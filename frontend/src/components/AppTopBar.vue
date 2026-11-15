@@ -35,11 +35,11 @@
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { clearDeepSeekKey, hasDeepSeekKey, setDeepSeekKey } from '@/api'
 import UserDrawer from '@/components/UserDrawer.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useJobStore } from '@/stores/job'
 import { useResumeStore } from '@/stores/resume'
+import { useUiStore } from '@/stores/ui'
 
 const props = defineProps<{
   /** 窄屏抽屉是否展开：由外框持有，这里只用来画 `aria-expanded` 与箭头方向。 */
@@ -53,58 +53,22 @@ const emit = defineEmits<{ 'toggle-resumes': [] }>()
 const auth = useAuthStore()
 const resume = useResumeStore()
 const job = useJobStore()
+const ui = useUiStore()
 const router = useRouter()
 
 /** 手机上「我在改哪一份」这句话不能因为列表换了住法就丢掉，所以触发按钮里仍带当前简历名。 */
 const currentTitle = computed(() => resume.currentProfileTitle)
 
-/* ------------------------------ AI 设置（ADR-009 BYOK） ----------------- */
-
-const aiSettingsVisible = ref(false)
-/**
- * 输入框草稿：打开弹窗时**不回填**已存的 Key。
- * Key 只在 sessionStorage 里活着，没必要再把它显示到屏幕上（肩窥 / 屏幕录制 / 截图）。
+/*
+ * AI 设置（ADR-009 BYOK）**搬走了**（2026-11-15 第 25 轮）：它现在是
+ * `SettingsModal.vue` 里的一个页签，开合状态在 `stores/ui.ts`，任何页面都能唤起
+ * （「点此配置 AI 密钥」那行链接就读它）。顶栏因此不再持有 Key 的草稿与状态。
  */
-const aiKeyDraft = ref('')
-const aiKeySaved = ref(hasDeepSeekKey())
-const aiSettingsError = ref('')
-
-function openAiSettings(): void {
-  aiKeyDraft.value = ''
-  aiSettingsError.value = ''
-  aiKeySaved.value = hasDeepSeekKey()
-  aiSettingsVisible.value = true
-}
-
-function closeAiSettings(): void {
-  aiSettingsVisible.value = false
-}
-
-function submitAiKey(): void {
-  const value = aiKeyDraft.value.trim()
-  if (!value) {
-    // ui-copy:allow C2 唯一豁免：这句话指向用户自己去 DeepSeek 复制的那串凭据，改名他会找不到
-    aiSettingsError.value = '这里还空着——把你的 DeepSeek API Key 粘进来才行。'
-    return
-  }
-  setDeepSeekKey(value)
-  aiKeySaved.value = true
-  // 保存后立刻清空输入框：屏幕上看不到完整 Key，也避免下次打开时留着一份明文。
-  aiKeyDraft.value = ''
-  aiSettingsError.value = ''
-}
-
-function forgetAiKey(): void {
-  clearDeepSeekKey()
-  aiKeySaved.value = false
-  aiKeyDraft.value = ''
-  aiSettingsError.value = ''
-}
 
 /* ---------------------------- 右侧用户抽屉 ------------------------------- */
 
 /**
- * 账户级动作（AI 设置 / 退出登录）的入口：一个「账户」触发按钮 + 右侧抽屉（`UserDrawer.vue`）。
+ * 账户级动作（个人资料 / 设置 / 退出登录）的入口：一个「账户」触发按钮 + 右侧抽屉（`UserDrawer.vue`）。
  *
  * **宽屏也收进抽屉**——这一点改了 ADR-011 议题 3.D 的原排版。3.D 只管「窄屏一级项从 5 个降到 3 个」，
  * 当时两个动作在宽屏仍是一级项；清单第 4 条要的是「账户的事在右边」，那是归属问题不是宽度问题。
@@ -182,7 +146,7 @@ async function handleLogout(): Promise<void> {
       <span v-if="resume.dirty" class="dirty-dot" title="有未保存的修改">未保存</span>
 
       <!--
-        账户入口（老板前端清单第 2 条）：一个触发按钮 + 右侧抽屉，「AI 设置」「退出登录」都在抽屉里。
+        账户入口（老板前端清单第 2 条）：一个触发按钮 + 右侧抽屉，「个人资料」「设置」「退出登录」都在抽屉里。
         不写 `role="menu"` / `role="menuitem"`：抽屉是账户面板（`role="group"`），
         里面两项各自带对话框与不可逆语义，声明成菜单项反而读起来像一个可以方向键走的列表。
         `aria-controls` 只在展开时给：收起态抽屉根本不在 DOM 里，指一个不存在的 id 是假声明。
@@ -210,64 +174,17 @@ async function handleLogout(): Promise<void> {
           v-if="drawerOpen"
           :username="auth.displayName || '已登录用户'"
           :signing-out="auth.signingOut"
+          :suspended="ui.modalOpen"
           @close="closeDrawer"
-          @open-ai-settings="openAiSettings"
+          @open-profile="ui.openProfile()"
+          @open-settings="ui.openSettings()"
           @logout="handleLogout"
         />
       </Transition>
     </div>
-
-    <!-- AI 设置弹窗：BYOK（ADR-009），Key 只进 sessionStorage。 -->
-    <Teleport to="body">
-      <Transition name="ui-fade">
-        <div v-if="aiSettingsVisible" class="ui-overlay" @click.self="closeAiSettings">
-          <section
-            class="ui-panel"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="ai-settings-heading"
-          >
-            <h2 id="ai-settings-heading" class="modal-title">AI 设置</h2>
-            <p class="modal-intro">
-              <!-- ui-copy:allow 老板 2026-11-09 定的 C2 唯一豁免：用户必须亲手去 DeepSeek 拿这把凭据，
-                   界面里的原词（DeepSeek API Key）可以出现；删掉它他反而认不出要粘什么。 -->
-              「AI 润色」用的是你自己申请的 DeepSeek API Key；「生成简历」是纯模板，不需要这把 Key。
-              润色失败只会提示你重试，不会改动表单。
-              Key 只留在这个标签页里：关掉标签页就没了，不会存进你的账号，也不会被记录或转发。
-            </p>
-
-            <p class="ai-settings-status">
-              {{ aiKeySaved ? '这个标签页里已经填好了' : '这个标签页里还没填' }}
-            </p>
-
-            <label class="modal-field">
-              <!-- ui-copy:allow 输入框标签：与他 DeepSeek 控制台里的叫法一致，是 C2 的唯一豁免 -->
-              <span>DeepSeek API Key</span>
-              <input
-                v-model="aiKeyDraft"
-                type="password"
-                autocomplete="off"
-                spellcheck="false"
-                placeholder="sk-……"
-                @keydown.enter.prevent="submitAiKey"
-              />
-            </label>
-
-            <p v-if="aiSettingsError" class="modal-error" role="alert">{{ aiSettingsError }}</p>
-
-            <div class="modal-actions">
-              <button class="modal-button" type="button" @click="forgetAiKey">清除 Key</button>
-              <button class="modal-button" type="button" @click="closeAiSettings">关闭</button>
-              <button class="modal-button modal-button--primary" type="button" @click="submitAiKey">
-                保存 Key
-              </button>
-            </div>
-          </section>
-        </div>
-      </Transition>
-    </Teleport>
   </header>
 </template>
+
 <style scoped>
 /*
  * 顶栏允许换行：375px 要装「品牌 + 简历入口 + 账户」几组内容，一行放不下时整组换行。
@@ -316,7 +233,6 @@ async function handleLogout(): Promise<void> {
 .account-word { display: none; color: var(--ui-ink-muted); font-size: var(--text-xl); }
 .account-caret { flex: 0 0 auto; color: var(--ui-ink-faint); font-size: var(--text-xs); line-height: 1; transition: transform var(--motion-base) var(--motion-ease); }
 .account-caret--open { transform: rotate(180deg); }
-.ai-settings-status { margin: 0; color: var(--ui-ink-faint); font-size: var(--text-sm); }
 /* ---- 简历入口（只在窄屏渲染，宽屏那份列表常驻在左栏） ---- */
 .resumes-trigger { display: inline-flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 8px; max-width: min(300px, 100%); height: 32px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 12px; color: var(--ui-ink); background: var(--ui-surface); cursor: pointer; font: inherit; font-size: var(--text-sm); }
 .resumes-trigger:hover { border-color: var(--theme-rule); }

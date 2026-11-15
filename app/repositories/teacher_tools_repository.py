@@ -141,10 +141,15 @@ class TeacherToolsRepository:
     def _documents(
         self, organization_id: str, resume_ids: list[str] | None
     ) -> list[ResumeDocument]:
-        """按 id 取简历，**在 SQL 层**钉死「属于本组织学生」。
+        """按 id 取简历，**在 SQL 层**钉死「属于本组织学生」+「是当前最新版本」。
 
         不在服务层先查再比：那会先把别人的简历对象读进内存，任何一次漏判都会把
         `content_html` 直接带到响应里。
+
+        **只取链头**（2026-11-15 第 25 轮，老板指令「只导最新版」）：`resumes` 的每一行
+        是一个版本，`is_head` 是生成列（`IF(id = current_version_id, 1, NULL)`，见迁移
+        `20261110_0016`），所以 `is_head == 1` 恰好是「这个学生现在这一份」。历史版本
+        不进清单、也不能靠猜 id 导出——名单与下载走同一条 SQL，两处边界不会各说一套。
         """
         if resume_ids is not None and not resume_ids:
             return []
@@ -168,6 +173,8 @@ class TeacherToolsRepository:
             OrganizationMember.organization_id == organization_id,
             OrganizationMember.role == "student",
             StudentProfile.deleted_at.is_(None),
+            # 链头：一个档案只有一个版本满足它（UNIQUE(student_profile_id, is_head)）。
+            Resume.is_head == 1,
         ]
         if resume_ids is not None:
             conditions.insert(0, Resume.id.in_(resume_ids))
@@ -193,7 +200,11 @@ class TeacherToolsRepository:
         return next((item for item in found if item.resume_id == resume_id), None)
 
     def all_documents(self, organization_id: str) -> list[ResumeDocument]:
-        """本组织所有可导出的简历版本（看板页的下载清单，不含正文）。"""
+        """本组织每个学生**当前最新版**的简历（看板页的下载清单，不含正文）。
+
+        第 25 轮起不再是「所有版本」：历史版本会被学生反复保存刷出一堆
+        v1/v2/v3，勾选列表里同一个名字出现三次，导出的人分不清哪份是现在的。
+        """
         return self._documents(organization_id, None)
 
     def documents(

@@ -18,7 +18,8 @@
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from app.repositories.user_repository import get_engine
+from app.repositories.audit_log_repository import AuditAction, AuditLogRepository
+from app.repositories.user_repository import get_engine, session_scope
 from tests.accounts import (
     create_organization,
     join,
@@ -158,6 +159,69 @@ def test_admin_role_change_is_audited(client: TestClient) -> None:
         ).all()
     assert len(registrations) == 1
     assert registrations[0].organization_id is None
+
+
+def test_audit_logs_carry_actor_username_and_shanghai_time(client: TestClient) -> None:
+    """「用户名 在 时间 动作」（2026-11-15 第 25 轮）。
+
+    三件事一起验，因为它们各自都可能悄悄坏掉：
+    ① `actor_username` 来自 `audit_logs` 与 `users` 的 JOIN（不是前端按 id 再查一次）；
+    ② 没有操作人的系统动作仍然在清单里（LEFT JOIN，不是 INNER JOIN）；
+    ③ 时间是带 `+08:00` 的绝对时刻——naive 串会让浏览器按本地时区解析，东八区用户少看 8 小时。
+    """
+    organization_id = create_organization()
+    join(client, "admin11", organization_id=organization_id, role="school_admin")
+    join(client, "teacher11", organization_id=organization_id, role="teacher")
+    teacher_id = me(client, "teacher11")["user"]["id"]
+    admin_headers = login(client, "admin11")
+
+    changed = client.patch(
+        f"{API}/organizations/{organization_id}/members/{teacher_id}",
+        json={"role": "student"},
+        headers=admin_headers,
+    )
+    assert changed.status_code == 200, changed.text
+
+    # 一条没有操作人的系统动作：内连接会把它整行吞掉，而它恰恰是最需要被看见的那种。
+    with session_scope() as session:
+        AuditLogRepository(session).record(
+            action=AuditAction.ORGANIZATION_CREATE,
+            organization_id=organization_id,
+            detail="{}",
+        )
+        session.commit()
+
+    logs = client.get(f"{API}/organizations/{organization_id}/audit-logs", headers=admin_headers)
+    assert logs.status_code == 200, logs.text
+    items = logs.json()["data"]["items"]
+
+    change = next(item for item in items if item["action"] == "member.role_change")
+    assert change["actor_username"] == "admin11"
+    assert change["actor_user_id"] is not None
+    assert change["created_at"].endswith("+08:00")
+
+    system_row = next(item for item in items if item["action"] == "organization.create")
+    assert system_row["actor_user_id"] is None
+    assert system_row["actor_username"] is None
+
+
+def test_member_joined_at_and_invitation_times_are_shanghai_iso(client: TestClient) -> None:
+    """组织页另外两个时间字段也要带偏移（同一个坑：naive 串会被当本地时间解析）。"""
+    organization_id = create_organization()
+    join(client, "admin12", organization_id=organization_id, role="school_admin")
+    headers = login(client, "admin12")
+
+    members = client.get(f"{API}/organizations/{organization_id}/members", headers=headers)
+    assert members.status_code == 200, members.text
+    assert all(item["joined_at"].endswith("+08:00") for item in members.json()["data"]["items"])
+
+    created = client.post(
+        f"{API}/organizations/{organization_id}/invitations", json={}, headers=headers
+    )
+    assert created.status_code == 201, created.text
+    invitation = created.json()["data"]["invitation"]
+    assert invitation["expires_at"].endswith("+08:00")
+    assert invitation["created_at"].endswith("+08:00")
 
 
 def test_admin_cannot_change_own_role(client: TestClient) -> None:

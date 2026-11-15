@@ -133,6 +133,11 @@ export interface AuditLogEntry {
   id: number
   action: string
   actor_user_id: string | null
+  /**
+   * 操作人用户名（2026-11-15 第 25 轮）。
+   * `null` = 系统动作（建组织、被拒绝的越权请求），界面上说「系统」而不是空白。
+   */
+  actor_username: string | null
   target_type: string | null
   target_id: string | null
   result: string

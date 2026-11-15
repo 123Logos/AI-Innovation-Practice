@@ -12,6 +12,7 @@
  * 视图里的类型与常量（`TARGET_ROLE_MAX_LEN` 等）仍走真实模块，不影响断言。
  */
 import { flushPromises, mount } from '@vue/test-utils'
+import { createPinia } from 'pinia'
 import { createMemoryHistory, createRouter, type RouteRecordRaw } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -46,7 +47,11 @@ async function mountList() {
   await router.push('/interviews')
   const attachTo = document.createElement('div')
   document.body.appendChild(attachTo)
-  const wrapper = mount(InterviewListView, { attachTo, global: { plugins: [router] } })
+  // 第 25 轮起详情/列表里的「点此配置 AI 密钥」读 `stores/ui.ts`，所以挂载要带 pinia。
+  const wrapper = mount(InterviewListView, {
+    attachTo,
+    global: { plugins: [router, createPinia()] },
+  })
   await flushPromises()
   return { wrapper, router }
 }
@@ -56,7 +61,10 @@ async function mountDetail(id = 'session-1') {
   await router.push({ name: 'interview-detail', params: { id } })
   const attachTo = document.createElement('div')
   document.body.appendChild(attachTo)
-  const wrapper = mount(InterviewDetailView, { attachTo, global: { plugins: [router] } })
+  const wrapper = mount(InterviewDetailView, {
+    attachTo,
+    global: { plugins: [router, createPinia()] },
+  })
   await flushPromises()
   return { wrapper, router }
 }
