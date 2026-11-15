@@ -116,11 +116,12 @@ export const APP_MODULES: readonly AppModule[] = [
    * 这里改的只是「入口画不画」——后端那三道闸一格没动：成员名单要 `org:member:read`、
    * 改角色要 `org:member:manage`、审计要 `audit:read`，越权仍是 403。
    *
-   * ⚠️ 一条连带后果必须说清（交付里也写了）：学生「凭邀请码加入班级」的那一屏就在本页
-   *   （`OrganizationView.vue` 的 `hasNoOrganization` 分支），入口对学生隐藏之后，
-   *   **学生在界面上不再有走到这条路径的链接**。加入能力本身没被删（直接访问 `/organization`
-   *   仍然可用、后端仍然接受兑换），但发现路径断了。要么给学生留一个入口，
-   *   要么把兑换挪到工作台——这一格等老板拍。
+   * 一条连带后果与它的定案（2026-11-15 第 24 轮）：学生「凭邀请码加入班级」的那一屏本来在
+   * 本页（`OrganizationView.vue` 的 `hasNoOrganization` 分支），入口对学生隐藏之后发现路径断了。
+   * 老板裁定**不把本页签加回学生导航**，改在学生工作台补一条「加入班级」横幅
+   * （判据 `GET /organizations/me` 的 404，走的还是 `POST /invitations/redeem`）。
+   * 所以今天学生的路是「工作台 → 横幅 → 输码」，而不是「工作台 → 组织管理」；
+   * 直接访问 `/organization` 仍然可用、后端仍然接受兑换——改的一直是入口，不是能力。
    */
   {
     key: 'organization',

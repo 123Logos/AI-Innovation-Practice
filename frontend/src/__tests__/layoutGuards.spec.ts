@@ -272,6 +272,29 @@ describe('守则 L3：浮层的「点外面关闭 / Esc 关闭」只有一处实
 
     expect(offenders).toEqual([])
   })
+
+  /**
+   * 2026-11-15 第 24 轮新加的两个浮层（窄屏导航菜单、工作台邀请码面板）。
+   * 这条钉的不是「有没有」而是「走的哪一份实现」：两者都必须挂基座，
+   * 而且必须在 `v-if` 下渲染——基座的监听随挂载注册、随卸载注销（它文件头第 3 条），
+   * 常驻 DOM 只靠 CSS 隐藏的浮层会在关掉的状态下仍占着一个 document 监听。
+   */
+  it('新增的浮层不许自己实现开合：窄屏导航菜单与邀请码面板都挂基座', () => {
+    const nav = file('components/ModuleNav.vue').text
+    const dash = file('views/DashboardView.vue').text
+
+    for (const [rel, text] of [
+      ['components/ModuleNav.vue', nav],
+      ['views/DashboardView.vue', dash],
+    ] as const) {
+      expect(text, `${rel} 要 import 浮层基座`).toContain(
+        "import OverlayPanel from '@/components/OverlayPanel.vue'",
+      )
+      expect(text, `${rel} 要真的渲染基座而不是只 import 不用`).toContain('<OverlayPanel')
+    }
+    expect(nav).toContain('v-if="menuOpen"')
+    expect(dash).toContain('v-if="redeemOpen"')
+  })
 })
 
 
@@ -373,6 +396,45 @@ describe('守则 L4：导航条目只有一张表', () => {
     const dash = file('views/DashboardView.vue').text
     expect(nav).not.toMatch(/role === '|role !== /)
     expect(dash).not.toMatch(/role === '|role !== /)
+  })
+
+  /**
+   * 窄屏那一棵下拉是**同一份名单的第二种形态**，不是第二个入口。这条要拦的是：
+   * 有人为了做菜单又抄一份模块数组，或把「哪一棵在屏上」写进 JS（守则 L2 把宽度驱动的
+   * 结构差异归 CSS，`matchMedia` 只许在 `composables/useViewport.ts` 一处）。
+   */
+  it('导航的两棵都遍历同一个 visibleModules，过滤器仍只有一处', () => {
+    const nav = file('components/ModuleNav.vue').text
+    const template = withoutHtmlComments(templateOf(nav))
+
+    // 页签那一排 + 菜单那一排：两处 v-for，遍历的是同一个 computed。
+    expect(template.match(/v-for="item in visibleModules"/g) ?? []).toHaveLength(2)
+    // 反向护栏：`modulesVisibleTo` 只许调一次（两处各调一次 = 开始各自演化）。
+    expect(nav.match(/modulesVisibleTo\(/g) ?? []).toHaveLength(1)
+    expect(nav).not.toMatch(/v-for="[^"]* in (?:APP_MODULES|STAFF_ROLES)\b/)
+    for (const module of APP_MODULES) {
+      expect(template, `${module.name} 不该以字面量出现在菜单里`).not.toContain(module.name)
+    }
+  })
+
+  /**
+   * 「窄屏绝对不能把右侧按钮挤出屏幕或让用户看不见」这条指令的机械判据：
+   * 横滚那一排（轨道 + 收起按钮）在 `compact` 档整条退役，屏上只剩一颗下拉，
+   * 没有第二件东西可以去挤。断点数值必须来自 `BREAKPOINTS`，不许新加第五档。
+   */
+  it('窄屏 CSS 把横滚那一排整条换掉，且断点仍来自同一张表', () => {
+    const text = file('components/ModuleNav.vue').text
+    const block = new RegExp(
+      `@media \\(max-width: ${BREAKPOINTS.compact}px\\) \\{([\\s\\S]*?)\\n\\}`,
+    ).exec(text)?.[1]
+    // 空检护栏：查不到那一块直接红，不让断言因为「没扫到」而全绿。
+    expect(block, `没找到 @media (max-width: ${BREAKPOINTS.compact}px) 那一块`).toBeTruthy()
+
+    // 轨道与收起按钮一起藏：只藏轨道的话，那颗按钮会孤零零留在被挤的一行里。
+    expect(block).toMatch(/\.module-nav__track,\s*\.module-nav__toggle \{\s*display: none/)
+    expect(block).toMatch(/\.module-nav__mobile \{\s*position: relative;\s*display: flex/)
+    // 默认态（宽屏）必须把这棵藏掉——否则宽屏会出现两个入口，那正是 L4 打过的仗。
+    expect(text).toMatch(/\.module-nav__mobile \{\s*display: none;\s*\}/)
   })
 })
 

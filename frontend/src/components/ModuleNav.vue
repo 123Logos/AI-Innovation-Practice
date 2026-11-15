@@ -28,10 +28,16 @@
  *    （403 / 400），学生直接敲地址进来看到的是后端的答复，不是这个导航栏。
  *    收起态那句兜底文案（当前页不属于任何模块时显示）跟着改成「可用模块」——
  *    展开之后看到的是角色过滤后的那一组，写「全部模块」会多承诺两个入口。
+ * 5. **窄屏换形态，不换名单**（2026-11-15 第 24 轮）。375px 上七个页签要横向滚 242px
+ *    （本轮 CDP 实测），滚过去的那几个既看不见也点不到，而右边那颗收起按钮随时可能被顶出屏幕。
+ *    窄屏因此改成「当前模块 + 下拉」：菜单项遍历的还是同一个 `visibleModules`，
+ *    浮层的点外面 / Esc / 焦点归还还是 `OverlayPanel` 基座（守则 L3）。
+ *    **形态由 CSS 决定，不用 `matchMedia`**（守则 L2）：两棵都在 DOM 里，谁显示看断点。
  */
 import { computed, ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 
+import OverlayPanel from '@/components/OverlayPanel.vue'
 import { APP_MODULES, modulesVisibleTo, type AppModuleKey } from '@/config/modules'
 import { useAuthStore } from '@/stores/auth'
 
@@ -64,6 +70,23 @@ const activeModule = computed(() => APP_MODULES.find((module) => module.key === 
 
 /** 手动收起（默认展开）：状态只在本地，刷新后回到展开——它是一次性的腾地方，不是偏好设置。 */
 const collapsed = ref(false)
+
+/**
+ * 窄屏那棵下拉的开合。菜单没有自己的数据：条目就是 `visibleModules`，
+ * 选中一条即关闭并跳转（老板指令「选完后自动收起并跳转」）。
+ */
+const menuOpen = ref(false)
+
+/** 触发按钮上那句当前模块名；当前页不属于任何模块时说「可用模块」。 */
+const menuName = computed(() => activeModule.value?.name ?? '可用模块')
+
+/**
+ * 读屏那句单独算：「切换模块，当前：可用模块」是句自相矛盾的话——
+ * 没有当前模块的时候就不承诺「当前」。
+ */
+const menuAriaLabel = computed(() =>
+  activeModule.value ? `切换模块，当前：${activeModule.value.name}` : '切换模块',
+)
 </script>
 
 <template>
@@ -105,6 +128,64 @@ const collapsed = ref(false)
       </RouterLink>
       <span v-else>可用模块</span>
     </p>
+
+    <!--
+      窄屏形态（第 24 轮）：一行「当前模块 ▾」+ 垂直菜单。它替的是横向滚动那一排，
+      不是第二个入口——宽屏这棵被 CSS 藏掉（`display: none` 同时移出 Tab 序与读屏），
+      两者读的是同一个 `visibleModules`。基座不 Teleport（它刻意不做，见 `OverlayPanel.vue`），
+      所以包含块是这一格 `position: relative`。
+    -->
+    <div class="module-nav__mobile">
+      <button
+        class="module-nav__menu-trigger"
+        type="button"
+        :aria-expanded="menuOpen"
+        :aria-controls="menuOpen ? 'module-nav-menu' : undefined"
+        :aria-label="menuAriaLabel"
+        @click="menuOpen = !menuOpen"
+      >
+        <span class="module-nav__menu-name">{{ menuName }}</span>
+        <svg
+          class="module-nav__menu-caret"
+          :class="{ 'module-nav__menu-caret--open': menuOpen }"
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="m6 9 6 6 6-6" />
+        </svg>
+      </button>
+
+      <Transition name="ui-fade-down">
+        <OverlayPanel
+          v-if="menuOpen"
+          panel-id="module-nav-menu"
+          panel-class="module-nav__menu"
+          role="group"
+          label="切换模块"
+          @close="menuOpen = false"
+        >
+          <ul class="module-nav__menu-list">
+            <li v-for="item in visibleModules" :key="item.key">
+              <RouterLink
+                class="module-nav__menu-item"
+                :to="{ name: item.routeName }"
+                :aria-current="activeKey === item.key ? 'page' : undefined"
+                @click="menuOpen = false"
+              >
+                {{ item.name }}
+              </RouterLink>
+            </li>
+          </ul>
+        </OverlayPanel>
+      </Transition>
+    </div>
 
     <button
       class="module-nav__toggle"
@@ -228,6 +309,14 @@ const collapsed = ref(false)
   flex: 0 0 auto;
 }
 
+/*
+ * 窄屏那棵默认藏掉，包括它里面可能正开着的弹层——宽屏不需要第二种形态，
+ * 而 `display: none` 会把整棵（含弹层）一起移出 Tab 序与读屏朗读。
+ */
+.module-nav__mobile {
+  display: none;
+}
+
 @media (max-width: 760px) {
   .module-nav {
     padding: 0 16px;
@@ -243,5 +332,114 @@ const collapsed = ref(false)
   .module-tab__icon {
     display: none;
   }
+
+  /*
+   * 横向滚动那一排在窄屏整条退役（老板指令「绝对不能把右侧按钮挤出屏幕或让用户看不见」）：
+   * 轨道与收起按钮都不渲染出来，这一行只剩「当前模块 ▾」一颗——没有东西可挤。
+   */
+  .module-nav__track,
+  .module-nav__toggle {
+    display: none;
+  }
+
+  .module-nav__mobile {
+    position: relative;
+    display: flex;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+}
+
+.module-nav__menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  border: 1px solid var(--ui-border-strong);
+  border-radius: var(--ui-radius);
+  padding: 6px 10px;
+  color: var(--ui-ink);
+  background: var(--ui-surface);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-base);
+}
+
+.module-nav__menu-trigger:hover {
+  border-color: var(--theme-rule);
+  color: var(--theme-primary);
+}
+
+.module-nav__menu-trigger:focus-visible {
+  outline: 2px solid var(--theme-rule);
+  outline-offset: 2px;
+}
+
+.module-nav__menu-name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.module-nav__menu-caret {
+  flex: 0 0 auto;
+  color: var(--ui-ink-faint);
+  transition: transform var(--motion-base) var(--motion-ease);
+}
+
+.module-nav__menu-caret--open {
+  transform: rotate(180deg);
+}
+
+/*
+ * 菜单宽度取这一行的整宽（左边贴导航内缩）：七个条目竖排，横向不需要滚动，
+ * 也不再有任何东西被挤出屏幕。z-index 不在这里新增——它住在 `.app-chrome`（10）
+ * 这个层叠上下文里，天然盖住内容区，而抽屉（30）与模态（100）仍在它之上（守则 L3 阶梯）。
+ */
+.module-nav__menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: min(280px, 100vw - 32px);
+  border: 1px solid var(--ui-border-strong);
+  border-radius: var(--ui-radius);
+  padding: 6px;
+  background: var(--ui-surface);
+  box-shadow: var(--ui-shadow-menu);
+}
+
+.module-nav__menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.module-nav__menu-item {
+  display: block;
+  border-radius: var(--ui-radius);
+  padding: 10px 12px;
+  color: var(--ui-ink-muted);
+  font-size: var(--text-md);
+  text-decoration: none;
+}
+
+.module-nav__menu-item:hover {
+  color: var(--theme-primary);
+  background: var(--ui-surface-soft);
+}
+
+.module-nav__menu-item:focus-visible {
+  outline: 2px solid var(--theme-rule);
+  outline-offset: -2px;
+}
+
+.module-nav__menu-item[aria-current='page'] {
+  color: var(--theme-primary-deep);
+  background: var(--theme-bg-light);
+  font-weight: 600;
 }
 </style>

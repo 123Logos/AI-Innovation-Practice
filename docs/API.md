@@ -1239,8 +1239,15 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 **同一支纪律也管「测试用的管理员与教师账号」**：2026-11-15 起的
 `scripts/seed_cjlu.py` 建「中国计量大学」（码 `CJLU2026`）+ `cjlu_admin`（school_admin）
 + `cjlu_teacher`（teacher），口令 bcrypt 落库、幂等可重跑、最后一律回读数据库校验；
-它存在的前提就是「这些动作没有 HTTP 入口」。**这两个账号是局域网测试用的弱口令账号，
-公网部署前必须删掉或改密**（与 `docs/PROJECT_STATUS.md` §4 那批探针账号同一笔账）。
+它存在的前提就是「这些动作没有 HTTP 入口」。**这两个账号是局域网测试用的弱口令账号**：
+老板 2026-11-15 裁定暂时保留（连同实测注册的 `role_nav_probe_23`）方便直接登录对照三种角色，
+但**公网上线前必须逐个删除或改强密码**——那一步是上线的前置条件，不是上线后的收尾清理
+（清单与口令见 `README.md`「测试账号」一节；与 `docs/PROJECT_STATUS.md` §4 那批探针账号同一笔账）。
+
+**`GET /organizations/me` 的 404 现在有两个读者**（2026-11-15 第 24 轮）：组织管理页那屏空态，
+以及学生工作台的「加入班级」横幅——`visibleToRoles` 把 `/organization` 入口对学生隐藏之后，
+兑换邀请码的界面入口挪到了工作台（仍是 `POST /invitations/redeem`，端点与权限一格没动）。
+404 之外的失败（500 / 断网）在工作台**什么都不画**：那不是「没有班级」的答复。
 
 ### GET `/teacher/classes/{class_id}/dashboard`
 

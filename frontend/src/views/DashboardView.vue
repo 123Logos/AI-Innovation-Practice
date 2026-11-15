@@ -25,6 +25,11 @@
  *    这不是啰嗦：把失败画成 `0` 与把「没填」画成 `0%` 是同一类谎，用户会据此
  *    以为「我已经有 0 个技能」而不是「这次没读上」。
  *
+ * 4. **学生「还没有班级」时，这一页替他补上那条入口**（2026-11-15 第 24 轮）。角色过滤之后
+ *    学生看不到 `/organization` 页签，而「凭邀请码加入」那一屏本来住在那儿；老板裁定
+ *    不把导航加回来，改在这里挂一条横幅 + 一个极简输入框。判据是 `GET /organizations/me`
+ *    的 **404**（那是后端对「没有组织」的正面答复），其他失败什么都不画。
+ *
  * 刻意**不**做的事：
  *
  * - 不放未实现模块的禁用副本——未实现即不在表里，见上面第 2 条；
@@ -53,7 +58,9 @@ import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import { assessmentsApi, interviewsApi, isApiError, jobsApi, profilesApi } from '@/api'
+import { fetchMyOrganization, redeemInvitation } from '@/api/organizations'
 import type { ProfileRead } from '@/api/types'
+import OverlayPanel from '@/components/OverlayPanel.vue'
 import { APP_MODULES, isStaffRole, modulesVisibleTo, staffOnlyModules } from '@/config/modules'
 import { useAuthStore } from '@/stores/auth'
 
@@ -201,10 +208,72 @@ async function loadMemberData(): Promise<void> {
   await Promise.all([loadProfile(), loadTags(), loadJobs(), loadInterviews()])
 }
 
+/**
+ * 学生「加入班级」横幅（2026-11-15 第 24 轮）。
+ *
+ * 它补的是角色过滤之后断掉的那条路：「凭邀请码加入组织」那一屏本来在 `/organization`，
+ * 而入口对学生隐藏了（`config/modules.ts` 的 `visibleToRoles`），老板裁定不把导航加回来，
+ * 改在这里补一个入口。
+ *
+ * 判据只有 404 这一格。`GET /organizations/me` 在「账号没有组织」时返回 404 而不是空对象
+ * （`ADR-021` §2.6，`OrganizationView.vue` 文件头同一件事）；其余失败——断网、500——
+ * **什么都不画**：那时候我们并不知道这个学生有没有班级，画一条「你还没加入班级」
+ * 是替他编一个结论（守则 C1/C3 同一把尺：未验证的状态不上屏）。
+ */
+const needsOrganization = ref(false)
+
+const redeemOpen = ref(false)
+const redeemCode = ref('')
+const redeemError = ref('')
+const redeeming = ref(false)
+const redeemNotice = ref('')
+
+async function loadMembership(): Promise<void> {
+  try {
+    await fetchMyOrganization()
+    needsOrganization.value = false
+  } catch (error) {
+    needsOrganization.value = isApiError(error) && error.status === 404
+  }
+}
+
+/**
+ * 提交邀请码。成功之后**重读这一页**，而不是 `location.reload()`：
+ * 与 `OrganizationView.vue::handleRedeem` 同一支做法（那句「已加入…」要留在屏幕上，
+ * 整页刷新会把它连同确认一起抹掉），而这一页的全部真相就是横幅的判据加那四张卡的读，
+ * 两个都重跑等于把页面刷新一遍。附带一条实测到的限制：jsdom 的 `Location` 成员是
+ * unforgeable（`Object.defineProperty(window.location, 'reload', …)` 直接报
+ * `Cannot redefine property`），整页刷新这一步在本仓的单测里根本没法断言——
+ * 不可断言的行为不该是交付的行为。失败必须把原因留在屏幕上并且不关面板（守则 C3）。
+ */
+async function submitRedeem(): Promise<void> {
+  if (redeeming.value) return
+  const code = redeemCode.value.trim()
+  if (!code) {
+    redeemError.value = '请填写老师给的邀请码。'
+    return
+  }
+  redeeming.value = true
+  redeemError.value = ''
+  try {
+    const result = await redeemInvitation(code)
+    redeemNotice.value = `已加入「${result.organization.name}」`
+    await Promise.all([loadMembership(), loadMemberData()])
+    redeemOpen.value = false
+  } catch (error) {
+    redeemError.value = describeError(error, '邀请码没有生效，请核对后重试。')
+  } finally {
+    redeeming.value = false
+  }
+}
+
 onMounted(() => {
   // 教师侧这一页不渲染那四张统计卡，所以一次请求都不发——
   // 「隐藏卡片但照样拉四次自己的档案/标签/岗位/面试」是白跑，也会把失败态写进没人看的卡里。
-  if (props.mode === 'member' && !isStaff.value) void loadMemberData()
+  if (props.mode === 'member' && !isStaff.value) {
+    void loadMemberData()
+    void loadMembership()
+  }
 })
 
 /** `—` 表示「这次没读到」，与「读到确实是 0」必须长得不一样。 */
@@ -259,6 +328,64 @@ function statText(state: LoadState, value: string): string {
       </section>
 
       <p v-if="loadError" class="page-error" role="alert">{{ loadError }}</p>
+
+      <!--
+        兑换成功那句要活过横幅本身：横幅在重读完组织信息之后就该消失了，
+        而「已加入哪个班」是用户在这页要看到的答案（守则 C4：可逆动作的完成要说得出结果）。
+      -->
+      <p v-if="redeemNotice" class="page-notice" role="status">{{ redeemNotice }}</p>
+
+      <!--
+        学生且后端回答「还没有组织」（404）时的入口，位置在四张卡之上（老板指令：最显眼处）。
+        弹层的三件底层事（点外面 / Esc / 焦点归还）归 `OverlayPanel` 基座（守则 L3），
+        这里只写开合与提交；必填校验与失败原因必须上屏（守则 C5 的校验/错误豁免）。
+      -->
+      <section v-if="!isStaff && needsOrganization" class="join-card">
+        <h2 class="join-card__title">加入班级</h2>
+        <button
+          class="join-card__trigger"
+          type="button"
+          :aria-expanded="redeemOpen"
+          :aria-controls="redeemOpen ? 'join-code-panel' : undefined"
+          @click="redeemOpen = !redeemOpen"
+        >
+          输入邀请码
+        </button>
+        <OverlayPanel
+          v-if="redeemOpen"
+          panel-id="join-code-panel"
+          panel-class="join-panel"
+          label="邀请码"
+          role="group"
+          @close="redeemOpen = false"
+        >
+          <form class="join-panel__form" @submit.prevent="submitRedeem">
+            <label class="join-panel__label" for="join-code-input">邀请码</label>
+            <input
+              id="join-code-input"
+              v-model="redeemCode"
+              class="join-panel__input"
+              name="code"
+              autocomplete="off"
+              :disabled="redeeming"
+            />
+            <p v-if="redeemError" class="join-panel__error" role="alert">{{ redeemError }}</p>
+            <div class="join-panel__actions">
+              <button
+                class="join-panel__cancel"
+                type="button"
+                :disabled="redeeming"
+                @click="redeemOpen = false"
+              >
+                取消
+              </button>
+              <button class="join-panel__submit" type="submit" :disabled="redeeming">
+                {{ redeeming ? '提交中…' : '加入' }}
+              </button>
+            </div>
+          </form>
+        </OverlayPanel>
+      </section>
 
       <!-- 学生那四张卡：教师侧不渲染（见 script 里 `isStaff` 那条注释）。 -->
       <section v-if="!isStaff" class="stat-grid" aria-label="我的进度">
@@ -380,6 +507,33 @@ h2 { margin: 0 0 8px; font-size: var(--text-xl); }
 .step-card p { margin: 0; color: var(--ui-ink-muted); font-size: var(--text-base); line-height: 1.7; }
 
 .page-error { margin: 0 0 16px; border: 1px solid var(--ui-danger-border); border-radius: var(--ui-radius); padding: 10px 14px; color: var(--ui-danger); background: var(--ui-danger-soft); font-size: var(--text-base); }
+
+/* 成功回执与错误同一档存在感，但不抢红色（守则 C4：完成与失败都要上屏）。 */
+.page-notice { margin: 0 0 16px; border: 1px solid var(--theme-fade); border-radius: var(--ui-radius); padding: 10px 14px; color: var(--theme-primary-deep); background: var(--theme-bg-light); font-size: var(--text-base); }
+
+/*
+ * 「加入班级」横幅：这一页唯一一条「先把这件事办了再往下」的入口，所以给它主题色
+ * 左边竖线 + 一颗靠右的主按钮，不写说明性小字（守则 C5）。
+ * `position: relative` 是给弹层当包含块——基座刻意不 Teleport（`OverlayPanel.vue` 文件头
+ * 第 1 条「刻意不做」），位置由调用方定，这是调用方那一份。
+ */
+.join-card { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 16px; border: 1px solid var(--ui-border); border-left: 3px solid var(--theme-rule); border-radius: var(--ui-radius); padding: 16px 20px; background: var(--ui-surface-soft); }
+.join-card__title { margin: 0; font-size: var(--text-lg-plus); }
+.join-card__trigger { margin-left: auto; border: 0; border-radius: var(--ui-radius); padding: 10px 18px; color: var(--ui-surface); background: var(--theme-rule); cursor: pointer; font: inherit; font-size: var(--text-md); }
+.join-card__trigger:hover { background: var(--theme-primary); }
+.join-card__trigger:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
+
+.join-panel { position: absolute; top: calc(100% - 6px); right: 16px; width: min(320px, 100%); border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 14px; background: var(--ui-surface); box-shadow: var(--ui-shadow-menu); }
+.join-panel__form { display: flex; flex-direction: column; gap: 8px; }
+.join-panel__label { color: var(--ui-ink-muted); font-size: var(--text-sm); }
+.join-panel__input { width: 100%; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 9px 12px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: var(--text-md); }
+.join-panel__input:focus { outline: 2px solid var(--theme-rule); outline-offset: 1px; }
+.join-panel__error { margin: 0; color: var(--ui-danger); font-size: var(--text-base); }
+.join-panel__actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 2px; }
+.join-panel__cancel, .join-panel__submit { border-radius: var(--ui-radius); padding: 9px 16px; cursor: pointer; font: inherit; font-size: var(--text-md); }
+.join-panel__cancel { border: 1px solid var(--ui-border-strong); color: var(--ui-ink); background: var(--ui-surface); }
+.join-panel__submit { border: 0; color: var(--ui-surface); background: var(--theme-rule); }
+.join-panel__cancel:disabled, .join-panel__submit:disabled { opacity: .6; cursor: progress; }
 
 .stat-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
 .stat-card { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 18px; background: var(--ui-surface); }
