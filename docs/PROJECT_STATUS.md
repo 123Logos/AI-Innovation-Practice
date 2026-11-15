@@ -17,8 +17,8 @@
 组织与角色（邀请码加入、成员角色调整、审计流水、教师端学情看板 + 批量 ZIP 下载 + PDF 导出）、
 能力测评（50 题标准题库 + 画像标签 + 概述生成）与模拟面试（文本回合制 + 录音转写回合制）。
 
-**规模（2026-11-15 实测）**：23 张表 / 28 个 Alembic 修订；后端 `uv run pytest --collect-only -q` = **753 tests collected**；
-前端 `npx vitest run` = **450 passed / 39 个 spec 文件**；30 张 ADR；7 个模块、14 个页面视图。
+**规模（2026-11-16 实测）**：23 张表 / 28 个 Alembic 修订；后端 `uv run pytest --collect-only -q` = **824 tests collected**；
+前端 `npx vitest run` = **559 passed / 47 个 spec 文件**；32 张 ADR；7 个模块、14 个页面视图。
 CI 只有一个 `test` job，**在 PR 上跑**（push 触发已删），含 ruff format/check、mypy、lint-imports、pytest、
 五道文档与文案闸（G1/G3/G4/G5 + 引用闸）与前端 lint/typecheck/test/build。
 
@@ -79,13 +79,13 @@ CI 只有一个 `test` job，**在 PR 上跑**（push 触发已删），含 ruff
 | 双 Token + 刷新接口（D2.1 后端 / D2.2 前端） | Phase 2 | 已验证：`refresh_tokens` 表 + 轮换 + 复用拒绝 + 登出撤销；前端拦截器已接（single-flight + 提前续期 + 重放） |
 
 > 下面这几条 T7.x 的逐轮数值（`12 passed` / `14 passed` / `迁移 20261102_0002` 等）是**那一轮的实测**，保留作证据链；
-> 全量口径看 §1（后端 753 collected / 前端 450 passed）。
+> 全量口径看 §1（后端 824 collected / 前端 559 passed）。
 
 ## 3. 已验证 / 未验证
 
-| 项 | 状态 | 证据（2026-11-15） |
+| 项 | 状态 | 证据（2026-11-16 复核） |
 |---|---|---|
-| 全量测试 | **已验证** | 后端 `uv run pytest --collect-only -q` = 753 tests collected；前端 `npx vitest run` = Test Files 39 passed / Tests 450 passed |
+| 全量测试 | **已验证** | 后端 `uv run pytest --collect-only -q` = 824 tests collected（`pytest -q` = 824 passed）；前端 `npx vitest run` = Test Files 47 passed / Tests 559 passed |
 | CI 真实运行 | **已验证** | `.github/workflows/ci.yml` 单个 `test` job 在 PR 上跑；最近一次 PR #45 → `test pass 8m10s`（run 43612941070）。**push 触发已删，所以「没开 PR 就没跑过 CI」这句话现在仍然成立** |
 | 数据库迁移可跑通 | **已验证** | `tests/test_migrations.py` 覆盖「空库 → `upgrade head` → `downgrade base`」；28 个修订，多线并行时另有 `alembic merge`  revision |
 | 进程可启动 | **已验证** | PR #44 / #45 验收那两轮（2026-11-14/15）实测：`uv run uvicorn app.main:app` + `npm run dev` 起得来，`/api/v1/health` 返回 200，headless Edge + CDP 连上 5173 做完 375 / 1280 / 1440 三档量测。**本轮（11-15 文档刷新）按指令未起服务、未跑测试** |

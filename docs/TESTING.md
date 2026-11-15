@@ -32,7 +32,7 @@ uv run ruff format --check app tests alembic scripts
 uv run ruff check app tests scripts
 uv run mypy app scripts
 uv run lint-imports
-uv run pytest -q                 # 2026-11-15 实测：753 tests collected
+uv run pytest -q                 # 2026-11-16 实测：824 passed
 
 # 文档与文案闸（五道，全在 scripts/）
 uv run python scripts/check_ui_copy.py            # G1
@@ -41,7 +41,7 @@ uv run python scripts/check_design_tokens.py      # G4
 uv run python scripts/check_route_reachability.py # G5
 uv run python scripts/check_docs_citations.py     # 文档指针
 
-# 前端（frontend/ 下；2026-11-15 实测 450 passed / 39 spec）
+# 前端（frontend/ 下；2026-11-16 实测 559 passed / 47 spec）
 npm run lint
 npm run typecheck
 npm run test
@@ -154,7 +154,7 @@ npm run build
 | TC-MEDIA-001 / SEC-011 / MEDIA-001…006 | 房间 token、WebRTC 媒体、授权撤回 | **不适用**：WebRTC 一行代码都没有；`ADR-030` 已裁定不建 `media_rooms` / `interview_reports` |
 | PERF-003 | Redis 暂停 → CRUD 可用 | **不适用**：没有 Redis 可停。等价测试是「DeepSeek 不可达」：润色 / 提取 / 匹配 / 概述各自返回 `AI_SERVICE_UNAVAILABLE` 且**不动已有数据**（`tests/test_resume_ai_copywriting.py`） |
 
-**已落地的等价覆盖在哪**：后端 753 条 collected 含鉴权、组织隔离、权限闸（`app/core/action_gate.py`）、审计、隐私检查、版本对比与按岗位定制、测评判分、邀请码兑换并发（`tests/test_invitations.py`）、教师端与批量导出（`tests/test_teacher_tools.py`）、限流（`tests/test_rate_limit.py`）；前端 450 条含 BYOK 两张白名单 fail-closed、抽屉互斥与焦点归还/圈定、分层与文案闸（`layoutGuards` / `motionGuards` / `formGuards` / `paperPaginationGuards`）。
+**已落地的等价覆盖在哪**：后端 824 条 collected 含鉴权、组织隔离、权限闸（`app/core/action_gate.py`）、审计、隐私检查、版本对比与按岗位定制、测评判分、邀请码兑换并发（`tests/test_invitations.py`）、教师端与批量导出（`tests/test_teacher_tools.py`，含「一个学生两份有效简历 → 清单两条、回收站那份不出现」）、限流（`tests/test_rate_limit.py`）、外部 PDF 简历导入（`tests/test_resumes_import_pdf.py`：真 `pypdf` 吃测试自己拼的最小 PDF、五个失败码各一条、`Engine` 上零 DML 的取证、归一账目、以及「响应原样 PUT 必须 200」。**v2 加的是三级降级链路**：文字层命中时**假 OCR 引擎的调用次数必须为 0**、无文字层的图嵌 PDF 走 OCR 且 `meta.source == "ocr"`、两级都空才 422、4 页只渲染 3 页、引擎只建一次、识别过 `_CALL_LOCK`、`txts is None` 不炸成 500，另有一条**用真 RapidOCR 引擎**跑通同一张图——假件说「认出来了」不算证据）；时钟冻结见 `ADR-032`（`tests/test_jobs.py::FREEZE_AT` + `@freeze_time`，那条 2.G 用例从此与「跑到第几秒」无关）；前端 559 条含 BYOK 两张白名单 fail-closed（转发用的精确路径现在三条）、抽屉互斥与焦点归还/圈定、导入的覆盖确认与回填（`stores/__tests__/resume-import.spec.ts` / `views/__tests__/ResumeEditorImport.spec.ts`）、分层与文案闸（`layoutGuards` / `motionGuards` / `formGuards` / `paperPaginationGuards`）。
 
 ## 5. 安全测试
 

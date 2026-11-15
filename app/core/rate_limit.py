@@ -41,6 +41,12 @@ EXTRACT_RATE_LIMIT = "10/minute"
 #: 人岗匹配的限流规则（ADR-013 §3）。数量级与前两条一致，**但键不一样**（见下面那条函数）。
 MATCH_RATE_LIMIT = "10/minute"
 
+#: 外部 PDF 简历导入的限流规则（`ADR-031` 3 代价第 4 条：沿用润色那一档，不单独放宽）。
+#: 与前两条同族的理由在这里更硬：一次导入 = 一次最多 30 秒的 DeepSeek 长请求 +
+#: 用户自己额度的上千 token，而且是**用户主动选文件**触发的，正常节奏一分钟到不了两次。
+#: 已知局限同前：slowapi 是进程内计数，多 worker 部署时每个 worker 各算一份。
+IMPORT_RATE_LIMIT = "10/minute"
+
 
 def get_user_or_remote_address(request: Request) -> str:
     """匹配端点的限流键：能认出用户就按用户，认不出就退回 IP。

@@ -28,6 +28,7 @@ from app.core.error_messages import (
 )
 from app.core.errors import error_response
 from app.core.rate_limit import limiter
+from app.services.resume_import import PdfImportError
 from app.services.resume_service import (
     ResumeApiKeyMissingError,
     ResumeCopyRejectedError,
@@ -40,7 +41,12 @@ logger = logging.getLogger(__name__)
 # 会把整个 request options —— 包含 `Authorization: Bearer <key>` —— 打出来，一旦有人
 # 用 `--log-level debug` 起服务，用户自带的 Key 就落进了日志文件。在这里按库压级，
 # 比在业务代码里小心更可靠：它挡住的是第三方库的日志，不是我们的。
-for _sdk_logger in ("openai", "httpx2", "httpcore", "httpx"):
+#
+# `rapidocr` 也在这一串里（第 29 轮 v2）：它每次建引擎都按 INFO 打三行
+# 「Using engine_name / File exists and is valid: …\models\xxx.onnx」。
+# 内容不敏感（是库自己的权重路径，不是用户数据），但**每次首次 OCR 都刷三行**，
+# 而我们要的只是它出错时那一条——压到 WARNING 与上面几个库同一口径。
+for _sdk_logger in ("openai", "httpx2", "httpcore", "httpx", "rapidocr"):
     logging.getLogger(_sdk_logger).setLevel(logging.WARNING)
 
 #: 前端实际用到的 HTTP 方法，显式列出而不放通配符 `*`。
@@ -332,6 +338,24 @@ def create_app() -> FastAPI:
                 "本次请求未被保存，您的资料不受影响。请稍后重试。",
                 retryable=True,
             ),
+        )
+
+    @app.exception_handler(PdfImportError)
+    async def pdf_import_failed(_: Request, exc: PdfImportError) -> JSONResponse:
+        """外部 PDF 导入的五个失败码共用一个 422（`ADR-031` 2.5）。
+
+        **为什么一个状态码配五个码**：老板指定「无 Key 或 AI 失败返回 422」，
+        而这五种情况用户的下一步完全不同（换文件 / 配 Key / 稍后再试 / 手动填）。
+        前端按 `code` 分叉——`AI_KEY_MISSING` 那一条要带出「点此配置 AI 密钥」的链接
+        （第 25 轮的 `AiKeyHint`），按状态码分叉会把这五种混成一锅。
+
+        与上面三个 AI 处理器不同，这里必须**新写一个处理器**：那三个挂在润色/提取的
+        异常族上，状态码是 400/401/502，而导入这一族统一 422、码也更多。
+        文案一律取自 `exc.message`（受信目录里的成员），异常文本一句都不上屏。
+        """
+        return JSONResponse(
+            status_code=422,
+            content=error_response(_, exc.code, exc.message, retryable=exc.retryable),
         )
 
     app.include_router(router, prefix="/api/v1")

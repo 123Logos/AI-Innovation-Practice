@@ -130,36 +130,65 @@ def _register_login(client: TestClient, username: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {response.json()['data']['access_token']}"}
 
 
+def _profile_body(name: str, skills: list[str]) -> dict[str, object]:
+    """一份「能生成简历」的档案内容：基本信息 + 1 条经历 + 1 段教育。"""
+    return {
+        "full_name": name,
+        "contact": "13800000000",
+        "skills": [{"name": skill} for skill in skills],
+        "experiences": [
+            {
+                "title": "校园二手交易平台",
+                "start_date": "2024-03-01",
+                "end_date": "2024-06-30",
+                "description": "面向校内学生的二手交易 Web 应用",
+                "responsibility": "负责接口开发",
+            }
+        ],
+        "educations": [
+            {
+                "school": "示例大学",
+                "major": "计算机",
+                "degree": "本科",
+                "edu_start": "2021-09-01",
+            }
+        ],
+    }
+
+
 def _profile(client: TestClient, headers: dict[str, str], *, name: str, skills: list[str]) -> str:
-    saved = client.put(
-        PROFILES_URL,
-        json={
-            "full_name": name,
-            "contact": "13800000000",
-            "skills": [{"name": skill} for skill in skills],
-            "experiences": [
-                {
-                    "title": "校园二手交易平台",
-                    "start_date": "2024-03-01",
-                    "end_date": "2024-06-30",
-                    "description": "面向校内学生的二手交易 Web 应用",
-                    "responsibility": "负责接口开发",
-                }
-            ],
-            "educations": [
-                {
-                    "school": "示例大学",
-                    "major": "计算机",
-                    "degree": "本科",
-                    "edu_start": "2021-09-01",
-                }
-            ],
-        },
-        headers=headers,
-    )
+    saved = client.put(PROFILES_URL, json=_profile_body(name, skills), headers=headers)
     assert saved.status_code == 200, saved.text
     profile_id: str = saved.json()["data"]["profile"]["id"]
     return profile_id
+
+
+def _profile_at(
+    client: TestClient, headers: dict[str, str], profile_id: str, *, name: str, skills: list[str]
+) -> None:
+    """把内容写进**指定**那份简历（`PUT /profiles/me` 只认默认那一份）。"""
+    saved = client.put(
+        f"{API}/profiles/{profile_id}", json=_profile_body(name, skills), headers=headers
+    )
+    assert saved.status_code == 200, saved.text
+
+
+def _new_profile(client: TestClient, headers: dict[str, str], title: str) -> str:
+    """新建一份简历（D4.1 多份简历），返回 profile id。"""
+    created = client.post(f"{API}/profiles", json={"title": title}, headers=headers)
+    assert created.status_code == 201, created.text
+    profile_id: str = created.json()["data"]["profile"]["id"]
+    return profile_id
+
+
+def _generate(client: TestClient, headers: dict[str, str], profile_id: str, title: str) -> str:
+    """给指定那份简历生成一版，返回 resume id（同一份再生成 = 旧版进历史）。"""
+    generated = client.post(
+        GENERATE_URL, json={"title": title, "profile_id": profile_id}, headers=headers
+    )
+    assert generated.status_code == 200, generated.text
+    resume_id: str = generated.json()["data"]["resume_id"]
+    return resume_id
 
 
 def _resume(client: TestClient, headers: dict[str, str]) -> str:
@@ -590,6 +619,59 @@ def test_downloadable_list_keeps_only_the_latest_version(
     assert [entry["resume_id"] for entry in manifest["skipped"]] == [first]
     assert manifest["item_count"] == 1
     assert second in json.dumps(manifest["items"])
+
+
+def test_downloadable_list_covers_every_active_resume(
+    client: TestClient, renderer: _FakeRenderer
+) -> None:
+    """「只导最新版」是**每份简历取自己的链头**，不是「每个学生只留最近改的那一份」。
+
+    第 25 轮那句需求被读成后者的话，后果是：学生有简历 A（投后端）与简历 B（投算法）两份
+    有效简历时，教师只拿到其中一份，另一份在清单里凭空消失。这一条把三种情况一次钉住：
+
+    1. A、B 两份有效简历**都要出现**（各自那一版链头）；
+    2. 同一份再生成一版，清单仍是两条、那一格换成新版（历史版不追加行）；
+    3. 回收站里的简历 C **不出现**，即使教师手里有它的 id，批量下载也把它列进 `skipped`。
+    """
+    headers, org_id = _school(client, "b10multi")
+    student, _ = _user(
+        client, f"b10_multi_s_{uuid4().hex[:8]}", organization_id=org_id, role="student"
+    )
+
+    resume_a = _profile(client, student, name="多份学生", skills=["Python"])
+    a_head = _generate(client, student, resume_a, "投后端")
+
+    resume_b = _new_profile(client, student, "投算法")
+    _profile_at(client, student, resume_b, name="多份学生", skills=["Go"])
+    b_head = _generate(client, student, resume_b, "投算法")
+
+    resume_c = _new_profile(client, student, "投数据")
+    _profile_at(client, student, resume_c, name="多份学生", skills=["Rust"])
+    c_head = _generate(client, student, resume_c, "投数据")
+    trashed = client.delete(f"{API}/profiles/{resume_c}", headers=student)
+    assert trashed.status_code == 200, trashed.text
+
+    response = client.get(RESUMES_URL, headers=headers)
+    assert response.status_code == 200, response.text
+    items = response.json()["data"]["items"]
+    assert {item["resume_id"] for item in items} == {a_head, b_head}
+    assert c_head not in {item["resume_id"] for item in items}
+    # 同一个学生的两份简历是两条记录，姓名相同也要分开列（教师靠标题认人）。
+    assert len({item["profile_id"] for item in items}) == 2
+
+    # 同一份再生成一版：清单条数不变，那一格换成新的链头。
+    b_head_v2 = _generate(client, student, resume_b, "投算法")
+    after = client.get(RESUMES_URL, headers=headers).json()["data"]["items"]
+    assert {item["resume_id"] for item in after} == {a_head, b_head_v2}
+    assert b_head not in {item["resume_id"] for item in after}
+
+    # 回收站那份即使被点名也不能导出。
+    batch = client.post(BATCH_URL, json={"resume_ids": [a_head, c_head]}, headers=headers)
+    assert batch.status_code == 200, batch.text
+    with zipfile.ZipFile(io.BytesIO(batch.content)) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+    assert manifest["item_count"] == 1
+    assert [entry["resume_id"] for entry in manifest["skipped"]] == [c_head]
 
 
 def test_zip_layout_and_manifest(client: TestClient, renderer: _FakeRenderer) -> None:

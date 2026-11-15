@@ -4,14 +4,29 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import ResumeEditor from '@/components/ResumeEditor.vue'
 import ResumePreview from '@/components/ResumePreview.vue'
 import StylePanel from '@/components/StylePanel.vue'
+import AiKeyHint from '@/components/AiKeyHint.vue'
 import { isApiError } from '@/api'
 import { useAuthStore } from '@/stores/auth'
+import { useDialogStore } from '@/stores/dialog'
 import { useResumeStore } from '@/stores/resume'
 import SkeletonList from '@/components/SkeletonList.vue'
 
 const auth = useAuthStore()
 const store = useResumeStore()
+const dialog = useDialogStore()
 const loadError = ref('')
+
+/**
+ * PDF 导入的两格状态（第 28 轮，`ADR-031`）。
+ *
+ * `feedback` 只管这一条路径，不接 `StylePanel` 那条（润色的提示住在它自己那一列）。
+ * `feedbackCode` 单独留着是因为 `AiKeyHint` 认的是**原因码**而不是文字：
+ * 五种 422 里只有「没配 Key」该给「点此配置 AI 密钥」那行链接，
+ * 超时与上游挂了给这个链接只会让用户去改一把本来没坏的 Key。
+ */
+const importFeedback = ref<{ tone: 'ok' | 'error'; text: string } | null>(null)
+const importCode = ref<string | null>(null)
+const fileInput = ref<HTMLInputElement | null>(null)
 
 /** 草稿写入时间，仅用于提示文案。 */
 const draftSavedAt = computed(() => {
@@ -19,6 +34,105 @@ const draftSavedAt = computed(() => {
   if (!at) return ''
   return new Date(at).toLocaleString('zh-CN', { hour12: false })
 })
+
+/** 导入成功后那句「读了哪些、丢了哪些」。没有一条需要说的时候返回空串，整条横幅就不画。 */
+const importedNotes = computed(() => {
+  const meta = store.importedMeta
+  if (!meta) return []
+  const notes: string[] = []
+  if (meta.pages_used < meta.pages_total) {
+    notes.push(`这份 PDF 共 ${meta.pages_total} 页，只读了前 ${meta.pages_used} 页。`)
+  }
+  if (meta.text_truncated) {
+    notes.push('文字太多，只处理了前面一部分。')
+  }
+  const dropped = meta.dropped
+  const trimmed = [
+    dropped.skills > 0 ? `${dropped.skills} 条技能` : '',
+    dropped.experiences > 0 ? `${dropped.experiences} 段经历` : '',
+    dropped.educations > 0 ? `${dropped.educations} 段教育经历` : '',
+  ].filter(Boolean)
+  if (trimmed.length) {
+    notes.push(`超出表单条数上限，没有导入：${trimmed.join('、')}。`)
+  }
+  if (dropped.contact_discarded) {
+    notes.push('PDF 里的手机号不是大陆 11 位号码，已留空。')
+  }
+  if (dropped.text_clamped) {
+    notes.push('有描述或职责超出长度上限，已截断。')
+  }
+  return notes
+})
+
+function openFilePicker(): void {
+  importFeedback.value = null
+  importCode.value = null
+  fileInput.value?.click()
+}
+
+/**
+ * 选完文件：dirty 先拦一次确认，然后交给 store。
+ *
+ * `input.value = ''` 必须写在读取之后、请求之前：不清的话，用户导入 a.pdf 失败后
+ * 再选同一个 a.pdf，`change` 不会触发（浏览器认为值没变），按钮就「点了没反应」。
+ */
+async function handleFileChange(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+
+  if (store.dirty) {
+    const agreed = await dialog.askConfirm(
+      // 标题就是老板第 28 轮点名的那句话（逐字）；正文补的是他这句话里没说但必须看见的
+      // 两件事：**不可撤回**，以及导入之后仍然要他自己点保存。
+      '导入将覆盖当前未保存的修改，是否继续？',
+      '表单里还没保存的改动会被 PDF 里的内容替换掉，且无法撤回。导入后仍需你点「保存修改」才会保存。',
+      { confirmLabel: '继续导入', cancelLabel: '先不导入' },
+    )
+    // 取消就是停在这一步：不发请求、不动表单、不留下任何半截状态。
+    if (!agreed) return
+  }
+
+  importFeedback.value = null
+  importCode.value = null
+  try {
+    await store.importPdf(file)
+  } catch (error) {
+    importCode.value = isApiError(error) ? error.code : null
+    importFeedback.value = { tone: 'error', text: importFailureText(error) }
+    return
+  }
+  importFeedback.value = {
+    tone: 'ok',
+    text: '已按这份 PDF 填好表单。核对无误后点「保存修改」才会保存。',
+  }
+}
+
+/**
+ * 五种 422 各给一句「下一步做什么」（`ADR-031` 2.5 的码表在前端这一侧的落点）。
+ *
+ * 后端已经把句子放在受信目录里了，这里只补**导入这一条路径特有的上下文**：
+ * 「手动填写」是这条路径唯一的退路，所以每个 AI 侧的失败都要把它说出来；
+ * 而扫描件这件事只有用户能判断（我们分不清是扫描件还是加密），所以给的是动作不是原因。
+ */
+function importFailureText(error: unknown): string {
+  if (!isApiError(error)) return '导入失败，请稍后重试。'
+  switch (error.code) {
+    case 'PDF_TOO_LARGE':
+    case 'PDF_INVALID':
+    case 'AI_KEY_MISSING':
+    case 'AI_OUTPUT_INVALID':
+      // 这四条后端那句中文已经说清了下一步（换文件 / 去设置 / 再试一次或手动填），
+      // 原样上屏即可（第 26 轮定的 4xx 中文放行口径）。
+      return error.message
+    case 'AI_SERVICE_UNAVAILABLE':
+    case 'RATE_LIMITED':
+      return `${error.message}（本次没有改动表单，您的资料不受影响。）`
+    default:
+      return error.message
+  }
+}
 
 /*
  * 已经完整加载过就不再重来（2026-11-14，UI 收尾第 5 条）。
@@ -99,10 +213,72 @@ onUnmounted(() => {
       </section>
     </div>
 
+    <div class="import-bar">
+      <button
+        class="import-button"
+        type="button"
+        data-testid="import-pdf-button"
+        :disabled="store.importing"
+        @click="openFilePicker"
+      >
+        {{ store.importing ? '正在解析 PDF…' : '导入 PDF 简历' }}
+      </button>
+      <!-- 真正的选择器是这个看不见的 input：按钮只负责打开它（`ADR-031` 2.1 的第一步）。 -->
+      <input
+        ref="fileInput"
+        class="import-file"
+        type="file"
+        accept="application/pdf"
+        data-testid="import-pdf-input"
+        @change="handleFileChange"
+      />
+
+      <p
+        v-if="importFeedback"
+        class="import-feedback"
+        :class="importFeedback.tone === 'error' ? 'import-feedback--error' : 'import-feedback--ok'"
+        :role="importFeedback.tone === 'error' ? 'alert' : 'status'"
+        aria-live="polite"
+        data-testid="import-feedback"
+      >
+        {{ importFeedback.text }}
+      </p>
+      <AiKeyHint :reason="importCode" />
+
+      <!-- 读了哪几页、丢了几条：截断与丢弃必须说出来（`ADR-017` / `ADR-031` 2.3）。 -->
+      <ul
+        v-if="importedNotes.length"
+        class="import-notes"
+        role="status"
+        aria-live="polite"
+        data-testid="import-notes"
+      >
+        <li v-for="note in importedNotes" :key="note">{{ note }}</li>
+      </ul>
+    </div>
+
     <div class="resume-workspace">
       <ResumeEditor class="editor" />
       <ResumePreview />
       <StylePanel class="style-panel" />
+    </div>
+
+    <!--
+      解析遮罩：外壳用全局 `.ui-overlay`（L3 现阶梯的 100 档），不在这里再写一个 z-index。
+      它不是弹窗——没有关闭路径（解析期间关掉等于留下一个改了一半的表单），
+      所以只带 `role="status"` 播报进度，不接 Esc、不接点遮罩。
+    -->
+    <div
+      v-if="store.importing"
+      class="ui-overlay import-mask"
+      role="status"
+      aria-live="polite"
+      data-testid="import-mask"
+    >
+      <div class="ui-panel import-mask__card">
+        <p class="import-mask__text">正在解析 PDF…</p>
+        <p class="import-mask__hint">这一步用的是你自己的 AI 用量，通常几秒到半分钟。</p>
+      </div>
     </div>
   </main>
 </template>
@@ -145,6 +321,26 @@ onUnmounted(() => {
 .load-error { color: var(--ui-danger); }
 .load-hint { color: var(--ui-ink-faint); }
 
+/*
+ * PDF 导入这一行：宽度与内缩跟着上面那条横幅走，两处不同宽会让用户以为
+ * 是两个页面的两块东西（同一条列对齐规矩，见 `.draft-banner-shell`）。
+ */
+.import-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; width: min(calc(var(--paper-a4-width) + 96px), 100%); margin: 0 auto; padding: 12px 48px 0; }
+.import-button { border: 1px solid var(--theme-primary); border-radius: var(--ui-radius); padding: 8px 16px; color: var(--theme-on-primary); background: var(--theme-primary); cursor: pointer; font: inherit; font-size: var(--text-base); }
+.import-button:hover:not(:disabled) { background: var(--theme-primary-hover); }
+.import-button:disabled { cursor: default; opacity: 0.6; }
+.import-button:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
+/* 隐藏的 file input：可点的是上面那个按钮，这一格只负责拿到 File（不进 Tab 序）。 */
+.import-file { display: none; }
+.import-feedback { margin: 0; font-size: var(--text-base); line-height: 1.5; }
+.import-feedback--error { color: var(--ui-danger); }
+.import-feedback--ok { color: var(--ui-ink-muted); }
+/* 截断与丢弃的账：小字、逐条一行，读起来是「刚才发生了什么」而不是提示废话。 */
+.import-notes { display: grid; gap: 2px; margin: 0; color: var(--ui-ink-faint); font-size: var(--text-sm); line-height: 1.5; list-style: none; padding: 0; }
+.import-mask__card { text-align: center; }
+.import-mask__text { margin: 0; color: var(--ui-ink); font-size: var(--text-lg); font-weight: 650; }
+.import-mask__hint { margin: 8px 0 0; color: var(--ui-ink-muted); font-size: var(--text-sm); line-height: 1.5; }
+
 /* 本地草稿恢复提示：用页面内联条，不用 window.confirm —— 可样式化、不阻塞、可测。 */
 .draft-banner-shell { width: min(calc(var(--paper-a4-width) + 96px), 100%); margin: 0 auto; padding: 12px 48px 0; }
 .draft-banner {
@@ -172,7 +368,7 @@ onUnmounted(() => {
  */
 @container app-content (min-width: 1174px) {
   .resume-workspace { grid-template-columns: minmax(300px, 1fr) minmax(0, var(--paper-a4-width)); justify-content: stretch; }
-  .load-error, .load-hint, .load-skeleton, .draft-banner-shell { width: min(1440px, 100%); }
+  .load-error, .load-hint, .load-skeleton, .draft-banner-shell, .import-bar { width: min(1440px, 100%); }
 }
 /*
  * 三列：只在纸面已经能按 A4 原大显示、还剩下侧栏的地方时才开（阈值 1434 的算式见文件头）。
@@ -181,17 +377,17 @@ onUnmounted(() => {
 @container app-content (min-width: 1434px) {
   .resume-workspace { grid-template-columns: 280px minmax(0, 1fr) 200px; gap: 32px; padding: 32px 48px 72px; }
   .style-panel { grid-column: auto; }
-  .load-error, .load-hint, .load-skeleton, .draft-banner-shell { padding: 12px 48px 0; }
+  .load-error, .load-hint, .load-skeleton, .draft-banner-shell, .import-bar { padding: 12px 48px 0; }
 }
 @container app-content (max-width: 760px) {
   .resume-workspace { grid-template-columns: 1fr; gap: 24px; padding: 20px 16px 48px; }
   .editor, .style-panel { grid-column: auto; }
-  .load-error, .load-hint, .load-skeleton, .draft-banner-shell { padding: 12px 16px 0; }
+  .load-error, .load-hint, .load-skeleton, .draft-banner-shell, .import-bar { padding: 12px 16px 0; flex-direction: column; align-items: stretch; }
   .draft-banner { flex-direction: column; align-items: stretch; }
   .draft-banner__actions { justify-content: flex-end; }
 }
 @media print {
   .resume-workspace { display: block; padding: 0; }
-  .editor, .style-panel, .load-error, .load-hint, .load-skeleton, .draft-banner-shell { display: none; }
+  .editor, .style-panel, .load-error, .load-hint, .load-skeleton, .draft-banner-shell, .import-bar { display: none; }
 }
 </style>

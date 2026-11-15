@@ -148,8 +148,10 @@ class TeacherToolsRepository:
 
         **只取链头**（2026-11-15 第 25 轮，老板指令「只导最新版」）：`resumes` 的每一行
         是一个版本，`is_head` 是生成列（`IF(id = current_version_id, 1, NULL)`，见迁移
-        `20261110_0016`），所以 `is_head == 1` 恰好是「这个学生现在这一份」。历史版本
-        不进清单、也不能靠猜 id 导出——名单与下载走同一条 SQL，两处边界不会各说一套。
+        `20261110_0016`），`UNIQUE(student_profile_id, is_head)` 保证**一份简历只有一个链头**
+        ——所以 `is_head == 1` 是「每份简历现在这一版」，一个学生两份有效简历就是两行，
+        不是「这个学生最近改的那一份」。历史版本不进清单、也不能靠猜 id 导出：
+        名单与下载走同一条 SQL，两处边界不会各说一套。
         """
         if resume_ids is not None and not resume_ids:
             return []
@@ -200,10 +202,17 @@ class TeacherToolsRepository:
         return next((item for item in found if item.resume_id == resume_id), None)
 
     def all_documents(self, organization_id: str) -> list[ResumeDocument]:
-        """本组织每个学生**当前最新版**的简历（看板页的下载清单，不含正文）。
+        """本组织**每份有效简历各自的最新版**（看板页的下载清单，不含正文）。
 
-        第 25 轮起不再是「所有版本」：历史版本会被学生反复保存刷出一堆
-        v1/v2/v3，勾选列表里同一个名字出现三次，导出的人分不清哪份是现在的。
+        「最新版」的粒度是**一份简历**（`student_profiles` 一行），不是「一个学生」：
+        学生可以同时有「投后端」「投算法」两份简历，教师端要拿到的是**两条**记录
+        ——每条都是它自己那条版本链的链头。把这条读成「每个学生只留最近改的那一份」，
+        后果是另一份简历在清单里凭空消失，而它在学生自己的列表里好好的。
+        （判据与三种情况的钉法见 `tests/test_teacher_tools.py::test_downloadable_list_covers_every_active_resume`。）
+
+        第 25 轮起不再返回历史版本：反复保存会刷出一堆 v1/v2/v3，同一个名字出现三次，
+        导出的人分不清哪份是现在的。回收站里的简历（`student_profiles.deleted_at` 非空）
+        不在清单里，也不能靠点名 id 导出。
         """
         return self._documents(organization_id, None)
 
