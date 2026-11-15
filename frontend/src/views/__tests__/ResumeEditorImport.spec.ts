@@ -58,6 +58,7 @@ function importedResult(): PdfImportResult {
       text_chars: 900,
       text_truncated: false,
       prompt_version: 'v1',
+      source: 'text_layer',
       dropped: {
         skills: 4,
         experiences: 0,
@@ -262,6 +263,7 @@ describe('结果上屏', () => {
         text_chars: 200,
         text_truncated: false,
         prompt_version: 'v1',
+        source: 'text_layer',
         dropped: {
           skills: 0,
           experiences: 0,
@@ -279,10 +281,29 @@ describe('结果上屏', () => {
     expect(wrapper.find('[data-testid="import-notes"]').exists()).toBe(false)
   })
 
+  it('OCR 来源的成功响应：界面与文本层来源逐字一致（`ADR-031` §5 第 11 条）', async () => {
+    // 两份响应只差 `meta.source`。前端**不**因为「这是认回来的」就换提示、换颜色、
+    // 或者多画一个说明——那会把「同一条路径的两种来源」变成用户面前的两件事。
+    const ocrResult = importedResult()
+    ocrResult.meta.source = 'ocr'
+    markLoaded()
+    importResumePdf.mockResolvedValue(ocrResult)
+    const wrapper = mountView()
+
+    pickFile(wrapper, FILE)
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="import-feedback"]').text()).toContain('保存修改')
+    expect(wrapper.get('[data-testid="import-notes"]').text()).toContain('只读了前 3 页')
+    // 来源这个事实留在数据里（排查找得到），但不作为第二套界面文案出现。
+    expect(useResumeStore().importedMeta?.source).toBe('ocr')
+    expect(wrapper.get('[data-testid="import-notes"]').text()).not.toContain('ocr')
+  })
+
   it('扫描件失败：错误进 `role="alert"`，句子用的是后端那句能动手的话', async () => {
     markLoaded()
     importResumePdf.mockRejectedValue(
-      new ApiError('这份 PDF 里读不出文字（可能是扫描件或加密文件）。', 422, 'PDF_INVALID'),
+      new ApiError('这份文件没识别到文字，请上传含文字层的 PDF，或在下面手动填写档案。', 422, 'PDF_INVALID'),
     )
     const wrapper = mountView()
 
@@ -291,7 +312,7 @@ describe('结果上屏', () => {
 
     const feedback = wrapper.get('[data-testid="import-feedback"]')
     expect(feedback.attributes('role')).toBe('alert')
-    expect(feedback.text()).toContain('读不出文字')
+    expect(feedback.text()).toContain('没识别到文字')
     // 不是 Key 的问题，就不该给「点此配置 AI 密钥」。
     expect(wrapper.find('[data-testid="ai-key-hint"]').exists()).toBe(false)
   })

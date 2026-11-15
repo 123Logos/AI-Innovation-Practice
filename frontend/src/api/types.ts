@@ -638,7 +638,7 @@ export interface PdfImportDropped {
   text_clamped: boolean
 }
 
-/** 这次导入读了多少页、发了哪一版 Prompt。 */
+/** 这次导入读了多少页、发了哪一版 Prompt、文本是从哪一级来的。 */
 export interface PdfImportMeta {
   pages_total: number
   pages_used: number
@@ -646,6 +646,14 @@ export interface PdfImportMeta {
   /** 抽取出的文本超过 12000 字被截断。 */
   text_truncated: boolean
   prompt_version: string
+  /**
+   * `ADR-031` v2 §2.9：`text_layer` = pypdf 直接读到的文字，`ocr` = 渲染成图后认回来的。
+   *
+   * 两级的**质量**不同（同一页 OCR 会把 `SCANME 2024` 认成 `SCAME024`，本机实测），
+   * 所以这个事实要留在数据里；但前端对两条路径的行为**完全一致**（§5 第 11 条）：
+   * 回填、置 `dirty`、不发 PUT、账本显示都相同，不因为走了 OCR 就演另一套。
+   */
+  source: 'text_layer' | 'ocr'
   dropped: PdfImportDropped
 }
 

@@ -17,6 +17,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from freezegun import freeze_time
 from sqlalchemy import text
 
 from app.core.error_messages import ErrorMessage
@@ -990,9 +991,21 @@ def test_restore_of_a_job_that_is_not_in_the_trash_is_404(client: TestClient) ->
 # 2.G：过期三态（昨天隐藏 / 今天出现 / include_expired 出现）+ NULL 长期有效
 # --------------------------------------------------------------------------- #
 
+#: 这条用例唯一允许存在的「今天」。`ADR-032`：它横跨 `submit-review` 的多次调用，
+#: 服务端 `job_service` 的五处 `date.today()` 与测试侧的 `today` 必须是同一个日子——
+#: 第 28 轮那次全量跑（23:47 → 00:00）就是在这里红的：
+#: 测试算出「今天截止」，服务端翻页之后已经是明天，于是发布被 `is_expired` 拦成 409。
+#: 取上午 09:00 而不是午夜：它离两条跨天线都远，读的人一眼能确认它不会跨天。
+FREEZE_AT = "2026-11-16 09:00:00"
 
+
+@freeze_time(FREEZE_AT)
 def test_expired_jobs_are_hidden_by_default_on_the_app_clock(client: TestClient) -> None:
-    """矩阵外的 2.G：过期是**读侧**判定，不写库、不改状态。"""
+    """矩阵外的 2.G：过期是**读侧**判定，不写库、不改状态。
+
+    时钟由 `FREEZE_AT` 钉住（`ADR-032`）：这条用例的正确性从此与「跑到第几秒」无关，
+    而不是只在白天成立。
+    """
     token = _register_and_login(client)
     today = date.today()
 

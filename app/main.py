@@ -41,7 +41,12 @@ logger = logging.getLogger(__name__)
 # 会把整个 request options —— 包含 `Authorization: Bearer <key>` —— 打出来，一旦有人
 # 用 `--log-level debug` 起服务，用户自带的 Key 就落进了日志文件。在这里按库压级，
 # 比在业务代码里小心更可靠：它挡住的是第三方库的日志，不是我们的。
-for _sdk_logger in ("openai", "httpx2", "httpcore", "httpx"):
+#
+# `rapidocr` 也在这一串里（第 29 轮 v2）：它每次建引擎都按 INFO 打三行
+# 「Using engine_name / File exists and is valid: …\models\xxx.onnx」。
+# 内容不敏感（是库自己的权重路径，不是用户数据），但**每次首次 OCR 都刷三行**，
+# 而我们要的只是它出错时那一条——压到 WARNING 与上面几个库同一口径。
+for _sdk_logger in ("openai", "httpx2", "httpcore", "httpx", "rapidocr"):
     logging.getLogger(_sdk_logger).setLevel(logging.WARNING)
 
 #: 前端实际用到的 HTTP 方法，显式列出而不放通配符 `*`。

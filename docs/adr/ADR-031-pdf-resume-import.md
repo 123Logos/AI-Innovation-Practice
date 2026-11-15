@@ -1,9 +1,9 @@
-# ADR-031: 导入外部 PDF 简历（pypdf 抽取 + DeepSeek 结构化）
+# ADR-031: 导入外部 PDF 简历（pypdf 抽取 + RapidOCR 兜底 + DeepSeek 结构化）
 
 - 状态：已采纳（Accepted，ADR 先行，代码随本文件同分支落地）
-- 日期：2026-11-15
+- 日期：2026-11-15；**v2 修订 2026-11-16**（第 29 轮老板指令「集成 RapidOCR 以支持扫描版 PDF」，新增 §2.9 三级降级链路与 §2.2 的 OCR 依赖面）
 - 关联需求：FR-01（档案填写）、FR-03（AI 只产出可编辑建议）；`ADR-009`/`ADR-010`（BYOK 与「哪些请求能带 Key」）、`ADR-011` 2.A/2.F（纯计算端点的同构先例）、`ADR-014`（解冻不覆盖 BYOK 逐条同意）
-- 关联裁定：第 28 轮老板指令「引入 pypdf 或 pdfplumber」「新增 `POST /resumes/import-pdf`（需登录，需 `X-DeepSeek-Key`）」「限制 5MB」「提取前 3–5 页」「无 Key 或 AI 失败返回 422」「将 `/resumes/import-pdf` 加入前端的 BYOK 白名单」
+- 关联裁定：第 28 轮老板指令「引入 pypdf 或 pdfplumber」「新增 `POST /resumes/import-pdf`（需登录，需 `X-DeepSeek-Key`）」「限制 5MB」「提取前 3–5 页」「无 Key 或 AI 失败返回 422」「将 `/resumes/import-pdf` 加入前端的 BYOK 白名单」；第 29 轮指令「`uv add rapidocr onnxruntime pypdfium2`」「三级降级：文本层 → OCR → 422」「OCR 引擎全局单例 + `threading.Lock` 串行化」「仍只处理前 3 页」「ADR 补 RapidOCR 决策与依赖体积」
 - 前置：`ADR-015`（版本链与 `is_head`）、`ADR-017`（上限与截断必须可见）
 
 ## 1. 背景：这一批要解决的三件事
@@ -26,7 +26,8 @@
      │  dirty 时先弹「导入将覆盖当前未保存的修改」确认
      ▼
 POST /api/v1/resumes/import-pdf   multipart/form-data: file
-     │  ① 体积 ≤ 5 MiB、② 魔数是 %PDF、③ 只读前 3 页文本（pypdf，本地，不出网）
+     │  ① 体积 ≤ 5 MiB、② 魔数是 %PDF、③ 只读前 3 页（pypdf，本地，不出网）
+     │  └─ v2：文本层为空 → pypdfium2 渲染 2.0× → RapidOCR 认字（仍本地、仍不出网）
      ▼
 DeepSeek（用户自己的 Key，非流式，thinking disabled，max_tokens=2000）
      │  严格 JSON：full_name / contact / target_role / educations[] / experiences[] / projects[] / skills[]
@@ -34,7 +35,7 @@ DeepSeek（用户自己的 Key，非流式，thinking disabled，max_tokens=2000
 服务层归一：projects[] 并入 experiences[]、按前端上限裁剪（技能 8 / 经历 3 / 教育 5）
      │  ★ 被裁掉的条数原样回传（dropped），一句都不许静默
      ▼
-响应 = { profile: {...}, meta: {pages_total, pages_used, text_chars, prompt_version, dropped} }
+响应 = { profile: {...}, meta: {pages_total, pages_used, text_chars, prompt_version, source, dropped} }
      │
      ▼
 前端把 profile 合并进 Pinia 草稿 → dirty = true → 左侧表单 + 右侧实时预览可见
@@ -72,13 +73,36 @@ DeepSeek（用户自己的 Key，非流式，thinking disabled，max_tokens=2000
 sha256 逐字节校验后从 PyPI 官方源装进 venv。`uv.lock` 里这两条仍然记的是清华的 URL 与
 镜像公布的哈希，所以 CI 与干净环境的安装路径没有变化。
 
+#### 2.2.1 v2 新增：OCR 三件套，以及它们各自拖进来的东西
+
+| 依赖 | 版本（本机实测） | 装进磁盘的量 | 为什么必须要它 |
+|---|---|---|---|
+| `rapidocr` | 3.10.0 | 包内 **31 MB** 是三个 `.onnx` 模型（det / cls / rec，PP-OCRv6 small + ch_ppocr_mobile cls） | OCR 的编排层；**模型在 wheel 里**，运行时不下载（实测日志原文 `File exists and is valid: …rapidocr\models\…onnx`），所以离线部署与 CI 都不会去连 HuggingFace |
+| `onnxruntime` | 1.32.0 | 单包最大的一块（wheel 数十 MB 量级） | rapidocr 的推理引擎（日志 `Using engine_name: onnxruntime`） |
+| `pypdfium2` | 5.15.2 | 小（带 PDFium 原生库） | 把 PDF 页面**渲染成位图**给 OCR——`pypdf` 只能读文字层，读不出像素 |
+
+**这三条不是「三个包」，`uv` 实际解析出 17 个新包**（如实记账，别按三个报）：
+`charset-normalizer colorlog flatbuffers numpy omegaconf onnxruntime opencv-python-headless
+pillow protobuf pyclipper pypdfium2 rapidocr requests shapely six tqdm urllib3`。
+其中两条要在交付时点名：
+
+1. `requests` + `urllib3` + `charset-normalizer` 是 rapidocr 的依赖，**本端点一个字节都不用它们出网**
+   （OCR 全程本地）。装了 ≠ 用了：这条依赖面是给镜像下载模型用的，我们的调用路径不经过它。
+2. `opencv-python-headless`（无 GUI，CI 友好）与 `pillow`、`numpy` 是推理链上的图像处理层。
+
+来源与 v1 同一处置：`uv add` 仍走 PyPI 官方（直连可达，实测 `pypi.org/simple` 200、
+`files.pythonhosted.org` 206，**没有用那条代理**），装完把 `uv.lock` 里的源 URL 整体改回清华，
+并**逐个文件**核对镜像 `/simple/<pkg>/` 公布的 sha256 与 lock 里的哈希——17 个包全部命中
+（脚本输出见 PR #49 第 29 轮追加评论）。仓库配置仍然只有清华一个 index。
+
 ### 2.3 限制：三条封顶，每条都对应一种故障
 
 | 限制 | 取值 | 为什么是这个数 |
 |---|---|---|
 | 文件体积 | **5 MiB** | 老板指定。超过即 422，不先读进内存再判（`UploadFile` 流式读，累计超限立刻中止） |
-| 页数 | **前 3 页** | 简历的正常长度是 1–2 页；3 页已经能兜住「一页纸简历 + 附录」。多页论文式 PDF 全文进 prompt 会挤掉档案本身该有的 token，而模型对超长输入的首尾注意力最差 |
+| 页数 | **前 3 页** | 简历的正常长度是 1–2 页；3 页已经能兜住「一页纸简历 + 附录」。多页论文式 PDF 全文进 prompt 会挤掉档案本身该有的 token，而模型对超长输入的首尾注意力最差。**v2：OCR 也只跑这 3 页**（老板第 29 轮原话「仍然只处理前 3 页，防止超时」） |
 | 送模型的字符数 | **12000** | 中文约 1 字 ≈ 1 token 量级，12000 字 + 输出 2000 token 仍在 `deepseek-flash` 的上下文内且 30 秒可回（`ADR-009` 的非流式超时口径） |
+| 渲染缩放（v2） | **2.0×** | 老板指定。A4 页面在 2× 下约 1190×1684 像素（本机实测），是「手机拍的扫描件还能认」与「一次推理不吃掉整个 30 秒预算」之间的那个点 |
 
 `pages_total` 与 `pages_used` 都回传：截了哪几页要能说出来（`ADR-017` 的「截断必须可见」）。
 
@@ -110,7 +134,7 @@ sha256 逐字节校验后从 PyPI 官方源装进 venv。`uv.lock` 里这两条�
 | `code` | 触发 | 上屏文案给的下一步 |
 |---|---|---|
 | `PDF_TOO_LARGE` | > 5 MiB | 换小一点的文件 |
-| `PDF_INVALID` | 魔数不是 `%PDF` / 抽不出任何文字（扫描版、图片版） | 手动录入，或换有文字层的文件 |
+| `PDF_INVALID` | 魔数不是 `%PDF` / 结构坏 / 加密 / **文本层与 OCR 两级都读不出字** | 手动录入，或换一份能识别的文件 |
 | `AI_KEY_MISSING` | 请求没带 `X-DeepSeek-Key` | 去「设置」填 Key（带 hint） |
 | `AI_SERVICE_UNAVAILABLE` | 超时 / 上游 4xx-5xx / 空返回 | 稍后再试一次 |
 | `AI_OUTPUT_INVALID` | 输出不是合法 JSON 或结构不符 | 再试一次，或手动录入 |
@@ -144,7 +168,48 @@ sha256 逐字节校验后从 PyPI 官方源装进 venv。`uv.lock` 里这两条�
 - PDF 原文只在内存里：不落盘、不缓存、不上传第三方（DeepSeek 是**用户自己的**凭据与账号）。
 - 出网的只有抽取出的文本（≤12000 字）+ Prompt。用户自己决定要不要导——这与润色
   把草稿文案发给模型是同一条边界，不新增暴露面。
-- 日志记：页数、字符数、prompt 版本、request_id、错误码。**不记**文本内容与档案字段值。
+- 日志记：页数、字符数、prompt 版本、request_id、错误码、**这一页走的是哪一级**（`source`）。
+  **不记**文本内容与档案字段值。
+
+### 2.9 v2：三级降级链路（文本层优先，OCR 兜底，失败才 422）
+
+v1 把「扫描版 PDF 抽不出字」当成物理限制交给用户手动录入。第 29 轮的裁定是**再兜一层**：
+本机跑 OCR。链路因此变成三级，判据只有一条——**上一级有没有拿到非空文本**：
+
+```
+① 文本层（pypdf，原有逻辑，零成本）
+   │  拿到非空文本 → 直接进 AI 结构化                     meta.source = "text_layer"
+   │  空（扫描件 / 图片版）
+   ▼
+② OCR 兜底（pypdfium2 渲染 2.0× → RapidOCR，全程本地、不出网）
+   │  拿到非空文本 → 进 AI 结构化                        meta.source = "ocr"
+   │  仍空（纯图、空白页、糊到认不出）
+   ▼
+③ 422 `PDF_INVALID`：「这份 PDF 没识别到文字……请上传含文字层的 PDF，或手动填写」
+```
+
+三条设计决定与它们的理由：
+
+1. **文本层永远先试**。文字型 PDF 用 `pypdf` 抽是**无损且近乎零耗时**的，而 OCR 对同一页
+   会引入识别噪声——本机实测把一张写着 `SCANME 2024` 的图嵌进 PDF、按 2.0× 渲染再 OCR，
+   认回来的是 `SCAME024`（丢了一个 `N` 与一个空格）。同一份文件两条路的质量差是**实测出来的**，
+   不是推测，所以顺序不能反过来。
+2. **`meta.source` 必须回传**。降级发生过就要能说出来（`ADR-017` 同一条纪律）：
+   它同时是「为什么这一份的字段比另一份脏」的唯一解释入口，也是前端两条路径
+   「表现一致」这条验收判据的观测点。
+3. **OCR 引擎全局单例 + `threading.Lock` 串行化识别**（老板指定）。三个模型常驻内存，
+   并发各建一份会直接翻倍占用；串行化的代价是「两个学生同时导扫描件」时第二个要排队，
+   而这条路径的并发量与 30 秒预算都不支持把它做成任务队列（引入队列是另一篇 ADR）。
+
+**耗时实测**（本机，CPU 推理，无 GPU）：单次 `ocr()` 调用约 **1.8 秒/页**，
+首次调用含模型初始化约 **2.2 秒**；三页扫描件 ≈ 5–7 秒，叠加 DeepSeek 的 30 秒上限后
+仍在 `importResumePdf()` 前端 60 秒超时以内（`frontend/src/api/resumes.ts::IMPORT_TIMEOUT_MS`）。
+模型加载发生在**第一次真正用到 OCR 的请求**上，不是进程启动时（懒建单例），
+所以没导过扫描件的用户一分钱成本都不付。
+
+**仍然不做的事**：不做图像预处理（去噪 / 透视矫正 / 二值化）、不做多页并发、不做方向纠正之外的
+额外后处理、不给扫描件走「重试到成功」。这些都在 `rapidocr` 的能力圈内，但每一件都要
+一个新的判据来验收；本批只把「有文字层 / 没文字层 / 都读不出」这三态接住。
 
 ## 3. 后果
 
@@ -157,12 +222,20 @@ sha256 逐字节校验后从 PyPI 官方源装进 venv。`uv.lock` 里这两条�
 **代价**
 
 1. 多一个第三方解析库依赖（`pypdf`），纯 Python、BSD，安装面小但仍是供应链上的一格。
-2. 扫描版 PDF 抽不出字——这是格式的物理限制，不是 bug，但用户会当成 bug，
-   所以 `PDF_INVALID` 的文案必须把「这份 PDF 里没有可复制的文字」说清楚。
+   **v2 把这一格放大了一圈**：`rapidocr` + `onnxruntime` + `pypdfium2` 连带 17 个新包、
+   约 31 MB 的模型权重与一个原生 PDFium 库。这是「扫描件也要能读」这个愿望的真实标价，
+   写在 §2.2.1 里逐条点名，不缩成「三个包」。
+2. ~~扫描版 PDF 抽不出字——这是格式的物理限制，不是 bug~~ → **v2 之后**：扫描件走 OCR，
+   但**OCR 会读错字**（实测 `SCANME 2024` → `SCAME024`）。所以第 2 条换了内容没换性质：
+   用户仍然会把「认错了」当成 bug，而唯一的防线是**回填后由他核对**，不是服务端假装准确。
+   两级都读不出时 `PDF_INVALID` 的文案必须说清「没识别到文字」并给出路（换文件 / 手动填）。
 3. AI 抽取质量决定于模型本身：`contact` 可能被写进经历正文、`projects` 与 `experiences` 会混。
    归一规则（§2.4）只能兜住形状，兜不住语义——所以**回填后必须用户确认才落库**。
 4. 这条端点会消耗用户自己的 AI 额度，且一次导入是一次长请求（非流式，30 秒上限）。
    限流沿用 `/resumes/polish` 那一档，不单独放宽。
+5. **v2 新增：一次扫描件导入多约 1.8 秒/页的本地推理**（实测），且 OCR 调用被
+   `threading.Lock` 串行化——并发导扫描件的人会互相排队。这是不引入任务队列的代价，
+   说清楚比藏着强。
 
 ## 4. 替代方案（都想过，都不选）
 
@@ -170,7 +243,9 @@ sha256 逐字节校验后从 PyPI 官方源装进 venv。`uv.lock` 里这两条�
 |---|---|
 | 服务端直接落库（导入即保存） | 违反 `ADR-010` 立的「AI 产物先回显、用户点保存才落库」；且没有回退点 |
 | `pdfplumber` | 我们要的能力只有「拿纯文本」，它带来的是版面/表格与更重的安装面 |
-| OCR（扫描件也读） | 引入 Tesseract 级系统依赖 + 图像管线，MVP 阶段不值；扫描版走手动录入 |
+| ~~OCR（扫描件也读）：引入 Tesseract 级系统依赖，MVP 阶段不值~~ → **v2 已被老板推翻**（第 29 轮指令）。落地形态换成了**纯 pip 的 RapidOCR**（不装系统级 tesseract，模型在 wheel 内），代价见 §2.2.1 与 §3 代价第 1 条 |
+| 只用 OCR、不先读文本层 | 同一页 OCR 比文本层差（实测 `SCAME024`），且慢两个数量级；文本层能读时没有任何理由去认像素 |
+| 把 PDF 交给云端 OCR / 云端文档解析 | 新增一条出网面（学生姓名、电话、学校全送出去），与 `ADR-031` 2.8 的隐私边界冲突；BYOK 只覆盖 DeepSeek 一家，不能再顺手开第二家 |
 | 不用 AI，规则式解析（正则找邮箱/电话/学校） | 简历版式千种，规则库会变成一个长期维护的黑洞；且中文姓名/公司/学校切分本身是模型强项 |
 | 前端直接调 DeepSeek（像 ASR/TTS 那样浏览器直连） | PDF 文本要先在后端抽（pypdf 只有 Python 侧），前端拿不到文本；且 multipart 出网带 Key 会多一个注入面 |
 | 上传即建一份新简历（`POST /profiles`） | 「导入」与「新建」是两个动作；导入先填草稿，用户保存时自然走既有 PUT，不需要第二条写路径 |
@@ -186,6 +261,13 @@ sha256 逐字节校验后从 PyPI 官方源装进 venv。`uv.lock` 里这两条�
 6. 前端：`dirty == true` 时点导入必先弹确认；确认后走上传；成功回填后 `dirty` 仍为真且**不发 PUT**。
 7. 教师端导出（同批修复）：一个学生两份有效简历 → 清单两条、各取其链头；回收站那份不出现，
    点名 id 批量下载也进 `skipped`。
+8. **v2**：无文字层的 PDF（图里印着字）→ 走 OCR、`meta.source == "ocr"`、送进模型的那条消息
+   就是 OCR 认回来的文本；OCR 也认不出（空白页）→ 422 `PDF_INVALID`。
+9. **v2**：有文字层时**绝不**调用 OCR（一级命中即返回）——这条是「顺序不能反过来」的判据，
+   用假 OCR 引擎数调用次数钉住（0 次）。
+10. **v2**：OCR 引擎是全局单例（两次导入只建一次），且识别调用被同一把锁串行化。
+11. **v2**：前端对 `source = "text_layer"` 与 `source = "ocr"` 两种响应**表现一致**——
+    回填、置 `dirty`、不发 PUT、账本显示都相同；唯一区别只在数据里，不在界面上演两套。
 
 ## 6. 遗留与下一步
 
@@ -195,3 +277,10 @@ sha256 逐字节校验后从 PyPI 官方源装进 venv。`uv.lock` 里这两条�
    「长得和原 PDF 一样」，那是另一件事（也超出 `ADR-007` 的纸面契约）。
 4. **`projects` 与 `experiences` 的语义合并**是形状层面的：模型把实习写成 project 时，
    合并顺序会让它排在项目之后。若后续观察到普遍错位，改法是 Prompt 侧收紧，不是加第二个区块。
+5. **v2：OCR 的识别质量没有兜底**。认错字（`SCAME024`）不会被任何服务端规则发现——
+   它形状合法。唯一的缓解是界面上「这是从扫描件认出来的」这句话（`meta.source`）+
+   用户核对。若后续观察到扫描件普遍不可用，改法是提高渲染缩放或引入图像预处理，
+   那要重新量 30 秒预算，不是顺手改一个数。
+6. **v2：OCR 串行化是单进程内的锁**。多 worker 部署时每个 worker 各有一份模型与一把锁
+   ——内存按 worker 数翻倍。这与 slowapi 那条已知局限是同一件事的两个面，
+   真要横向扩扫描件吞吐，答案是任务队列（另一篇 ADR）。

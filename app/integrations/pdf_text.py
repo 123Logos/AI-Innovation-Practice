@@ -27,6 +27,7 @@ from __future__ import annotations
 import io
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Literal
 
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
@@ -41,28 +42,50 @@ MAX_TEXT_CHARS = 12000
 #: PDF 的文件头魔数：规范要求前四个字节就是 `%PDF`。
 PDF_MAGIC = b"%PDF"
 
+#: 文本是从哪一级来的（`ADR-031` v2 §2.9）。这两个值会原样进 `meta.source`：
+#: 降级发生过就要能说出来（`ADR-017` 同一条纪律），也是前端两条路径
+#: 「表现一致」那条验收判据唯一的观测点。常量住在本文件是因为
+#: `pdf_ocr.py` import 它，反过来会成环。
+#: 类型写成 `Literal` 而不是 `str`：响应契约（`PdfImportMeta.source`）就是那两个值，
+#: 这里松一格，mypy 就得在服务层再判一次「这个 str 是不是那两个字之一」——
+#: 而那个判断本来由类型系统做就够了。
+SOURCE_TEXT_LAYER: Literal["text_layer"] = "text_layer"
+SOURCE_OCR: Literal["ocr"] = "ocr"
+
 
 class PdfTextError(Exception):
     """抽取失败基类。消息里**不允许**出现 PDF 正文内容。"""
 
 
 class PdfUnreadableError(PdfTextError):
-    """文件不是 PDF、结构坏了、加密打不开，或一页文字都抽不出来（扫描版/图片版）。
+    """这份文件读不出文字：不是 PDF、结构坏了、加密打不开，或 OCR 也认不出。
 
-    这两种情形对外同一句（`ADR-031` 2.5 的 `PDF_INVALID`）：用户能做的动作是同一个——
-    换一份有文字层的 PDF，或者手动填。区分「扫描件」与「加密」只在让用户去猜更细的原因。
+    对外同一句（`ADR-031` 2.5 的 `PDF_INVALID`）：用户能做的动作是同一个——
+    换一份能识别的 PDF，或者手动填。区分「扫描件」与「加密」只在让他猜更细的原因。
+    """
+
+
+class PdfNoTextError(PdfUnreadableError):
+    """**有版面、没有文字层**——扫描件与图片版的专属形态，是三级链路的触发条件。
+
+    单独一个类型不是为了细分文案（对外仍然并成 `PDF_INVALID` 那一句），而是为了
+    让「该不该去认像素」有一个可判的依据：`PdfUnreadableError` 的其他三种原因
+    （不是 PDF / 结构坏 / 加密）走 OCR 也一样读不出，白付一次推理。
     """
 
 
 @dataclass(frozen=True)
 class PdfText:
-    """抽取结果。`text` 已经过 `MAX_TEXT_CHARS` 截断，其余三格是它的来历。"""
+    """抽取结果。`text` 已经过 `MAX_TEXT_CHARS` 截断，其余几格是它的来历。"""
 
     pages_total: int
     pages_used: int
     text: str
     text_chars: int
     truncated: bool
+    #: 默认是文本层：`PypdfTextExtractor` 只可能产出这一种，
+    #: 走没走 OCR 由 `TextLayerThenOcrExtractor` 显式改写。
+    source: Literal["text_layer", "ocr"] = SOURCE_TEXT_LAYER
 
 
 class PdfTextExtractor(ABC):
@@ -104,7 +127,8 @@ class PypdfTextExtractor(PdfTextExtractor):
 
         text = "\n".join(chunks).strip()
         if not text:
-            raise PdfUnreadableError("PDF 没有文字层。")
+            # 这是三级链路的触发信号（`ADR-031` v2 §2.9）：文件本身读得动，只是没有可复制的字。
+            raise PdfNoTextError("PDF 没有文字层。")
 
         truncated = len(text) > MAX_TEXT_CHARS
         kept = text[:MAX_TEXT_CHARS]

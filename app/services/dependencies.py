@@ -26,8 +26,8 @@ from app.core.teacher_tools_rules import teacher_audit_detail
 from app.integrations.copy_writer import DeepSeekCopyWriter
 from app.integrations.evidence_scorer import DeepSeekEvidenceScorer
 from app.integrations.interview_coach import DeepSeekInterviewCoach
+from app.integrations.pdf_ocr import TextLayerThenOcrExtractor
 from app.integrations.pdf_renderer import HeadlessBrowserPdfRenderer
-from app.integrations.pdf_text import PypdfTextExtractor
 from app.integrations.profile_summarizer import DeepSeekProfileSummarizer
 from app.integrations.resume_generator import TemplateResumeGenerator
 from app.integrations.resume_structurer import DeepSeekResumeStructurer
@@ -380,10 +380,14 @@ def get_resume_pdf_import_service(request: Request) -> ResumePdfImportService:
     这一族的码与文案都由服务层决定，装配层不参与业务判断。
 
     Key 只活在这一次请求的内存里：不落库、不写日志、不进异常消息（`ADR-009`）。
+
+    v2（`ADR-031` §2.9）之后抽取器换成 `TextLayerThenOcrExtractor`：文字层优先、
+    读不出才认像素。**OCR 引擎不在这里建**——它挂在这个抽取器上懒建，
+    所以「没导过扫描件的一次进程」既不起模型也不占那把锁。
     """
     api_key = request.headers.get(DEEPSEEK_KEY_HEADER, "").strip()
     return ResumePdfImportService(
-        pdf_extractor=PypdfTextExtractor(),
+        pdf_extractor=TextLayerThenOcrExtractor(),
         structurer=DeepSeekResumeStructurer(api_key) if api_key else None,
     )
 

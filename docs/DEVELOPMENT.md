@@ -42,12 +42,14 @@ backend/                     ← 实际是仓库根：app/ 与 tests/ 平级，�
     schemas/          ✅ 存在（Pydantic 请求/响应）
     repositories/     ✅ 存在
     services/         ✅ 存在
-    integrations/     ✅ 存在，但只有 7 个模块：`copy_writer`（润色 BYOK 出口）、`skill_extractor`、
+    integrations/     ✅ 存在，10 个模块：`copy_writer`（润色 BYOK 出口）、`skill_extractor`、
                           `evidence_scorer`、`interview_coach`、`profile_summarizer`、
-                          `resume_generator`（模板）、`pdf_renderer`（调宿主机浏览器，不是对象存储）。
+                          `resume_generator`（模板）、`pdf_renderer`（调宿主机浏览器，不是对象存储）、
+                          `pdf_text`（pypdf 读文字层）、`resume_structurer`（PDF 文本 → 结构化 JSON，BYOK）、
+                          `pdf_ocr`（文字层读不出时的第二级：pypdfium2 渲染 + RapidOCR，全程本地不出网）。
                           **没有对象存储适配器、没有邮件、没有媒体适配器**
     workers/          ❌ 不存在（异步任务未接线，见 §1）
-  tests/              ✅ 816 条 collected（含 scripts/tests 的闸门自测）
+  tests/              ✅ 824 条 collected（含 scripts/tests 的闸门自测）
 frontend/
   src/
     api/              ✅ 按模块封装 + client.ts（BYOK 两张白名单在这里）

@@ -75,6 +75,7 @@ function resultFixture(
       text_chars: 1200,
       text_truncated: false,
       prompt_version: 'v1',
+      source: 'text_layer',
       dropped: {
         skills: 0,
         experiences: 0,
@@ -260,6 +261,31 @@ describe('只覆盖 AI 真读过的那几格', () => {
 
     // 新一次的请求还没成功，横幅说的就必须是「这一次」——上一次的成功记录不该继续挂着。
     expect(store.importedMeta).toBeNull()
+  })
+})
+
+describe('OCR 与文本层两条路径表现一致（`ADR-031` §5 第 11 条）', () => {
+  it('只差 `meta.source` 的两份响应，回填结果、dirty、请求次数逐字相同', async () => {
+    const store = seedDraft()
+    const profile = profileFixture()
+
+    importResumePdf.mockResolvedValue(resultFixture(profile, { source: 'text_layer' }))
+    await store.importPdf(new File(['%PDF-1.4'], 'a.pdf'))
+    const fromTextLayer = JSON.stringify({ draft: store.draft, dirty: store.dirty })
+    const textLayerCalls = importResumePdf.mock.calls.length
+
+    store.reset()
+    seedDraft()
+    importResumePdf.mockResolvedValue(resultFixture(profile, { source: 'ocr' }))
+    await store.importPdf(new File(['%PDF-1.4'], 'b.pdf'))
+    const fromOcr = JSON.stringify({ draft: store.draft, dirty: store.dirty })
+
+    // 前端不因为「这是认出来的」就演第二套：该填的填、该脏的脏、该存的一律不存。
+    expect(fromOcr).toBe(fromTextLayer)
+    expect(importResumePdf).toHaveBeenCalledTimes(textLayerCalls + 1)
+    expect(saveMyProfile).not.toHaveBeenCalled()
+    // 但来源这个事实留在数据里，日志与排查找得到它。
+    expect(store.importedMeta?.source).toBe('ocr')
   })
 })
 

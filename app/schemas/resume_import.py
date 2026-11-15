@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from app.schemas.profile import ProfileUpsertRequest
@@ -38,6 +40,9 @@ class PdfImportMeta(BaseModel):
 
     `pages_total` / `pages_used` 分开给：一份 12 页的 PDF 只读了前 3 页
     （`MAX_PAGES`），只看 `pages_used` 就说不出这件事。
+    `source` 是 v2 加的第三格（`ADR-031` §2.9）：这段文本是从**文字层**读的还是从
+    **像素**认回来的。它必须回传，因为两级的质量不一样（实测同一页 OCR 会把
+    `SCANME 2024` 认成 `SCAME024`），而「为什么这一份的字段更脏」总得有人回答。
     """
 
     pages_total: int
@@ -45,6 +50,7 @@ class PdfImportMeta(BaseModel):
     text_chars: int
     text_truncated: bool
     prompt_version: str
+    source: Literal["text_layer", "ocr"]
     dropped: PdfImportDropped
 
 

@@ -271,17 +271,17 @@
 
 | 触发条件 | HTTP | `error.code` | 代码位置 |
 |---|---|---|---|
-| 请求体或查询参数不合模型 | 422 | `VALIDATION_ERROR` | `app/main.py:204-216` |
+| 请求体或查询参数不合模型 | 422 | `VALIDATION_ERROR` | `app/main.py:209-221` |
 | 无 `Authorization` 头 / 令牌无效或过期 | 401 | `CLIENT_ERROR`，message 为 `UNAUTHORIZED_MESSAGE` | 抛出 `app/services/dependencies.py::_context_from_request`、`app/services/dependencies.py::_bearer_token`；映射 `app/main.py:193-195` |
 | 岗位不存在 / 不属于当前用户 / 已在回收站 | 404 | `NOT_FOUND`（处理器的固定文案「资源不存在。」） | 抛出 `app/api/v1/jobs.py:116-118`；映射 `app/main.py::http_exception` |
 | 有登录但缺 `job:review`（只出现在 `GET /jobs/review-queue` 与 `POST /jobs/{job_id}/review`） | 403 | `CLIENT_ERROR`，`details.reason = "FORBIDDEN"` | `app/services/dependencies.py:83`；映射 `app/main.py:215-235` |
 | 提取请求缺 `X-DeepSeek-Key` | 400 | `AI_KEY_MISSING`，`retryable: false` | `app/services/job_service.py:281-282` → `app/main.py:260-265` |
-| DeepSeek 拒绝该 Key（鉴权失败） | 401 | `AI_KEY_INVALID` | `app/integrations/skill_extractor.py:294-298` → `app/services/job_service.py::JobService.extract_skills` → `app/main.py:267-276` |
+| DeepSeek 拒绝该 Key（鉴权失败） | 401 | `AI_KEY_INVALID` | `app/integrations/skill_extractor.py:294-298` → `app/services/job_service.py::JobService.extract_skills` → `app/main.py:272-281` |
 | 上游不可用 / 输出不是可解析 JSON / 内容为空 / 无一可回溯 | 502 | `AI_SERVICE_UNAVAILABLE`，`retryable: true` | `app/main.py:278-291`（异常族 `app/services/job_service.py:281-290`、`:270-281`） |
 | 输出被服务端 `max_tokens` 切断（`finish_reason == "length"`） | 502 | `AI_SERVICE_UNAVAILABLE`，`retryable: true`，**并在外层 `meta.finish_reason` 回显 `"length"`** | 就地组装 `app/api/v1/jobs.py:151-160`，文案 `EXTRACT_TRUNCATED_MESSAGE` `app/api/v1/jobs.py:62-65` |
 | 提取超过 `EXTRACT_RATE_LIMIT`（`10/minute`，按客户端 IP） | 429 | `RATE_LIMITED`，`retryable: true`，响应头 `Retry-After: 60` | 常量 `app/core/rate_limit.py:39`；装饰器 `app/api/v1/jobs.py:122`；映射 `app/main.py:218-238` |
 | 匹配超过 `MATCH_RATE_LIMIT`（`10/minute`，**按用户**而不是按 IP） | 429 | `RATE_LIMITED`，`retryable: true`，响应头 `Retry-After: 60` | 常量 `app/core/rate_limit.py:42`；键函数 `:45`；装饰器 `app/api/v1/jobs.py:197`；映射同一个 `app/main.py:218-238`（§4.10） |
-| 未捕获异常 | 500 | `INTERNAL_ERROR` | `app/main.py:174-183` |
+| 未捕获异常 | 500 | `INTERNAL_ERROR` | `app/main.py:179-188` |
 | 提交审核时账号还没有组织归属（`ADR-024` §2.3，第 18 轮裁定 ①） | 400 | `CLIENT_ERROR`，`details.reason = "JOB_ORGANIZATION_REQUIRED"`，文案「发布岗位需要先绑定组织，请用邀请码加入学校组织后再提交审核。」 | 抛出 `app/api/v1/jobs.py:91-113`（`_review_translate`）← `app/services/job_service.py:624-639` |
 | 审核/提交时岗位状态已经不是你以为的那个 | 409 | `CLIENT_ERROR`，`details.reason = "JOB_STATE_CONFLICT"` | 同上；状态机见 §4.2 |
 | 审核/提交时岗位已过截止时间（`ADR-017` §5 的动作层判据） | 409 | `CLIENT_ERROR`，`details.reason = "JOB_EXPIRED"` | `app/services/job_service.py::JobService._ensure_not_expired`（唯一判据 `app/core/deadline.py::is_expired`） |
@@ -490,7 +490,7 @@
 | # | 情形 | HTTP + `error.code` | 代码位置 |
 |---|---|---|---|
 | 1 | 请求头没有 Key | 400 `AI_KEY_MISSING` | `app/services/job_service.py:281-282` → `app/main.py:260-265` |
-| 2 | DeepSeek 拒绝该 Key | 401 `AI_KEY_INVALID` | `app/integrations/skill_extractor.py:294-298` → `app/services/job_service.py::JobService.extract_skills` → `app/main.py:267-276` |
+| 2 | DeepSeek 拒绝该 Key | 401 `AI_KEY_INVALID` | `app/integrations/skill_extractor.py:294-298` → `app/services/job_service.py::JobService.extract_skills` → `app/main.py:272-281` |
 | 3 | 网络超时 / 上游 4xx·5xx | 502 `AI_SERVICE_UNAVAILABLE` | `app/integrations/skill_extractor.py:299-303` → `app/services/job_service.py:212-213` |
 | 4 | 返回内容不是可解析的 JSON 对象 | 502 `AI_SERVICE_UNAVAILABLE` | `app/integrations/skill_extractor.py:327-343` |
 | 5 | 所有条目的 `evidence` 都回溯不到原文 | 502 `AI_SERVICE_UNAVAILABLE` | `app/services/job_service.py:270-281` |
@@ -1120,13 +1120,26 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 |---|---|---|
 | `file` | PDF、**≤ 5 MiB**、只读前 **3 页**、抽出文本 ≤ **12000 字** | 超限在**流式读**时就中止（不是先收满再判，`app/api/v1/resumes.py::_read_capped`）；三条封顶各自的理由见 `ADR-031` 2.3 |
 
+**取文本是三级降级链路**（`ADR-031` v2 §2.9，第 29 轮）：
+
+| 级 | 手段 | 触发条件 | `meta.source` |
+|---|---|---|---|
+| ① | `pypdf` 读文字层 | 总是先试 | `text_layer` |
+| ② | `pypdfium2` 按 **2.0×** 渲染前 3 页 → `RapidOCR`（onnxruntime，CPU，**本地、不出网**） | ① 拿到的是空（扫描件 / 图片版） | `ocr` |
+| ③ | 422 `PDF_INVALID` | ①② 都没拿到字 | — |
+
+顺序不能反过来：同一页 OCR 的结果比文字层差（本机实测 `SCANME 2024` → `SCAME024`）且慢两个数量级
+（约 1.8 秒/页）。OCR 引擎是**模块级单例 + 一把 `threading.Lock`** 串行化识别调用；
+模型权重在 wheel 里（`rapidocr/models/*.onnx`），运行时不下载，所以离线可用。
+
 响应 `200`：`data = {profile, meta}`。
 
 - **`profile` 就是 `ProfileUpsertRequest`**（`app/schemas/resume_import.py::PdfImportResult`）：
   归一化保证它**当场能通过保存的校验**，所以 `tests/test_resumes_import_pdf.py::test_imported_profile_can_be_saved_directly`
   把这份响应原样 `PUT /profiles/me` 断言 200。前端只把它合并进 Pinia 草稿，**不发保存**。
-- `meta`：`{pages_total, pages_used, text_chars, text_truncated, prompt_version, dropped}`。
+- `meta`：`{pages_total, pages_used, text_chars, text_truncated, prompt_version, source, dropped}`。
   `pages_total` 与 `pages_used` 分开给（一份 12 页的 PDF 只读了前 3 页，只看后者说不出来）；
+  `source` 说这段文本是从**文字层读**的还是从**像素认**回来的（`ADR-031` v2 §2.9，两级的质量不同）；
   `dropped = {skills, experiences, educations, contact_discarded, text_clamped}` 是
   「被裁掉的条数」，与 `ADR-017` 的「截断必须可见」同一条纪律。
 - 归一规则：`projects[]` 并入 `experiences[]`（经历在前、项目在前端只有这一个区块）、
@@ -1139,7 +1152,7 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 | `code` | 触发 | `retryable` |
 |---|---|---|
 | `PDF_TOO_LARGE` | 超过 5 MiB | 否 |
-| `PDF_INVALID` | 魔数不对 / 结构坏 / 加密 / 抽不出任何文字（扫描件） | 否 |
+| `PDF_INVALID` | 魔数不对 / 结构坏 / 加密 / **文字层与 OCR 两级都没拿到字** | 否 |
 | `AI_KEY_MISSING` | 没带 `X-DeepSeek-Key`，或 Key 被上游拒绝（401） | 否 |
 | `AI_SERVICE_UNAVAILABLE` | 超时 / 断连 / 上游 4xx-5xx / 空返回 | **是** |
 | `AI_OUTPUT_INVALID` | 输出不是合法 JSON、结构不合契约、被 `max_tokens` 切断 | **是** |

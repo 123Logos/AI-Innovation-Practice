@@ -127,10 +127,13 @@ class PdfTooLargeError(PdfImportError):
 
 
 class PdfInvalidError(PdfImportError):
-    """魔数不对、结构坏了、加密打不开，或一页文字都抽不出来（扫描版/图片版）。
+    """魔数不对、结构坏了、加密打不开，或**文字层与 OCR 两级都没拿到字**。
 
-    这四种原因对外同一句：用户能做的动作是同一个——换一份有文字层的 PDF，或手动填。
+    这四种原因对外同一句：用户能做的动作是同一个——换一份能识别的 PDF，或手动填。
     区分开来只会让他去猜「扫描件」和「加密」哪个才是真原因。
+
+    v2（`ADR-031` §2.9）之后「扫描件」不再是这一句的主语：能认出来的扫描件已经走通了，
+    落到这里的都是两级都失败的文件——纯图、空白页，或糊到模型认不出的那一批。
     """
 
     code = "PDF_INVALID"
@@ -470,11 +473,12 @@ class ResumePdfImportService:
 
         profile, dropped = _profile_from_model(raw)
         logger.info(
-            "PDF 导入完成（pages=%s/%s, chars=%s, truncated=%s, prompt=%s, dropped=%s）",
+            "PDF 导入完成（pages=%s/%s, chars=%s, truncated=%s, source=%s, prompt=%s, dropped=%s）",
             extracted.pages_used,
             extracted.pages_total,
             extracted.text_chars,
             extracted.truncated,
+            extracted.source,
             self._structurer.prompt_version,
             (dropped.skills, dropped.experiences, dropped.educations),
         )
@@ -486,6 +490,8 @@ class ResumePdfImportService:
                 text_chars=extracted.text_chars,
                 text_truncated=extracted.truncated,
                 prompt_version=self._structurer.prompt_version,
+                # 走没走 OCR 由抽取器说（`ADR-031` v2 §2.9）：服务层不猜，也不自己数。
+                source=extracted.source,
                 dropped=dropped,
             ),
         )

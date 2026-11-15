@@ -24,7 +24,16 @@ Key 相关：`API_KEY` 只是本地假串，本机没有真实凭据；它必须
 
 拦截点仍是自己构造的 `httpx2.MockTransport`：`openai` 3.x 走 `httpx2`，
 而 pytest-httpx / respx 只给 `httpx` 打补丁（实测那种「Mock」会把请求真的发出去）。
-夹具是 **autouse** 的，所以本模块没有任何一条用例可能真出网（AGENTS.md §4.4）。
+两个夹具都是 **autouse** 的，所以本模块没有任何一条用例可能真出网（AGENTS.md §4.4）。
+
+**v2（`ADR-031` §2.9）加的是三级降级链路**，所以再加一个 autouse 的假 OCR 引擎：
+
+- 真 `RapidOCR` 一次推理约 1.8 秒/页，全套跑几十条用例不该都付这笔时间；
+- 但「假件说它认出了字」不等于「真引擎认得出字」，所以
+  `test_real_rapidocr_reads_text_from_image_only_pdf` 用**真引擎**跑一张真嵌图的 PDF，
+  并把实测到的识别噪声（`SCANME 2024` → `SCAME024`）写进它的 docstring；
+- 假引擎默认**什么都认不出**：这样 v1 那几条「读不出文字 → 422」不会因为多了
+  第二级而悄悄变成 200——那种「旧用例集体翻绿」正是加兜底层时最容易漏的账。
 """
 
 from __future__ import annotations
@@ -32,6 +41,7 @@ from __future__ import annotations
 import io
 import json
 import re
+import threading
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -157,6 +167,49 @@ def fake_deepseek(monkeypatch: pytest.MonkeyPatch) -> FakeDeepSeek:
     return fake
 
 
+class StubOcr:
+    """假 OCR 引擎：按「第几张图」返回预置文本，并记录被调用了几次。
+
+    记调用次数是 §2.9 第 1 条判据（有文字层时**绝不**去认像素）唯一能测的方式——
+    真实引擎不会告诉你它本不该被叫起来。
+    """
+
+    def __init__(self, texts: list[str] | None = None) -> None:
+        self.calls: list[object] = []
+        # 默认「什么都认不出」：没被指定看见过什么的假引擎，就该 behave 得像一张白纸。
+        # 这样 v1 那几条「读不出文字 → 422」的用例不会因为多了第二级而悄悄变成 200。
+        self._texts = texts if texts is not None else [""]
+        self.name = "stub"
+
+    def recognize(self, image: object) -> str:
+        self.calls.append(image)
+        index = len(self.calls) - 1
+        return self._texts[index] if index < len(self._texts) else ""
+
+    @property
+    def call_count(self) -> int:
+        return len(self.calls)
+
+
+@pytest.fixture(autouse=True)
+def stub_ocr(monkeypatch: pytest.MonkeyPatch) -> StubOcr:
+    """把 OCR 引擎换成假件，并清掉全局单例。
+
+    两件都是必须的：
+    1. 真引擎一次推理约 1.8 秒/页，全套跑下来只是把 CI 拖慢，而**判据并不更需要它**
+       （端到端能认字那一件事由 `test_real_rapidocr_reads_text_from_image_only_pdf` 单独钉）；
+    2. `_ENGINE` 是模块级单例，不清的话上一个测试建好的实例会漏给下一个测试，
+       「引擎只建一次」这类断言就变成测缓存污染而不是测单例。
+    """
+    from app.integrations import pdf_ocr
+
+    engine = StubOcr()
+    pdf_ocr._ENGINE = None
+    monkeypatch.setattr(pdf_ocr, "_build_engine", lambda: engine)
+    yield engine
+    pdf_ocr._ENGINE = None
+
+
 # --------------------------------------------------------------------------- #
 # 夹具式辅助
 # --------------------------------------------------------------------------- #
@@ -245,6 +298,63 @@ def blank_page_pdf() -> bytes:
     buffer = io.BytesIO()
     writer.write(buffer)
     return buffer.getvalue()
+
+
+def image_pdf(text: str, *, pages: int = 1) -> bytes:
+    """把一段文字**画成图**再嵌进 PDF：得到的文件没有文字层，只有像素。
+
+    这就是扫描件在测试里的等价形态，而不是往仓库里塞一个二进制样例——
+    「pypdf 抽出空串、pypdfium2 能渲染出字」这两件事都由代码自己说明，
+    下一个改用例的人看得见该改哪一行。
+
+    画布取 1800×440：嵌进 A4 页面按 2.0× 渲染后约 1190 宽，
+    字高还剩够认的像素（本机实测更小的画布会被降采样到认不出）。
+    `pages` 造多页时共用同一张图（对象编号：1 Catalog、2 Pages、每页两个、最后一个是图像）。
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    canvas = Image.new("RGB", (1800, 440), "white")
+    ImageDraw.Draw(canvas).text((60, 160), text, fill="black", font=ImageFont.load_default(size=72))
+    jpeg = io.BytesIO()
+    canvas.save(jpeg, format="JPEG", quality=92)
+    blob = jpeg.getvalue()
+
+    image_number = 3 + pages * 2
+    content = b"q 595 0 0 700 0 60 cm /Im0 Do Q"
+    bodies = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [%s] /Count %d >>"
+        % (b" ".join(b"%d 0 R" % (3 + index * 2) for index in range(pages)), pages),
+    ]
+    for index in range(pages):
+        page_number = 3 + index * 2
+        bodies.append(
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] "
+            b"/Resources << /XObject << /Im0 %d 0 R >> >> /Contents %d 0 R >>"
+            % (image_number, page_number + 1)
+        )
+        bodies.append(b"<< /Length %d >>\nstream\n%s\nendstream" % (len(content), content))
+    bodies.append(
+        b"<< /Type /XObject /Subtype /Image /Width 1800 /Height 440 /ColorSpace /DeviceRGB "
+        b"/BitsPerComponent 8 /Filter /DCTDecode /Length %d >>\nstream\n%s\nendstream"
+        % (len(blob), blob)
+    )
+
+    out = bytearray(b"%PDF-1.4\n")
+    offsets: list[int] = []
+    for number, body in enumerate(bodies, start=1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n%s\nendobj\n" % (number, body)
+    xref_at = len(out)
+    out += b"xref\n0 %d\n" % (len(bodies) + 1)
+    out += b"0000000000 65535 f \n"
+    for offset in offsets:
+        out += b"%010d 00000 n \n" % offset
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(bodies) + 1,
+        xref_at,
+    )
+    return bytes(out)
 
 
 def _import(
@@ -576,9 +686,14 @@ def test_unreadable_pdf_is_422_pdf_invalid(client: TestClient, data: bytes, file
     assert _error(response)["code"] == "PDF_INVALID"
 
 
-def test_pdf_without_text_layer_is_422_pdf_invalid(client: TestClient) -> None:
-    """扫描件（有版面没文字层）是最常见的一种失败，必须单独钉住。"""
+def test_pdf_without_text_layer_is_422_pdf_invalid(client: TestClient, stub_ocr: StubOcr) -> None:
+    """扫描件（有版面没文字层）是最常见的一种失败，必须单独钉住。
+
+    v2 之后它不再直接失败，而是**两级都失败**才失败：所以这条要把 OCR 也设成
+    「什么都认不出」，否则它会在第二级被救回来，测的就不是这一句了。
+    """
     token = _register_and_login(client)
+    stub_ocr._texts = [""]
 
     response = _import(client, token, blank_page_pdf())
 
@@ -627,6 +742,181 @@ def test_prompt_carries_the_write_side_caps(
     assert "skills 最多 8 条" in prompt
     assert "各最多 3 条" in prompt
     assert "educations 最多 5 条" in prompt
+
+
+# --------------------------------------------------------------------------- #
+# 三点五、v2 的三级降级链路（`ADR-031` §2.9）
+# --------------------------------------------------------------------------- #
+
+
+def test_text_layer_hit_never_calls_ocr(client: TestClient, stub_ocr: StubOcr) -> None:
+    """判据 §5 第 9 条：文字层能读到东西时**一个像素都不该去认**。
+
+    顺序反过来不是「多花 1.8 秒」这么简单：同一页 OCR 的结果比文本层差
+    （实测 `SCANME 2024` → `SCAME024`），把质量更低的那一级放在前面等于
+    系统性地给用户提供脏数据。
+    """
+    token = _register_and_login(client)
+
+    meta = _meta(_import(client, token, build_pdf([["Zhang San  Python"]])))
+
+    assert meta["source"] == "text_layer"
+    assert stub_ocr.call_count == 0
+
+
+def test_scanned_pdf_falls_back_to_ocr_and_says_so(
+    client: TestClient, stub_ocr: StubOcr, fake_deepseek: FakeDeepSeek
+) -> None:
+    """判据 §5 第 8 条前半：无文字层 → 走 OCR、`meta.source == "ocr"`、
+    且**送进模型的就是 OCR 认回来的那段文本**。"""
+    token = _register_and_login(client)
+    stub_ocr._texts = ["张三  中国计量大学  13800138000"]
+
+    response = _import(client, token, image_pdf("SCANME 2024"))
+
+    meta = _meta(response)
+    assert meta["source"] == "ocr"
+    assert meta["pages_total"] == 1 and meta["pages_used"] == 1
+    assert stub_ocr.call_count == 1
+    # 假引擎返回的两行都该出现在发给模型的那条消息里（顺序按页序，用换行拼接）。
+    assert "中国计量大学" in fake_deepseek.user_message
+    assert "13800138000" in fake_deepseek.user_message
+
+
+def test_blank_page_pdf_goes_through_ocr_then_422(client: TestClient, stub_ocr: StubOcr) -> None:
+    """判据 §5 第 8 条后半：OCR 也认不出 → 422 `PDF_INVALID`，文案给的是能动的下一步。
+
+    这一条同时证明「第二级真的被叫起来了」（`call_count`），
+    而不是文本层失败后直接跳到失败——那样「兜底」就只是一句注释。
+    """
+    token = _register_and_login(client)
+    stub_ocr._texts = [""]
+
+    response = _import(client, token, blank_page_pdf())
+
+    error = _error(response)
+    assert response.status_code == 422, response.text
+    assert error["code"] == "PDF_INVALID"
+    assert stub_ocr.call_count == 1
+    assert "没识别到文字" in error["message"] and "手动" in error["message"]
+
+
+def test_ocr_only_reads_first_three_pages(
+    client: TestClient, stub_ocr: StubOcr, fake_deepseek: FakeDeepSeek
+) -> None:
+    """v2 仍只处理前 3 页（老板原话「防止超时」）：4 页扫描件只渲染 3 张。"""
+    token = _register_and_login(client)
+    stub_ocr._texts = ["第一页", "第二页", "第三页", "第四页不该被读到"]
+
+    meta = _meta(_import(client, token, image_pdf("SCANME 2024", pages=4)))
+
+    assert stub_ocr.call_count == 3
+    assert meta["pages_used"] == 3
+    assert meta["pages_total"] == 4, "只读前 3 页这件事要说得出总共几页"
+    assert "第四页不该被读到" not in fake_deepseek.user_message
+
+
+def test_ocr_engine_is_built_once(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """判据 §5 第 10 条前半：引擎是全局单例——两次导入只建一次模型。
+
+    这里刻意不用 `stub_ocr` 夹具：要数的正是「建了几次」，
+    所以自己换掉 `_build_engine` 并自己清单例（夹具的清理与本条互斥）。
+    """
+    from app.integrations import pdf_ocr
+
+    built: list[StubOcr] = []
+
+    def build() -> StubOcr:
+        engine = StubOcr(["认出来的字"])
+        built.append(engine)
+        return engine
+
+    pdf_ocr._ENGINE = None
+    monkeypatch.setattr(pdf_ocr, "_build_engine", build)
+    try:
+        token = _register_and_login(client)
+        _import(client, token, image_pdf("A"))
+        _import(client, token, image_pdf("B"))
+    finally:
+        pdf_ocr._ENGINE = None
+
+    assert len(built) == 1, f"模型被建了 {len(built)} 次，单例没生效"
+
+
+def test_ocr_recognition_is_serialized_by_one_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """判据 §5 第 10 条后半：每次识别都过同一把 `threading.Lock`（老板指定的串行化）。
+
+    用一把会记数的锁换掉模块级那把，再直接开引擎认两张图：
+    锁被 acquire 的次数必须是「调用次数」，少一次就是漏了串行化，
+    多一次就是锁在了错误的位置（比如整页渲染也被它挡住）。
+    """
+    from app.integrations import pdf_ocr
+
+    class CountingLock:
+        def __init__(self) -> None:
+            self.acquired = 0
+            self._inner = threading.Lock()
+
+        def __enter__(self) -> object:
+            self.acquired += 1
+            return self._inner.__enter__()
+
+        def __exit__(self, *exc: object) -> None:
+            self._inner.__exit__(*exc)
+
+    counter = CountingLock()
+    monkeypatch.setattr(pdf_ocr, "_CALL_LOCK", counter)
+
+    seen: list[object] = []
+
+    def instance(image: object) -> object:
+        seen.append(image)
+        return type("Res", (), {"txts": ("HELLO",)})()
+
+    engine = pdf_ocr.RapidOcrEngine(instance)
+    assert engine.recognize("图一") == "HELLO"
+    assert engine.recognize("图二") == "HELLO"
+    assert counter.acquired == 2
+    assert len(seen) == 2
+
+
+def test_ocr_empty_txts_is_not_a_500(monkeypatch: pytest.MonkeyPatch) -> None:
+    """真实 `RapidOCR` 什么都没认出来时 `txts` 是 `None`（本机实测），不是空元组。
+
+    不判空就是 `TypeError: 'NoneType' is not iterable` → 500 + 问题编号，
+    而正确答案是一句 422。这条测的是那一格判空本身，所以直接开引擎、不经过端点。
+    """
+    from app.integrations import pdf_ocr
+
+    engine = pdf_ocr.RapidOcrEngine(lambda image: type("Res", (), {"txts": None})())
+    assert engine.recognize("一张空白图") == ""
+
+
+def test_real_rapidocr_reads_text_from_image_only_pdf(
+    client: TestClient, fake_deepseek: FakeDeepSeek, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """整条第二级用**真引擎**跑一遍：证明 OCR 不是只在假件里成立。
+
+    本机实测（2026-11-16，CPU）：一张写着 `SCANME 2024` 的图嵌进 PDF、按 2.0× 渲染后，
+    真引擎认回来的是 `SCAME024`——**丢了一个 `N` 与一个空格**。所以这条断言刻意只断
+    「非空 + 是 OCR 来的 + 那段文本进了模型」，不去断字符逐字正确：
+    逐字正确是 §6 遗留第 5 条记下的已知不足，不是本批的承诺。
+    """
+    from rapidocr import RapidOCR
+
+    from app.integrations import pdf_ocr
+
+    pdf_ocr._ENGINE = None
+    monkeypatch.setattr(pdf_ocr, "_build_engine", lambda: pdf_ocr.RapidOcrEngine(RapidOCR()))
+    token = _register_and_login(client)
+    try:
+        response = _import(client, token, image_pdf("SCANME 2024"))
+    finally:
+        pdf_ocr._ENGINE = None
+
+    assert response.status_code == 200, response.text
+    assert _meta(response)["source"] == "ocr"
+    assert fake_deepseek.user_message.strip() != ""
 
 
 # --------------------------------------------------------------------------- #
