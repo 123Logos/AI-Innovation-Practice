@@ -165,14 +165,14 @@ dev 库实测：`published` 岗位 **0** 条，`draft` 3 条，回收站 1 条�
 - BYOK：请求头 `X-DeepSeek-Key`，与润色/提取同一份 Key、同一套「不落库、不写日志、不出现在异常文本」的规则。
 - 限流：**`10/minute` 按用户键**，新增常量 `MATCH_RATE_LIMIT`。
   🚩 这一条是 §13 架构复核改的，原文写的是「`10/minute/user`，与 extract-skills 同量级」——**那句在本仓库当时不成立**：
-  `app/core/rate_limit.py:72` 的 `Limiter` 用 `key_func=get_remote_address`，现有三条规则（`AUTH` / `POLISH` / `EXTRACT`）
+  `app/core/rate_limit.py:78` 的 `Limiter` 用 `key_func=get_remote_address`，现有三条规则（`AUTH` / `POLISH` / `EXTRACT`）
   实际全部**按 IP**计数，`rate_limit.py:35` 自己也写了「多 worker 部署时每个 worker 各算一份」。
   按 IP 对本端点不是措辞不严谨，是错的：局域网实测那批人共用一个出口时，10 次/分钟会被前一两个账号点光，
   后面的人拿到 429 —— 而这恰恰是唯一一个「别人替你花不了钱、但能替你花 Key」的端点。
   实测 `Limiter.limit()` 的签名支持装饰器级 `key_func=` 覆盖（`slowapi` 的 `limit(limit_value, key_func=None, per_method, methods, error_message, exempt_when, cost, override_defaults)`），
   所以**只给这一条端点换键**，另三条一个字不动；已知局限照抄 `rate_limit.py:35`：进程内计数，多 worker 各算一份。
 - 状态码边界（同样来自 §13 复核，实现时最容易写错的一条）：**本端点不因 AI 失败返回 4xx/5xx**。
-  润色与提取把 AI 失败抛给 `app/main.py:259/266/277` 的三个处理器（400 `AI_KEY_MISSING` / 401 `AI_KEY_INVALID` / 502 `AI_SERVICE_UNAVAILABLE`）；
+  润色与提取把 AI 失败抛给 `app/main.py:260/266/277` 的三个处理器（400 `AI_KEY_MISSING` / 401 `AI_KEY_INVALID` / 502 `AI_SERVICE_UNAVAILABLE`）；
   匹配按 §6.5 要**退化**，所以这三个异常在 service 层就地转成「关键词模式的成功响应」，处理器一个都不新增、也不复用其状态码。
   会走到处理器的只有：未登录 401、岗位不可见 404、限流 429、参数校验 422。
   退化必须可归因，见 §6.5 的 `data.meta.degrade_reason`。
@@ -380,7 +380,7 @@ preference=None/no_target_role    remaining_time=None/no_deadline
 4. 模型**从不**被问「这个学生匹不匹配这个岗位」，也从不收到完整简历或完整 JD——只收到已经定位好的片段。这样它既无法发明覆盖，也拿不到可以反推身份的整体上下文。
 5. 无 Key / Key 无效 / 超时 / 429：`证据强度` 项退化为**确定性代理值**（命中经历条数 / min(条数,3)，见 §7.2），并在 `data.meta.evidence_mode` 与 UI 文案里**显式说明当前是关键词模式**，绝不静默降级（AGENTS.md §3.2 那条「失败时必须由用户点出来」的口径沿用）。
    退化必须**可归因**：`data.meta.degrade_reason ∈ {key_missing, key_invalid, upstream, bad_output, timeout}`，AI 正常参与时为 `null`。
-   这五个值是 `app/main.py:259/266/277` 三个处理器今天各自对应的失败（400/401/502）加上「输出不可用」的两类，
+   这五个值是 `app/main.py:260/266/277` 三个处理器今天各自对应的失败（400/401/502）加上「输出不可用」的两类，
    在 service 层一一对应转换：`ResumeApiKeyMissingError → key_missing`、`ResumeCopyRejectedError → key_invalid`、
    `ResumeCopyUnavailableError`（及其子类 `SkillExtract*` 翻译过来的超时/上游错）`→ upstream|timeout`、JSON 不可解析/空内容 `→ bad_output`。
    **实现要求**：五种情形各一个测试，断言 200 + `evidence_mode="keyword_fallback"` + 正确的 `degrade_reason`，
@@ -923,8 +923,8 @@ deadline 为 NULL → computed = False      （§13 更正，见下）
 
 | # | 发现 | 取证（实测，不是推断） | 处置 |
 |---|---|---|---|
-| 1 | 限流口径与仓库机制不符，按 IP 会让局域网测试互相抢额度 | `app/core/rate_limit.py:72` `key_func=get_remote_address`；`:37` 自记多 worker 局限；`Limiter.limit` 签名实测支持 `key_func=` 覆盖 | §3 改为按用户键 + 新增 `MATCH_RATE_LIMIT`，另三条规则不动 |
-| 2 | 「AI 失败退化成 200」与三个全局 AI 处理器冲突，实现时最自然的写法会把它变成红字报错 | `app/main.py:259/266/277` 分别 400/401/502；异常类 `ResumeApiKeyMissingError` / `ResumeCopyRejectedError` / `ResumeCopyUnavailableError`（`app/services/resume_service.py:43/47/51`） | §3 新增「状态码边界」；§6.5 新增 `degrade_reason` 五值 + 五情形各一测试 |
+| 1 | 限流口径与仓库机制不符，按 IP 会让局域网测试互相抢额度 | `app/core/rate_limit.py:78` `key_func=get_remote_address`；`:37` 自记多 worker 局限；`Limiter.limit` 签名实测支持 `key_func=` 覆盖 | §3 改为按用户键 + 新增 `MATCH_RATE_LIMIT`，另三条规则不动 |
+| 2 | 「AI 失败退化成 200」与三个全局 AI 处理器冲突，实现时最自然的写法会把它变成红字报错 | `app/main.py:260/266/277` 分别 400/401/502；异常类 `ResumeApiKeyMissingError` / `ResumeCopyRejectedError` / `ResumeCopyUnavailableError`（`app/services/resume_service.py:43/47/51`） | §3 新增「状态码边界」；§6.5 新增 `degrade_reason` 五值 + 五情形各一测试 |
 | 3 | 交给模型的输入没有上界，而它由用户自由文本决定 | 技能 ≤8 / 经历 ≤3（`app/schemas/profile.py:271-272`），但 `description`/`responsibility` 无长度约束（`app/schemas/resume.py:117-118`，列型 `Text`）；dev 库 8 条经历 `description` p50 44 / p90 102 / **max 615** | §6 第 2 点改窗口化（±80 字）+ `fragments_truncated`；不给 `ExperienceInput` 加 `max_length`（那是截断用户数据，另一个决定） |
 | 4 | §7.5 与 §5.1 的「未知怎么办」自相矛盾，常数 0.5 进分母会把总分往中间挤 | `status='published'` 6 行、`deadline is null` 2 行（其中 1 行是回收站异常行）→ 真实可点 5 个里 1 个走这一支 | §7.5 改为 `computed=False`，键名 `freshness` → `remaining_time`，UI 改名「剩余投递时间」 |
 | 5 | §6 的白名单自证不成立：正则也命中**不存在**的路径，那些请求不转发 DeepSeek | `client.ts` 现在是 `BYOK_KEY_PATHS.includes(path)` 整段相等，模式机制今天不存在；`:229` 只做查询串与尾斜杠归一化 | §6.1 换成路由表论证 + 三条断言（正向 / 不扩张 / 已注册路由闭合），并进 `byok.spec.ts` 现有注入矩阵 |

@@ -20,6 +20,8 @@ dependencies = [
     "bcrypt>=4.0.1,<4.1.0",
     "slowapi>=0.1.9",
     "openai>=3.45.0",
+    "pypdf>=7.1.0",
+    "python-multipart>=0.0.9",
 ]
 
 [dependency-groups]

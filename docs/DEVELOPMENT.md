@@ -47,7 +47,7 @@ backend/                     ← 实际是仓库根：app/ 与 tests/ 平级，�
                           `resume_generator`（模板）、`pdf_renderer`（调宿主机浏览器，不是对象存储）。
                           **没有对象存储适配器、没有邮件、没有媒体适配器**
     workers/          ❌ 不存在（异步任务未接线，见 §1）
-  tests/              ✅ 753 条 collected（含 scripts/tests 的闸门自测）
+  tests/              ✅ 816 条 collected（含 scripts/tests 的闸门自测）
 frontend/
   src/
     api/              ✅ 按模块封装 + client.ts（BYOK 两张白名单在这里）
@@ -107,7 +107,7 @@ docs/               ✅ 另有 adr/、design/，以及本文 + ROADMAP/FRONTEND_
 
 - AI 不可用：保留岗位和档案基础 CRUD，提示稍后重试。✅ 已兑现，且遵守「绝不静默降级」（`ADR-018`/守则 C4）：润色失败只提示重试、不动表单；概述没填凭据时回落模板文字**并在界面上说明是哪一种**。
 - AI 输出无法解析：保存原始响应的脱敏诊断摘要，进入重试/人工处理，不返回伪造成功。⚠️ 现状是**当场报错 + 原始串留在 `details.reason`**（批次 F1c 之后用户读的那句来自 G3 文案表），没有「人工处理」队列。
-- 超过额度：返回明确的限流错误和预计重试时间。⚠️ **一半落地**：限流在 `app/core/rate_limit.py`，429 带 `Retry-After: 60` 响应头（`app/main.py:270`，因为规则是「每分钟 N 次」），用户读的那句是 G3 表里的 `RATE_LIMITED`——**具体秒数只在响应头里，没上屏**。
+- 超过额度：返回明确的限流错误和预计重试时间。⚠️ **一半落地**：限流在 `app/core/rate_limit.py`，429 带 `Retry-After: 60` 响应头（`app/main.py:271`，因为规则是「每分钟 N 次」），用户读的那句是 G3 表里的 `RATE_LIMITED`——**具体秒数只在响应头里，没上屏**。
 
 ### 6.4 证据检索与事实核验
 

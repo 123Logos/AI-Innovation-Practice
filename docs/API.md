@@ -33,9 +33,9 @@
 
 **`message` 的来源（2026-11-15 第 26 轮补了一条出口）**：4xx 依次试「枚举实例 → 别名表 → 枚举值 → **人写的中文原句** → 按状态码兜底」。中文原句要同时满足「含汉字、单行、≤200 字、无花括号」才原样放行（`app/core/error_messages.py::is_human_prose`）——压成通用句会把一句「用户修得动的话」换成「去问维护人员」；英文 detail（`Not Found`、`invalid token`）与多行异常文本仍然落到通用句，并在 `details.reason` 里记 `UNMAPPED`（原句直传不记）。**5xx 永远只有一句固定文案**，detail 一个字都不进响应。
 
-实际由代码发出的错误码（以 `app/` 全量 grep 这些字面量为准，不含测试）：`VALIDATION_ERROR`（`app/main.py::validation_exception`）、`RATE_LIMITED`（`app/main.py::rate_limit_exceeded`）、`NOT_FOUND`（`app/main.py::http_exception`）、`CLIENT_ERROR`（同上，`http_exception` 的兜底档）、`INTERNAL_ERROR`（`app/main.py::unhandled_exception`，以及 `::http_exception` 的 5xx 档）、`AI_KEY_MISSING`（`app/main.py::resume_api_key_missing`）、`AI_KEY_INVALID`（`app/main.py::resume_copy_rejected`）、`AI_SERVICE_UNAVAILABLE`（`app/main.py::resume_copy_unavailable`、`app/api/v1/jobs.py` 的提取端点）。三个 `AI_*` 码只在 `/resumes/polish` 与 `/jobs/extract-skills` 上可达（`app/main.py:239-240` 的注释写明这一沿革；`POST /jobs/{job_id}/match` **不在这个集合里**——它 AI 失败也返回 `200`，见 §4.10；`GET /jobs/{job_id}/requirement-match` 同样不在——它按定义不调 AI，见 §4.10.1），且处理器文案要求作用域中性——不得出现「润色」或「简历」（`docs/adr/ADR-011-job-board-and-skill-extraction.md` 2.F）。
+实际由代码发出的错误码（以 `app/` 全量 grep 这些字面量为准，不含测试）：`VALIDATION_ERROR`（`app/main.py::validation_exception`）、`RATE_LIMITED`（`app/main.py::rate_limit_exceeded`）、`NOT_FOUND`（`app/main.py::http_exception`）、`CLIENT_ERROR`（同上，`http_exception` 的兜底档）、`INTERNAL_ERROR`（`app/main.py::unhandled_exception`，以及 `::http_exception` 的 5xx 档）、`AI_KEY_MISSING`（`app/main.py::resume_api_key_missing`、`app/main.py::pdf_import_failed`）、`AI_KEY_INVALID`（`app/main.py::resume_copy_rejected`）、`AI_SERVICE_UNAVAILABLE`（`app/main.py::resume_copy_unavailable`、`app/api/v1/jobs.py` 的提取端点、`app/main.py::pdf_import_failed`）。**第 28 轮（`ADR-031`）新增三个码，全部只从 `POST /resumes/import-pdf` 产生**：`PDF_TOO_LARGE`、`PDF_INVALID`、`AI_OUTPUT_INVALID`——加上复用既有两句的 `AI_KEY_MISSING` / `AI_SERVICE_UNAVAILABLE`，这一条端点是「一个状态码（422）配五个码」。三个 `AI_*` 码的可达集合仍是那两条润色/提取端点（`app/main.py:240-241` 的注释写明这一沿革；`POST /jobs/{job_id}/match` **不在这个集合里**——它 AI 失败也返回 `200`，见 §4.10；`GET /jobs/{job_id}/requirement-match` 同样不在——它按定义不调 AI，见 §4.10.1），且那三个处理器的文案要求作用域中性——不得出现「润色」或「简历」（`docs/adr/ADR-011-job-board-and-skill-extraction.md` 2.F）。导入这一族**有自己的处理器**，文案就是「这份 PDF」的句子：它不与那三个共用异常族，所以那条中性规则对它不适用（`ADR-031` 2.5）。
 
-以下码目前**只是本文件的设计意图**，`app/` 下没有任何一处产生它们：`AUTH_REQUIRED`、`AUTH_INVALID_CREDENTIALS`、`AUTH_FORBIDDEN`、`RESOURCE_NOT_FOUND`、`CONSENT_REQUIRED`、`CONFLICT`。未登录与令牌失效实际走 `HTTPException(401)`（`app/services/dependencies.py::_context_from_request`、`app/services/dependencies.py::_bearer_token`），被通用 4xx 处理器压成 `CLIENT_ERROR`（`app/main.py:192-194`），message 取 `UNAUTHORIZED_MESSAGE`（`app/services/dependencies.py::UNAUTHORIZED_MESSAGE`）。
+以下码目前**只是本文件的设计意图**，`app/` 下没有任何一处产生它们：`AUTH_REQUIRED`、`AUTH_INVALID_CREDENTIALS`、`AUTH_FORBIDDEN`、`RESOURCE_NOT_FOUND`、`CONSENT_REQUIRED`、`CONFLICT`。未登录与令牌失效实际走 `HTTPException(401)`（`app/services/dependencies.py::_context_from_request`、`app/services/dependencies.py::_bearer_token`），被通用 4xx 处理器压成 `CLIENT_ERROR`（`app/main.py:193-195`），message 取 `UNAUTHORIZED_MESSAGE`（`app/services/dependencies.py::UNAUTHORIZED_MESSAGE`）。
 
 `MEDIA_UNAVAILABLE` 属模拟面试，仍在冻结清单（AGENTS.md §3.2），未启用、无代码位置。
 
@@ -271,17 +271,17 @@
 
 | 触发条件 | HTTP | `error.code` | 代码位置 |
 |---|---|---|---|
-| 请求体或查询参数不合模型 | 422 | `VALIDATION_ERROR` | `app/main.py:203-215` |
-| 无 `Authorization` 头 / 令牌无效或过期 | 401 | `CLIENT_ERROR`，message 为 `UNAUTHORIZED_MESSAGE` | 抛出 `app/services/dependencies.py::_context_from_request`、`app/services/dependencies.py::_bearer_token`；映射 `app/main.py:192-194` |
+| 请求体或查询参数不合模型 | 422 | `VALIDATION_ERROR` | `app/main.py:204-216` |
+| 无 `Authorization` 头 / 令牌无效或过期 | 401 | `CLIENT_ERROR`，message 为 `UNAUTHORIZED_MESSAGE` | 抛出 `app/services/dependencies.py::_context_from_request`、`app/services/dependencies.py::_bearer_token`；映射 `app/main.py:193-195` |
 | 岗位不存在 / 不属于当前用户 / 已在回收站 | 404 | `NOT_FOUND`（处理器的固定文案「资源不存在。」） | 抛出 `app/api/v1/jobs.py:116-118`；映射 `app/main.py::http_exception` |
-| 有登录但缺 `job:review`（只出现在 `GET /jobs/review-queue` 与 `POST /jobs/{job_id}/review`） | 403 | `CLIENT_ERROR`，`details.reason = "FORBIDDEN"` | `app/services/dependencies.py:83`；映射 `app/main.py:214-234` |
-| 提取请求缺 `X-DeepSeek-Key` | 400 | `AI_KEY_MISSING`，`retryable: false` | `app/services/job_service.py:281-282` → `app/main.py:259-264` |
-| DeepSeek 拒绝该 Key（鉴权失败） | 401 | `AI_KEY_INVALID` | `app/integrations/skill_extractor.py:294-298` → `app/services/job_service.py::JobService.extract_skills` → `app/main.py:266-275` |
-| 上游不可用 / 输出不是可解析 JSON / 内容为空 / 无一可回溯 | 502 | `AI_SERVICE_UNAVAILABLE`，`retryable: true` | `app/main.py:277-290`（异常族 `app/services/job_service.py:281-290`、`:270-281`） |
+| 有登录但缺 `job:review`（只出现在 `GET /jobs/review-queue` 与 `POST /jobs/{job_id}/review`） | 403 | `CLIENT_ERROR`，`details.reason = "FORBIDDEN"` | `app/services/dependencies.py:83`；映射 `app/main.py:215-235` |
+| 提取请求缺 `X-DeepSeek-Key` | 400 | `AI_KEY_MISSING`，`retryable: false` | `app/services/job_service.py:281-282` → `app/main.py:260-265` |
+| DeepSeek 拒绝该 Key（鉴权失败） | 401 | `AI_KEY_INVALID` | `app/integrations/skill_extractor.py:294-298` → `app/services/job_service.py::JobService.extract_skills` → `app/main.py:267-276` |
+| 上游不可用 / 输出不是可解析 JSON / 内容为空 / 无一可回溯 | 502 | `AI_SERVICE_UNAVAILABLE`，`retryable: true` | `app/main.py:278-291`（异常族 `app/services/job_service.py:281-290`、`:270-281`） |
 | 输出被服务端 `max_tokens` 切断（`finish_reason == "length"`） | 502 | `AI_SERVICE_UNAVAILABLE`，`retryable: true`，**并在外层 `meta.finish_reason` 回显 `"length"`** | 就地组装 `app/api/v1/jobs.py:151-160`，文案 `EXTRACT_TRUNCATED_MESSAGE` `app/api/v1/jobs.py:62-65` |
-| 提取超过 `EXTRACT_RATE_LIMIT`（`10/minute`，按客户端 IP） | 429 | `RATE_LIMITED`，`retryable: true`，响应头 `Retry-After: 60` | 常量 `app/core/rate_limit.py:39`；装饰器 `app/api/v1/jobs.py:122`；映射 `app/main.py:217-237` |
-| 匹配超过 `MATCH_RATE_LIMIT`（`10/minute`，**按用户**而不是按 IP） | 429 | `RATE_LIMITED`，`retryable: true`，响应头 `Retry-After: 60` | 常量 `app/core/rate_limit.py:42`；键函数 `:45`；装饰器 `app/api/v1/jobs.py:197`；映射同一个 `app/main.py:217-237`（§4.10） |
-| 未捕获异常 | 500 | `INTERNAL_ERROR` | `app/main.py:173-182` |
+| 提取超过 `EXTRACT_RATE_LIMIT`（`10/minute`，按客户端 IP） | 429 | `RATE_LIMITED`，`retryable: true`，响应头 `Retry-After: 60` | 常量 `app/core/rate_limit.py:39`；装饰器 `app/api/v1/jobs.py:122`；映射 `app/main.py:218-238` |
+| 匹配超过 `MATCH_RATE_LIMIT`（`10/minute`，**按用户**而不是按 IP） | 429 | `RATE_LIMITED`，`retryable: true`，响应头 `Retry-After: 60` | 常量 `app/core/rate_limit.py:42`；键函数 `:45`；装饰器 `app/api/v1/jobs.py:197`；映射同一个 `app/main.py:218-238`（§4.10） |
+| 未捕获异常 | 500 | `INTERNAL_ERROR` | `app/main.py:174-183` |
 | 提交审核时账号还没有组织归属（`ADR-024` §2.3，第 18 轮裁定 ①） | 400 | `CLIENT_ERROR`，`details.reason = "JOB_ORGANIZATION_REQUIRED"`，文案「发布岗位需要先绑定组织，请用邀请码加入学校组织后再提交审核。」 | 抛出 `app/api/v1/jobs.py:91-113`（`_review_translate`）← `app/services/job_service.py:624-639` |
 | 审核/提交时岗位状态已经不是你以为的那个 | 409 | `CLIENT_ERROR`，`details.reason = "JOB_STATE_CONFLICT"` | 同上；状态机见 §4.2 |
 | 审核/提交时岗位已过截止时间（`ADR-017` §5 的动作层判据） | 409 | `CLIENT_ERROR`，`details.reason = "JOB_EXPIRED"` | `app/services/job_service.py::JobService._ensure_not_expired`（唯一判据 `app/core/deadline.py::is_expired`） |
@@ -489,8 +489,8 @@
 
 | # | 情形 | HTTP + `error.code` | 代码位置 |
 |---|---|---|---|
-| 1 | 请求头没有 Key | 400 `AI_KEY_MISSING` | `app/services/job_service.py:281-282` → `app/main.py:259-264` |
-| 2 | DeepSeek 拒绝该 Key | 401 `AI_KEY_INVALID` | `app/integrations/skill_extractor.py:294-298` → `app/services/job_service.py::JobService.extract_skills` → `app/main.py:266-275` |
+| 1 | 请求头没有 Key | 400 `AI_KEY_MISSING` | `app/services/job_service.py:281-282` → `app/main.py:260-265` |
+| 2 | DeepSeek 拒绝该 Key | 401 `AI_KEY_INVALID` | `app/integrations/skill_extractor.py:294-298` → `app/services/job_service.py::JobService.extract_skills` → `app/main.py:267-276` |
 | 3 | 网络超时 / 上游 4xx·5xx | 502 `AI_SERVICE_UNAVAILABLE` | `app/integrations/skill_extractor.py:299-303` → `app/services/job_service.py:212-213` |
 | 4 | 返回内容不是可解析的 JSON 对象 | 502 `AI_SERVICE_UNAVAILABLE` | `app/integrations/skill_extractor.py:327-343` |
 | 5 | 所有条目的 `evidence` 都回溯不到原文 | 502 `AI_SERVICE_UNAVAILABLE` | `app/services/job_service.py:270-281` |
@@ -637,7 +637,7 @@
 **前端调用**：`frontend/src/api/jobs.ts::matchJob(jobId)`，调用方是岗位详情页的匹配卡
 （`frontend/src/views/JobDetailView.vue`，状态与文案在 `frontend/src/stores/job.ts::runMatch` /
 `matchDegradeLines` / `matchFailureText`）。`X-DeepSeek-Key` 由
-`client.ts` 白名单注入——注入的是 `BYOK_KEY_PATTERNS` 那张表，**今天有三条模式判据**：`POST ^/jobs/{uuid}/match$`（本条）、`POST ^/interviews/{uuid}/messages$`（`ADR-022`）、`POST ^/assessments/sessions/{uuid}/summary$`（`ADR-028` §2.5）；另有 `BYOK_KEY_PATHS` 两条精确路径（`/resumes/polish`、`/jobs/extract-skills`）与 `DEEPSEEK_DIRECT_PATHS` 两条语音直连（`/v1/tools/asr`、`/v1/tools/tts`）。三条模式都要求 `{id}` 是 UUID 形状，为的是排掉 `/interviews/extra/messages` 这类「看着像但没有路由」的路径。为什么它不构成扩张、以及它的可辩护版本是路由表论证而不是「命中即转发」，
+`client.ts` 白名单注入——注入的是 `BYOK_KEY_PATTERNS` 那张表，**今天有三条模式判据**：`POST ^/jobs/{uuid}/match$`（本条）、`POST ^/interviews/{uuid}/messages$`（`ADR-022`）、`POST ^/assessments/sessions/{uuid}/summary$`（`ADR-028` §2.5）；另有 `BYOK_KEY_PATHS` **三条**精确路径（`/resumes/polish`、`/jobs/extract-skills`，以及第 28 轮 `ADR-031` 2.6 扩进来的 `/resumes/import-pdf`——它没有路径参数，所以用整段相等而不是再加一条模式）与 `DEEPSEEK_DIRECT_PATHS` 两条语音直连（`/v1/tools/asr`、`/v1/tools/tts`）。三条模式都要求 `{id}` 是 UUID 形状，为的是排掉 `/interviews/extra/messages` 这类「看着像但没有路由」的路径。为什么它不构成扩张、以及它的可辩护版本是路由表论证而不是「命中即转发」，
 见 `client.ts` 的注释与 ADR-013 §6.1。**必须由用户显式点击**，不得在详情页自动调用
 （`JobDetailView.spec.ts` 里有一条「mount 后匹配请求数为 0」的断言；
 卡片为什么排在 JD 前面见那个文件里的注释与 ADR-013 §10 第 8 步）。
@@ -817,7 +817,7 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 | 方法与路径 | 响应 | 说明 |
 |---|---|---|
 | `GET /teacher/dashboard` | JSON | 标签分布（按学生去重）+ 岗位技能覆盖率概况；**不含姓名 / 邮箱 / 手机号 / 简历正文**，空组织返回零值结构 |
-| `GET /teacher/resumes` | JSON `items[]` | 本组织可导出的简历清单（`resume_id` / `profile_id` / `full_name` / `title` / `version_no`），不含正文。**2026-11-15 第 25 轮起只返回每个学生的最新版本**（`resumes.is_head = 1`，生成列）；历史版本既不在清单里，`POST /resumes/{id}/export` 也会 404、批量下载会把它列进 `manifest.skipped` |
+| `GET /teacher/resumes` | JSON `items[]` | 本组织可导出的简历清单（`resume_id` / `profile_id` / `full_name` / `title` / `version_no`），不含正文。**2026-11-15 第 25 轮起只返回「每份有效简历各自的最新版」**（`resumes.is_head = 1`，生成列；`UNIQUE(student_profile_id, is_head)` 保证一份简历一条）。粒度是**一份简历**而不是一个学生：学生同时有「投后端」「投算法」两份时，清单是**两条**记录。回收站里的简历（`student_profiles.deleted_at` 非空）不出现在清单，`POST /resumes/{id}/export` 对它 404、批量下载把它列进 `manifest.skipped`；历史版本同理 |
 | `POST /teacher/resumes/batch-download` | `application/zip` | 请求 `{"resume_ids":[...],"format":"pdf"}`，最多 50 条 |
 | `POST /resumes/{id}/export?format=pdf` | `application/pdf` | 单份导出；打印 CSS 与 `ResumePreview.vue` 同源 |
 | `POST /teacher/skills/confirm` | JSON | 教师确认学生技能（B7 证据链，2026-11-14 补）；权限 `skill:confirm`，**唯一写别人档案的教师端点** |
@@ -892,6 +892,7 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 > | `GET /resumes/versions/diff` | 两版的结构级差异（纯读） | ADR-026 §2.4 |
 > | `POST /resumes/customize` | 按岗位**只重排**，落一行新版本但**不移动链头** | ADR-026 §2.5 |
 > | `POST /resumes/polish` | AI 润色，纯计算、不落库 | ADR-018 |
+> | `POST /resumes/import-pdf` | 上传学生的 PDF 换回一份档案草稿，纯计算、不落库、需 BYOK | ADR-031 |
 > | `POST /resumes/privacy-check` | 导出前隐私检查，纯计算、不落库 | ADR-011 / B2 |
 >
 > 其余小节（`GET /resumes`、`GET /resumes/{id}`、`PATCH …/versions/{id}`、`POST …/share`）**都没有实现**，
@@ -1110,6 +1111,42 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 
 **纯计算、不落库**：不写任何表，结果回显给用户逐条确认，用户点保存才由 `PUT /profiles/me` 落库
 （ADR-010 §5）。Key 走请求头 `X-DeepSeek-Key`，不落库、不进日志（ADR-009）。
+
+### POST `/resumes/import-pdf` — 导入外部 PDF 简历（第 28 轮，`ADR-031`，同步、纯计算、BYOK）
+
+请求体是 **`multipart/form-data`**，只有一个字段：
+
+| 字段 | 约束 | 备注 |
+|---|---|---|
+| `file` | PDF、**≤ 5 MiB**、只读前 **3 页**、抽出文本 ≤ **12000 字** | 超限在**流式读**时就中止（不是先收满再判，`app/api/v1/resumes.py::_read_capped`）；三条封顶各自的理由见 `ADR-031` 2.3 |
+
+响应 `200`：`data = {profile, meta}`。
+
+- **`profile` 就是 `ProfileUpsertRequest`**（`app/schemas/resume_import.py::PdfImportResult`）：
+  归一化保证它**当场能通过保存的校验**，所以 `tests/test_resumes_import_pdf.py::test_imported_profile_can_be_saved_directly`
+  把这份响应原样 `PUT /profiles/me` 断言 200。前端只把它合并进 Pinia 草稿，**不发保存**。
+- `meta`：`{pages_total, pages_used, text_chars, text_truncated, prompt_version, dropped}`。
+  `pages_total` 与 `pages_used` 分开给（一份 12 页的 PDF 只读了前 3 页，只看后者说不出来）；
+  `dropped = {skills, experiences, educations, contact_discarded, text_clamped}` 是
+  「被裁掉的条数」，与 `ADR-017` 的「截断必须可见」同一条纪律。
+- 归一规则：`projects[]` 并入 `experiences[]`（经历在前、项目在前端只有这一个区块）、
+  技能按 `skill_name_key` 去重、上限 8 / 3 / 5 与写侧同源（`app/schemas/profile.py::MAX_PROFILE_*`）、
+  学历只认 `专科/本科/硕士/博士`（同义词表折得动的才折，`高中` 这类**丢整条并计数**，不折算成别的学历）、
+  `contact` 只留数字且允许 `+86` 前缀，非大陆 11 位则置空并报 `contact_discarded`。
+
+**一个状态码、五个码**（`ADR-031` 2.5，处理器 `app/main.py::pdf_import_failed`）：
+
+| `code` | 触发 | `retryable` |
+|---|---|---|
+| `PDF_TOO_LARGE` | 超过 5 MiB | 否 |
+| `PDF_INVALID` | 魔数不对 / 结构坏 / 加密 / 抽不出任何文字（扫描件） | 否 |
+| `AI_KEY_MISSING` | 没带 `X-DeepSeek-Key`，或 Key 被上游拒绝（401） | 否 |
+| `AI_SERVICE_UNAVAILABLE` | 超时 / 断连 / 上游 4xx-5xx / 空返回 | **是** |
+| `AI_OUTPUT_INVALID` | 输出不是合法 JSON、结构不合契约、被 `max_tokens` 切断 | **是** |
+
+三条刻意：**不降级成模板**（兜底等于凭空造一份没读过 PDF 的档案）；**Key 无效归 `AI_KEY_MISSING`**
+（用户能修的只有那一格）；**上游异常文本一句都不上屏**（`PDF_INVALID` 的四种原因对外同一句，
+因为用户的动作是同一个）。Key 走请求头，不落库、不进日志（`ADR-009`）；限流与润色同档（10 次/分钟）。
 
 ### POST `/resumes/privacy-check` — 导出前隐私检查（批次 B2，已实现）
 

@@ -624,3 +624,38 @@ export interface ResumeCopy {
   skills: string[]
   experiences: PolishedExperience[]
 }
+
+/* ------------------------- 外部 PDF 简历导入（ADR-031） ------------------------- */
+
+/** 被裁掉的条数：一句都不许静默（`ADR-017` 的「截断必须可见」在这张表上落地）。 */
+export interface PdfImportDropped {
+  skills: number
+  experiences: number
+  educations: number
+  /** PDF 里有手机号但不是大陆 11 位，已置空（表单里留非法值会让保存才吃 422）。 */
+  contact_discarded: boolean
+  /** 有描述/职责被截到文案契约上限（与润色共用 1200/600 那一对数字）。 */
+  text_clamped: boolean
+}
+
+/** 这次导入读了多少页、发了哪一版 Prompt。 */
+export interface PdfImportMeta {
+  pages_total: number
+  pages_used: number
+  text_chars: number
+  /** 抽取出的文本超过 12000 字被截断。 */
+  text_truncated: boolean
+  prompt_version: string
+  dropped: PdfImportDropped
+}
+
+/**
+ * `POST /resumes/import-pdf` 的响应（`ADR-031` 2.1：全程不落库，结果只进草稿）。
+ *
+ * `profile` 就是后端的 `ProfileUpsertRequest`——归一化保证它**当场能通过保存的校验**，
+ * 但前端只把它合并进 Pinia 草稿，落库仍然是用户点「保存修改」那一次。
+ */
+export interface PdfImportResult {
+  profile: ProfileUpsertRequest
+  meta: PdfImportMeta
+}

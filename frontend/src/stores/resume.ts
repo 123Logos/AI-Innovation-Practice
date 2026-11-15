@@ -56,6 +56,11 @@
  * 用户在对照弹窗里点「接受并同步到表单」才由 `applyPolish()` 改写 `draft` 并置 `dirty`；
  * 点「放弃」则一个字段都不动。接受之后**仍然要用户自己点「保存修改」才落库**，
  * 润色永远既不落库、也不覆盖表单。
+ *
+ * PDF 导入（第 28 轮 / `ADR-031`）是**第四条路**，形态与润色同族但少一步弹窗：
+ * `importPdf()` 上传学生的 PDF、服务端抽文字层交给 AI，回来的草稿由
+ * `applyImportedProfile()` 合并进 `draft` 并置 `dirty`——**只覆盖 AI 真读过的那几格**
+ * （邮箱、证书、作品链接、期望城市与排版一律不碰），落库仍然是用户点「保存修改」。
  */
 
 import { computed, reactive, ref, watch } from 'vue'
@@ -72,6 +77,8 @@ import type {
   PaperSize,
   PolishExperienceInput,
   PolishMode,
+  PdfImportMeta,
+  PdfImportResult,
   ProfileRead,
   ProfileSortField,
   ProfileSummary,
@@ -1062,6 +1069,16 @@ export const useResumeStore = defineStore('resume', () => {
   const polishResult = ref<PolishResult | null>(null)
   /** 接受润色后留在表单上的每段目标（ADR-018 §2.5）；换档案 / 重新润色时清掉。 */
   const polishTargets = ref<PolishTarget[]>([])
+  /** PDF 导入请求进行中（与 `polishing` 分开：两条 AI 路径各自 disable，互不牵连）。 */
+  const importing = ref(false)
+  /**
+   * 最近一次导入的来历：读了哪几页、裁掉几条、Prompt 是哪一版。
+   *
+   * 留在 store 而不是只交给调用方：`ADR-031` 2.3 要求截断与丢弃**看得见**，
+   * 而看得见的位置是表单上方那条横幅——它得在这次导入之后一直在那儿，
+   * 直到用户换档案或再导一次。
+   */
+  const importedMeta = ref<PdfImportMeta | null>(null)
   /**
    * 「与服务端一致」那一刻的内容投影（S2）。
    *
@@ -1252,6 +1269,8 @@ export const useResumeStore = defineStore('resume', () => {
     // 换了一份数据，上一条提示与上一份润色目标都过期了（否则切到 B 还挂着 A 的提示）。
     regenerateHint.value = null
     polishTargets.value = []
+    // 导入横幅同理：它说的是「刚才那份 PDF」，切到另一份简历还挂着就是假话。
+    importedMeta.value = null
   }
 
   function updateProfileField(
@@ -2198,6 +2217,87 @@ export const useResumeStore = defineStore('resume', () => {
   }
 
   /**
+   * 导入一份外部 PDF 简历（第 28 轮，`ADR-031`）。
+   *
+   * 与 `polish()` 同一条 BYOK 前置：本地没有 Key 就**不发请求**——省一次注定 422 的
+   * 往返，更重要的是省掉一次几十秒的文件上传（用户不该在等完进度条之后才被告知没配 Key）。
+   * Key 仍然由 `client.ts` 的拦截器注入，这里一个头都不碰。
+   *
+   * 成功即改写表单；失败一个字段都不动。服务端本来就不落库，前端这一侧也不能出现
+   * 「导入失败但表单被改了一半」。
+   */
+  async function importPdf(file: File): Promise<PdfImportResult> {
+    if (!hasDeepSeekKey()) {
+      // ui-copy:allow C2 唯一豁免：用户必须亲手去 DeepSeek 拿这把凭据，界面里的原词可以出现
+      throw new ApiError(
+        '请先在右上角账户里的「设置」中填写你的 DeepSeek API Key。',
+        400,
+        'AI_KEY_MISSING',
+      )
+    }
+    importing.value = true
+    // 上一次导入的账先清掉：它说的是「刚才那一份文件」，与新一次的失败并排显示就成了假话。
+    importedMeta.value = null
+    try {
+      const result = await resumesApi.importResumePdf(file)
+      applyImportedProfile(result.profile)
+      importedMeta.value = result.meta
+      return result
+    } finally {
+      importing.value = false
+    }
+  }
+
+  /**
+   * 把导入结果合并进草稿：**只覆盖 AI 真的读过的那几格**。
+   *
+   * - 邮箱、证书、作品链接、期望城市不在导入契约里（`ADR-031` 2.4 的字段表就是老板
+   *   第 28 轮点名的那七个字段），而响应里它们是空数组——照单全收等于
+   *   「导一份 PDF 就把证书清空」；
+   * - 排版与配色（`paper_size` / `theme` / `layout_config`）同样不碰：导入的是**内容**，
+   *   不是这份简历长什么样，与 `copyContentInto()` 同一条边界；
+   * - 技能的 `source` 与 `last_used_on` 按名字从**旧行**继承：`assessment` 那一档
+   *   是标准化测评写的（`ADR-027` §2.6），若导入把它降回自评，用户再点一次保存，
+   *   B9 的证据就被一次导入动作抹掉了；
+   * - 日期各归各位：经历用 `YYYY-MM-DD`（`<input type="date">`），教育用 `YYYY-MM`
+   *   （`<input type="month">`），与 `draftFromProfile()` 完全一致。
+   *
+   * 结尾是 `markContentChanged()` 而不是 `save()`：dirty 归内容差异判定，
+   * 落库永远是用户点「保存修改」那一次。
+   */
+  function applyImportedProfile(profile: ProfileUpsertRequest): void {
+    const previousSkills = new Map(
+      draft.skills.map((skill) => [skill.name.trim().toLowerCase(), skill]),
+    )
+    draft.full_name = profile.full_name
+    draft.contact = profile.contact
+    draft.target_role = profile.target_role ?? ''
+    draft.skills = profile.skills.map((skill) => {
+      const old = previousSkills.get(skill.name.trim().toLowerCase())
+      return {
+        name: skill.name,
+        source: old?.source ?? 'self_reported',
+        last_used_on: old?.last_used_on ?? '',
+      }
+    })
+    draft.experiences = profile.experiences.map((experience) => ({
+      title: experience.title,
+      start_date: experience.start_date,
+      end_date: experience.end_date ?? '',
+      description: experience.description,
+      responsibility: experience.responsibility,
+    }))
+    draft.educations = profile.educations.map((education) => ({
+      school: education.school,
+      major: education.major,
+      degree: education.degree,
+      edu_start: toMonth(education.edu_start),
+      edu_end: toMonth(education.edu_end),
+    }))
+    markContentChanged()
+  }
+
+  /**
    * 表单上第 `index` 段经历的超限提示；没有就返回 null。
    *
    * 超出字数**实时算**（描述 + 职责合计，与 `max_words` 一直以来的口径一致）：
@@ -2413,6 +2513,7 @@ export const useResumeStore = defineStore('resume', () => {
     saving,
     generating,
     polishing,
+    importing,
     dirty,
     lastSavedAt,
     generatedHtml,
@@ -2426,6 +2527,7 @@ export const useResumeStore = defineStore('resume', () => {
     customizing,
     lastCustomize,
     polishResult,
+    importedMeta,
     polishNoteFor,
     pendingDraft,
     autosavedAt,
@@ -2517,6 +2619,7 @@ export const useResumeStore = defineStore('resume', () => {
     polish,
     applyPolish,
     discardPolish,
+    importPdf,
     showLivePreview,
     startDraftAutosave,
     stopDraftAutosave,

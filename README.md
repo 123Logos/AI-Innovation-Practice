@@ -12,7 +12,7 @@
 |---|---|
 | [AGENTS.md](AGENTS.md) | 工作协议与硬约束，优先级高于仓库里任何其他文档 |
 | [docs/MVP_SCOPE.md](docs/MVP_SCOPE.md) | Phase 1 范围基线（Phase 2 起被 ADR 与 ROADMAP 批次覆盖，文件里已注明） |
-| [docs/adr/](docs/adr/) | 30 张 ADR（ADR-001…ADR-030）：**口径与决策的唯一来源** |
+| [docs/adr/](docs/adr/) | 31 张 ADR（ADR-001…ADR-031）：**口径与决策的唯一来源** |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 批次编号（前端轨 F1a–F7、后端轨 B1–B11）与开工顺序的唯一来源 |
 | [docs/FRONTEND_DESIGN.md](docs/FRONTEND_DESIGN.md) | 用户可见物的判据：文案 C / 视觉 V / 动效 M / 布局 L / 表单 F / 状态 S / 令牌 T / 可测性 R + 六道闸门 G |
 | [产品需求文档](docs/PRD.md) | 用户、范围、功能、创新点、指标和验收标准 |
@@ -34,9 +34,9 @@
 |---|---|---|
 | 后端 | `uv` + Python 3.13 + FastAPI + SQLAlchemy + MySQL 8，同步请求 | Redis、ARQ/Celery、消息队列、任何后台任务框架 |
 | 前端 | Vue 3 + TypeScript + Vite + Element Plus，响应式 Web（`ADR-001`） | 小程序 / 原生 App |
-| AI | **BYOK**：用户在界面里填自己的 DeepSeek Key，后端携带它调用 DeepSeek（`ADR-009` 润色 / `ADR-011` JD 技能提取 / `ADR-013` 匹配 / `ADR-028` 画像概述），**非流式** | 服务端自持 Key 的调用形态（已废弃，`.env` 的 `DEEPSEEK_API_KEY` 不再被任何代码读取） |
+| AI | **BYOK**：用户在界面里填自己的 DeepSeek Key，后端携带它调用 DeepSeek（`ADR-009` 润色 / `ADR-011` JD 技能提取 / `ADR-013` 匹配 / `ADR-028` 画像概述 / `ADR-031` 外部 PDF 简历结构化），**非流式** | 服务端自持 Key 的调用形态（已废弃，`.env` 的 `DEEPSEEK_API_KEY` 不再被任何代码读取） |
 | 语音 | 浏览器 `MediaRecorder` 录音 + **直连** DeepSeek 语音工具做转写（`ADR-030`，回合制面试） | WebRTC 音视频房间（`media_rooms` 等表已裁定不建） |
-| 文件 | 不落对象存储：批量下载是同步生成的 ZIP（`ADR-029`），PDF 用宿主机浏览器渲染 | S3 兼容私有对象存储 |
+| 文件 | 不落对象存储：批量下载是同步生成的 ZIP（`ADR-029`），PDF 用宿主机浏览器渲染；导入外部 PDF 用 `pypdf` 在本地抽文字层（`ADR-031`） | S3 兼容私有对象存储、OCR（扫描件走手动录入） |
 | 部署 | 本地 `start.bat` / `start-local.ps1` 一键启动；CI 在 GitHub Actions 的 **PR** 上跑 | `docker-compose.yml` 等 Docker 件已入库但**从未构建过**（见 [ADR-008](docs/adr/ADR-008-docker-configs-unverified.md)） |
 
 数据库里现在是 **23 张表 / 28 个 Alembic 修订**（Phase 1 基线那 5 张早已扩出，新增每张表都要先有 ADR——`AGENTS.md` §4.2）。
@@ -80,7 +80,7 @@ Key 能出现在哪，是 `frontend/src/api/client.ts` 里**两张 fail-closed �
 
 | 表 | 端点 | Key 在哪个头 | 发往 |
 |---|---|---|---|
-| `BYOK_KEY_PATHS` | `POST /resumes/polish`、`POST /jobs/extract-skills` | `X-DeepSeek-Key` | 我方域名 |
+| `BYOK_KEY_PATHS` | `POST /resumes/polish`、`POST /jobs/extract-skills`、`POST /resumes/import-pdf`（第 28 轮 `ADR-031` 2.6 扩的最后一条；三条都是**整段相等**，不是前缀） | `X-DeepSeek-Key` | 我方域名 |
 | `BYOK_KEY_PATTERNS` | `POST /jobs/{uuid}/match`、`POST /interviews/{uuid}/messages`、`POST /assessments/sessions/{uuid}/summary` | `X-DeepSeek-Key` | 我方域名 |
 | `DEEPSEEK_DIRECT_PATHS` | `/v1/tools/asr`、`/v1/tools/tts`（浏览器直连，音频不上传、转写即删，`ADR-030`） | `Authorization` | `api.deepseek.com` |
 
@@ -186,14 +186,14 @@ Key 能出现在哪，是 `frontend/src/api/client.ts` 里**两张 fail-closed �
 改完跑这些，全部在 CI 的 PR 检查里（`.github/workflows/ci.yml`；push 触发已删，所以**只有开 PR 才会跑**）：
 
 ```bash
-# 后端（753 条 collected）
+# 后端（816 条 collected）
 uv run ruff format --check app tests alembic scripts
 uv run ruff check app tests scripts
 uv run mypy app scripts
 uv run lint-imports          # 分层闸：api → services → repositories → integrations
 uv run pytest -q             # 含「空库 upgrade head → downgrade base」那条迁移检查
 
-# 前端（450 条 / 39 个 spec）
+# 前端（557 条 / 47 个 spec）
 cd frontend
 npm run lint
 npm run typecheck            # vue-tsc --noEmit

@@ -4,6 +4,8 @@
  * - `generateResume()`：纯模板生成，读的是**数据库里已保存**的档案，会落一行 `resumes`；
  * - `polishResume()`：AI 文案润色，发的是**前端草稿态**，服务端不落库，
  *   结果必须经用户在对照弹窗里点「接受」才写回表单；
+ * - `importResumePdf()`：上传一份外部 PDF 简历换回一份档案草稿（第 28 轮 / `ADR-031`），
+ *   multipart 上传、服务端同样不落库，结果由 store 合并进表单并置 dirty；
  * - `listResumeVersions()` / `diffResumeVersions()`：纯读，不动任何一张表；
  * - `customizeResume()`：会落一行 **`origin='customized'`** 的版本，
  *   但它**不移动链头**——「当前简历」仍然由 `/resumes/current` 的指针决定。
@@ -14,6 +16,7 @@
 import { http, unwrap } from './client'
 import type {
   ApiSuccess,
+  PdfImportResult,
   ResumeCopy,
   ResumeCustomizeRequest,
   ResumeCustomizeResult,
@@ -50,6 +53,35 @@ const POLISH_TIMEOUT_MS = 45_000
 export async function polishResume(payload: ResumePolishRequest): Promise<ResumeCopy> {
   const response = await http.post<ApiSuccess<ResumeCopy>>('/resumes/polish', payload, {
     timeout: POLISH_TIMEOUT_MS,
+  })
+  return unwrap(response)
+}
+
+/* --------------------- 外部 PDF 简历导入（第 28 轮，ADR-031） --------------------- */
+
+/**
+ * `POST /api/v1/resumes/import-pdf`：把学生手上的 PDF 简历抽成档案草稿。
+ *
+ * 三点与 `polishResume()` 不同，都不是风格选择：
+ *
+ * 1. **multipart 而不是 JSON**：传的是文件本体，`FormData` 里只有一个 `file` 字段。
+ *    axios 会自己带 `Content-Type: multipart/form-data; boundary=...`，
+ *    这里**不要**手写 Content-Type——手写的会顶掉 boundary，后端直接 422。
+ * 2. **超时给 60 秒**：后端给 DeepSeek 的预算是 30 秒（`ADR-009`），前面还要加上
+ *    上传与本地抽取；按默认 15 秒会先被自己掐断，报成「连不上服务」，
+ *    而真话是 AI 还在跑。
+ * 3. **Key 仍由 `client.ts` 的拦截器注入**：这条路径已在 BYOK 白名单里（`ADR-031` 2.6），
+ *    所以本函数一个头都不碰。
+ *
+ * 失败口径：五种失败都是 422，靠 `error.code` 分叉（`ADR-031` 2.5）。
+ */
+const IMPORT_TIMEOUT_MS = 60_000
+
+export async function importResumePdf(file: File): Promise<PdfImportResult> {
+  const form = new FormData()
+  form.append('file', file)
+  const response = await http.post<ApiSuccess<PdfImportResult>>('/resumes/import-pdf', form, {
+    timeout: IMPORT_TIMEOUT_MS,
   })
   return unwrap(response)
 }

@@ -99,6 +99,16 @@ class ErrorMessage(StrEnum):
     # ui-copy:allow 此处名称用于定位用户必须检查的凭据，不展示凭据内容。
     AI_KEY_INVALID = "您的 DeepSeek API Key 无效或已欠费，请前往「AI 设置」检查后重试。"
     AI_UNAVAILABLE = "AI 服务当前不可用，本次请求未被保存，您的资料不受影响。请稍后重试。"
+    # ---- 第 28 轮（`ADR-031`）：导入外部 PDF 简历。一个状态码（422）配五个码，
+    # 其中 `AI_KEY_MISSING` / `AI_UNAVAILABLE` 复用上面既有的句子，这里只新增三句。
+    # 判据是同一条：每句都必须给一个用户做得动的动作，不描述内部状态。
+    # ui-copy:allow 此处名称用于定位用户必须配置的凭据，不展示凭据内容。
+    PDF_TOO_LARGE = "这份 PDF 超过 5 MB，请压缩它，或换一份较小的文件重新导入。"
+    PDF_INVALID = (
+        "这份 PDF 里读不出文字（可能是扫描件或加密文件）。"
+        "请换一份可以复制文字的 PDF，或在下面手动填写档案。"
+    )
+    AI_OUTPUT_INVALID = "AI 没能把这份 PDF 整理成可用的档案。请再试一次；连续失败请手动填写。"
     EXTRACT_TRUNCATED = (
         "AI 输出的技能条目过多，结果未能完整返回。"
         "请重试，并只粘贴岗位描述的核心段落，或减少期望的条数。"

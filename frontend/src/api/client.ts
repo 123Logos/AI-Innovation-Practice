@@ -242,7 +242,10 @@ export function hasDeepSeekKey(): boolean {
  * 这样既不会误中 `/interviews/extra/messages` 这种「看起来像、但没有路由」的路径
  * （它返回 404，一个字节都不发往 DeepSeek），也和「命中即转发」的路线表论证一致。
  */
-const BYOK_KEY_PATHS = ['/resumes/polish', '/jobs/extract-skills'] as const
+// `/resumes/import-pdf` 是第 28 轮（`ADR-031` 2.6）扩进来的**唯一一条**，
+// 且用精确匹配而不是加一条模式：这条路径没有路径参数（PDF 还没有 id），
+// 精确匹配比正则更难被拼错的路径蹭到——模式每多一条，「命中即转发」的论证面就多一片。
+const BYOK_KEY_PATHS = ['/resumes/polish', '/jobs/extract-skills', '/resumes/import-pdf'] as const
 
 const UUID_SEGMENT = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
 

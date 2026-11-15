@@ -27,8 +27,10 @@ from app.integrations.copy_writer import DeepSeekCopyWriter
 from app.integrations.evidence_scorer import DeepSeekEvidenceScorer
 from app.integrations.interview_coach import DeepSeekInterviewCoach
 from app.integrations.pdf_renderer import HeadlessBrowserPdfRenderer
+from app.integrations.pdf_text import PypdfTextExtractor
 from app.integrations.profile_summarizer import DeepSeekProfileSummarizer
 from app.integrations.resume_generator import TemplateResumeGenerator
+from app.integrations.resume_structurer import DeepSeekResumeStructurer
 from app.integrations.skill_extractor import DeepSeekJobSkillExtractor
 from app.repositories.assessment_repository import AssessmentRepository
 from app.repositories.audit_log_repository import AuditAction, AuditLogRepository, AuditResult
@@ -55,6 +57,7 @@ from app.services.job_service import JobService
 from app.services.match_service import MatchService
 from app.services.organization_service import OrganizationService
 from app.services.profile_service import ProfileService
+from app.services.resume_import import ResumePdfImportService
 from app.services.resume_service import ResumeService
 from app.services.teacher_tools_service import TeacherToolsService
 
@@ -362,6 +365,27 @@ def get_resume_service(request: Request) -> Iterator[ResumeService]:
             copy_writer=DeepSeekCopyWriter(api_key) if api_key else None,
             job_repository=JobRepository(session),
         )
+
+
+def get_resume_pdf_import_service(request: Request) -> ResumePdfImportService:
+    """装配外部 PDF 简历导入（第 28 轮，`ADR-031`）。
+
+    **这里刻意没有 `session_scope()`**：本端点一行都不写库（2.1），所以它不需要、
+    也不该占一条数据库连接。这是「纯计算端点」这条既有分工的干净形态
+    （`/resumes/polish` 与 `/jobs/extract-skills` 都因为还要读档案/岗位才开 session），
+    不是漏装配——漏装配的样子是「开了 session 却一个仓储都没传进去」。
+
+    Key 的取法与 `get_resume_service` 完全同构：空 Key 时 structurer 装 `None`，
+    由服务层翻译成 422 `AI_KEY_MISSING`，**不在这里 4xx**——
+    这一族的码与文案都由服务层决定，装配层不参与业务判断。
+
+    Key 只活在这一次请求的内存里：不落库、不写日志、不进异常消息（`ADR-009`）。
+    """
+    api_key = request.headers.get(DEEPSEEK_KEY_HEADER, "").strip()
+    return ResumePdfImportService(
+        pdf_extractor=PypdfTextExtractor(),
+        structurer=DeepSeekResumeStructurer(api_key) if api_key else None,
+    )
 
 
 def _bearer_token(request: Request) -> str:

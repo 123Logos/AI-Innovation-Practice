@@ -338,6 +338,16 @@ class CityPreferenceRead(BaseModel):
     city: str
 
 
+#: 档案各子表的条数上限（`ADR-031` 第 28 轮起有了第二个读者）。
+#: 这两处数字**必须**只有一个来源：`PUT /profiles/me` 用它拦超限提交，
+#: PDF 导入的归一化（`app/services/resume_import.py`）用它裁剪 AI 给的条目并回显
+#: `meta.dropped`——两边各写一个数，就会出现「AI 留下的第 4 段经历被 PUT 判 422」
+#: 这种只有用户能发现的错位。
+MAX_PROFILE_SKILLS = 8
+MAX_PROFILE_EXPERIENCES = 3
+MAX_PROFILE_EDUCATIONS = 5
+
+
 class ProfileUpsertRequest(BaseModel):
     """写入档案的请求体。
 
@@ -390,10 +400,14 @@ class ProfileUpsertRequest(BaseModel):
     #: 排版（顺序 + 自定义标题）；缺省 = 不改动，显式 null = 恢复默认顺序。
     #: 只存元信息：内容仍在 `skills` / `experiences` / `educations` 子表里。
     layout_config: LayoutConfigInput | None = None
-    skills: list[SkillInput] = Field(default_factory=list, max_length=8)
-    experiences: list[ExperienceInput] = Field(default_factory=list, max_length=3)
+    skills: list[SkillInput] = Field(default_factory=list, max_length=MAX_PROFILE_SKILLS)
+    experiences: list[ExperienceInput] = Field(
+        default_factory=list, max_length=MAX_PROFILE_EXPERIENCES
+    )
     #: 教育经历 0–5 段；为空时不渲染教育区块，缺省值兼容尚未升级的旧客户端。
-    educations: list[EducationInput] = Field(default_factory=list, max_length=5)
+    educations: list[EducationInput] = Field(
+        default_factory=list, max_length=MAX_PROFILE_EDUCATIONS
+    )
     #: B4（ADR-015 §2.1 / §5 ③）：证书 / 作品链接 / 期望城市，各 0–5 条。
     #: 与 `educations` 同档，理由只有一条——一页 A4。上限数的是**本次提交的活跃行**：
     #: 子表写路径是「全量替换 + 软删除」，历史行不参与计数（否则存几次就永久加不进东西）。

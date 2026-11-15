@@ -7,6 +7,9 @@
   （ADR-015 §2.2：版本失配只在「要产出新数据」时拦人）。
 - `POST /resumes/polish`：把前端草稿态的文案交给 AI 改写，**只返回结果，不落库、
   不碰任何表**。请求体就是前端 Pinia 里的草稿，允许尚未保存。
+- `POST /resumes/import-pdf`：把学生手上的 PDF 简历（`multipart/form-data`）抽成文字层、
+  交给 AI 整理成档案草稿，**同样只返回结果、不落库**（`ADR-031` 2.1）。它是本文件唯一
+  一条 `async` 路由，因为上传体要流式读；也是唯一一条 multipart 路由。
 - `GET /resumes/current`：`resumes` 的第一条读路径（ADR-015 §2.3）。「当前简历」
   只读版本指针；指针落空显式报错，绝不按 `created_at` 猜。
 
@@ -31,10 +34,10 @@
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 
 from app.core.error_messages import ErrorMessage
-from app.core.rate_limit import POLISH_RATE_LIMIT, limiter
+from app.core.rate_limit import IMPORT_RATE_LIMIT, POLISH_RATE_LIMIT, limiter
 from app.core.responses import success_response
 from app.schemas.auth import UserRead
 from app.schemas.resume import (
@@ -43,8 +46,13 @@ from app.schemas.resume import (
     ResumePolishRequest,
     ResumePrivacyCheckRequest,
 )
-from app.services.dependencies import get_current_user, get_resume_service
+from app.services.dependencies import (
+    get_current_user,
+    get_resume_pdf_import_service,
+    get_resume_service,
+)
 from app.services.profile_service import ProfileNotFoundError
+from app.services.resume_import import MAX_PDF_BYTES, PdfTooLargeError, ResumePdfImportService
 from app.services.resume_service import (
     ProfileIncompleteError,
     ResumeCustomizeJobExpiredError,
@@ -59,7 +67,14 @@ from app.services.resume_service import (
 router = APIRouter(prefix="/resumes", tags=["resumes"])
 
 ResumeServiceDep = Annotated[ResumeService, Depends(get_resume_service)]
+ResumePdfImportServiceDep = Annotated[
+    ResumePdfImportService, Depends(get_resume_pdf_import_service)
+]
 CurrentUserDep = Annotated[UserRead, Depends(get_current_user)]
+
+#: 流式读上传文件时的块大小。取 64 KB 是让它显著小于 `MAX_PDF_BYTES`：
+#: 超限那一次最多只多读一块就停，而不是把整份文件读完。
+UPLOAD_CHUNK_BYTES = 64 * 1024
 
 
 @router.post("/generate")
@@ -180,6 +195,54 @@ def polish_resume(
     """
     copy = service.polish(payload)
     return success_response(request, copy.model_dump(mode="json"))
+
+
+@router.post("/import-pdf")
+@limiter.limit(IMPORT_RATE_LIMIT)
+async def import_resume_pdf(
+    request: Request,
+    file: Annotated[UploadFile, File(...)],
+    service: ResumePdfImportServiceDep,
+    current_user: CurrentUserDep,
+) -> dict[str, Any]:
+    """导入外部 PDF 简历（第 28 轮，`ADR-031`）：**纯计算、不落库**。
+
+    与 `/polish`、`/jobs/extract-skills` 同族：PDF 进来、档案草稿回去，用户在前端逐格
+    删改，点「保存修改」才由 `PUT /profiles/me` 落库（2.1）。所以本函数没有任何一处
+    碰仓储，`ResumePdfImportService` 也没拿 session。
+
+    `file` 声明成 `Annotated[UploadFile, File(...)]`：这条路由因此**只接**
+    `multipart/form-data`（老板第 28 轮指定的上传形式），体积上限在 `_read_capped` 里
+    **边读边判**：先 `await file.read()` 收满 20 MB 再比大小，等于让一次注定失败的上传
+    把内存与带宽都走完（2.3 第一条封顶的原意）。
+
+    五个失败码（`PDF_TOO_LARGE` / `PDF_INVALID` / `AI_KEY_MISSING` /
+    `AI_SERVICE_UNAVAILABLE` / `AI_OUTPUT_INVALID`）都不在这里 catch：
+    它们共用一个 422，由 `app/main.py` 的专用处理器统一成错误模型，
+    文案一律来自 `ErrorMessage`——上游异常文本一句都不许上屏（G3 的既有纪律）。
+
+    `current_user` 的依赖不能省：本端点消耗用户自己的 AI 额度，必须登录。
+    """
+    data = await _read_capped(file)
+    result = service.import_profile(data)
+    return success_response(request, result.model_dump(mode="json"))
+
+
+async def _read_capped(file: UploadFile) -> bytes:
+    """流式读到 `MAX_PDF_BYTES` 就中止，返回完整字节。
+
+    超限那一次抛 `PdfTooLargeError`：内存里最多多出一块（`UPLOAD_CHUNK_BYTES`），
+    而不是整份文件——这条路由对 20 MB 的 PDF 只可能读到 5 MB + 一块就停。
+    """
+    buffer = bytearray()
+    while True:
+        chunk = await file.read(UPLOAD_CHUNK_BYTES)
+        if not chunk:
+            break
+        buffer += chunk
+        if len(buffer) > MAX_PDF_BYTES:
+            raise PdfTooLargeError
+    return bytes(buffer)
 
 
 # --------------------------------------------------------------------------- #

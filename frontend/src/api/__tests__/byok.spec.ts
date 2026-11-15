@@ -26,7 +26,7 @@ import {
 } from 'axios'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { jobsApi } from '@/api'
+import { jobsApi, resumesApi } from '@/api'
 import {
   ApiError,
   authHttp,
@@ -536,6 +536,107 @@ describe('Key 注入：能力测评只让「生成概述」这一个 URL 带 Key
     await http.get(`/assessments/sessions/${SESSION_ID}/summary`)
 
     expect(sentHeaders.map((item) => item.key)).toEqual([undefined, undefined])
+  })
+})
+
+/**
+ * 第 28 轮（`ADR-031` 2.6）：转发白名单从两条扩到**三条**，只多
+ * `POST /resumes/import-pdf` 这一条，而且用的是精确匹配而不是新模式——
+ * 这条路径没有路径参数（PDF 还没有 id），精确匹配比正则更难被拼错的路径蹭到。
+ *
+ * 反向那一半比正向更要紧：`/resumes/` 这个前缀下面还有 generate / versions /
+ * diff / customize / privacy-check 五条，它们一个字节都不发往 DeepSeek
+ * （`generate` 从 ADR-010 起是纯模板）。判据一旦被松成 `startsWith('/resumes/')`，
+ * 用户的凭据就同时出现在五条与 AI 无关的接收方上，而每一处都会进访问日志。
+ */
+describe('Key 注入：PDF 导入只扩 `/resumes/import-pdf` 这一条精确路径', () => {
+  let sentHeaders: Array<{ url: string; method: string; key: string | undefined }>
+
+  beforeEach(() => {
+    sentHeaders = []
+    http.defaults.adapter = async (config) => {
+      sentHeaders.push({
+        url: config.url ?? '',
+        method: (config.method ?? 'get').toLowerCase(),
+        key: config.headers['X-DeepSeek-Key'] as string | undefined,
+      })
+      return response(config, {
+        data: {
+          profile: {
+            full_name: '张三',
+            contact: '13800138000',
+            skills: [],
+            experiences: [],
+            educations: [],
+            certificates: [],
+            portfolio_links: [],
+            city_preferences: [],
+          },
+          meta: {
+            pages_total: 1,
+            pages_used: 1,
+            text_chars: 10,
+            text_truncated: false,
+            prompt_version: 'v1',
+            dropped: { skills: 0, experiences: 0, educations: 0 },
+          },
+        },
+        meta: { request_id: 'r' },
+      })
+    }
+    setDeepSeekKey(TEST_KEY)
+  })
+
+  it('走封装发的那条导入请求带 Key（证明白名单里是真实路径，不是我编的串）', async () => {
+    await resumesApi.importResumePdf(new File(['%PDF-1.4'], 'resume.pdf', { type: 'application/pdf' }))
+
+    expect(sentHeaders).toHaveLength(1)
+    expect(sentHeaders[0]).toMatchObject({ method: 'post', url: '/resumes/import-pdf', key: TEST_KEY })
+  })
+
+  it('同前缀的其余 resumes 端点一律不带 Key', async () => {
+    await resumesApi.generateResume({ title: '我的简历' })
+    await resumesApi.listResumeVersions()
+    await resumesApi.diffResumeVersions('v1', 'v2')
+    await resumesApi.customizeResume({ job_id: 'j1' })
+    // `/resumes/current` 与 `/resumes/privacy-check` 没有独立封装，直接按真实路径发。
+    await http.get('/resumes/current')
+    await http.post('/resumes/privacy-check', {})
+
+    for (const item of sentHeaders) {
+      expect(item.key, `${item.method} ${item.url} 不该携带 DeepSeek Key`).toBeUndefined()
+    }
+    expect(sentHeaders).toHaveLength(6)
+  })
+
+  it('近似路径不带；同路径换方法仍带——这张表按路径判，与既有两条同口径', async () => {
+    // `/resumes/import-pdf/extra` 与 `/resumes/import-pdfx` 都不该命中：判据是整段相等。
+    // 而 `GET /resumes/import-pdf` **会**命中，这不是漏洞而是这张表的既有语义
+    // （`/resumes/polish` 与 `/jobs/extract-skills` 从来也不看方法）：
+    // 命中只是「带着 Key 发往我们自己的域名」，而这条路径上没有 GET 路由，
+    // 后端当场 405，一个字节都不会被转发给 DeepSeek。
+    // 真正「绑方法」的是另外三条**模式**（match / 面试 / 测评）——那些是正则，
+    // 不绑方法就会让拼错的 GET 也命中，判据不同、风险也不同。
+    await http.post('/resumes/import-pdf/extra', {})
+    await http.post('/resumes/import-pdfx', {})
+    await http.get('/resumes/import-pdf')
+
+    expect(sentHeaders.map((item) => item.key)).toEqual([undefined, undefined, TEST_KEY])
+  })
+
+  it('尾斜杠与查询串归一后仍算同一条（沿用既有判据次序）', async () => {
+    await http.post('/resumes/import-pdf/')
+    await http.post('/resumes/import-pdf?retry=1')
+
+    expect(sentHeaders.map((item) => item.key)).toEqual([TEST_KEY, TEST_KEY])
+  })
+
+  it('没有 Key 时这条也不带头（不让前端把空串发出去）', async () => {
+    clearDeepSeekKey()
+
+    await http.post('/resumes/import-pdf', {})
+
+    expect(sentHeaders[0]?.key).toBeUndefined()
   })
 })
 
