@@ -166,7 +166,8 @@ describe('右侧用户抽屉的开关（清单 4，批次 F3 第二片）', () =
     // `aria-controls` 指过去必须真有其人，否则这个属性只是好看。
     const drawer = drawerEl()
     expect(drawer).not.toBeNull()
-    expect(drawerText()).toContain('AI 设置')
+    expect(drawerText()).toContain('个人资料')
+    expect(drawerText()).toContain('设置')
     expect(drawerText()).toContain('退出登录')
     expect(wrapper.find('.account-caret').classes()).toContain('account-caret--open')
 
@@ -361,7 +362,8 @@ describe('顶栏的入口组织（结构判据，不测像素）', () => {
     // 展开后一级项不变：抽屉 Teleport 到 body，不占顶栏的一格。
     expect(items(narrow.wrapper)).toEqual(['resumes-trigger', 'account-trigger'])
     expect(drawerRootEl()?.parentElement).toBe(document.body)
-    expect(document.querySelectorAll('#user-drawer .drawer-item')).toHaveLength(2)
+    // 三行（第 25 轮）：个人资料 / 设置 / 退出登录。
+    expect(document.querySelectorAll('#user-drawer .drawer-item')).toHaveLength(3)
 
     // 两个动作在整页里**只有一处**：抽屉里那两行。这一条防的是半迁移——
     // 新抽屉建好却忘了删掉旧的一级按钮，用户就会看到两个「退出登录」。
@@ -369,7 +371,11 @@ describe('顶栏的入口组织（结构判据，不测像素）', () => {
     const labels = [...document.querySelectorAll('button')].map(
       (node) => node.textContent?.trim() ?? '',
     )
-    expect(labels.filter((text) => text === 'AI 设置')).toHaveLength(1)
+    // 2026-11-15 第 25 轮：账户动作从两行变三行（个人资料 / 设置 / 退出登录），
+    // 「AI 设置」这一行搬进了设置弹窗，所以它在整页里出现的次数必须是 0。
+    expect(labels.filter((text) => text === '个人资料')).toHaveLength(1)
+    expect(labels.filter((text) => text === '设置')).toHaveLength(1)
+    expect(labels.filter((text) => text === 'AI 设置')).toHaveLength(0)
     expect(labels.filter((text) => text === '退出登录')).toHaveLength(1)
   })
 

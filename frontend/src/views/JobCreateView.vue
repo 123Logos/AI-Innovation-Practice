@@ -39,6 +39,7 @@ import {
   useJobStore,
 } from '@/stores/job'
 import AutoTextarea from '@/components/AutoTextarea.vue'
+import AiKeyHint from '@/components/AiKeyHint.vue'
 
 /** `create` = 录入新岗位；`edit` = 改一条已有的。两条路由共用本组件。 */
 const props = withDefaults(defineProps<{ mode?: 'create' | 'edit'; jobId?: string }>(), {
@@ -63,6 +64,8 @@ const loadingDetail = ref(false)
  * （或反过来），而「Key 没配」这种问题必须一直看得见。
  */
 const extractError = ref('')
+/** 上一次提取失败的原因码（第 25 轮）：只给 AI 凭据相关的两种接「点此配置」链接。 */
+const extractErrorCode = ref<string | null>(null)
 const extractNotice = ref('')
 
 /** 展开显示原文依据的行下标：默认收起，evidence 不挤占主视觉（议题 3.B）。 */
@@ -131,6 +134,7 @@ function snapshotForm() {
 async function runExtract(): Promise<void> {
   if (!canExtract.value) return
   extractError.value = ''
+  extractErrorCode.value = null
   extractNotice.value = ''
 
   let plan
@@ -141,6 +145,7 @@ async function runExtract(): Promise<void> {
     )
   } catch (error) {
     extractError.value = extractFailureText(error)
+    extractErrorCode.value = isApiError(error) ? error.code : null
     return
   }
 
@@ -401,6 +406,7 @@ void loadForEdit()
         <p v-else-if="extractNotice" class="feedback" role="status" data-testid="extract-notice">
           {{ extractNotice }}
         </p>
+        <AiKeyHint :reason="extractErrorCode" />
       </section>
 
       <section class="form-block">

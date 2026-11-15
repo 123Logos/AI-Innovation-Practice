@@ -10,7 +10,7 @@
  * 下载的错误体是 blob，拦截器给的是通用 `ApiError`，这里只展示固定人话，
  * 不把响应体里的技术字串上屏。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import { teacherToolsApi } from '@/api'
 import type {
@@ -26,6 +26,34 @@ const selected = ref<string[]>([])
 const loading = ref(false)
 const busy = ref(false)
 const error = ref('')
+
+/**
+ * 学生筛选（2026-11-15 第 25 轮，老板指令：下拉、不要输入框）。
+ *
+ * 选项**从已经拿到的那份清单里推导**（按名字去重 + 中文排序），不另发一次请求：
+ * 清单本身就是「本组织可导出的人」，再造一个「学生列表」接口等于两份名单各说一套
+ * （后端也会因此多一个入口要单独过组织闸）。
+ */
+const studentFilter = ref('')
+const studentOptions = computed(() =>
+  [...new Set(resumes.value.map((item) => item.full_name))].sort((a, b) =>
+    a.localeCompare(b, 'zh-CN'),
+  ),
+)
+/** 选「全部学生」时是整份清单，选了谁就只剩谁。 */
+const visibleResumes = computed(() =>
+  studentFilter.value
+    ? resumes.value.filter((item) => item.full_name === studentFilter.value)
+    : resumes.value,
+)
+
+/**
+ * 换筛选就清空勾选：勾选是**为了这次打包**，而打包按钮只报一个「已选 N 份」，
+ * 留着屏幕外看不见的勾选，用户按下按钮时根本数不清会打包谁。
+ */
+watch(studentFilter, () => {
+  selected.value = []
+})
 
 const studentTotal = computed(() => dashboard.value?.student_total ?? 0)
 const taggedTotal = computed(() => dashboard.value?.tagged_student_total ?? 0)
@@ -46,6 +74,7 @@ async function load(): Promise<void> {
     dashboard.value = data
     resumes.value = items
     selected.value = []
+    studentFilter.value = ''
   } catch {
     error.value = describeError('读取看板数据失败，请刷新页面重试。')
   } finally {
@@ -158,18 +187,28 @@ onMounted(load)
           勾选后打包下载；单份导出会生成 PDF，分页与预览里的纸面一致。
         </p>
         <p v-if="!resumes.length" class="feedback">本组织暂时没有可导出的简历版本。</p>
-        <ul v-else class="resume-list">
-          <li v-for="item in resumes" :key="item.resume_id" class="resume-item">
-            <label class="resume-check">
-              <input v-model="selected" type="checkbox" :value="item.resume_id" />
-              <span class="resume-name">{{ item.full_name }}</span>
-              <span class="resume-title">{{ item.title }} · v{{ item.version_no }}</span>
-            </label>
-            <button class="ghost-button" type="button" :disabled="busy" @click="exportOne(item.resume_id)">
-              导出 PDF
-            </button>
-          </li>
-        </ul>
+        <template v-else>
+          <div class="filter-row">
+            <label class="filter-label" for="resume-student-filter">学生</label>
+            <select id="resume-student-filter" v-model="studentFilter" class="filter-select">
+              <option value="">全部学生</option>
+              <option v-for="name in studentOptions" :key="name" :value="name">{{ name }}</option>
+            </select>
+          </div>
+          <p v-if="!visibleResumes.length" class="feedback">这个学生暂时没有可导出的简历。</p>
+          <ul v-else class="resume-list">
+            <li v-for="item in visibleResumes" :key="item.resume_id" class="resume-item">
+              <label class="resume-check">
+                <input v-model="selected" type="checkbox" :value="item.resume_id" />
+                <span class="resume-name">{{ item.full_name }}</span>
+                <span class="resume-title">{{ item.title }} · v{{ item.version_no }}</span>
+              </label>
+              <button class="ghost-button" type="button" :disabled="busy" @click="exportOne(item.resume_id)">
+                导出 PDF
+              </button>
+            </li>
+          </ul>
+        </template>
         <button
           v-if="resumes.length"
           class="primary-button"
@@ -198,6 +237,19 @@ h1 { margin: 0; color: var(--ui-ink); font-size: var(--text-4xl); font-weight: 6
 .feedback--error { color: var(--ui-danger); }
 
 .tag-list, .job-list, .resume-list, .bucket-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+/*
+ * 导出清单封顶（老板 2026-11-15 第 25 轮：列表高 400px、超出滚动）：
+ * 一个班几十个人时这一栏会把「打包下载」按钮与页面底部一起推下去，
+ * 用户勾到一半就看不到自己在勾什么。`padding-right` 是给滚动条留位，
+ * 不然最后一行右侧按钮会被滚动条压住半个。
+ */
+.resume-list { max-height: 400px; overflow-y: auto; padding-right: 6px; }
+
+/* 学生筛选：标签 + 下拉同一行，与上方表单控件同一档高度（34px）。 */
+.filter-row { display: flex; align-items: center; gap: 10px; }
+.filter-label { color: var(--ui-ink-muted); font-size: var(--text-sm); white-space: nowrap; }
+.filter-select { flex: 0 1 220px; min-width: 0; height: 34px; border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 0 10px; color: var(--ui-ink); background: var(--ui-surface); font: inherit; font-size: var(--text-base); }
+.filter-select:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 1px; }
 .tag-item, .job-item, .resume-item { display: flex; align-items: center; gap: 10px; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 8px 12px; background: var(--ui-surface-soft); }
 .tag-name, .job-title, .resume-name { color: var(--ui-ink); font-size: var(--text-md); }
 .tag-status { border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius); padding: 1px 8px; font-size: var(--text-xs); }

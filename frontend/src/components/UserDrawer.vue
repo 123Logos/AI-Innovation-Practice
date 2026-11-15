@@ -11,10 +11,12 @@
  * 1. **浮层的三件底层事（点外面 / Esc / 焦点归还）由 `OverlayPanel` 一处实现**（L3），
  *    抽屉这一形态的外壳（Teleport / 遮罩 / 贴右满高）由 `DrawerPanel` 一处实现。
  *    本组件只写账户这一屏的内容与文案，所以它既不是第三份手写监听，也不是第二份遮罩。
- * 2. **不自带业务决定**：AI 设置怎么开、退出怎么调接口，全在调用方（`AppTopBar.vue`）
- *    原来的 handler 里，本组件只发两个意图事件。所以这一片没有第二套退出逻辑，也没有
+ * 2. **不自带业务决定**：弹窗怎么开、退出怎么调接口，全在调用方（`AppTopBar.vue`）
+ *    原来的 handler 里，本组件只发意图事件。所以这一片没有第二套退出逻辑，也没有
  *    「抽屉里再确认一次」那种分叉。
  * 3. **名字只作身份确认**：这一屏不能改用户名，所以它是文字不是输入框。
+ * 4. **大弹窗打开时整层挂起**（2026-11-15 第 25 轮）：`suspended` 由调用方给，
+ *    基座据此忽略外部点击与 Esc——否则在弹窗里点一下会把背后的抽屉一起关掉。
  */
 import DrawerPanel from '@/components/DrawerPanel.vue'
 
@@ -23,24 +25,38 @@ const props = defineProps<{
   username: string
   /** 正在退出：按钮禁用并改文案，防止连点发两次。 */
   signingOut?: boolean
+  /** 上面压着一层大弹窗时置真：抽屉不接受外部点击 / Esc（第 25 轮层级修复）。 */
+  suspended?: boolean
 }>()
 
 const emit = defineEmits<{
   close: []
-  openAiSettings: []
+  openProfile: []
+  openSettings: []
   logout: []
 }>()
 </script>
 
 <template>
-  <DrawerPanel panel-id="user-drawer" label="账户" @close="emit('close')">
+  <DrawerPanel
+    panel-id="user-drawer"
+    label="账户"
+    :suspended="props.suspended"
+    @close="emit('close')"
+  >
     <div class="account-body">
       <div class="drawer-heading">
         <p class="drawer-eyebrow">已登录</p>
         <p class="drawer-name">{{ props.username }}</p>
       </div>
 
-      <button class="drawer-item" type="button" @click="emit('openAiSettings')">AI 设置</button>
+      <!--
+        三行账户动作（2026-11-15 第 25 轮）：个人资料 / 设置 / 退出登录。
+        原来的「AI 设置」快捷入口删掉了——它现在是「设置」里的一个页签，
+        抽屉里再晒一遍等于同一个界面上有两个入口（守则 L4 同一个毛病）。
+      -->
+      <button class="drawer-item" type="button" @click="emit('openProfile')">个人资料</button>
+      <button class="drawer-item" type="button" @click="emit('openSettings')">设置</button>
 
       <button
         class="drawer-item drawer-item--danger"

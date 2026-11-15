@@ -34,9 +34,11 @@ import { RouterView } from 'vue-router'
 
 import AppTopBar from '@/components/AppTopBar.vue'
 import ModuleNav from '@/components/ModuleNav.vue'
+import ProfileModal from '@/components/ProfileModal.vue'
 import ResumeCreateDialog from '@/components/ResumeCreateDialog.vue'
 import ResumeDrawer from '@/components/ResumeDrawer.vue'
 import ResumeList from '@/components/ResumeList.vue'
+import SettingsModal from '@/components/SettingsModal.vue'
 import { useViewport } from '@/composables/useViewport'
 
 /**
@@ -211,6 +213,15 @@ function openCreate(): void {
     <Transition name="ui-fade">
       <ResumeCreateDialog v-if="createVisible" @close="createVisible = false" />
     </Transition>
+
+    <!--
+      账户区的两个大弹窗（2026-11-15 第 25 轮）：挂在外框这一层而不是抽屉里。
+      理由两条：① 它们的开合状态在 `stores/ui.ts`，任何页面都能唤起（「点此配置 AI 密钥」）；
+      ② 抽屉是 `v-if` 的，弹窗若住在抽屉里，关抽屉等于把弹窗一起带走。两个组件自己读 store、
+      自己 Teleport 到 body，这里只负责「在不在文档里」。
+    -->
+    <SettingsModal />
+    <ProfileModal />
   </div>
 </template>
 

@@ -457,3 +457,67 @@ describe('OverlayPanel：模态形态的焦点陷阱（trapFocus）', () => {
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('挂起（第 25 轮：上面还压着一层模态时）', () => {
+  /**
+   * 场景就是老板第 6 条：资料 / 设置弹窗开着时，用户在弹窗里点一下，
+   * 那一次 `pointerdown` 也会冒到 document——本基座若不理会 `suspended`，
+   * 就会把背后的抽屉一起关掉（关它等于关掉打开它的那个入口）。
+   * 「不挂起时会关」由上面那组既有用例证明，所以这里只验挂起这一半，
+   * 外加「开关是真的开关」——否则它可能只是把监听整个丢了。
+   */
+  function mountSuspended(initial: boolean) {
+    const suspended = ref(initial)
+    const onClose = vi.fn()
+    const wrapper = mount(
+      {
+        components: { OverlayPanel },
+        setup() {
+          return { onClose, suspended }
+        },
+        template: `
+          <div>
+            <button class="outside" type="button">外面</button>
+            <OverlayPanel
+              panel-id="suspended-panel"
+              label="探针面板"
+              :suspended="suspended"
+              @close="onClose"
+            >
+              <button class="inside" type="button">里面</button>
+            </OverlayPanel>
+          </div>
+        `,
+      },
+      { attachTo: document.body },
+    )
+    return { wrapper, onClose, suspended }
+  }
+
+  it('挂起时点外面不关、Esc 也不关；面板与监听都还在（不是「什么都没挂上」）', async () => {
+    const { onClose } = mountSuspended(true)
+    expect(document.querySelector('#suspended-panel')).not.toBeNull()
+
+    ;(document.querySelector('.outside') as HTMLElement).dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true }),
+    )
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await nextTick()
+
+    expect(onClose).not.toHaveBeenCalled()
+    expect(document.querySelector('#suspended-panel')).not.toBeNull()
+  })
+
+  it('解除挂起后同一次点击就会关：`suspended` 是开关，不是把监听整个丢掉', async () => {
+    const { onClose, suspended } = mountSuspended(true)
+
+    suspended.value = false
+    await nextTick()
+    ;(document.querySelector('.outside') as HTMLElement).dispatchEvent(
+      new PointerEvent('pointerdown', { bubbles: true }),
+    )
+    await nextTick()
+
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+})

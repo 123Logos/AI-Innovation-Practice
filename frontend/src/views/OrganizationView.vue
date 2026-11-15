@@ -33,7 +33,8 @@ import {
   type OrganizationInvitation,
 } from '@/api/organizations'
 import type { AuditLogEntry, OrganizationMember, OrganizationOverview, UserRole } from '@/api/types'
-import { formatDateTime } from '@/utils/datetime'
+import { ROLE_LABELS } from '@/config/roles'
+import { formatDateTimeMinute } from '@/utils/datetime'
 
 const loading = ref(true)
 const errorMessage = ref('')
@@ -48,13 +49,6 @@ const auditLogs = ref<AuditLogEntry[]>([])
 /** 后端 404 = 「你的账号还没有加入组织」，是空状态而不是故障。 */
 const hasNoOrganization = ref(false)
 
-const ROLE_LABELS: Record<UserRole, string> = {
-  student: '学生',
-  teacher: '教师',
-  school_admin: '学校管理员',
-  platform_admin: '平台管理员',
-}
-
 /** 可授出的角色（`platform_admin` 只能由运维在库里授予，后端会拒绝）。 */
 const ASSIGNABLE_ROLES: { value: AssignableRole; label: string }[] = [
   { value: 'student', label: '学生' },
@@ -62,15 +56,31 @@ const ASSIGNABLE_ROLES: { value: AssignableRole; label: string }[] = [
   { value: 'school_admin', label: '学校管理员' },
 ]
 
+/**
+ * 动作码 → 人话（2026-11-15 第 25 轮补齐）。
+ *
+ * 键必须与后端 `app/repositories/audit_log_repository.py::AuditAction` 的**全部**取值
+ * 一一对应——枚举是唯一出处，这张表是它的中文投影。少一条的表现是日志里出现
+ * `resume.export_pdf` 这种原文（`actionLabel()` 的兜底），用户读不懂；
+ * 所以 `src/__tests__/organizationActions.spec.ts` 会去读那个 `.py` 文件逐项比对。
+ */
 const ACTION_LABELS: Record<string, string> = {
   'user.register': '注册账号',
   'user.login': '登录',
+  'user.password_change': '修改密码',
   'organization.create': '创建组织',
   'member.join': '加入组织',
   'member.role_change': '调整角色',
   'invitation.create': '生成邀请码',
   'invitation.redeem': '凭邀请码加入组织',
   'invitation.revoke': '撤回邀请码',
+  'job.submit_review': '提交岗位审核',
+  'job.approve': '通过岗位审核',
+  'job.reject': '驳回岗位审核',
+  'dashboard.view': '查看看板',
+  'resume.export_pdf': '导出简历 PDF',
+  'resume.batch_download': '批量下载简历',
+  'skill.teacher_confirm': '确认学生技能',
 }
 
 const canManage = computed(() => overview.value?.role === 'school_admin')
@@ -289,7 +299,7 @@ onMounted(load)
                 </select>
                 <span v-else>{{ roleLabel(member.role) }}</span>
               </td>
-              <td class="mono">{{ formatDateTime(member.joined_at) }}</td>
+              <td class="mono">{{ formatDateTimeMinute(member.joined_at) }}</td>
             </tr>
           </tbody>
         </table>
@@ -331,7 +341,7 @@ onMounted(load)
             <span class="invite-code mono">{{ item.code }}</span>
             <span class="hint">
               {{ roleLabel(item.role) }} · 已用 {{ item.used_count }}/{{ item.max_uses }} 次 ·
-              {{ formatDateTime(item.expires_at) }} 前有效
+              {{ formatDateTimeMinute(item.expires_at) }} 前有效
             </span>
             <span v-if="item.redeemed_by.length" class="hint invite-redeemers">
               已被 {{ item.redeemed_by.join('、') }} 兑换
@@ -353,8 +363,11 @@ onMounted(load)
         <p v-if="auditError" class="notice notice--error" role="alert">{{ auditError }}</p>
         <ul v-else-if="auditLogs.length" class="log-list">
           <li v-for="entry in auditLogs" :key="entry.id" class="log-item">
+            <!-- 「谁 在 什么时候 做了什么」：三格连成一句话读完，被拒绝的标记靠右。 -->
+            <span class="log-who">{{ entry.actor_username ?? '系统' }}</span>
+            <span class="log-in">在</span>
+            <span class="log-time mono">{{ formatDateTimeMinute(entry.created_at) }}</span>
             <span class="log-action">{{ actionLabel(entry.action) }}</span>
-            <span class="log-time mono">{{ formatDateTime(entry.created_at) }}</span>
             <span v-if="entry.result !== 'ok'" class="log-result">被拒绝</span>
           </li>
         </ul>
@@ -468,9 +481,12 @@ h1 { margin: 0; color: var(--ui-ink); font-size: var(--text-4xl); font-weight: 6
   padding: 8px 0;
   font-size: var(--text-base);
 }
+/* 一行读完的一句话：谁 → 在 → 时间 → 做了什么；被拒绝的标记靠右。 */
+.log-who { color: var(--ui-ink); font-weight: 600; overflow-wrap: anywhere; }
+.log-in { color: var(--ui-ink-faint); }
 .log-action { color: var(--ui-ink); font-weight: 600; }
-.log-time { margin-left: auto; }
-.log-result { border: 1px solid var(--ui-warning-border); border-radius: var(--ui-radius); padding: 1px 8px; color: var(--ui-warning); font-size: var(--text-xs); }
+.log-time { color: var(--ui-ink-muted); }
+.log-result { margin-left: auto; border: 1px solid var(--ui-warning-border); border-radius: var(--ui-radius); padding: 1px 8px; color: var(--ui-warning); font-size: var(--text-xs); }
 
 /*
  * 两个表单照 `InterviewListView.vue` 的 `.start-row` 那一套排（2026-11-14 第 22 轮）：

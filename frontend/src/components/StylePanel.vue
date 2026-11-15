@@ -9,11 +9,19 @@ import { useDialogStore } from '@/stores/dialog'
 import PolishReviewDialog from './PolishReviewDialog.vue'
 import PolishSettingsDialog from './PolishSettingsDialog.vue'
 import ResumeVersionsDialog from './ResumeVersionsDialog.vue'
+import AiKeyHint from './AiKeyHint.vue'
 
 const store = useResumeStore()
 const dialog = useDialogStore()
 
 const feedback = ref<{ tone: 'ok' | 'error'; text: string } | null>(null)
+
+/**
+ * 上一次润色失败的**原因码**（第 25 轮）：`AiKeyHint` 只认 `AI_KEY_MISSING` /
+ * `AI_KEY_INVALID` 两种，其余（超时、上游、限流）不给「去配 Key」的链接——
+ * 那些不是用户去设置里能修好的。成功或重新发起时一律清空。
+ */
+const feedbackCode = ref<string | null>(null)
 
 /** 润色档位弹窗与对照弹窗的开关（两个弹窗是两段独立的用户决定）。 */
 const settingsOpen = ref(false)
@@ -146,6 +154,7 @@ async function handleGenerate(): Promise<void> {
  */
 function openPolishSettings(): void {
   feedback.value = null
+  feedbackCode.value = null
   const issue = store.validateForPolish()
   if (issue) {
     feedback.value = { tone: 'error', text: issue }
@@ -158,12 +167,14 @@ function openPolishSettings(): void {
 async function handlePolishConfirm(options: { mode: PolishMode; maxWords: number }): Promise<void> {
   settingsOpen.value = false
   feedback.value = { tone: 'ok', text: 'AI 正在改写文案，请稍候…' }
+  feedbackCode.value = null
 
   // 结果由 store 存进 `polishResult`（对照弹窗直接读它），这里不需要接返回值。
   try {
     await store.polish(options)
   } catch (error) {
     feedback.value = { tone: 'error', text: polishFailureText(error) }
+    feedbackCode.value = isApiError(error) ? error.code : null
     return
   }
 
@@ -182,10 +193,10 @@ function polishFailureText(error: unknown): string {
   switch (error.code) {
     case 'AI_KEY_MISSING':
       // ui-copy:allow C2 唯一豁免：用户必须亲手去 DeepSeek 拿这把凭据，界面里的原词可以出现
-      return '请先在右上角「AI 设置」里填好你的 DeepSeek API Key。'
+      return '请先在右上角账户里的「设置」中填好你的 DeepSeek API Key。'
     case 'AI_KEY_INVALID':
       // ui-copy:allow 同上：这句话指向他自己粘 Key 的那个输入框
-      return '你的 DeepSeek API Key 无效或已欠费，请打开「AI 设置」检查后重试。'
+      return '你的 DeepSeek API Key 无效或已欠费，请打开右上角账户里的「设置」检查后重试。'
     case 'AI_SERVICE_UNAVAILABLE':
       return `${error.message}（生成简历不受影响，可以先直接生成。）`
     case 'RATE_LIMITED':
@@ -355,6 +366,7 @@ function printResume(): void {
       -->
       <button class="history-button" type="button" @click="versionsOpen = true">版本历史 / 对比</button>
       <p v-if="feedback" :class="['feedback', `feedback--${feedback.tone}`]">{{ feedback.text }}</p>
+      <AiKeyHint :reason="feedbackCode" />
     </div>
 
     <button class="print-button" type="button" @click="printResume">打印 / 导出 PDF</button>

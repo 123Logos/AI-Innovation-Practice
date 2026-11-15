@@ -815,7 +815,7 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 | 方法与路径 | 响应 | 说明 |
 |---|---|---|
 | `GET /teacher/dashboard` | JSON | 标签分布（按学生去重）+ 岗位技能覆盖率概况；**不含姓名 / 邮箱 / 手机号 / 简历正文**，空组织返回零值结构 |
-| `GET /teacher/resumes` | JSON `items[]` | 本组织可导出的简历清单（`resume_id` / `profile_id` / `full_name` / `title` / `version_no`），不含正文 |
+| `GET /teacher/resumes` | JSON `items[]` | 本组织可导出的简历清单（`resume_id` / `profile_id` / `full_name` / `title` / `version_no`），不含正文。**2026-11-15 第 25 轮起只返回每个学生的最新版本**（`resumes.is_head = 1`，生成列）；历史版本既不在清单里，`POST /resumes/{id}/export` 也会 404、批量下载会把它列进 `manifest.skipped` |
 | `POST /teacher/resumes/batch-download` | `application/zip` | 请求 `{"resume_ids":[...],"format":"pdf"}`，最多 50 条 |
 | `POST /resumes/{id}/export?format=pdf` | `application/pdf` | 单份导出；打印 CSS 与 `ResumePreview.vue` 同源 |
 | `POST /teacher/skills/confirm` | JSON | 教师确认学生技能（B7 证据链，2026-11-14 补）；权限 `skill:confirm`，**唯一写别人档案的教师端点** |
@@ -1227,7 +1227,7 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 | `GET /organizations/me` | 只需登录 | 当前账号的组织概览：`{organization:{id,code,name,kind}, role, member_count}`。没有组织时 **404**（不是空对象——空对象会让前端画出「组织：（空）」） |
 | `GET /organizations/{id}/members` | `org:member:read` | 成员列表：`{items:[{user_id,username,email,role,joined_at}]}`，按用户名排序。目标组织不是自己的 → 403 |
 | `PATCH /organizations/{id}/members/{user_id}` | `org:member:manage` | 改角色，body `{"role":"student"\|"teacher"\|"school_admin"}`。改自己 → 400（防自锁：校长把自己降级后没人能改回来）；`platform_admin` → 422 |
-| `GET /organizations/{id}/audit-logs` | `audit:read` | `{items:[{id,action,actor_user_id,target_type,target_id,result,detail,ip,created_at}], total}`，`limit` 1–200 默认 50、`offset` ≥0。跨组织 → 403 |
+| `GET /organizations/{id}/audit-logs` | `audit:read` | `{items:[{id,action,actor_user_id,actor_username,target_type,target_id,result,detail,ip,created_at}], total}`，`limit` 1–200 默认 50、`offset` ≥0。跨组织 → 403。**2026-11-15 第 25 轮**：`actor_username` 由 `LEFT JOIN users` 带出（`null` = 系统动作，界面写「系统」），`created_at` 带 `+08:00` 偏移——同一轮 `members[].joined_at` 与邀请码的 `expires_at` / `created_at` 也一起补了偏移，naive 串会让浏览器按本地时区解析、东八区用户少看 8 小时 |
 
 审计的 `action` 是白名单枚举（`user.register` / `user.login` / `organization.create` / `member.join` / `member.role_change`），
 `result` 为 `ok` / `denied`——**被拒绝的越权尝试也记**，那是「谁在什么时候试图做什么」的唯一证据。

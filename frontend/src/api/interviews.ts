@@ -130,9 +130,9 @@ export function interviewDegradeHint(reason: string | null, isOpening = false): 
   }
   switch (reason) {
     case 'key_missing':
-      return '还没填写 AI 使用凭据，这一轮用了内置题库。完成当前回答后，去「AI 设置」粘贴你的凭据，后续会更贴合你的简历。'
+      return '还没填写 AI 使用凭据，这一轮用了内置题库。完成当前回答后，去右上角账户里的「设置」粘贴你的凭据，后续会更贴合你的简历。'
     case 'key_invalid':
-      return '你的 AI 使用凭据不被接受（可能填错或已失效）。去「AI 设置」核对一下，这一轮用内置题库继续。'
+      return '你的 AI 使用凭据不被接受（可能填错或已失效）。去右上角账户里的「设置」核对一下，这一轮用内置题库继续。'
     case 'timeout':
       return '刚才那一下等得有点久，回答没能生成。可以再发一次，或者稍后再试。'
     case 'upstream':

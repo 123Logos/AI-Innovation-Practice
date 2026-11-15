@@ -846,8 +846,8 @@ describe('匹配卡：只有点按钮才算', () => {
     for (const line of lines) expect(line).toContain('关键词')
     // 前两种用户自己修得动，所以必须给出去哪儿修；
     // 后三种不许把他支去改一个本来没坏的 Key——这正是 §6.5 要求分句的理由。
-    expect(lines[0]).toContain('AI 设置')
-    expect(lines[1]).toContain('AI 设置')
+    expect(lines[0]).toContain('「设置」')
+    expect(lines[1]).toContain('「设置」')
     for (const line of lines.slice(2)) {
       expect(line).not.toContain('AI 设置')
       expect(line).not.toContain('API Key')

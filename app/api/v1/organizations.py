@@ -170,7 +170,12 @@ def list_audit_logs(
     return success_response(
         request,
         AuditLogListData(
-            items=[AuditLogRead.model_validate(entry) for entry in entries],
+            # 仓储返回的是 `(审计行, 操作人用户名)`：用户名来自那一条 SQL 的 LEFT JOIN，
+            # 服务层与路由都不再自己拼「谁是谁」。
+            items=[
+                AuditLogRead.model_validate(entry).model_copy(update={"actor_username": username})
+                for entry, username in entries
+            ],
             total=total,
         ).model_dump(mode="json"),
     )

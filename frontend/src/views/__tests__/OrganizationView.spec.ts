@@ -47,12 +47,27 @@ const MEMBERS = [
   },
 ]
 
-const AUDIT = {
+interface AuditItemFixture {
+  id: number
+  action: string
+  actor_user_id: string | null
+  actor_username: string | null
+  target_type: string
+  target_id: string
+  result: string
+  detail: string
+  ip: string
+  created_at: string
+}
+
+const AUDIT: { items: AuditItemFixture[]; total: number } = {
   items: [
     {
       id: 3,
       action: 'member.role_change',
       actor_user_id: 'user-1',
+      // 第 25 轮：后端用 LEFT JOIN 把操作人名字带出来，界面那句「谁 在 时间 动作」靠它。
+      actor_username: 'admin01',
       target_type: 'user',
       target_id: 'user-2',
       result: 'ok',
@@ -83,6 +98,8 @@ let savedAdapters: Array<[AxiosInstance, AxiosInstance['defaults']['adapter']]> 
 let overviewResponse: unknown = OVERVIEW
 let meStatus = 200
 let membersStatus = 200
+/** 操作记录的响应体可替换：新用例要喂不同的 action / 操作人。 */
+let auditResponse: { items: AuditItemFixture[]; total: number } = AUDIT
 
 function envelope(config: InternalAxiosRequestConfig, data: unknown, status = 200): AxiosResponse {
   return { data, status, statusText: 'OK', headers: {}, config } as AxiosResponse
@@ -114,7 +131,7 @@ function fakeAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse>
     return Promise.resolve(envelope(config, { data: { items: MEMBERS }, meta: { request_id: 'r' } }))
   }
   if (method === 'get' && url === `/organizations/${ORGANIZATION_ID}/audit-logs`) {
-    return Promise.resolve(envelope(config, { data: AUDIT, meta: { request_id: 'r' } }))
+    return Promise.resolve(envelope(config, { data: auditResponse, meta: { request_id: 'r' } }))
   }
   if (method === 'get' && url === `/organizations/${ORGANIZATION_ID}/invitations`) {
     return Promise.resolve(envelope(config, { data: { items: INVITATIONS }, meta: { request_id: 'r' } }))
@@ -137,6 +154,7 @@ beforeEach(() => {
   overviewResponse = OVERVIEW
   meStatus = 200
   membersStatus = 200
+  auditResponse = AUDIT
   savedAdapters = [
     [http, http.defaults.adapter],
     [authHttp, authHttp.defaults.adapter],
@@ -229,4 +247,58 @@ describe('组织管理页', () => {
     expect(wrapper.find('.invite-redeemers').text()).toContain('teacher06')
   })
 
+})
+
+describe('操作记录与时间（2026-11-15 第 25 轮）', () => {
+  it('一行读成一句话：用户名 在 时间 动作；时间是 YYYY-MM-DD HH:mm（东八区）', async () => {
+    const wrapper = await mountView()
+
+    const row = wrapper.get('.log-item')
+    expect(row.get('.log-who').text()).toBe('admin01')
+    expect(row.get('.log-in').text()).toBe('在')
+    expect(row.get('.log-time').text()).toBe('2026-11-12 09:30')
+    expect(row.get('.log-action').text()).toBe('调整角色')
+  })
+
+  it('没有操作人的系统动作写「系统」，不是空白也不是 UUID', async () => {
+    auditResponse = {
+      items: [
+        {
+          ...AUDIT.items[0]!,
+          id: 9,
+          action: 'organization.create',
+          actor_user_id: null,
+          actor_username: null,
+        },
+      ],
+      total: 1,
+    }
+    const wrapper = await mountView()
+
+    expect(wrapper.get('.log-who').text()).toBe('系统')
+  })
+
+  it('动作码翻成人话：查看看板 / 导出简历 PDF；不认识的码原样显示而不是消失', async () => {
+    auditResponse = {
+      items: [
+        { ...AUDIT.items[0]!, id: 11, action: 'dashboard.view' },
+        { ...AUDIT.items[0]!, id: 12, action: 'resume.export_pdf' },
+        { ...AUDIT.items[0]!, id: 13, action: 'brand.new_action' },
+      ],
+      total: 3,
+    }
+    const wrapper = await mountView()
+
+    const labels = wrapper.findAll('.log-action').map((node) => node.text())
+    expect(labels).toEqual(['查看看板', '导出简历 PDF', 'brand.new_action'])
+  })
+
+  it('成员入组时间与邀请码到期同样用横线版分钟精度', async () => {
+    const wrapper = await mountView()
+
+    // 成员表：2026-11-12T09:05:00+08:00 → 2026-11-12 09:05
+    expect(wrapper.text()).toContain('2026-11-12 09:05')
+    // 邀请码：2026-11-19T09:00:00+08:00 → 2026-11-19 09:00
+    expect(wrapper.text()).toContain('2026-11-19 09:00')
+  })
 })

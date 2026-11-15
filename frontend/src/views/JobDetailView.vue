@@ -48,6 +48,7 @@ import {
 import { formatDate, formatDateTime } from '@/utils/datetime'
 import SkeletonList from '@/components/SkeletonList.vue'
 import AutoTextarea from '@/components/AutoTextarea.vue'
+import AiKeyHint from '@/components/AiKeyHint.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useResumeStore } from '@/stores/resume'
 import type { ResumeCustomizeResult } from '@/api/types'
@@ -559,6 +560,8 @@ onBeforeUnmount(() => {
           <ul v-if="matchHintLines.length" class="match-degrade" role="status">
             <li v-for="line in matchHintLines" :key="line">{{ line }}</li>
           </ul>
+          <!-- 关键那一支直接给按钮：`key_missing` / `key_invalid` 才渲染（见 `AiKeyHint`）。 -->
+          <AiKeyHint :reason="match?.meta.degrade_reason ?? null" />
 
           <!--
             `score === null` 不配独立文案（2026-11-08 老板裁定 + 同日真浏览器实测）：

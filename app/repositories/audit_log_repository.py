@@ -20,7 +20,7 @@ from sqlalchemy import BigInteger, DateTime, String, Text, func, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from app.core.datetime_display import utc_now
-from app.repositories.user_repository import Base
+from app.repositories.user_repository import Base, User
 
 
 class AuditAction(StrEnum):
@@ -110,16 +110,32 @@ class AuditLogRepository:
 
     def list_recent(
         self, *, organization_id: str | None, limit: int = 50, offset: int = 0
-    ) -> list[AuditLog]:
-        """按时间倒序翻页；`organization_id=None` 表示跨组织（仅平台管理员用得上）。
+    ) -> list[tuple[AuditLog, str | None]]:
+        """按时间倒序翻页，并把**操作人用户名**一起带出来。
 
-        `id` 作为第二排序键：同一毫秒内写入的多条记录（批量邀请）否则顺序不稳定，
-        翻页时会出现「第二页看到第一页的最后一条」。
+        返回 `(审计行, 用户名)` 而不是只返回审计行：`audit_logs` 只存 `actor_user_id`，
+        而界面上那句「谁在什么时候做了什么」需要的是**名字**。分成两次查（先取日志
+        再按 id 批量取用户）也能得到同样的结果，但那次批量查询的 id 列表来自日志行，
+        等于把「这条日志属于哪个组织」的边界在服务层再比一遍；一个 LEFT JOIN 就把
+        归属判定留在同一条 SQL 里（与 `teacher_tools_repository._documents()` 同一支纪律）。
+
+        `LEFT JOIN` 而不是 `INNER JOIN`：系统动作（`scripts/seed_cjlu.py` 建组织、
+        被拒绝的越权请求）的 `actor_user_id` 为 NULL，内连接会把它们整行吞掉——
+        审计里「谁都没做」的那几条恰恰是最需要看见的。
+
+        `organization_id=None` 表示跨组织（仅平台管理员用得上）。`id` 作为第二排序键：
+        同一毫秒内写入的多条记录（批量邀请）否则顺序不稳定，翻页时会出现
+        「第二页看到第一页的最后一条」。
         """
-        statement = select(AuditLog).order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        statement = (
+            select(AuditLog, User.username)
+            .outerjoin(User, User.id == AuditLog.actor_user_id)
+            .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        )
         if organization_id is not None:
             statement = statement.where(AuditLog.organization_id == organization_id)
-        return list(self._session.scalars(statement.limit(limit).offset(offset)))
+        rows = self._session.execute(statement.limit(limit).offset(offset)).all()
+        return [(entry, username) for entry, username in rows]
 
     def count(self, *, organization_id: str | None) -> int:
         statement = select(func.count()).select_from(AuditLog)
