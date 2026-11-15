@@ -1236,6 +1236,12 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 `school_admin`，组织码还是他自己起的，等于没有角色边界）。建组织用
 `scripts/seed_organization.py`，见 `docs/adr/ADR-021` §3.3。
 
+**同一支纪律也管「测试用的管理员与教师账号」**：2026-11-15 起的
+`scripts/seed_cjlu.py` 建「中国计量大学」（码 `CJLU2026`）+ `cjlu_admin`（school_admin）
++ `cjlu_teacher`（teacher），口令 bcrypt 落库、幂等可重跑、最后一律回读数据库校验；
+它存在的前提就是「这些动作没有 HTTP 入口」。**这两个账号是局域网测试用的弱口令账号，
+公网部署前必须删掉或改密**（与 `docs/PROJECT_STATUS.md` §4 那批探针账号同一笔账）。
+
 ### GET `/teacher/classes/{class_id}/dashboard`
 
 参数 `from`、`to`、`job_id`；返回聚合人数、技能缺口、目标岗位分布、任务完成率。默认隐藏小样本可识别数据。
