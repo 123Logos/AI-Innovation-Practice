@@ -22,14 +22,18 @@ import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import ModuleNav from '@/components/ModuleNav.vue'
-import { APP_MODULES } from '@/config/modules'
+import type { UserRole } from '@/api/types'
+import { APP_MODULES, modulesVisibleTo } from '@/config/modules'
 import router from '@/router'
 import { useAuthStore } from '@/stores/auth'
 
 let pinia: Pinia
 const mounted: VueWrapper[] = []
 
-async function mountAt(path: string): Promise<VueWrapper> {
+async function mountAt(path: string, role: UserRole = 'student'): Promise<VueWrapper> {
+  // 角色直接写进 store：这一份测的是「导航按角色画什么」，不是 `/auth/me` 怎么把角色送进来
+  // （那一格由 `stores/__tests__/auth.spec.ts` 管）。
+  useAuthStore().role = role
   await router.push(path)
   await router.isReady()
   const wrapper = mount(ModuleNav, { global: { plugins: [pinia, router] } })
@@ -70,16 +74,32 @@ afterEach(() => {
 })
 
 describe('页签来自模块表', () => {
-  it('页签数量、文案与 href 逐项等于 APP_MODULES', async () => {
-    const wrapper = await mountAt('/jobs')
+  /*
+   * 显式改写（2026-11-15，守则 R1 / L4）：这两条原来钉的是「页签逐项等于 APP_MODULES」，
+   * 而这一轮加了角色过滤——学生看不见教师侧那两个入口。
+   * 判据跟着换成「逐项等于 `modulesVisibleTo(role)`」：
+   *  - 仍然是**从那张表推导**，不是抄一份名字（抄一份的话，表改了而用例没跟上，红的会是抄件）；
+   *  - 数量、顺序、文案、href 四件事一格没放宽，只是量的对象从全表换成「这个角色能看的那一段」。
+   */
+  it('学生看到的页签数量、文案与 href 逐项等于 modulesVisibleTo("student")', async () => {
+    const wrapper = await mountAt('/jobs', 'student')
+    const expected = modulesVisibleTo('student')
     const tabs = wrapper.findAll('.module-tab')
 
-    expect(tabs.map((tab) => tab.text())).toEqual(APP_MODULES.map((module) => module.name))
+    expect(tabs.map((tab) => tab.text())).toEqual(expected.map((module) => module.name))
     // href 由路由表解析出来：模块表的 `routeName` 必须真的能落地（L5 的同一件事）。
-    for (const [index, module] of APP_MODULES.entries()) {
-      const expected = router.resolve({ name: module.routeName }).fullPath
-      expect(tabs[index]?.attributes('href')).toBe(expected)
+    for (const [index, module] of expected.entries()) {
+      const resolved = router.resolve({ name: module.routeName }).fullPath
+      expect(tabs[index]?.attributes('href')).toBe(resolved)
     }
+  })
+
+  it('教师侧角色看到的是全表（那两个教师入口对学生是隐藏的，对教师不是）', async () => {
+    const wrapper = await mountAt('/jobs', 'teacher')
+
+    expect(wrapper.findAll('.module-tab').map((tab) => tab.text())).toEqual(
+      APP_MODULES.map((module) => module.name),
+    )
   })
 
   it('是一条横向的页签栏（<nav> + 列表），不是下拉或按钮组', async () => {
@@ -87,9 +107,38 @@ describe('页签来自模块表', () => {
 
     expect(wrapper.element.tagName).toBe('NAV')
     expect(wrapper.attributes('aria-label')).toBe('模块导航')
-    // 七个页签都在同一个 <ul> 里并排：用按钮的话键盘与读屏语义都会变成「动作」而不是「页面」。
-    expect(wrapper.findAll('.module-nav__track > li')).toHaveLength(APP_MODULES.length)
+    // 页签都在同一个 <ul> 里并排：用按钮的话键盘与读屏语义都会变成「动作」而不是「页面」。
+    expect(wrapper.findAll('.module-nav__track > li')).toHaveLength(
+      modulesVisibleTo('student').length,
+    )
     expect(wrapper.findAll('.module-tab').every((tab) => tab.element.tagName === 'A')).toBe(true)
+  })
+})
+
+describe('按角色过滤入口（2026-11-15，老板指令「基于角色的导航过滤」）', () => {
+  it('学生看不到「学情看板」与「组织管理」两个页签', async () => {
+    const wrapper = await mountAt('/jobs', 'student')
+    const names = wrapper.findAll('.module-tab').map((tab) => tab.text())
+
+    const staffOnly = APP_MODULES.filter((module) => !module.visibleToRoles.includes('student'))
+    expect(staffOnly.length).toBeGreaterThan(0)
+    for (const module of staffOnly) {
+      expect(names, `${module.name} 不该出现在学生的导航里`).not.toContain(module.name)
+    }
+  })
+
+  it('school_admin 两个教师入口都在', async () => {
+    const wrapper = await mountAt('/jobs', 'school_admin')
+    const names = wrapper.findAll('.module-tab').map((tab) => tab.text())
+
+    for (const module of APP_MODULES.filter((m) => m.visibleToRoles.includes('school_admin'))) {
+      expect(names).toContain(module.name)
+    }
+  })
+
+  it('角色还没读到（null）时一个页签都不画——fail-closed，不猜身份', async () => {
+    const wrapper = await mountAt('/jobs', null as unknown as UserRole)
+    expect(wrapper.findAll('.module-tab')).toHaveLength(0)
   })
 })
 
@@ -110,7 +159,9 @@ describe('手动收起（2026-11-14 UI 收尾第 1 条：显隐由人控制，�
 
     await wrapper.find('.module-nav__toggle').trigger('click')
     expect(trackHidden(wrapper)).toBe(false)
-    expect(wrapper.findAll('.module-nav__track > li')).toHaveLength(APP_MODULES.length)
+    expect(wrapper.findAll('.module-nav__track > li')).toHaveLength(
+      modulesVisibleTo('student').length,
+    )
   })
 
   it('收起态那句模块名按「归属」算：详情页收起来仍写它所属的模块', async () => {
@@ -164,7 +215,9 @@ describe('没有一条受保护路由会「谁都不高亮」', () => {
 
     const uncovered: string[] = []
     for (const path of mountedPaths) {
-      const wrapper = await mountAt(path)
+      // 用教师侧角色来跑这一条：它看得到全表，所以「有没有页签归属」这件事
+      // 不会被角色过滤干扰。学生看不见的入口由上面那一组用例单独钉。
+      const wrapper = await mountAt(path, 'teacher')
       if (activeTab(wrapper) === null) uncovered.push(path)
       wrapper.unmount()
     }

@@ -27,8 +27,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
 
 import { authHttp, http } from '@/api/client'
-import type { ApiErrorBody, ProfileRead } from '@/api/types'
-import { APP_MODULES } from '@/config/modules'
+import type { ApiErrorBody, ProfileRead, UserRole } from '@/api/types'
+import { APP_MODULES, staffOnlyModules } from '@/config/modules'
 import { useAuthStore } from '@/stores/auth'
 import DashboardView from '@/views/DashboardView.vue'
 
@@ -169,9 +169,11 @@ function fakeAdapter(config: InternalAxiosRequestConfig): Promise<AxiosResponse>
 }
 
 /** 只为 `RouterLink` 能解析出 `href`：目标页本身不挂载，所以组件桩成空壳。 */
+let viewRouter: ReturnType<typeof createRouter>
+
 function makeRouter() {
   const blank = { template: '<div />' }
-  return createRouter({
+  viewRouter = createRouter({
     history: createMemoryHistory(),
     routes: [
       { path: '/', name: 'resume-editor', component: blank },
@@ -186,14 +188,27 @@ function makeRouter() {
       { path: '/register', name: 'register', component: blank },
     ],
   })
+  return viewRouter
 }
 
-async function mountView(mode: 'guest' | 'member', permissions: string[] = []) {
+async function mountView(mode: 'guest' | 'member', role: UserRole | null = 'student') {
   const pinia = createPinia()
   setActivePinia(pinia)
-  // `hasPermission()` 读的是 store 里那份权限表（登录后由 `/auth/me` 写进来），
-  // 这里直接灌进去——测的是「有权限时画不画这张卡」，不是登录流程。
-  useAuthStore().permissions = permissions
+  /*
+   * 显式改写（2026-11-15，守则 R1）：原来这里灌的是 `permissions`（配合
+   * `auth.hasPermission('dashboard:read')` 那张教师入口卡），现在工作台按**角色**分流，
+   * 判据换成直接写 `auth.role`——它与 `/auth/me` 顶层那一格同源，
+   * 而「谁能看到哪个入口」的唯一出处仍是 `config/modules.ts::visibleToRoles`。
+   */
+  const auth = useAuthStore()
+  auth.role = role
+  auth.user = {
+    id: 'user-1',
+    username: 'tester',
+    email: null,
+    phone: null,
+    created_at: '2026-11-01T09:00:00+08:00',
+  }
 
   const wrapper = mount(DashboardView, {
     props: { mode },
@@ -288,13 +303,55 @@ describe('工作台 · 登录态', () => {
     expect(wrapper.get('.page-error').text()).toContain('能力标签读不到')
   })
 
-  it('教师入口按权限出现：有 dashboard:read 才画', async () => {
-    const without = await mountView('member')
-    expect(without.find('.teacher-entry').exists()).toBe(false)
+  /*
+   * 显式改写（2026-11-15）：原来这一条叫「教师入口按权限出现：有 dashboard:read 才画」，
+   * 判据是权限字符串。工作台改成按角色分流之后，这一条拆成三格，
+   * 每格都还在验同一件事——**教师不该看到学生那四张空统计卡，且要有一眼能走进去的入口**。
+   */
+  it('教师侧角色：四张统计卡不渲染，改成教师工具入口卡', async () => {
+    const wrapper = await mountView('member', 'teacher')
 
-    const withPermission = await mountView('member', ['dashboard:read'])
-    expect(withPermission.find('.teacher-entry').exists()).toBe(true)
-    expect(withPermission.get('.teacher-entry').text()).toContain('学情看板')
+    expect(wrapper.find('.stat-grid').exists()).toBe(false)
+    expect(wrapper.findAll('.stat-card')).toHaveLength(0)
+
+    const cards = wrapper.findAll('.staff-entry')
+    const expected = staffOnlyModules()
+    expect(cards).toHaveLength(expected.length)
+    // 名字仍从模块表来（守则 L4）：写死一份也会「有 N 张卡」，比对名字才证明读的是那张表。
+    // 取 h2 而不是整张卡的 text()——卡里还有一格「教师工具」的标签，整卡文案会把比对变成
+    // 「教师工具组织管理」这种拼出来的东西，看着像通过了其实没比对名字。
+    expect(cards.map((card) => card.get('h2').text())).toEqual(
+      expected.map((module) => module.name),
+    )
+    // href 由路由表解析：入口指向的必须是那条真路由。
+    for (const [index, module] of expected.entries()) {
+      expect(cards[index]?.attributes('href')).toBe(
+        viewRouter.resolve({ name: module.routeName }).fullPath,
+      )
+    }
+  })
+
+  it('教师侧不发那四个读请求：卡片不渲染，请求也不该照发', async () => {
+    await mountView('member', 'teacher')
+
+    expect(calls).toEqual([])
+  })
+
+  it('教师侧欢迎语带「老师」二字，学生侧不带', async () => {
+    const teacher = await mountView('member', 'teacher')
+    expect(teacher.get('.hero--member h1').text()).toBe('tester老师，今天从哪一步接着走？')
+
+    const student = await mountView('member', 'student')
+    expect(student.get('.hero--member h1').text()).toBe('tester，今天从哪一步接着走？')
+    // 学生侧那四张卡照常（这一句防止「教师分流」把学生页也一起改坏）。
+    expect(student.findAll('.stat-card')).toHaveLength(4)
+  })
+
+  it('school_admin 也走教师侧那一支', async () => {
+    const wrapper = await mountView('member', 'school_admin')
+
+    expect(wrapper.find('.stat-grid').exists()).toBe(false)
+    expect(wrapper.findAll('.staff-entry').length).toBe(staffOnlyModules().length)
   })
 })
 

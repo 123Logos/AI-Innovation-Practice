@@ -21,11 +21,19 @@
  *    被 `AppLayout` 的那层 `.app-chrome` sticky 住，滚到哪都在；要腾地方就点右侧那颗
  *    「收起导航」，收起后这一条只剩一行细栏：当前模块 + 展开入口。外框高度是
  *    `AppLayout` 实测出来的（`measureChrome`），所以这一条变高变矮都不需要别处跟着改数字。
+ * 4. **页签按角色过滤**（2026-11-15，老板指令「基于角色的导航过滤」）。过滤器是
+ *    `config/modules.ts::modulesVisibleTo`，本文件不写第二条 `filter`，也不写任何角色判断——
+ *    「谁能看到什么入口」那张表在模块表里，这里只负责读它。
+ *    这条只减入口、不改边界：`/teacher/*` 与 `/organization/*` 的权限仍在后端判
+ *    （403 / 400），学生直接敲地址进来看到的是后端的答复，不是这个导航栏。
+ *    收起态那句兜底文案（当前页不属于任何模块时显示）跟着改成「可用模块」——
+ *    展开之后看到的是角色过滤后的那一组，写「全部模块」会多承诺两个入口。
  */
 import { computed, ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 
-import { APP_MODULES, type AppModuleKey } from '@/config/modules'
+import { APP_MODULES, modulesVisibleTo, type AppModuleKey } from '@/config/modules'
+import { useAuthStore } from '@/stores/auth'
 
 /** 「这一页归哪个模块」：只列**不在模块表里**、但应高亮某个页签的路由名。 */
 const ROUTE_OWNER: Readonly<Record<string, AppModuleKey>> = {
@@ -39,6 +47,10 @@ const ROUTE_OWNER: Readonly<Record<string, AppModuleKey>> = {
 }
 
 const route = useRoute()
+const auth = useAuthStore()
+
+/** 当前角色能看到的页签。顺序仍是模块表的顺序，不在这里重排（L4：一处定义顺序）。 */
+const visibleModules = computed(() => modulesVisibleTo(auth.role))
 
 const activeKey = computed<AppModuleKey | null>(() => {
   const name = typeof route.name === 'string' ? route.name : ''
@@ -61,7 +73,7 @@ const collapsed = ref(false)
       `display: none` 同时把它移出 Tab 序与读屏朗读，展开时又不用重新拉一遍模块表。
     -->
     <ul v-show="!collapsed" id="module-nav-track" class="module-nav__track">
-      <li v-for="item in APP_MODULES" :key="item.key">
+      <li v-for="item in visibleModules" :key="item.key">
         <RouterLink
           class="module-tab"
           :class="{ 'module-tab--active': activeKey === item.key }"
@@ -91,7 +103,7 @@ const collapsed = ref(false)
       <RouterLink v-if="activeModule" :to="{ name: activeModule.routeName }">
         {{ activeModule.name }}
       </RouterLink>
-      <span v-else>全部模块</span>
+      <span v-else>可用模块</span>
     </p>
 
     <button

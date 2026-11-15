@@ -17,7 +17,7 @@ import { join, resolve } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { APP_MODULES } from '@/config/modules'
+import { ALL_LOGGED_IN_ROLES, APP_MODULES } from '@/config/modules'
 import { BREAKPOINTS } from '@/composables/useViewport'
 import router from '@/router'
 
@@ -335,9 +335,44 @@ describe('守则 L4：导航条目只有一张表', () => {
     for (const module of APP_MODULES) {
       expect(template, `${module.name} 不该以字面量出现在导航模板里`).not.toContain(module.name)
     }
-    // 正向：它确实在遍历那张表，否则上面那条会因为「什么都没渲染」而假绿。
-    expect(template).toContain('v-for="item in APP_MODULES"')
+    /*
+     * 正向判据跟着 2026-11-15 的角色过滤**显式改写**（守则 R1）：
+     * 原来钉的是 `v-for="item in APP_MODULES"`，现在导航遍历的是
+     * `modulesVisibleTo(auth.role)` 的结果。换判据不是放宽——两件事仍然要同时成立：
+     * ① 模板确实在遍历一个从那张表推导出来的数组（不是自己抄的一份）；
+     * ② 过滤器只有 `config/modules.ts::modulesVisibleTo` 一处，导航里不许再写一份 `filter`。
+     */
+    expect(template).toContain('v-for="item in visibleModules"')
+    expect(source.text).toContain('modulesVisibleTo(auth.role)')
+    expect(source.text).not.toContain('APP_MODULES.filter')
+    // 正向：它确实在渲染那张表的东西，否则上面那条会因为「什么都没渲染」而假绿。
     expect(template).toContain(':to="{ name: item.routeName }"')
+  })
+
+  it('角色可见性只写在模块表里，别处不许另建一份「谁能看什么」', () => {
+    const declarers = sources
+      .filter((source) => /visibleToRoles:/.test(source.text))
+      .map((source) => source.rel)
+
+    expect(declarers).toEqual(['config/modules.ts'])
+
+    // 每一项至少对一个角色可见：谁都看不见的入口就是 L5 禁的那种「写了但到不了」的孤儿。
+    for (const module of APP_MODULES) {
+      expect(
+        module.visibleToRoles.length,
+        `${module.name} 的 visibleToRoles 是空的`,
+      ).toBeGreaterThan(0)
+      // 角色取值必须是后端那张枚举里的（`app/core/permissions.py::UserRole`）。
+      for (const role of module.visibleToRoles) {
+        expect(ALL_LOGGED_IN_ROLES, `${module.name} 写了不认识的角色 ${role}`).toContain(role)
+      }
+    }
+
+    // 过滤器只有一个出处：消费者读 `modulesVisibleTo`，不自己写角色判断。
+    const nav = file('components/ModuleNav.vue').text
+    const dash = file('views/DashboardView.vue').text
+    expect(nav).not.toMatch(/role === '|role !== /)
+    expect(dash).not.toMatch(/role === '|role !== /)
   })
 })
 

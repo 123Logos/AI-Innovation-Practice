@@ -31,13 +31,30 @@
  * - 不显示任何未接入的数字，也不用占位符假装有数据；
  * - 不在访客态渲染登录态那四张统计卡：那些数字要登录才读得到，画一批空壳
  *   只能靠假数据填充。
+ *
+ * **2026-11-15 加了角色分流**（老板指令「基于角色的导航过滤」）：
+ *
+ * - `student` → 原来那四张统计卡（档案完成度 / 能力标签 / 在招岗位 / 模拟面试）；
+ * - `teacher` / `school_admin` / `platform_admin` → 四张卡整块不渲染，改成一组
+ *   「教师工具」入口卡，卡片来自 `config/modules.ts::staffOnlyModules()`，
+ *   名字与路由都不在本文件写死（L4）；欢迎语换成「X老师，今天从哪一步接着走？」。
+ *   教师侧也不发那四个读请求——它们服务的是已经不渲染的卡片。
+ * - 模块入口那一栏的小标题随这一轮从「全部模块」改成「可用模块」：登录态那一栏现在是
+ *   角色过滤后的结果，写「全部」会多承诺两个入口。访客态仍是全表、仍是「登录后可以用这些」。
+ *
+ * 一条机制变更要说清：原来那张「学情看板」入口卡的显示判据是权限字符串
+ * `dashboard:read`（`auth.hasPermission`），现在统一换成模块表里的 `visibleToRoles`。
+ * 今天两者等价——`app/core/permissions.py::ROLE_PERMISSIONS` 里拿到 `dashboard:read`
+ * 的恰好就是教师侧三支；换掉是为了让「谁能看到哪个入口」只有一个出处。
+ * **边界仍然在后端**：`GET /teacher/dashboard` 的 `dashboard:read`（403）与
+ * `action_gate::require_organization`（400）一格没动，前端少画一张卡不构成任何保护。
  */
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import { assessmentsApi, interviewsApi, isApiError, jobsApi, profilesApi } from '@/api'
 import type { ProfileRead } from '@/api/types'
-import { APP_MODULES } from '@/config/modules'
+import { APP_MODULES, isStaffRole, modulesVisibleTo, staffOnlyModules } from '@/config/modules'
 import { useAuthStore } from '@/stores/auth'
 
 const props = withDefaults(defineProps<{ mode?: 'guest' | 'member' }>(), { mode: 'member' })
@@ -45,20 +62,37 @@ const props = withDefaults(defineProps<{ mode?: 'guest' | 'member' }>(), { mode:
 const auth = useAuthStore()
 
 /**
- * 教师端入口的可见条件。
+ * 除工作台自己以外的模块：本页就是工作台，再摆一张「回工作台」的卡片没有意义。
  *
- * 与 `app/core/permissions.py::DASHBOARD_READ` 同一个字符串：`/auth/me` 把权限表原样
- * 发给前端，两边的判据因此同源。这里只决定「要不要显示这张卡」，真正的边界在后端
- * （无权限 403、无组织 400），前端少画一张卡不构成任何保护。
+ * 2026-11-15 起按角色过滤（老板指令「基于角色的导航过滤」），但**访客态例外**：
+ * 访客那一屏的任务就是「登录后你可以用这些」，那一刻没有角色可读（`auth.role` 是 `null`），
+ * 按 `modulesVisibleTo(null)` 走会得到空数组、介绍页一片空白。所以访客态列全表，
+ * 登录态才用那张角色过滤器——两个分支都在这一处，视图里不写第二份。
  */
-const TEACHER_DASHBOARD_PERMISSION = 'dashboard:read'
+const entryModules = computed(() => {
+  const pool = props.mode === 'guest' ? [...APP_MODULES] : modulesVisibleTo(auth.role)
+  return pool.filter((module) => module.key !== 'dashboard')
+})
 
-/** 除工作台自己以外的模块：本页就是工作台，再摆一张「回工作台」的卡片没有意义。 */
-const entryModules = computed(() => APP_MODULES.filter((module) => module.key !== 'dashboard'))
+/**
+ * 教师侧（`teacher` / `school_admin` / `platform_admin`）在工作台看到的是这一组入口卡，
+ * 而不是学生那四张统计卡——判据是「学生看不见的模块」，从模块表反推，
+ * 不写模块名（守则 L4），也不写第二份角色判断（`isStaffRole` 是唯一那一处）。
+ */
+const staffEntryModules = computed(() => staffOnlyModules())
 
-const showTeacherEntry = computed(
-  () => props.mode === 'member' && auth.hasPermission(TEACHER_DASHBOARD_PERMISSION),
-)
+/** 登录态这一页给谁看。学生那四张卡的读请求也只在这一个条件下发。 */
+const isStaff = computed(() => isStaffRole(auth.role))
+
+/**
+ * 欢迎语。教师侧那句按老板给的样式加「老师」二字；
+ * 名字取 `auth.displayName`（= 用户名），今天没有单独的「真实姓名」字段可读。
+ */
+const greeting = computed(() => {
+  const name = auth.displayName
+  if (isStaff.value) return name ? `${name}老师，今天从哪一步接着走？` : '老师，今天从哪一步接着走？'
+  return name ? `${name}，今天从哪一步接着走？` : '今天从哪一步接着走？'
+})
 
 type LoadState = 'loading' | 'ready' | 'failed'
 
@@ -168,7 +202,9 @@ async function loadMemberData(): Promise<void> {
 }
 
 onMounted(() => {
-  if (props.mode === 'member') void loadMemberData()
+  // 教师侧这一页不渲染那四张统计卡，所以一次请求都不发——
+  // 「隐藏卡片但照样拉四次自己的档案/标签/岗位/面试」是白跑，也会把失败态写进没人看的卡里。
+  if (props.mode === 'member' && !isStaff.value) void loadMemberData()
 })
 
 /** `—` 表示「这次没读到」，与「读到确实是 0」必须长得不一样。 */
@@ -219,12 +255,13 @@ function statText(state: LoadState, value: string): string {
     <template v-else>
       <section class="hero hero--member">
         <p class="eyebrow">工作台</p>
-        <h1>{{ auth.displayName ? `${auth.displayName}，今天从哪一步接着走？` : '今天从哪一步接着走？' }}</h1>
+        <h1>{{ greeting }}</h1>
       </section>
 
       <p v-if="loadError" class="page-error" role="alert">{{ loadError }}</p>
 
-      <section class="stat-grid" aria-label="我的进度">
+      <!-- 学生那四张卡：教师侧不渲染（见 script 里 `isStaff` 那条注释）。 -->
+      <section v-if="!isStaff" class="stat-grid" aria-label="我的进度">
         <article class="stat-card">
           <span class="stat-label">档案完成度</span>
           <strong class="stat-value">{{
@@ -260,16 +297,43 @@ function statText(state: LoadState, value: string): string {
         </article>
       </section>
 
-      <RouterLink v-if="showTeacherEntry" class="teacher-entry" :to="{ name: 'teacher-dashboard' }">
-        <span class="teacher-entry__label">教师工具</span>
-        <h2>学情看板</h2>
-      </RouterLink>
+      <!--
+        教师侧（teacher / school_admin / platform_admin）的显著入口区：
+        模块名与路由都从 `staffOnlyModules()` 来（守则 L4——这里不许出现写死的模块名），
+        所以「学情看板」「组织管理」两张卡是那张表反推出来的结果，加一个只对教师侧开放的
+        模块进表，这里自动多一张卡。
+      -->
+      <section v-if="isStaff" class="staff-entries" aria-label="教师工具">
+        <RouterLink
+          v-for="module in staffEntryModules"
+          :key="module.key"
+          class="staff-entry"
+          :to="{ name: module.routeName }"
+        >
+          <span class="staff-entry__label">教师工具</span>
+          <h2>{{ module.name }}</h2>
+          <svg
+            class="staff-entry__icon"
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path v-for="(path, index) in module.iconPaths" :key="index" :d="path" />
+          </svg>
+        </RouterLink>
+      </section>
     </template>
 
     <!-- ------------------------------------------------------- 模块入口（两态共用） -->
-    <section class="module-section" aria-label="全部模块">
+    <section class="module-section" aria-label="模块入口">
       <div class="section-heading">
-        <h2>{{ mode === 'guest' ? '登录后可以用这些' : '全部模块' }}</h2>
+        <h2>{{ mode === 'guest' ? '登录后可以用这些' : '可用模块' }}</h2>
       </div>
       <ul class="module-grid">
         <li v-for="module in entryModules" :key="module.key">
@@ -325,9 +389,17 @@ h2 { margin: 0 0 8px; font-size: var(--text-xl); }
 .card-link { margin-top: 8px; color: var(--theme-rule); font-size: var(--text-base); text-decoration: none; }
 .card-link:hover { text-decoration: underline; }
 
-.teacher-entry { display: flex; flex-direction: column; gap: 4px; margin-top: 16px; border: 1px solid var(--ui-border); border-left: 3px solid var(--theme-rule); border-radius: var(--ui-radius); padding: 18px 20px; background: var(--ui-surface-soft); color: inherit; text-decoration: none; }
-.teacher-entry__label { color: var(--theme-rule); font-size: var(--text-sm); letter-spacing: .1em; }
-.teacher-entry h2 { margin: 0; font-size: var(--text-lg-plus); }
+/*
+ * 教师侧入口区：两张卡并排（窄屏自动折成一列），左边那条 3px 主题色竖线沿用
+ * 原来那张「学情看板」入口卡的样式——它是这一页唯一的「这不是你的东西，去这里」信号。
+ */
+.staff-entries { display: grid; gap: 12px; margin-top: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.staff-entry { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--ui-border); border-left: 3px solid var(--theme-rule); border-radius: var(--ui-radius); padding: 18px 20px; background: var(--ui-surface-soft); color: inherit; text-decoration: none; }
+.staff-entry:hover { border-color: var(--ui-border-strong); border-left-color: var(--theme-primary); background: var(--ui-surface); }
+.staff-entry:focus-visible { outline: 2px solid var(--theme-rule); outline-offset: 2px; }
+.staff-entry__label { display: block; color: var(--theme-rule); font-size: var(--text-sm); letter-spacing: .1em; }
+.staff-entry h2 { margin: 4px 0 0; font-size: var(--text-lg-plus); }
+.staff-entry__icon { flex: 0 0 auto; color: var(--ui-ink-muted); }
 
 .module-section { margin-top: 36px; }
 .section-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-bottom: 12px; }

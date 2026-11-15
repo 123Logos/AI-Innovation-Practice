@@ -33,7 +33,7 @@ import App from '@/App.vue'
 import { http } from '@/api/client'
 import type { ApiErrorBody } from '@/api/types'
 import router from '@/router'
-import { APP_MODULES } from '@/config/modules'
+import { modulesVisibleTo } from '@/config/modules'
 import { useAuthStore } from '@/stores/auth'
 import { settled } from '@/__tests__/setup'
 
@@ -205,6 +205,13 @@ beforeEach(async () => {
     phone: null,
     created_at: '2026-11-10T10:00:00+08:00',
   }
+  /*
+   * 2026-11-15 起必须连角色一起摆：二级导航按 `auth.role` 过滤页签，
+   * `role` 为 null 时一个都不画（fail-closed），本文件那几条「导航里要有岗位库」
+   * 的判据会整体变成空检。真实应用里不会出现 null——守卫在渲染任何 `requiresAuth`
+   * 页面之前都 `await ensureUser()`，角色是那一刻从 `/auth/me` 顶层拿到的。
+   */
+  auth.role = 'student'
 
   // vue-router 的首次导航只在 install 时补一次，会把本条用例自己 push 的目标顶掉
   // （同一处理见 `LoginView.spec.ts` 的 beforeEach）。
@@ -284,6 +291,64 @@ describe('外框只有一处定义（守则 L1）', () => {
   })
 })
 
+describe('登录后落地页按角色分流（2026-11-15，老板指令）', () => {
+  /** 走一次 `/`，返回守卫最终把人放到了哪条路由。 */
+  async function land(role: string | null): Promise<string | undefined> {
+    const auth = useAuthStore()
+    auth.role = role as never
+    await visit('/')
+    return router.currentRoute.value.name as string | undefined
+  }
+
+  it('学生 → 工作台', async () => {
+    expect(await land('student')).toBe('dashboard')
+  })
+
+  it('教师 → 学情看板（他每天打开要看的第一个东西不是自己的简历）', async () => {
+    expect(await land('teacher')).toBe('teacher-dashboard')
+  })
+
+  it('学校管理员 → 组织管理', async () => {
+    expect(await land('school_admin')).toBe('organization')
+  })
+
+  it('平台管理员落学情看板，不落一张空白导航', async () => {
+    // 这一格是**我替他定的**（老板指令里没点名 platform_admin）：它在 ROLE_PERMISSIONS
+    // 里拿得到 dashboard:read，落看板不会 403。判据写下来是为了这条以后被改时能红。
+    expect(await land('platform_admin')).toBe('teacher-dashboard')
+  })
+
+  it('角色还没读到（null）时落工作台，不白屏', async () => {
+    expect(await land(null)).toBe('dashboard')
+  })
+
+  it('未登录访问 `/` 仍然是访客首屏，不被角色分流劫走', async () => {
+    const auth = useAuthStore()
+    auth.token = null
+    auth.user = null
+
+    await visit('/')
+
+    expect(router.currentRoute.value.name).toBe('welcome')
+  })
+
+  it('敲错地址与 `/` 走同一条分流：教师同样落到学情看板', async () => {
+    const auth = useAuthStore()
+    auth.role = 'teacher'
+    await visit('/no-such-page')
+
+    expect(router.currentRoute.value.name).toBe('teacher-dashboard')
+  })
+
+  it('已登录的人再去看登录页：送回自己角色的落点，不再统一塞工作台', async () => {
+    const auth = useAuthStore()
+    auth.role = 'school_admin'
+    await visit('/login')
+
+    expect(router.currentRoute.value.name).toBe('organization')
+  })
+})
+
 describe('模块导航与顶栏同处一个 sticky 外框（2026-11-14 UI 收尾第 1 条）', () => {
   it('二级导航渲染出「岗位库」页签，href 指向 /jobs，且在顶栏之下、不在抽屉里', async () => {
     const wrapper = await visit('/jobs')
@@ -294,12 +359,13 @@ describe('模块导航与顶栏同处一个 sticky 外框（2026-11-14 UI 收尾
 
     /*
      * 入口从顶栏搬到了二级导航：判据跟着搬，而不是删掉。
-     * 名字仍从模块表推导（`APP_MODULES`），加模块改的是表、不是这里。
+     * 名字仍从模块表推导（`modulesVisibleTo`），加模块改的是表、不是这里。
+     * 2026-11-15 起对照对象是「这个角色能看的那一段」（`modulesVisibleTo('student')`），
+     * 本用例 beforeEach 把角色摆成 student；改写它不是放宽——顺序、文案、href、高亮四件事照旧全比。
      */
     const entries = nav.findAll('.module-tab')
-    expect(entries.map((entry) => entry.text())).toEqual(
-      APP_MODULES.map((module) => module.name),
-    )
+    const expected = modulesVisibleTo('student')
+    expect(entries.map((entry) => entry.text())).toEqual(expected.map((module) => module.name))
     expect(entries.every((entry) => entry.element.tagName === 'A')).toBe(true)
     const jobsTab = entries.find((entry) => entry.text() === '岗位库')
     expect(jobsTab?.attributes('href')).toBe('/jobs')
