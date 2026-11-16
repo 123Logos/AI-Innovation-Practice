@@ -176,17 +176,22 @@ describe('下载 / 导出', () => {
     await wrapper.findAll('input[type="checkbox"]')[0].setValue(true)
     const button = wrapper.findAll('button').find((item) => item.text().includes('打包下载'))
     await button!.trigger('click')
-    await flushPromises()
 
-    const progressLine = wrapper.get('[data-testid="pack-progress"]')
+    const progressLine = await vi.waitFor(() =>
+      wrapper.get('[data-testid="pack-progress"]'),
+    )
     expect(progressLine.text()).toContain('正在逐份生成 PDF')
     expect(progressLine.text()).toContain('45')
 
+    // **必须等第二次轮询真的发出去**再放行：`waitFor` 在进度行一出现就返回，
+    // 那一刻 `sleep(0)` 的定时器可能还没跑，`release` 仍是 undefined——
+    // 直接 `release?.()` 会静默什么都不做，于是「进度行收掉」永远等不到（本机就红过一次）。
+    await vi.waitFor(() => expect(typeof release).toBe('function'))
     release?.(PACK_DONE)
-    await flushPromises()
-    await flushPromises()
-    // 终态之后进度行收掉：留着「正在逐份生成 PDF」那句话就是假话。
-    expect(wrapper.find('[data-testid="pack-progress"]').exists()).toBe(false)
+    // 同上：等状态真的收掉，而不是数 `flushPromises` 的次数（CI 上会少数一次）。
+    await vi.waitFor(() =>
+      expect(wrapper.find('[data-testid="pack-progress"]').exists()).toBe(false),
+    )
   })
 
   it('单份导出按行上的 id 发请求', async () => {

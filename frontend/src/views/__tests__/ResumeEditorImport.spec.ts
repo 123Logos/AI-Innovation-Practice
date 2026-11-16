@@ -303,16 +303,21 @@ describe('解析期间的样子', () => {
     const wrapper = mountView()
 
     pickFile(wrapper, FILE)
-    await flushPromises()
 
+    // 用 `vi.waitFor` 而不是「一次 `flushPromises` 之后断言」：CI 上的调度比本机紧，
+    // 「上传 202 → 第一次轮询 → 写 store → 重渲染」要几轮微任务才走完，
+    // 一次 flush 之后就断言会读到上一帧（本机侥幸过、CI 红过一次）。
+    await vi.waitFor(() =>
+      expect(wrapper.get('.import-mask__text').text()).toBe('正在提取文字…'),
+    )
     const bar = wrapper.get('[data-testid="import-progress"]')
     expect(bar.attributes('role')).toBe('progressbar')
     expect(bar.attributes('aria-valuenow')).toBe('35')
-    expect(wrapper.get('.import-mask__text').text()).toBe('正在提取文字…')
 
     release?.({ ...completedTask(importedResult()) })
-    await flushPromises()
-    expect(wrapper.find('[data-testid="import-mask"]').exists()).toBe(false)
+    await vi.waitFor(() =>
+      expect(wrapper.find('[data-testid="import-mask"]').exists()).toBe(false),
+    )
   })
 })
 
