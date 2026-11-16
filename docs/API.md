@@ -818,7 +818,7 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 |---|---|---|
 | `GET /teacher/dashboard` | JSON | 标签分布（按学生去重）+ 岗位技能覆盖率概况；**不含姓名 / 邮箱 / 手机号 / 简历正文**，空组织返回零值结构 |
 | `GET /teacher/resumes` | JSON `items[]` | 本组织可导出的简历清单（`resume_id` / `profile_id` / `full_name` / `title` / `version_no`），不含正文。**2026-11-15 第 25 轮起只返回「每份有效简历各自的最新版」**（`resumes.is_head = 1`，生成列；`UNIQUE(student_profile_id, is_head)` 保证一份简历一条）。粒度是**一份简历**而不是一个学生：学生同时有「投后端」「投算法」两份时，清单是**两条**记录。回收站里的简历（`student_profiles.deleted_at` 非空）不出现在清单，`POST /resumes/{id}/export` 对它 404、批量下载把它列进 `manifest.skipped`；历史版本同理 |
-| `POST /teacher/resumes/batch-download` | `application/zip` | 请求 `{"resume_ids":[...],"format":"pdf"}`，最多 50 条 |
+| `POST /teacher/resumes/batch-download` | **`202` + `{task_id}`**（第 30 轮，`ADR-033`） | 请求 `{"resume_ids":[...],"format":"pdf"}`，最多 50 条；ZIP 从 `GET /tasks/{id}/download` **一次性**取（§9.2） |
 | `POST /resumes/{id}/export?format=pdf` | `application/pdf` | 单份导出；打印 CSS 与 `ResumePreview.vue` 同源 |
 | `POST /teacher/skills/confirm` | JSON | 教师确认学生技能（B7 证据链，2026-11-14 补）；权限 `skill:confirm`，**唯一写别人档案的教师端点** |
 
@@ -846,7 +846,8 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 **ZIP 结构**：`README.txt`（导出时间 / 组织 / 发起人 / 条目数）、`manifest.json`
 （`generated_at` / `organization_id` / `actor_user_id` / `items[]` 逐条 `sha256` 与 `bytes` /
 `skipped[]`）、`resumes/NNN_姓名_vN.pdf`。不属于本组织或已不存在的 id 进 `skipped`
-而不整批失败；一个可下载项都不剩 → 400 `NO_DOWNLOADABLE_RESUME`。
+而不整批失败；一个可下载项都不剩 → **任务失败** `NO_DOWNLOADABLE_RESUME`
+（第 30 轮起这条判断要读库，而读库那一半在 worker 里，所以它不再是同步 400）。
 
 **PDF 打印方案**（第 15 轮裁定）：正文取 `resumes.content_html`，外面包
 `.paper-stage > .paper`，注入从 `frontend/src/components/ResumePreview.vue` 原样切出的
@@ -854,12 +855,15 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 `@media print` 里 `.paper-experience` 写 `break-inside: avoid` 与
 `page-break-inside: avoid`、段标题 `break-after: avoid`、预警线打印时 `display: none`。
 页码由浏览器打印页脚给，**不写进正文 HTML**（写进去会在第二页重复）。
-宿主机没有无头浏览器时 → `503 PDF_RENDERER_UNAVAILABLE`，绝不返回假 PDF。
+宿主机没有无头浏览器时：**单份导出**（仍同步）→ `503 PDF_RENDERER_UNAVAILABLE`；
+**批量打包**（第 30 轮起异步）→ 任务终态 `failed` + 同一个码。两条路径都**绝不返回假 PDF**。
 
 **审计**：与 B5 共用 `audit_logs`（不建第二套）。三个新 `action`：
 `dashboard.view` / `resume.export_pdf` / `resume.batch_download`；`detail` 是
 `{"resource_ids":[...],"item_count":N,"format":"pdf","bytes":N,"reason":...}`，
 `result=denied` 的尝试（无组织 / 渲染失败 / 无可下载项）也记一行。
+**第 30 轮起时机后移**：批量下载的那条 `ok` 审计由 worker 在**真的打出包之后**写，
+记的是实际条目数与字节数；入队那一刻不写 `ok`——「有人点了一下按钮」不是「文件被带走了」。
 
 ### POST `/match-runs`
 
@@ -1112,7 +1116,7 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 **纯计算、不落库**：不写任何表，结果回显给用户逐条确认，用户点保存才由 `PUT /profiles/me` 落库
 （ADR-010 §5）。Key 走请求头 `X-DeepSeek-Key`，不落库、不进日志（ADR-009）。
 
-### POST `/resumes/import-pdf` — 导入外部 PDF 简历（第 28 轮，`ADR-031`，同步、纯计算、BYOK）
+### POST `/resumes/import-pdf` — 导入外部 PDF 简历（第 28 轮 `ADR-031`；**第 30 轮起异步**，`ADR-033`）
 
 请求体是 **`multipart/form-data`**，只有一个字段：
 
@@ -1132,7 +1136,17 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 （约 1.8 秒/页）。OCR 引擎是**模块级单例 + 一把 `threading.Lock`** 串行化识别调用；
 模型权重在 wheel 里（`rapidocr/models/*.onnx`），运行时不下载，所以离线可用。
 
-响应 `200`：`data = {profile, meta}`。
+响应 **`202 Accepted`**：`data = {task_id, kind:"import_pdf", state:"pending", created_at}`。
+**结果不在这个响应里**——它要轮询 `GET /tasks/{task_id}`（§9.1），确认前值得 `data.result`。
+`schema` 见 `app/schemas/task.py::TaskQueued`。
+
+**仍留在同步路径上的两个 422**（`ADR-033` §2.7：用户能立刻修的错误不该让他先排队）：
+`PDF_TOO_LARGE`（> 5 MiB）、`AI_KEY_MISSING`（请求没带 `X-DeepSeek-Key`）。
+其余三种（`PDF_INVALID` / `AI_SERVICE_UNAVAILABLE` / `AI_OUTPUT_INVALID`）必须真跑一遍才知道，
+所以它们是**任务终态**里的 `error.code`。队列不可用（Redis 没起 / 没配 `REDIS_URL`）→ **503**，
+不是 202——一个永远不会被消费的任务比一次明确的失败更糟。
+
+轮询到 `complete` 时 `data.result`：
 
 - **`profile` 就是 `ProfileUpsertRequest`**（`app/schemas/resume_import.py::PdfImportResult`）：
   归一化保证它**当场能通过保存的校验**，所以 `tests/test_resumes_import_pdf.py::test_imported_profile_can_be_saved_directly`
@@ -1147,7 +1161,8 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
   学历只认 `专科/本科/硕士/博士`（同义词表折得动的才折，`高中` 这类**丢整条并计数**，不折算成别的学历）、
   `contact` 只留数字且允许 `+86` 前缀，非大陆 11 位则置空并报 `contact_discarded`。
 
-**一个状态码、五个码**（`ADR-031` 2.5，处理器 `app/main.py::pdf_import_failed`）：
+**五个码**（`ADR-031` 2.5；第 30 轮之后它们出现在**任务终态**的 `data.error` 里，
+同步预检那两个仍走 HTTP 422，处理器 `app/main.py::pdf_import_failed`）：
 
 | `code` | 触发 | `retryable` |
 |---|---|---|
@@ -1348,21 +1363,58 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 
 **FR-01 仍未完全达成**：本批把「绑定」变成可审计、可撤销、有时效的管理员动作，但**没有**强制「所有账号必须属于某个组织」（存量账号全无组织，迁移方案需产品裁定）。`ADR-021` §2.4 那句「跨组织不可见只在有组织的账号之间成立」继续有效，不许在 ROADMAP 记成已达成。
 
-## 9. AI 任务与实时状态
+## 9. 异步任务（第 30 轮已实现，`ADR-033`）
 
-`# PHASE-2: not wired` — 本章全部端点未接通：`app/api/v1/` 下没有任何 `/ai-jobs` 路由，`app/` 全量 grep `ai-jobs` 与 `ai_job` **零命中**（`app/api/router.py` 只挂了 v1 聚合路由与 `/health`）；队列依赖（Redis / ARQ / Celery）仍在 AGENTS.md §3.2 冻结清单内。**岗位 JD 技能提取不走本章的异步模型**——它是 `POST /jobs/extract-skills` 的 200 同步返回（见 §4.8，异步 + `ai_job_id` 的岗位分析形态被 ADR-011 2.A 否决）。
+**这一章从「设计意图」变成了实现**：`app/api/v1/tasks.py` 两个端点，`app/worker.py`
+三条队列（`arq:queue:ocr` / `arq:queue:pdf` / `arq:queue:default`）。
 
-### GET `/ai-jobs/{ai_job_id}`
+~~`# PHASE-2: not wired` — 本章全部端点未接通：`app/api/v1/` 下没有任何 `/ai-jobs` 路由~~
+→ **2026-11-16 更正**：任务端点已经存在，但**不叫 `/ai-jobs`**，契约也不同（见下）。
+`/ai-jobs` 那套（`type` / `retry_count` / SSE `/events`）**没有实现，也不打算按它实现**：
+SSE 需要长连接与断线恢复，而 1.5 秒轮询在这个量级下够用（`ADR-033` §6）。
+**岗位 JD 技能提取与简历润色仍然同步**（`ADR-011` 2.A / `ADR-010` 的口径没变）——
+它们是一次几十秒以内的纯计算，没有文件、不需要产物。
 
-返回：
+### 9.1 GET `/tasks/{task_id}` — 轮询四态
 
 ```json
-{"data":{"id":"uuid","type":"job_analysis","status":"running","progress":40,"retry_count":0,"error_code":null}}
+{"data":{
+  "task_id":"…","kind":"import_pdf","state":"running","stage":"structuring",
+  "progress":70,"created_at":"2026-11-16T12:00:00+08:00","finished_at":null,
+  "result":null,"error":null
+},"meta":{"request_id":"…"}}
 ```
 
-### GET `/ai-jobs/{ai_job_id}/events`
+| 字段 | 说明 |
+|---|---|
+| `state` | **只有四态**：`pending` / `running` / `complete` / `failed` |
+| `stage` | `queued` / `extracting` / `structuring` / `rendering` / `packaging` / `null`（终态清空）。只用于画进度条，不是状态机 |
+| `progress` | 0–100，**服务端算**（`app/core/task_kinds.py::progress_for`），前端只画 |
+| `result` | 仅 `complete`：`import_pdf` → `{profile, meta}`；`batch_download` → `{filename, bytes, download_url}` |
+| `error` | 仅 `failed`：`{code, message, retryable}`，`code` 见 §6 那张表 + `TASK_LOST` / `TASK_EXPIRED` / `TASK_INTERNAL` |
 
-SSE，事件 `progress`、`succeeded`、`failed`；客户端断线可用 `Last-Event-ID` 恢复。不得通过 SSE 推送 API Key 或未授权正文。
+**任务失败是 200 + `state=failed`，不是 4xx/5xx**：请求成功地被回答了，
+失败信息在 `error` 里。这条如果反过来做，前端轮询会把它当网络错误，
+用户看到「连不上服务」，而真话是「这份 PDF 没识别到文字」。
+
+**归属**：`task.owner_id != 当前用户` 与「任务不存在」返回**同一个 404**
+（不区分原因，免得任务 id 变成探测器）。任务记录保留 `WORKER_TASK_TTL_SECONDS`（默认 30 分钟）。
+
+### 9.2 GET `/tasks/{task_id}/download` — 取产物（一次性）
+
+`batch_download` 完成后才有产物。响应 `application/zip`，`Content-Disposition` 按 RFC 5987
+（中文名不截断）。**发一次就删**：第二次请求得到 `410` + 「这份文件已经被取走或已过期，请重新发起导出」。
+这也是「短时下载 URL」的落地形态——不是靠过期时间假装，而是真的只有一个窗口。
+
+### 9.3 哪些端点会建任务
+
+| 端点 | 队列 | 结果 |
+|---|---|---|
+| `POST /resumes/import-pdf` | `arq:queue:ocr` | `result = {profile, meta}` |
+| `POST /teacher/resumes/batch-download` | `arq:queue:pdf` | `result.download_url` → §9.2 |
+
+两条都是 **202 + `task_id`**；`WORKER_OCR_MAX_JOBS`（默认 4）与 `WORKER_PDF_MAX_JOBS`（默认 2）
+分别限制两条队列的并发——**这是本批的主要目的**：一次 50 份的导出不会再挤掉扫描件导入。
 
 ## 10. 幂等、并发和权限
 
@@ -1379,6 +1431,6 @@ FastAPI 自动生成 `/openapi.json` 和 `/docs`；生产环境只在内网或�
 
 - 所有 `{id}` 路径参数先做组织级对象授权，再读取字段；不能仅依赖角色判断。
 - `source_ids`、`evidence_ids` 和 `consent_id` 必须属于当前组织且处于有效授权状态。
-- 已实现的 AI 端点（`/resumes/polish`、`/jobs/extract-skills`）都是**纯计算、同步返回、不落库**，没有 `ai_job_id` 可查；结果先回显给用户逐条确认，用户点保存才由各自的写端点落库（ADR-010 §5 / ADR-011 2.A）。未实现的异步任务形态见 §9（`# PHASE-2: not wired`）。不把未核验的生成文本伪装成最终事实——这条在岗位侧的具体实现是：`/jobs/extract-skills` 的每条 `evidence` 都必须能回溯 JD 原文，核验不过的条目直接丢弃并把剔除数量回显在 `data.meta.dropped_count`（§4.8）。
+- 已实现的 AI 端点（`/resumes/polish`、`/jobs/extract-skills`）都是**纯计算、同步返回、不落库**，没有任务 id 可查；结果先回显给用户逐条确认，用户点保存才由各自的写端点落库（ADR-010 §5 / ADR-011 2.A）。异步任务只有 §9 那两条（导入与打包），它们的 BYOK Key 由后端加密后交给 worker、**读到即删**（`ADR-033` §2.4）。不把未核验的生成文本伪装成最终事实——这条在岗位侧的具体实现是：`/jobs/extract-skills` 的每条 `evidence` 都必须能回溯 JD 原文，核验不过的条目直接丢弃并把剔除数量回显在 `data.meta.dropped_count`（§4.8）。
 - AI 输出可包含 `support_status`：`supported`、`unsupported`、`needs_review`；`unsupported` 的关键事实必须阻断发布或导出。
 - 错误码与日志事件一一对应，错误消息不泄露资源是否存在（例如未授权对象统一使用 `RESOURCE_NOT_FOUND` 或 `AUTH_FORBIDDEN`，按安全策略选择）。

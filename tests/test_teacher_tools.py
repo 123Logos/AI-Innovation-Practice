@@ -12,6 +12,13 @@
    真浏览器），但断言落在「交给渲染器的 HTML」上——假实现也要能证明样式对。
 
 测试库用 `resume_mvp_b10`，与并行的其它批次不共用（AGENTS.md §5.4.1）。
+
+**第 30 轮（`ADR-033`）把批量下载改成了异步**：`POST /teacher/resumes/batch-download`
+现在只回 202 + `task_id`，ZIP 由 `arq:queue:pdf` 的 worker 打完，从
+`GET /tasks/{task_id}/download` 一次性取走。本文件因此多了一个 `_batch()`：
+它做「POST → 跑一次真 worker → 轮询 → 下载」，并把结果包成与旧响应同形的对象，
+所以 `zipfile` / `manifest` / 审计那几条断言一条都没改。单份导出（`/resumes/{id}/export`）
+**仍然是同步的**——它不在这批改造范围内（`ADR-033` §2.7 只动两个端点）。
 """
 
 from __future__ import annotations
@@ -33,6 +40,7 @@ from app.core.pdf_errors import PdfRendererUnavailableError
 from app.repositories.organization_repository import OrganizationRepository
 from app.repositories.user_repository import get_engine, session_scope
 from app.services import dependencies
+from tests.task_support import run_all_workers
 
 API = "/api/v1"
 DASHBOARD_URL = f"{API}/teacher/dashboard"
@@ -282,6 +290,76 @@ def _reason(response: object) -> str:
     return str(body["error"]["details"].get("reason", ""))
 
 
+class BatchDownloaded:
+    """打包任务完成并已取走产物。`.content` / `.headers` 与旧的同步响应同形。"""
+
+    def __init__(self, response: object, task_id: str) -> None:
+        self.response = response
+        self.task_id = task_id
+        self.status_code = 200
+        self.state = "complete"
+        self.error_code: str | None = None
+        self.content: bytes = response.content  # type: ignore[attr-defined]
+        self.headers = response.headers  # type: ignore[attr-defined]
+
+
+class BatchRejected:
+    """同步拒绝（散人 400 / 无可下载 400）：**没有任务被创建**。"""
+
+    def __init__(self, response: object) -> None:
+        self.response = response
+        self.status_code = response.status_code  # type: ignore[attr-defined]
+        self.state = "rejected"
+        self.error_code = str(
+            response.json()["error"]["details"].get("reason", "")  # type: ignore[attr-defined]
+        )
+        self.task_id: str | None = None
+        self.content = b""
+        self.headers: dict[str, str] = {}
+
+    @property
+    def text(self) -> str:
+        return str(self.response.text)  # type: ignore[attr-defined]
+
+    def json(self) -> dict[str, object]:
+        return dict(self.response.json())  # type: ignore[attr-defined]
+
+
+class BatchFailed:
+    """任务跑完是 `failed`：错误码在 `error_code` 里（`ADR-033` §2.6 的码表）。"""
+
+    def __init__(self, payload: dict[str, object], task_id: str) -> None:
+        self.task_id = task_id
+        self.status_code = 200
+        self.state = "failed"
+        error = payload.get("error") or {}
+        self.error_code = str(error.get("code", ""))  # type: ignore[union-attr]
+        self.error_message = str(error.get("message", ""))  # type: ignore[union-attr]
+        self.content = b""
+        self.headers: dict[str, str] = {}
+
+
+def _batch(
+    client: TestClient, headers: dict[str, str], resume_ids: list[str]
+) -> BatchDownloaded | BatchRejected | BatchFailed:
+    """POST → 202 → 跑一次 worker → 轮询 → 取产物（`ADR-033` §2.7 的新链路）。"""
+    queued = client.post(
+        BATCH_URL, json={"resume_ids": resume_ids, "format": "pdf"}, headers=headers
+    )
+    if queued.status_code != 202:
+        return BatchRejected(queued)
+    task_id = str(queued.json()["data"]["task_id"])
+    run_all_workers()
+    status = client.get(f"{API}/tasks/{task_id}", headers=headers)
+    assert status.status_code == 200, status.text
+    payload = status.json()["data"]
+    if payload["state"] != "complete":
+        return BatchFailed(payload, task_id)
+    download = client.get(f"{API}/tasks/{task_id}/download", headers=headers)
+    assert download.status_code == 200, download.text
+    return BatchDownloaded(download, task_id)
+
+
 # --------------------------------------------------------------------------- #
 # 1. 动作层组织闸
 # --------------------------------------------------------------------------- #
@@ -362,6 +440,25 @@ def test_every_entry_starts_with_the_action_gate() -> None:
         assert isinstance(first.value.func, ast.Attribute), name
         assert first.value.func.attr == "_require_organization", name
 
+    # 第 30 轮（`ADR-033` §2.7）：打包搬到 worker 里执行，**闸也跟着走**。
+    # 它没有 `CurrentUserContext`（那是查库查出来的），所以调的是模块级
+    # `_require_worker_organization()`——同一个 `require_organization`，少一层壳。
+    # 位置判据不变：必须是方法的第一条语句。
+    worker_statements = [
+        node
+        for node in methods["build_batch_archive"].body
+        if not (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        )
+    ]
+    worker_first = worker_statements[0]
+    assert isinstance(worker_first, ast.Assign)
+    assert isinstance(worker_first.value, ast.Call)
+    assert isinstance(worker_first.value.func, ast.Name)
+    assert worker_first.value.func.id == "_require_worker_organization"
+
     # 第一条语句是 docstring（AST 里的 Expr），第二条才是 `try`。
     statements = [
         node
@@ -404,10 +501,13 @@ def test_every_entry_starts_with_the_action_gate() -> None:
         first = statements[0]
         assert isinstance(first, ast.Try), name
         call = first.body[0]
-        assert isinstance(call, ast.Assign) and isinstance(call.value, ast.Call), name
-        assert isinstance(call.value.func, ast.Attribute), name
+        assert isinstance(call, ast.Assign), name
+        # 第 30 轮起 `batch_download` 是 `await service.…`：`ast.Await` 里才是那个 Call。
+        value = call.value.value if isinstance(call.value, ast.Await) else call.value
+        assert isinstance(value, ast.Call), name
+        assert isinstance(value.func, ast.Attribute), name
         assert (
-            call.value.func.attr
+            value.func.attr
             == {
                 "read_dashboard": "dashboard",
                 "list_downloadable_resumes": "list_downloadable",
@@ -542,12 +642,14 @@ def test_other_organization_resumes_are_skipped(
     _profile(client, own_student, name="本校学生", skills=["Python"])
     own_id = _resume(client, own_student)
 
-    only_foreign = client.post(BATCH_URL, json={"resume_ids": [foreign_id]}, headers=headers)
-    assert only_foreign.status_code == 400, only_foreign.text
-    assert _reason(only_foreign) == "NO_DOWNLOADABLE_RESUME"
+    # 一个都不属于本组织：**任务失败**而不是 400（`ADR-033` §2.7）——
+    # 这条判断要读库才知道，而读库那一半现在在 worker 里。
+    only_foreign = _batch(client, headers, [foreign_id])
+    assert isinstance(only_foreign, BatchFailed), only_foreign.state
+    assert only_foreign.error_code == "NO_DOWNLOADABLE_RESUME"
 
-    mixed = client.post(BATCH_URL, json={"resume_ids": [own_id, foreign_id]}, headers=headers)
-    assert mixed.status_code == 200, mixed.text
+    mixed = _batch(client, headers, [own_id, foreign_id])
+    assert isinstance(mixed, BatchDownloaded), mixed.state
     with zipfile.ZipFile(io.BytesIO(mixed.content)) as archive:
         manifest = json.loads(archive.read("manifest.json"))
     assert manifest["item_count"] == 1
@@ -612,7 +714,7 @@ def test_downloadable_list_keeps_only_the_latest_version(
     # 历史版本：单份导出 404，批量下载被跳过（不是静默成功）。
     old_export = client.post(EXPORT_URL.format(id=first), headers=headers)
     assert old_export.status_code == 404, old_export.text
-    batch = client.post(BATCH_URL, json={"resume_ids": [first, second]}, headers=headers)
+    batch = _batch(client, headers, [first, second])
     assert batch.status_code == 200, batch.text
     with zipfile.ZipFile(io.BytesIO(batch.content)) as archive:
         manifest = json.loads(archive.read("manifest.json"))
@@ -666,8 +768,8 @@ def test_downloadable_list_covers_every_active_resume(
     assert b_head not in {item["resume_id"] for item in after}
 
     # 回收站那份即使被点名也不能导出。
-    batch = client.post(BATCH_URL, json={"resume_ids": [a_head, c_head]}, headers=headers)
-    assert batch.status_code == 200, batch.text
+    batch = _batch(client, headers, [a_head, c_head])
+    assert isinstance(batch, BatchDownloaded), batch.state
     with zipfile.ZipFile(io.BytesIO(batch.content)) as archive:
         manifest = json.loads(archive.read("manifest.json"))
     assert manifest["item_count"] == 1
@@ -685,8 +787,9 @@ def test_zip_layout_and_manifest(client: TestClient, renderer: _FakeRenderer) ->
         _profile(client, student, name="../张三" if index == 0 else "李四", skills=["Python"])
         ids.append(_resume(client, student))
 
-    response = client.post(BATCH_URL, json={"resume_ids": ids + [ids[0]]}, headers=headers)
+    response = _batch(client, headers, ids + [ids[0]])
 
+    assert isinstance(response, BatchDownloaded), response.state
     assert response.status_code == 200, response.text
     assert response.headers["content-type"].startswith("application/zip")
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
@@ -704,6 +807,42 @@ def test_zip_layout_and_manifest(client: TestClient, renderer: _FakeRenderer) ->
         assert "导出时间" in archive.read("README.txt").decode("utf-8")
 
 
+def test_task_download_is_single_use(client: TestClient, renderer: _FakeRenderer) -> None:
+    """产物只能取**一次**：第二次 410，之后连任务状态都变成 expired（`ADR-033` §2.5）。
+
+    这一条是「短时下载 URL」的机械判据：不是靠过期时间假装，而是真的只有一个窗口。
+    三次请求的顺序本身是契约——① 取到 ZIP、② 再取 410、③ 轮询说「已过期」。
+    """
+    headers, org_id = _school(client, "b10once")
+    student, _ = _user(
+        client, f"b10_once_s_{uuid4().hex[:8]}", organization_id=org_id, role="student"
+    )
+    _profile(client, student, name="一次性学生", skills=["Python"])
+    resume_id = _resume(client, student)
+
+    queued = client.post(BATCH_URL, json={"resume_ids": [resume_id]}, headers=headers)
+    assert queued.status_code == 202, queued.text
+    task_id = str(queued.json()["data"]["task_id"])
+    run_all_workers()
+
+    first = client.get(f"{API}/tasks/{task_id}/download", headers=headers)
+    assert first.status_code == 200, first.text
+    assert first.headers["content-type"].startswith("application/zip")
+    with zipfile.ZipFile(io.BytesIO(first.content)) as archive:
+        assert "manifest.json" in archive.namelist()
+
+    second = client.get(f"{API}/tasks/{task_id}/download", headers=headers)
+    assert second.status_code == 410, second.text
+    assert second.json()["error"]["code"] == "CLIENT_ERROR"
+    assert "取走或已过期" in second.json()["error"]["message"]
+
+    # 取走之后轮询也该说「过期」：前端拿到 status 就能提示「请重新发起」，
+    # 不必先点一次下载才知道链接已经废了。
+    status = client.get(f"{API}/tasks/{task_id}", headers=headers).json()["data"]
+    assert status["state"] == "failed"
+    assert status["error"]["code"] == "TASK_EXPIRED"
+
+
 def test_download_audit_rows(client: TestClient, renderer: _FakeRenderer) -> None:
     """看板 / 单份导出 / 批量下载各一条 `ok`，批量不按条目拆成多条。"""
     headers, org_id = _school(client, "b10audit")
@@ -713,9 +852,7 @@ def test_download_audit_rows(client: TestClient, renderer: _FakeRenderer) -> Non
 
     assert client.get(DASHBOARD_URL, headers=headers).status_code == 200
     assert client.post(EXPORT_URL.format(id=resume_id), headers=headers).status_code == 200
-    assert (
-        client.post(BATCH_URL, json={"resume_ids": [resume_id]}, headers=headers).status_code == 200
-    )
+    assert isinstance(_batch(client, headers, [resume_id]), BatchDownloaded)
 
     rows = _teacher_rows()
     assert [row["action"] for row in rows] == [
@@ -802,8 +939,9 @@ def test_renderer_unavailable_is_not_a_fake_pdf(
     assert single.status_code == 503, single.text
     assert _reason(single) == "PDF_RENDERER_UNAVAILABLE"
 
-    batch = client.post(BATCH_URL, json={"resume_ids": [resume_id]}, headers=headers)
-    assert batch.status_code == 503, batch.text
+    batch = _batch(client, headers, [resume_id])
+    assert isinstance(batch, BatchFailed), batch.state
+    assert batch.error_code == "PDF_RENDERER_UNAVAILABLE"
     denied = [row for row in _teacher_rows() if row["result"] == "denied"]
     assert len(denied) == 2
     assert all(json.loads(str(row["detail"]))["reason"] == "renderer_unavailable" for row in denied)

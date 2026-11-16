@@ -13,12 +13,15 @@
 import { computed, onMounted, ref, watch } from 'vue'
 
 import { teacherToolsApi } from '@/api'
+import { isApiError } from '@/api/client'
 import type {
   DownloadableResume,
   JobCoverageItem,
   TeacherDashboard,
 } from '@/api/teacherTools'
 import { BUCKET_LABELS, TAG_STATUS_LABELS } from '@/api/teacherTools'
+import type { TaskDownloadResult } from '@/api/types'
+import { TaskFailedError, usePollTask } from '@/composables/usePollTask'
 
 const dashboard = ref<TeacherDashboard | null>(null)
 const resumes = ref<DownloadableResume[]>([])
@@ -59,9 +62,43 @@ const studentTotal = computed(() => dashboard.value?.student_total ?? 0)
 const taggedTotal = computed(() => dashboard.value?.tagged_student_total ?? 0)
 const selectedCount = computed(() => selected.value.length)
 
-function describeError(fallback: string): string {
+/**
+ * 错误上屏：优先用**服务端那句人话**（`ADR-033` §2.6 的 `error.message` / `ApiError.message`）。
+ *
+ * 第 30 轮之前这里恒返回 `fallback`，因为下载是同步的、失败只有一句固定话。
+ * 现在失败可能来自任务终态（`TaskFailedError`，例如「这批简历没有可下载的版本」），
+ * 那句话本身就是能动的下一步——丢掉它，用户只能看到「打包失败」。
+ */
+function describeError(fallback: string, error?: unknown): string {
+  if (error instanceof TaskFailedError || isApiError(error)) return error.message
   return fallback
 }
+
+/* ---------------------------- 打包任务（ADR-033） ---------------------------- */
+
+/**
+ * 打包是一个**后台任务**：点一下只拿到 `task_id`，进度与结果都要轮询。
+ *
+ * 三件事都不在这里发明：状态机（pending/running/complete/failed）、进度百分比、
+ * 失败码——全部来自 `GET /tasks/{id}`。视图只负责画和下载。
+ */
+const pack = usePollTask()
+
+/** 打包进度那句话：没在跑就不显示。 */
+const packStageText = computed(() => {
+  if (!pack.polling.value) return ''
+  switch (pack.task.value?.stage) {
+    case 'queued':
+      return '已排队，马上开始打包…'
+    case 'rendering':
+      return '正在逐份生成 PDF…'
+    case 'packaging':
+      return '正在打包压缩文件…'
+    default:
+      return '正在准备打包…'
+  }
+})
+const packProgress = computed(() => pack.task.value?.progress ?? 5)
 
 async function load(): Promise<void> {
   loading.value = true
@@ -75,8 +112,8 @@ async function load(): Promise<void> {
     resumes.value = items
     selected.value = []
     studentFilter.value = ''
-  } catch {
-    error.value = describeError('读取看板数据失败，请刷新页面重试。')
+  } catch (failure) {
+    error.value = describeError('读取看板数据失败，请刷新页面重试。', failure)
   } finally {
     loading.value = false
   }
@@ -87,10 +124,16 @@ async function downloadSelected(): Promise<void> {
   busy.value = true
   error.value = ''
   try {
-    const blob = await teacherToolsApi.downloadBatch(selected.value)
-    teacherToolsApi.saveBlob(blob, '简历批量导出.zip')
-  } catch {
-    error.value = describeError('批量下载没能完成，请稍后再试。')
+    // ① 入队（202）→ ② 轮询到终态 → ③ 一次性取产物。
+    // 三步分开而不是合成一个「等等看」：第 ② 步失败时错误码要能原样给到用户
+    // （例如「这批简历没有可下载的版本」），第 ③ 步失败才说明是网络/文件的问题。
+    const queued = await teacherToolsApi.downloadBatch(selected.value)
+    const status = await pack.start(queued.task_id)
+    const result = status.result as TaskDownloadResult | null
+    const blob = await teacherToolsApi.fetchTaskArchive(queued.task_id)
+    teacherToolsApi.saveBlob(blob, result?.filename ?? '简历批量导出.zip')
+  } catch (failure) {
+    error.value = describeError('批量下载没能完成，请稍后再试。', failure)
   } finally {
     busy.value = false
   }
@@ -103,8 +146,8 @@ async function exportOne(resumeId: string): Promise<void> {
   try {
     const blob = await teacherToolsApi.exportResume(resumeId)
     teacherToolsApi.saveBlob(blob, '简历.pdf')
-  } catch {
-    error.value = describeError('这份简历没能导出，请稍后再试。')
+  } catch (failure) {
+    error.value = describeError('这份简历没能导出，请稍后再试。', failure)
   } finally {
     busy.value = false
   }
@@ -218,6 +261,10 @@ onMounted(load)
         >
           {{ busy ? '正在准备…' : `打包下载（已选 ${selectedCount} 份）` }}
         </button>
+        <!-- 进度：只在打包时出现；`aria-live` 让屏幕阅读器跟着念，不用用户去找。 -->
+        <p v-if="busy && packStageText" class="feedback" role="status" aria-live="polite" data-testid="pack-progress">
+          {{ packStageText }}（{{ packProgress }}%）
+        </p>
       </section>
     </template>
   </main>

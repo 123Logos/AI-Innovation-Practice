@@ -121,6 +121,11 @@ Key 能出现在哪，是 `frontend/src/api/client.ts` 里**两张 fail-closed �
 - [uv](https://docs.astral.sh/uv/)（Python 包管理器）
 - 本机 MySQL 8 正在运行（默认端口 3306）
 - 项目根目录有 `.env`，其中 `DATABASE_URL` 指向你的 MySQL
+- **（可选，但「导入 PDF 简历」与「批量导出」这两条功能需要）本机有一个 Redis**：
+  `redis-server`，或者 `docker run -d --name redis -p 6379:6379 redis:7`。
+  没有它这两条功能会返回 **503**（一句「服务暂时不可用，请稍后重试。」，
+  `details.reason = TASK_QUEUE_UNAVAILABLE`），其它功能一切正常——
+  **不回落成同步执行**（`ADR-033` §2.6）
 
 准备完成后：
 
@@ -140,6 +145,9 @@ Key 能出现在哪，是 `frontend/src/api/client.ts` 里**两张 fail-closed �
 1. 检查 `uv` / `npm` 是否安装、`.env` 是否存在、MySQL 端口是否可连；
 2. 新开一个窗口跑后端：先 `uv run alembic upgrade head` 同步表结构，再 `uv run uvicorn app.main:app --reload`；
 3. 新开一个窗口跑前端：进入 `frontend`，首次运行会先 `npm install`，然后 `npm run dev`；
+   **（异步任务）** 另开窗口跑 worker —— `uv run arq app.worker.OcrWorkerSettings`（导入）与
+   `uv run arq app.worker.PdfWorkerSettings`（打包）。**不起 worker 的表现是「任务永远停在
+   pending」**，不是报错；三条队列与并发配置见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) §11.2；
 4. 轮询 `http://127.0.0.1:8000/api/v1/health` 和 `http://localhost:5173`，等两个服务真的能响应后自动用默认浏览器打开页面。
 
 启动完成后：
@@ -150,7 +158,7 @@ Key 能出现在哪，是 `frontend/src/api/client.ts` 里**两张 fail-closed �
 | 后端健康检查 | http://127.0.0.1:8000/api/v1/health |
 | 接口文档 | http://127.0.0.1:8000/docs |
 
-停止服务：直接关掉「后端」和「前端」两个窗口。
+停止服务：直接关掉「后端」「前端」（以及 worker）窗口。
 
 常见问题：
 

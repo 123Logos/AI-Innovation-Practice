@@ -7,9 +7,10 @@
   （ADR-015 §2.2：版本失配只在「要产出新数据」时拦人）。
 - `POST /resumes/polish`：把前端草稿态的文案交给 AI 改写，**只返回结果，不落库、
   不碰任何表**。请求体就是前端 Pinia 里的草稿，允许尚未保存。
-- `POST /resumes/import-pdf`：把学生手上的 PDF 简历（`multipart/form-data`）抽成文字层、
-  交给 AI 整理成档案草稿，**同样只返回结果、不落库**（`ADR-031` 2.1）。它是本文件唯一
-  一条 `async` 路由，因为上传体要流式读；也是唯一一条 multipart 路由。
+- `POST /resumes/import-pdf`：把学生手上的 PDF 简历（`multipart/form-data`）**落盘并入队**，
+  立即返回 202 + `task_id`；解析由 `arq:queue:ocr` 的 worker 执行，结果从
+  `GET /tasks/{task_id}` 取，**全程不落库**（`ADR-031` 2.1 / `ADR-033` §2.7）。
+  它是本文件唯一一条 multipart 路由，也是唯一一条把结果交给任务链路的。
 - `GET /resumes/current`：`resumes` 的第一条读路径（ADR-015 §2.3）。「当前简历」
   只读版本指针；指针落空显式报错，绝不按 `created_at` 猜。
 
@@ -34,11 +35,22 @@
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
+from fastapi.responses import JSONResponse
 
 from app.core.error_messages import ErrorMessage
 from app.core.rate_limit import IMPORT_RATE_LIMIT, POLISH_RATE_LIMIT, limiter
-from app.core.responses import success_response
+from app.core.responses import request_id, success_response
+from app.core.task_errors import TaskQueueUnavailableError
 from app.schemas.auth import UserRead
 from app.schemas.resume import (
     ResumeCustomizeRequest,
@@ -47,12 +59,17 @@ from app.schemas.resume import (
     ResumePrivacyCheckRequest,
 )
 from app.services.dependencies import (
+    client_ip,
     get_current_user,
-    get_resume_pdf_import_service,
+    get_deepseek_key,
     get_resume_service,
+    get_task_service,
 )
 from app.services.profile_service import ProfileNotFoundError
-from app.services.resume_import import MAX_PDF_BYTES, PdfTooLargeError, ResumePdfImportService
+from app.services.resume_import import (
+    MAX_PDF_BYTES,
+    PdfTooLargeError,
+)
 from app.services.resume_service import (
     ProfileIncompleteError,
     ResumeCustomizeJobExpiredError,
@@ -63,13 +80,15 @@ from app.services.resume_service import (
     ResumeService,
     ResumeVersionNotFoundError,
 )
+from app.services.task_service import TaskService
 
 router = APIRouter(prefix="/resumes", tags=["resumes"])
 
 ResumeServiceDep = Annotated[ResumeService, Depends(get_resume_service)]
-ResumePdfImportServiceDep = Annotated[
-    ResumePdfImportService, Depends(get_resume_pdf_import_service)
-]
+#: 第 30 轮（`ADR-033`）：导入从「同步跑完再返回」改成「入队 + 202」，
+#: 所以装配的是任务服务；`ResumePdfImportService` 现在只在 worker 里构造
+#: （`dependencies.build_resume_pdf_import_service`），路由不再直接碰它。
+ResumePdfTaskServiceDep = Annotated[TaskService, Depends(get_task_service)]
 CurrentUserDep = Annotated[UserRead, Depends(get_current_user)]
 
 #: 流式读上传文件时的块大小。取 64 KB 是让它显著小于 `MAX_PDF_BYTES`：
@@ -197,35 +216,50 @@ def polish_resume(
     return success_response(request, copy.model_dump(mode="json"))
 
 
-@router.post("/import-pdf")
+@router.post("/import-pdf", status_code=status.HTTP_202_ACCEPTED)
 @limiter.limit(IMPORT_RATE_LIMIT)
 async def import_resume_pdf(
     request: Request,
     file: Annotated[UploadFile, File(...)],
-    service: ResumePdfImportServiceDep,
+    service: ResumePdfTaskServiceDep,
     current_user: CurrentUserDep,
-) -> dict[str, Any]:
-    """导入外部 PDF 简历（第 28 轮，`ADR-031`）：**纯计算、不落库**。
+    api_key: Annotated[str, Depends(get_deepseek_key)],
+) -> JSONResponse:
+    """导入外部 PDF 简历（第 28 轮 `ADR-031`；第 30 轮改为异步，`ADR-033` §2.7）。
 
-    与 `/polish`、`/jobs/extract-skills` 同族：PDF 进来、档案草稿回去，用户在前端逐格
-    删改，点「保存修改」才由 `PUT /profiles/me` 落库（2.1）。所以本函数没有任何一处
-    碰仓储，`ResumePdfImportService` 也没拿 session。
+    现在这条路由只做四件事，**都不需要跑一遍 PDF**：
 
-    `file` 声明成 `Annotated[UploadFile, File(...)]`：这条路由因此**只接**
-    `multipart/form-data`（老板第 28 轮指定的上传形式），体积上限在 `_read_capped` 里
-    **边读边判**：先 `await file.read()` 收满 20 MB 再比大小，等于让一次注定失败的上传
-    把内存与带宽都走完（2.3 第一条封顶的原意）。
+    1. 没带 `X-DeepSeek-Key` → 422 `AI_KEY_MISSING`（用户能立刻去修，别让他排队等）；
+    2. 边读边判体积，超 5 MiB → 422 `PDF_TOO_LARGE`（同上）；
+    3. 把字节落到 `temp/imports/<task_id>.pdf`、把 Key 加密后短存进 Redis；
+    4. 入队并 **202 + task_id**。
 
-    五个失败码（`PDF_TOO_LARGE` / `PDF_INVALID` / `AI_KEY_MISSING` /
-    `AI_SERVICE_UNAVAILABLE` / `AI_OUTPUT_INVALID`）都不在这里 catch：
-    它们共用一个 422，由 `app/main.py` 的专用处理器统一成错误模型，
-    文案一律来自 `ErrorMessage`——上游异常文本一句都不许上屏（G3 的既有纪律）。
+    为什么 202 而不是 200：请求确实被接受了，但业务还没做完（`ADR-033` §2.6）。
+    把「排队了」报成 200 + 一个空档案，前端就会把空表单填给用户。
 
-    `current_user` 的依赖不能省：本端点消耗用户自己的 AI 额度，必须登录。
+    为什么 Key 先在同步路径判、而「文件读不出字」留给任务：前者用户立刻能修，
+    后者必须真跑一遍才知道（`ADR-033` §2.7 的那条分界）。
     """
     data = await _read_capped(file)
-    result = service.import_profile(data)
-    return success_response(request, result.model_dump(mode="json"))
+    try:
+        queued = await service.submit_import_pdf(
+            owner_id=current_user.id,
+            api_key=api_key,
+            data=data,
+            request_id=request_id(request),
+            ip=client_ip(request),
+        )
+    except TaskQueueUnavailableError as error:
+        # 队列不可用 → 503，**不是 202**（`ADR-033` §2.6）：一个永远不会被消费的任务
+        # 比一次明确的失败更糟。文案仍走受信目录，5xx 那侧统一压成固定一句（`app/main.py`）。
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=ErrorMessage.TASK_QUEUE_UNAVAILABLE,
+        ) from error
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content=success_response(request, queued.model_dump(mode="json")),
+    )
 
 
 async def _read_capped(file: UploadFile) -> bytes:

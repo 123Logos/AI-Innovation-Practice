@@ -29,6 +29,22 @@ services:
       retries: 10
       start_period: 30s
 
+  # 异步任务队列（第 30 轮，ADR-033）：队列与任务记录都在这里。
+  # `noeviction` 不是调优而是正确性：任务记录被内存策略淘汰 = 任务凭空消失，
+  # 用户会看到一个 404 而不是「失败」。ADR-033 §7 第 6 条记着这条是本批的遗留。
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "no", "--maxmemory-policy", "noeviction"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    ports:
+      # 只为本地调试（redis-cli 看队列深度）；生产可以整段删掉。
+      - "6379:6379"
+
   backend:
     build:
       context: .
@@ -51,14 +67,88 @@ services:
       FRONTEND_URL: http://localhost:8080
       ALLOWED_ORIGINS: http://localhost:8080
       RATE_LIMIT_ENABLED: "true"
+      # 队列地址按服务名拼（宿主 .env 里那个 127.0.0.1 在本容器里指的是它自己）。
+      REDIS_URL: redis://redis:6379/0
+      WORKER_OCR_MAX_JOBS: ${WORKER_OCR_MAX_JOBS:-4}
+      WORKER_PDF_MAX_JOBS: ${WORKER_PDF_MAX_JOBS:-2}
+      WORKER_DEFAULT_MAX_JOBS: ${WORKER_DEFAULT_MAX_JOBS:-10}
     # Migrations run at container start, so a fresh volume becomes usable without a
     # separate step. Downgrades stay a manual operation, as in local development.
     command: sh -c "uv run --no-sync alembic upgrade head && exec uv run --no-sync uvicorn app.main:app --host 0.0.0.0 --port 8000"
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
       - "8000:8000"
+    volumes:
+      - task-temp:/app/temp
+      - task-downloads:/app/downloads
+
+  # 三个 worker，每个只吃一条队列（ADR-033 §2.2）。**不起 worker 的表现是
+  # 「任务永远 pending」**：202 回得去、队列里也真有任务，只是没人消费。
+  # 三条命令共用同一个镜像，靠 command 区分队列。
+  worker-ocr:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    environment: &worker-env
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-root}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE}?charset=utf8mb4
+      ENVIRONMENT: development
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY is not set - create .env from .env.example}
+      REDIS_URL: redis://redis:6379/0
+      WORKER_OCR_MAX_JOBS: ${WORKER_OCR_MAX_JOBS:-4}
+      WORKER_PDF_MAX_JOBS: ${WORKER_PDF_MAX_JOBS:-2}
+      WORKER_DEFAULT_MAX_JOBS: ${WORKER_DEFAULT_MAX_JOBS:-10}
+      WORKER_IMPORT_DIR: temp/imports
+      WORKER_DOWNLOAD_DIR: downloads
+      # 导出要用宿主机/容器里的无头浏览器；没装时任务会以 PDF_RENDERER_UNAVAILABLE 失败，
+      # 而不是回一个假 PDF（ADR-029 §2.5）。
+      PDF_BROWSER_PATH: ${PDF_BROWSER_PATH:-}
+    command: sh -c "uv run --no-sync arq app.worker.OcrWorkerSettings"
+    # 上传暂存目录必须与 backend 共用一份卷：web 落盘、worker 读盘（ADR-033 §2.5）。
+    volumes:
+      - task-temp:/app/temp
+      - task-downloads:/app/downloads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker-pdf:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    environment: *worker-env
+    command: sh -c "uv run --no-sync arq app.worker.PdfWorkerSettings"
+    volumes:
+      - task-temp:/app/temp
+      - task-downloads:/app/downloads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker-default:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    environment: *worker-env
+    command: sh -c "uv run --no-sync arq app.worker.DefaultWorkerSettings"
+    volumes:
+      - task-temp:/app/temp
+      - task-downloads:/app/downloads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   frontend:
     build:
@@ -75,3 +165,6 @@ services:
 
 volumes:
   mysql-data:
+  # 上传暂存与导出产物：backend 与三个 worker 共享（本地盘，多机部署不成立）
+  task-temp:
+  task-downloads:

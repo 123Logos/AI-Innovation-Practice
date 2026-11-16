@@ -16,7 +16,6 @@
 import { http, unwrap } from './client'
 import type {
   ApiSuccess,
-  PdfImportResult,
   ResumeCopy,
   ResumeCustomizeRequest,
   ResumeCustomizeResult,
@@ -25,6 +24,7 @@ import type {
   ResumePolishRequest,
   ResumeRead,
   ResumeVersionList,
+  TaskQueued,
 } from './types'
 
 /**
@@ -60,27 +60,29 @@ export async function polishResume(payload: ResumePolishRequest): Promise<Resume
 /* --------------------- 外部 PDF 简历导入（第 28 轮，ADR-031） --------------------- */
 
 /**
- * `POST /api/v1/resumes/import-pdf`：把学生手上的 PDF 简历抽成档案草稿。
+ * `POST /api/v1/resumes/import-pdf`：上传一份 PDF，**立刻拿回 `task_id`**（第 30 轮，`ADR-033`）。
  *
- * 三点与 `polishResume()` 不同，都不是风格选择：
+ * 四点与 `polishResume()` 不同，都不是风格选择：
  *
  * 1. **multipart 而不是 JSON**：传的是文件本体，`FormData` 里只有一个 `file` 字段。
  *    axios 会自己带 `Content-Type: multipart/form-data; boundary=...`，
  *    这里**不要**手写 Content-Type——手写的会顶掉 boundary，后端直接 422。
- * 2. **超时给 60 秒**：后端给 DeepSeek 的预算是 30 秒（`ADR-009`），前面还要加上
- *    上传与本地抽取；按默认 15 秒会先被自己掐断，报成「连不上服务」，
- *    而真话是 AI 还在跑。
+ * 2. **超时降到 30 秒**：解析已经搬到 worker 里，这个请求只做「落盘 + 入队」，
+ *    正常是几十毫秒。给 60 秒反而会让「后端卡住」表现成「用户等了整整一分钟」。
  * 3. **Key 仍由 `client.ts` 的拦截器注入**：这条路径已在 BYOK 白名单里（`ADR-031` 2.6），
- *    所以本函数一个头都不碰。
+ *    所以本函数一个头都不碰。Key 由后端加密后交给 worker（`ADR-033` §2.4）。
+ * 4. **响应是 202 + `{task_id, kind, state, created_at}`**：结果要去 `GET /tasks/{id}` 取
+ *    （`api/tasks.ts` + `composables/usePollTask.ts`）。把「排队了」当成「解析完了」，
+ *    前端就会把空表单填给用户。
  *
- * 失败口径：五种失败都是 422，靠 `error.code` 分叉（`ADR-031` 2.5）。
+ * 仍留在同步路径上的两个失败（体积超限、没带 Key）还是 422，`error.code` 分叉口径不变。
  */
-const IMPORT_TIMEOUT_MS = 60_000
+const IMPORT_TIMEOUT_MS = 30_000
 
-export async function importResumePdf(file: File): Promise<PdfImportResult> {
+export async function importResumePdf(file: File): Promise<TaskQueued> {
   const form = new FormData()
   form.append('file', file)
-  const response = await http.post<ApiSuccess<PdfImportResult>>('/resumes/import-pdf', form, {
+  const response = await http.post<ApiSuccess<TaskQueued>>('/resumes/import-pdf', form, {
     timeout: IMPORT_TIMEOUT_MS,
   })
   return unwrap(response)

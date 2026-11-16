@@ -667,3 +667,69 @@ export interface PdfImportResult {
   profile: ProfileUpsertRequest
   meta: PdfImportMeta
 }
+
+/* ---------------------- 异步任务（第 30 轮，ADR-033） ---------------------- */
+
+/** 任务种类：取值为后端 `TaskKind`，进响应契约。 */
+export type TaskKind = 'import_pdf' | 'batch_download'
+
+/** 对外只有四态（`ADR-033` §2.3），与后端 `TaskState` 逐字一致。 */
+export type TaskState = 'pending' | 'running' | 'complete' | 'failed'
+
+/**
+ * 进度阶段：只用于画进度条，**不是**状态机的一部分。
+ *
+ * `queued` 排队 / `extracting` 抽字（文本层或 OCR）/ `structuring` AI 结构化 /
+ * `rendering` 逐份渲染 PDF / `packaging` 拼 ZIP。
+ */
+export type TaskStage =
+  | 'queued'
+  | 'extracting'
+  | 'structuring'
+  | 'rendering'
+  | 'packaging'
+
+/** 两个入队端点（202）的响应体：只有四格，**没有 profile**。 */
+export interface TaskQueued {
+  task_id: string
+  kind: TaskKind
+  state: TaskState
+  created_at: string
+}
+
+/**
+ * 任务失败的原因。`code` 与 `ADR-031` §2.5 的五个码同一套词表，
+ * 另有三个任务侧的码：`TASK_LOST` / `TASK_EXPIRED` / `TASK_INTERNAL`。
+ */
+export interface TaskErrorBody {
+  code: string
+  message: string
+  retryable: boolean
+}
+
+/** `batch_download` 完成时的结果（`result` 那一格）。 */
+export interface TaskDownloadResult {
+  filename: string | null
+  bytes: number | null
+  download_url: string
+}
+
+/**
+ * `GET /tasks/{task_id}` 的响应（`ADR-033` §2.6）。
+ *
+ * `result` 与 `error` 互斥：`complete` 才有 `result`，`failed` 才有 `error`。
+ * `result` 的形状按 `kind` 分叉——`import_pdf` 是 `PdfImportResult`，
+ * `batch_download` 是 `TaskDownloadResult`，所以这里用联合类型让调用方必须收窄。
+ */
+export interface TaskStatus {
+  task_id: string
+  kind: TaskKind
+  state: TaskState
+  stage: TaskStage | null
+  /** 0–100，服务端算好的（`progress_for`），前端只画。 */
+  progress: number
+  created_at: string
+  finished_at: string | null
+  result: PdfImportResult | TaskDownloadResult | null
+  error: TaskErrorBody | null
+}

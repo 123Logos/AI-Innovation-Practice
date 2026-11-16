@@ -16,12 +16,14 @@ from typing import Annotated, Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import JSONResponse
 
 from app.core.action_gate import OrganizationAction
 from app.core.error_messages import ErrorMessage
 from app.core.pdf_errors import PdfRendererUnavailableError
 from app.core.permissions import DASHBOARD_READ, RESUME_DOWNLOAD, SKILL_CONFIRM
-from app.core.responses import success_response
+from app.core.responses import request_id, success_response
+from app.core.task_errors import TaskQueueUnavailableError
 from app.schemas.teacher_tools import BatchDownloadRequest, SkillConfirmRequest
 from app.services.auth_service import CurrentUserContext
 from app.services.dependencies import (
@@ -95,6 +97,12 @@ def _translate(error: Exception) -> HTTPException:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=ErrorMessage.PDF_RENDERER_UNAVAILABLE,
         )
+    if isinstance(error, TaskQueueUnavailableError):
+        # 第 30 轮（`ADR-033` §2.6）：队列不可用 → 503，绝不用 202 假装接下了。
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=ErrorMessage.TASK_QUEUE_UNAVAILABLE,
+        )
     if isinstance(error, SkillConfirmProfileNotFoundError):
         return HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -136,23 +144,40 @@ def list_downloadable_resumes(
     return success_response(request, {"items": [item.model_dump(mode="json") for item in items]})
 
 
-@router.post("/resumes/batch-download")
-def batch_download(
+@router.post("/resumes/batch-download", status_code=status.HTTP_202_ACCEPTED)
+async def batch_download(
     payload: BatchDownloadRequest,
     request: Request,
     service: TeacherToolsDep,
     context: DownloaderDep,
-) -> Response:
-    """打包下载：ZIP 内有 `README.txt` / `manifest.json` / `resumes/*.pdf`。"""
+) -> JSONResponse:
+    """打包下载：**入队 + 202**（第 30 轮，`ADR-033` §2.7），ZIP 从 `/tasks/{id}/download` 取。
+
+    第 30 轮之前这里是「同步渲染 50 份 PDF 再流式返回」，一次请求会把 web 进程的
+    内存与句柄一起顶上去（老板点名的 OOM 风险）。现在渲染发生在 `arq:queue:pdf`
+    的 worker 里，并发上限是 `WORKER_PDF_MAX_JOBS`（默认 2）。
+
+    动作闸仍在 service 的第一句（散人 400「请先绑定组织」），**在入队之前**——
+    否则散人会先拿到一个 task_id，再在轮询里才被告知没有组织。
+    """
     try:
-        result = service.batch_download(context, payload.resume_ids, ip=client_ip(request))
+        queued = await service.batch_download(
+            context,
+            payload.resume_ids,
+            ip=client_ip(request),
+            request_id=request_id(request),
+        )
     except (
         TeacherOrganizationRequiredError,
         NoDownloadableResumeError,
         PdfRendererUnavailableError,
+        TaskQueueUnavailableError,
     ) as error:
         raise _translate(error) from error
-    return _attachment(result.filename, "application/zip", result.content)
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content=success_response(request, queued.model_dump(mode="json")),
+    )
 
 
 @export_router.post("/{resume_id}/export")

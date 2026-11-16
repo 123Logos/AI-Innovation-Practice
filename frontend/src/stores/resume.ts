@@ -91,8 +91,10 @@ import type {
   SectionId,
   SkillSource,
   SkillSourceRead,
+  TaskStatus,
   ThemeId,
 } from '@/api/types'
+import { TaskFailedError, waitForTask } from '@/composables/usePollTask'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
 import { applyTheme } from '@/stores/theme'
@@ -1079,6 +1081,13 @@ export const useResumeStore = defineStore('resume', () => {
    * 直到用户换档案或再导一次。
    */
   const importedMeta = ref<PdfImportMeta | null>(null)
+  /**
+   * 导入任务的最新一次轮询结果（第 30 轮，`ADR-033`）。
+   *
+   * 遮罩上那行「正在提取文字…」与进度条都读它：解析已经不在请求里跑，
+   * 所以「进行到哪一步」只能从 `GET /tasks/{id}` 拿。`null` = 没有在跑的任务。
+   */
+  const importTask = ref<TaskStatus | null>(null)
   /**
    * 「与服务端一致」那一刻的内容投影（S2）。
    *
@@ -2238,8 +2247,25 @@ export const useResumeStore = defineStore('resume', () => {
     importing.value = true
     // 上一次导入的账先清掉：它说的是「刚才那一份文件」，与新一次的失败并排显示就成了假话。
     importedMeta.value = null
+    importTask.value = null
     try {
-      const result = await resumesApi.importResumePdf(file)
+      // 第 30 轮（`ADR-033`）：上传只回 202 + task_id，解析在 worker 里跑。
+      // 轮询到终态之前**一个字段都不改**——失败时表单必须原样不动。
+      const queued = await resumesApi.importResumePdf(file)
+      const status = await waitForTask(queued.task_id, {
+        onUpdate: (current) => {
+          importTask.value = current
+        },
+      })
+      const result = status.result as PdfImportResult | null
+      if (result === null || !('profile' in result)) {
+        // 防御：`complete` 却没结果说明记录被写坏了。报失败而不是把空档案填进表单。
+        throw new TaskFailedError({
+          code: 'TASK_INTERNAL',
+          message: '这次导入没有拿到结果，请再试一次。',
+          retryable: true,
+        })
+      }
       applyImportedProfile(result.profile)
       importedMeta.value = result.meta
       return result
@@ -2528,6 +2554,7 @@ export const useResumeStore = defineStore('resume', () => {
     lastCustomize,
     polishResult,
     importedMeta,
+    importTask,
     polishNoteFor,
     pendingDraft,
     autosavedAt,

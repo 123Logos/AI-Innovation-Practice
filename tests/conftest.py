@@ -39,12 +39,17 @@ B4 / ADR-015 起含 `profile_certificates` / `portfolio_links` / `profile_city_p
 在**自己用例内部**降级，并在 `finally` 里把库交回 head。
 """
 
+import asyncio
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 import pytest
+
+if TYPE_CHECKING:  # 只用于夹具的返回标注：真导入发生在 `task_runtime` 夹具内部
+    from tests.task_support import FakeRuntimeProvider
 
 # --------------------------------------------------------------------------- #
 # 1. 环境准备：必须早于任何 `app.*` 导入
@@ -56,6 +61,21 @@ import pytest
 #: 与「验证鉴权逻辑」这件事无关。限流本身不是不测：`tests/test_rate_limit.py`
 #: 会在用例内临时打开限流，断言第 6 次请求返回 429 且响应体符合 T6 统一错误模型。
 os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
+
+#: 第 30 轮（`ADR-033`）：任务端点的默认 Redis 地址。
+#:
+#: **本机没有 Redis**（2026-11-16 实测 `127.0.0.1:6379` 与 `63790` 均拒绝连接），
+#: 所以这条地址不会真的被连上——`task_runtime` 夹具会把「取运行时」整个换掉
+#: （`tests/task_support.py` 的 fakeredis 实现）。
+#: 之所以还是要给它一个值：`app.worker` 在 import 时就构造 `RedisSettings`
+#: （ARQ 的 CLI 只读 `__dict__`，见 `app/worker.py` 的模块 docstring），
+#: 空值会让「只是 import 一下」变成启动失败。真正的「没配 Redis」场景
+#: 由 `tests/test_tasks.py::test_missing_redis_url_is_503` 显式构造。
+os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:6379/15")
+#: 任务产物与上传暂存放进临时目录，别在仓库里留下 `temp/` 与 `downloads/`。
+#: 用例结束由 fixture 删掉整个目录（见 `test_task_files_are_removed`）。
+os.environ.setdefault("WORKER_IMPORT_DIR", "temp/test-imports")
+os.environ.setdefault("WORKER_DOWNLOAD_DIR", "downloads/test-outputs")
 
 
 def _read_value(key: str) -> str | None:
@@ -248,3 +268,48 @@ def client() -> TestClient:
     if not TEST_DATABASE_URL:
         raise RuntimeError("集成测试需要 TEST_DATABASE_URL（指向独立测试库）。")
     return TestClient(app)
+
+
+# --------------------------------------------------------------------------- #
+# 3. 异步任务（第 30 轮，`ADR-033`）
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(autouse=True)
+def task_runtime(monkeypatch: pytest.MonkeyPatch) -> Iterator["FakeRuntimeProvider"]:
+    """把「取任务运行时」换成 fakeredis 实现（autouse，理由见 `tests/task_support.py`）。
+
+    autouse 而不是逐用例显式请求：**任何**一条用例只要碰到 `/resumes/import-pdf` 或
+    `/teacher/resumes/batch-download`，就该拿到一套干净的队列与记录；
+    漏一条就会让那条用例去连本机并不存在的 Redis，报成「后台任务服务不可用」——
+    红的地方与它想测的东西毫无关系。
+    """
+    from tests.task_support import FakeRuntimeProvider, reset_server
+
+    reset_server()
+    provider = FakeRuntimeProvider()
+    # 三个 import 点各有一份引用：只打一个补丁，「另一条路径」会绕过它去连真 Redis。
+    monkeypatch.setattr("app.services.dependencies.get_task_runtime", provider)
+    monkeypatch.setattr("app.worker.get_task_runtime", provider)
+    try:
+        yield provider
+    finally:
+        asyncio.run(provider.close())
+
+
+@pytest.fixture(autouse=True)
+def _task_dirs() -> Iterator[None]:
+    """任务的两个目录在每个用例前后清空（`temp/test-imports`、`downloads/test-outputs`）。"""
+    import shutil
+
+    from app.core import task_files
+
+    def clean() -> None:
+        for directory in (task_files.import_dir(), task_files.download_dir()):
+            shutil.rmtree(directory, ignore_errors=True)
+
+    clean()
+    try:
+        yield
+    finally:
+        clean()

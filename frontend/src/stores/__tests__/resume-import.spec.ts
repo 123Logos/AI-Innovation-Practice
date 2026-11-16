@@ -13,21 +13,85 @@
  * 3. **技能的 `source` 按名字继承**。`assessment` 那一档是标准化测评写的
  *    （`ADR-027` §2.6），导入若把它降回自评，用户点一次保存就把 B9 的证据抹掉了。
  *
- * `@/api/resumes` 与 `@/api/profiles` 整体被 mock：本文件验的是 store 的编排，不是 axios。
+ * **第 30 轮（`ADR-033`）之后多了一层**：导入是「上传 → 轮询 → 回填」，
+ * 所以 `@/api/resumes`（上传）与 `@/api/tasks`（轮询）都被 mock。上面三条约定一条没变，
+ * 变的只是「结果从哪来」：`importResumePdf` 只回 `task_id`，结果在 `getTask` 的终态里。
+ * `TASK_POLL_INTERVAL_MS` 也一并 mock 成 0：轮询间隔在测试里没有意义，
+ * 留着 1500ms 只会让每个用例白等一秒半。
  */
 
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError, clearDeepSeekKey, setDeepSeekKey } from '@/api/client'
-import type { PdfImportResult, ProfileUpsertRequest } from '@/api/types'
+import type { PdfImportResult, ProfileUpsertRequest, TaskStatus } from '@/api/types'
+import { TaskFailedError } from '@/composables/usePollTask'
 import { useResumeStore } from '@/stores/resume'
 
 const importResumePdf = vi.hoisted(() => vi.fn())
+const getTask = vi.hoisted(() => vi.fn())
 const saveMyProfile = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/resumes', () => ({ importResumePdf }))
 vi.mock('@/api/profiles', () => ({ saveMyProfile }))
+vi.mock('@/api/tasks', () => ({
+  getTask,
+  downloadTaskFile: vi.fn(),
+  TASK_POLL_INTERVAL_MS: 0,
+  TASK_POLL_BUDGET_MS: 60_000,
+}))
+
+/** 上传的 202 响应（`ADR-033` §2.6）：只有四格，没有 `profile`。 */
+function queuedTask(taskId = 'task0000000000000000000000000000'): Record<string, string> {
+  return {
+    task_id: taskId,
+    kind: 'import_pdf',
+    state: 'pending',
+    created_at: '2026-11-16T12:00:00+08:00',
+  }
+}
+
+/** 轮询到 `complete`：结果在 `result` 里，形状就是旧的 `PdfImportResult`。 */
+function completedTask(result: PdfImportResult): TaskStatus {
+  return {
+    task_id: 'task0000000000000000000000000000',
+    kind: 'import_pdf',
+    state: 'complete',
+    stage: null,
+    progress: 100,
+    created_at: '2026-11-16T12:00:00+08:00',
+    finished_at: '2026-11-16T12:00:05+08:00',
+    result,
+    error: null,
+  }
+}
+
+/** 轮询到 `failed`：**HTTP 200**，失败在 `error` 里（这是新契约最容易写错的一格）。 */
+function failedTask(code: string, message: string): TaskStatus {
+  return {
+    task_id: 'task0000000000000000000000000000',
+    kind: 'import_pdf',
+    state: 'failed',
+    stage: 'extracting',
+    progress: 35,
+    created_at: '2026-11-16T12:00:00+08:00',
+    finished_at: '2026-11-16T12:00:03+08:00',
+    result: null,
+    error: { code, message, retryable: false },
+  }
+}
+
+/** 一次成功的导入：上传回 202、轮询到 complete 且带着这份结果。 */
+function stubImport(result: PdfImportResult): void {
+  importResumePdf.mockResolvedValue(queuedTask())
+  getTask.mockResolvedValue(completedTask(result))
+}
+
+/** 一次失败的导入：上传成功、任务失败。 */
+function stubImportFailure(code: string, message: string): void {
+  importResumePdf.mockResolvedValue(queuedTask())
+  getTask.mockResolvedValue(failedTask(code, message))
+}
 
 const TEST_KEY = 'sk-import-test'
 
@@ -109,8 +173,10 @@ beforeEach(() => {
   sessionStorage.clear()
   localStorage.clear()
   setDeepSeekKey(TEST_KEY)
-  importResumePdf.mockReset().mockResolvedValue(resultFixture())
+  importResumePdf.mockReset()
+  getTask.mockReset()
   saveMyProfile.mockReset()
+  stubImport(resultFixture())
 })
 
 describe('导入即改写草稿，但不落库', () => {
@@ -148,14 +214,15 @@ describe('导入即改写草稿，但不落库', () => {
 
   it('请求进行中 `importing` 为真、结束后为假（遮罩与按钮 disable 都读它）', async () => {
     const store = seedDraft()
-    let resolveFirst: ((value: PdfImportResult) => void) | undefined
+    let resolveUpload: ((value: Record<string, string>) => void) | undefined
     importResumePdf.mockImplementation(
-      () => new Promise<PdfImportResult>((resolve) => (resolveFirst = resolve)),
+      () => new Promise<Record<string, string>>((resolve) => (resolveUpload = resolve)),
     )
+    getTask.mockResolvedValue(completedTask(resultFixture()))
 
     const pending = store.importPdf(new File(['%PDF-1.4'], 'resume.pdf'))
     expect(store.importing).toBe(true)
-    resolveFirst?.(resultFixture())
+    resolveUpload?.(queuedTask())
     await pending
 
     expect(store.importing).toBe(false)
@@ -163,7 +230,7 @@ describe('导入即改写草稿，但不落库', () => {
 
   it('来历留在 store 里供横幅显示（读了 3/4 页 + 丢弃计数）', async () => {
     const store = seedDraft()
-    importResumePdf.mockResolvedValue(
+    stubImport(
       resultFixture(profileFixture(), {
         dropped: { skills: 4, experiences: 0, educations: 1, contact_discarded: true, text_clamped: false },
       }),
@@ -227,9 +294,7 @@ describe('只覆盖 AI 真读过的那几格', () => {
       { name: 'Python', source: 'assessment', last_used_on: '2025-03' },
       { name: 'Excel', source: 'teacher_confirmed', last_used_on: '' },
     ]
-    importResumePdf.mockResolvedValue(
-      resultFixture(profileFixture({ skills: [{ name: 'python' }, { name: 'SQL' }] })),
-    )
+    stubImport(resultFixture(profileFixture({ skills: [{ name: 'python' }, { name: 'SQL' }] })))
 
     await store.importPdf(new File(['%PDF-1.4'], 'resume.pdf'))
 
@@ -241,10 +306,13 @@ describe('只覆盖 AI 真读过的那几格', () => {
 
   it('导入失败时表单一个字段都不动，横幅也不出现', async () => {
     const store = seedDraft()
-    importResumePdf.mockRejectedValue(new ApiError('这份 PDF 里读不出文字。', 422, 'PDF_INVALID'))
+    // 失败从**任务终态**来（HTTP 200 + `state=failed`），不是 422 响应体。
+    stubImportFailure('PDF_INVALID', '这份 PDF 里读不出文字。')
     const before = JSON.stringify(store.draft)
 
-    await expect(store.importPdf(new File(['x'], 'scan.pdf'))).rejects.toBeInstanceOf(ApiError)
+    const failure = await store.importPdf(new File(['x'], 'scan.pdf')).catch((e) => e)
+    expect(failure).toBeInstanceOf(TaskFailedError)
+    expect(failure.code).toBe('PDF_INVALID')
 
     expect(JSON.stringify(store.draft)).toBe(before)
     expect(store.importing).toBe(false)
@@ -255,9 +323,10 @@ describe('只覆盖 AI 真读过的那几格', () => {
     const store = seedDraft()
     await store.importPdf(new File(['%PDF-1.4'], 'ok.pdf'))
     expect(store.importedMeta).not.toBeNull()
-    importResumePdf.mockRejectedValue(new ApiError('AI 服务当前不可用。', 422, 'AI_SERVICE_UNAVAILABLE'))
+    stubImportFailure('AI_SERVICE_UNAVAILABLE', 'AI 服务当前不可用。')
 
-    await expect(store.importPdf(new File(['%PDF-1.4'], 'second.pdf'))).rejects.toBeInstanceOf(ApiError)
+    const failure = await store.importPdf(new File(['%PDF-1.4'], 'second.pdf')).catch((e) => e)
+    expect(failure).toBeInstanceOf(TaskFailedError)
 
     // 新一次的请求还没成功，横幅说的就必须是「这一次」——上一次的成功记录不该继续挂着。
     expect(store.importedMeta).toBeNull()
@@ -269,14 +338,14 @@ describe('OCR 与文本层两条路径表现一致（`ADR-031` §5 第 11 条）
     const store = seedDraft()
     const profile = profileFixture()
 
-    importResumePdf.mockResolvedValue(resultFixture(profile, { source: 'text_layer' }))
+    stubImport(resultFixture(profile, { source: 'text_layer' }))
     await store.importPdf(new File(['%PDF-1.4'], 'a.pdf'))
     const fromTextLayer = JSON.stringify({ draft: store.draft, dirty: store.dirty })
     const textLayerCalls = importResumePdf.mock.calls.length
 
     store.reset()
     seedDraft()
-    importResumePdf.mockResolvedValue(resultFixture(profile, { source: 'ocr' }))
+    stubImport(resultFixture(profile, { source: 'ocr' }))
     await store.importPdf(new File(['%PDF-1.4'], 'b.pdf'))
     const fromOcr = JSON.stringify({ draft: store.draft, dirty: store.dirty })
 

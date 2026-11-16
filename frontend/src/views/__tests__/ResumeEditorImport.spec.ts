@@ -13,6 +13,11 @@
  * 4. **结果上屏**：成功给「仍需点保存」那句话 + 截断/丢弃的账；失败进 `role="alert"`，
  *    其中只有 `AI_KEY_MISSING` 那条带「点此配置 AI 密钥」的链接。
  *
+ * **第 30 轮（`ADR-033`）之后导入变成「上传 → 轮询 → 回填」**：上传只回 202 + `task_id`，
+ * 结果与失败原因都在 `GET /tasks/{id}` 的终态里。所以本文件 mock 了 `@/api/tasks`，
+ * 并按新契约补了一条「进度条读服务端的 `stage` / `progress`」——
+ * 那是老板点名的「上传后显示正在提取文字，可能有进度条」那句话的机械判据。
+ *
  * 表单本身（`ResumeEditor`）与预览、辅助面板都被 stub：它们各自的用例在别的文件里，
  * 这一页不需要重复证明它们能渲染。
  */
@@ -21,15 +26,22 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, type Pinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { ApiError, setDeepSeekKey } from '@/api/client'
-import type { PdfImportResult, ProfileUpsertRequest } from '@/api/types'
+import { setDeepSeekKey } from '@/api/client'
+import type { PdfImportResult, ProfileUpsertRequest, TaskStatus } from '@/api/types'
 import { useDialogStore } from '@/stores/dialog'
 import { useResumeStore } from '@/stores/resume'
 import ResumeEditorView from '@/views/ResumeEditorView.vue'
 
 const importResumePdf = vi.hoisted(() => vi.fn())
+const getTask = vi.hoisted(() => vi.fn())
 
 vi.mock('@/api/resumes', () => ({ importResumePdf }))
+vi.mock('@/api/tasks', () => ({
+  getTask,
+  downloadTaskFile: vi.fn(),
+  TASK_POLL_INTERVAL_MS: 0,
+  TASK_POLL_BUDGET_MS: 60_000,
+}))
 vi.mock('@/api/profiles', () => ({
   listProfiles: vi.fn().mockResolvedValue([]),
   getMyProfile: vi.fn().mockResolvedValue(null),
@@ -70,6 +82,52 @@ function importedResult(): PdfImportResult {
   }
 }
 
+/** 上传的 202（`ADR-033` §2.6）：四格，没有 `profile`。 */
+const QUEUED = {
+  task_id: 'task0000000000000000000000000000',
+  kind: 'import_pdf' as const,
+  state: 'pending' as const,
+  created_at: '2026-11-16T12:00:00+08:00',
+}
+
+/** 轮询到 `complete`（结果就是旧的 `PdfImportResult`）。 */
+function completedTask(result: PdfImportResult): TaskStatus {
+  return {
+    ...QUEUED,
+    state: 'complete',
+    stage: null,
+    progress: 100,
+    finished_at: '2026-11-16T12:00:05+08:00',
+    result,
+    error: null,
+  }
+}
+
+/** 轮询到 `failed`：HTTP 200，失败在 `error` 里。 */
+function failedTask(code: string, message: string): TaskStatus {
+  return {
+    ...QUEUED,
+    state: 'failed',
+    stage: 'extracting',
+    progress: 35,
+    finished_at: '2026-11-16T12:00:03+08:00',
+    result: null,
+    error: { code, message, retryable: false },
+  }
+}
+
+/** 一次成功导入（上传 202 + 轮询 complete）。 */
+function stubImport(result: PdfImportResult): void {
+  importResumePdf.mockResolvedValue(QUEUED)
+  getTask.mockResolvedValue(completedTask(result))
+}
+
+/** 一次失败的导入：**上传成功**、任务失败（这是新契约里最容易写错的组合）。 */
+function stubFailure(code: string, message: string): void {
+  importResumePdf.mockResolvedValue(QUEUED)
+  getTask.mockResolvedValue(failedTask(code, message))
+}
+
 function mountView() {
   return mount(ResumeEditorView, {
     global: {
@@ -105,7 +163,9 @@ beforeEach(() => {
   pinia = createPinia()
   setActivePinia(pinia)
   setDeepSeekKey('sk-view-test')
-  importResumePdf.mockReset().mockResolvedValue(importedResult())
+  importResumePdf.mockReset()
+  getTask.mockReset()
+  stubImport(importedResult())
 })
 
 describe('入口的形状', () => {
@@ -208,8 +268,9 @@ describe('dirty 先拦一次确认', () => {
 describe('解析期间的样子', () => {
   it('遮罩出现、按钮禁用、按钮文字换成「正在解析 PDF…」', async () => {
     markLoaded()
-    let resolveImport: ((value: PdfImportResult) => void) | undefined
-    importResumePdf.mockImplementation(() => new Promise<PdfImportResult>((resolve) => (resolveImport = resolve)))
+    let resolveImport: ((value: typeof QUEUED) => void) | undefined
+    importResumePdf.mockImplementation(() => new Promise<typeof QUEUED>((resolve) => (resolveImport = resolve)))
+    getTask.mockResolvedValue(completedTask(importedResult()))
     const wrapper = mountView()
 
     pickFile(wrapper, FILE)
@@ -220,11 +281,38 @@ describe('解析期间的样子', () => {
     expect(button.attributes('disabled')).toBeDefined()
     expect(button.text()).toBe('正在解析 PDF…')
 
-    resolveImport?.(importedResult())
+    resolveImport?.(QUEUED)
     await flushPromises()
 
     expect(wrapper.find('[data-testid="import-mask"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="import-pdf-button"]').text()).toBe('导入 PDF 简历')
+  })
+
+  it('进度条读服务端的 `stage` / `progress`（「正在提取文字…」不是前端编的）', async () => {
+    // 第二次轮询挂在半空：这时屏幕上必须已经是服务端给的那一档。
+    let release: ((value: TaskStatus) => void) | undefined
+    getTask
+      .mockResolvedValueOnce({
+        ...QUEUED,
+        state: 'running',
+        stage: 'extracting',
+        progress: 35,
+      })
+      .mockImplementationOnce(() => new Promise<TaskStatus>((resolve) => (release = resolve)))
+    markLoaded()
+    const wrapper = mountView()
+
+    pickFile(wrapper, FILE)
+    await flushPromises()
+
+    const bar = wrapper.get('[data-testid="import-progress"]')
+    expect(bar.attributes('role')).toBe('progressbar')
+    expect(bar.attributes('aria-valuenow')).toBe('35')
+    expect(wrapper.get('.import-mask__text').text()).toBe('正在提取文字…')
+
+    release?.({ ...completedTask(importedResult()) })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="import-mask"]').exists()).toBe(false)
   })
 })
 
@@ -255,7 +343,7 @@ describe('结果上屏', () => {
 
   it('干净导入（没有任何截断与丢弃）时不画那条账', async () => {
     markLoaded()
-    importResumePdf.mockResolvedValue({
+    stubImport({
       profile: importedResult().profile,
       meta: {
         pages_total: 1,
@@ -287,7 +375,7 @@ describe('结果上屏', () => {
     const ocrResult = importedResult()
     ocrResult.meta.source = 'ocr'
     markLoaded()
-    importResumePdf.mockResolvedValue(ocrResult)
+    stubImport(ocrResult)
     const wrapper = mountView()
 
     pickFile(wrapper, FILE)
@@ -302,9 +390,7 @@ describe('结果上屏', () => {
 
   it('扫描件失败：错误进 `role="alert"`，句子用的是后端那句能动手的话', async () => {
     markLoaded()
-    importResumePdf.mockRejectedValue(
-      new ApiError('这份文件没识别到文字，请上传含文字层的 PDF，或在下面手动填写档案。', 422, 'PDF_INVALID'),
-    )
+    stubFailure('PDF_INVALID', '这份文件没识别到文字，请上传含文字层的 PDF，或在下面手动填写档案。')
     const wrapper = mountView()
 
     pickFile(wrapper, FILE)
@@ -319,9 +405,7 @@ describe('结果上屏', () => {
 
   it('没配 Key 失败：错误句子下面那一行「点此配置 AI 密钥」必须出现', async () => {
     markLoaded()
-    importResumePdf.mockRejectedValue(
-      new ApiError('请先在「AI 设置」中配置 DeepSeek API Key。', 422, 'AI_KEY_MISSING'),
-    )
+    stubFailure('AI_KEY_MISSING', '请先在「AI 设置」中配置 DeepSeek API Key。')
     const wrapper = mountView()
 
     pickFile(wrapper, FILE)
@@ -333,15 +417,14 @@ describe('结果上屏', () => {
 
   it('AI 超时失败：说清「表单没被改动」，并且不给配 Key 的链接', async () => {
     markLoaded()
-    importResumePdf.mockRejectedValue(
-      new ApiError('AI 服务当前不可用，本次请求未被保存，您的资料不受影响。请稍后重试。', 422, 'AI_SERVICE_UNAVAILABLE'),
-    )
+    stubFailure('AI_SERVICE_UNAVAILABLE', 'AI 服务当前不可用，本次请求未被保存，您的资料不受影响。请稍后重试。')
     const wrapper = mountView()
 
     pickFile(wrapper, FILE)
     await flushPromises()
 
-    expect(wrapper.get('[data-testid="import-feedback"]').text()).toContain('本次没有改动表单')
+    // 这句话来自后端 `ErrorMessage.AI_UNAVAILABLE`（受信目录），前端不再叠一句同义话。
+    expect(wrapper.get('[data-testid="import-feedback"]').text()).toContain('资料不受影响')
     expect(wrapper.find('[data-testid="ai-key-hint"]').exists()).toBe(false)
   })
 

@@ -31,6 +31,10 @@ frontend/.vite/
 # 本地脚本生成的账号凭据（scripts/seed_internal_jobs.py），与 .env 同级敏感
 .dev-secrets/
 
+# 异步任务的文件落点（ADR-033 §2.5）：上传暂存与导出产物，都是「跑完就该消失」的东西
+temp/
+downloads/
+
 # IDE and operating system files
 .idea/
 .vscode/*
