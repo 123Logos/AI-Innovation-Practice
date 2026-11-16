@@ -8,6 +8,7 @@ from app.api.v1.jobs import router as jobs_router
 from app.api.v1.organizations import router as organizations_router
 from app.api.v1.profiles import router as profiles_router
 from app.api.v1.resumes import router as resumes_router
+from app.api.v1.tasks import router as tasks_router
 from app.api.v1.teacher_tools import export_router as resume_export_router
 from app.api.v1.teacher_tools import router as teacher_tools_router
 
@@ -27,3 +28,6 @@ router.include_router(assessments_router)
 # `/versions/diff` 等静态段靠声明顺序避开被当成 id。
 router.include_router(teacher_tools_router)
 router.include_router(resume_export_router)
+# 第 30 轮（`ADR-033`）：异步任务的轮询与产物下载。前缀 `/tasks` 不与其他组重叠；
+# `/{task_id}` 与 `/{task_id}/download` 段数不同，声明顺序不影响匹配。
+router.include_router(tasks_router)

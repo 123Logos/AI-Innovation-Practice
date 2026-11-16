@@ -10,6 +10,11 @@
 分工：范围判定在仓储的 SQL 里，数字口径在 `app/core/teacher_tools_rules.py`（纯函数），
 PDF 字节来自可注入的 `PdfRenderer`（测试换假实现），审计是**同一张 `audit_logs`**
 （`ADR-029` §2.4），提交点全在本层。
+
+**第 30 轮（`ADR-033` §2.7）把 `batch_download` 拆成两半**：
+`batch_download()` 只过闸 + 入队（返回 `TaskQueued`），真正的打包在
+`build_batch_archive()` 里、由 worker 调用。两半的**第一句都是动作闸**，
+`tests/test_teacher_tools.py::test_every_entry_starts_with_the_action_gate` 逐条钉住。
 """
 
 from __future__ import annotations
@@ -48,6 +53,7 @@ from app.repositories.audit_log_repository import (
 )
 from app.repositories.organization_repository import OrganizationRepository
 from app.repositories.teacher_tools_repository import TeacherToolsRepository
+from app.schemas.task import TaskQueued
 from app.schemas.teacher_tools import (
     BatchManifest,
     DashboardRead,
@@ -58,6 +64,7 @@ from app.schemas.teacher_tools import (
     TagDistributionItem,
 )
 from app.services.auth_service import CurrentUserContext
+from app.services.task_service import TaskService
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +95,19 @@ class DownloadResult:
     content: bytes
 
 
+def _require_worker_organization(organization_id: str | None) -> str:
+    """worker 侧的动作闸：没有 `CurrentUserContext`，只有记录里的组织 id。
+
+    与 `TeacherToolsService._require_organization` 调的是**同一个** `require_organization`
+    （`ADR-025` §2.5 的唯一判据），差别只有「拒绝时写不写审计」——原因见
+    `build_batch_archive` 的 docstring。
+    """
+    try:
+        return require_organization(organization_id, action=OrganizationAction.BULK_DOWNLOAD)
+    except ActionRequiresOrganization as error:
+        raise TeacherOrganizationRequiredError(organization_id) from error
+
+
 class TeacherToolsService:
     def __init__(
         self,
@@ -96,11 +116,13 @@ class TeacherToolsService:
         audit: AuditLogRepository,
         organizations: OrganizationRepository,
         renderer: PdfRenderer,
+        tasks: TaskService,
     ) -> None:
         self._repository = repository
         self._audit = audit
         self._organizations = organizations
         self._renderer = renderer
+        self._tasks = tasks
 
     # ------------------------------------------------------------------ 闸
 
@@ -284,14 +306,25 @@ class TeacherToolsService:
         self._audit.commit()
         return DownloadResult(filename=filename, content=content)
 
-    def batch_download(
+    async def batch_download(
         self,
         context: CurrentUserContext,
         resume_ids: list[str],
         *,
         ip: str | None = None,
-    ) -> DownloadResult:
-        """打包下载：ZIP 结构 / manifest / 审计一次完成（ADR-029 §2.3、§2.4）。"""
+        request_id: str | None = None,
+    ) -> TaskQueued:
+        """批量下载的**入队**入口（第 30 轮改造，`ADR-033` §2.7）。
+
+        第 30 轮之前这个方法在这里把 50 份 PDF 渲染完拼成 ZIP 同步返回；现在它只做两件事：
+        **过动作闸**（第一句，一个字都没动）与**把任务放进 `arq:queue:pdf`**。
+        打包本身搬到 `build_batch_archive()`，由 worker 在 `WORKER_PDF_MAX_JOBS=2`
+        的并发上限下执行——那条「一次请求最多同时压 2 个浏览器」的约束只有在那里才成立。
+
+        返回值从 `DownloadResult` 变成 `TaskQueued`：**202 的语义**（§2.6）。
+        组装 ZIP 的结果与审计都在 worker 里产出（审计记的是「真的打出了一包」，
+        而不是「有人点了一下按钮」——`ADR-029` §2.4 的口径不变，只是时点后移）。
+        """
         organization_id = self._require_organization(
             context,
             action=OrganizationAction.BULK_DOWNLOAD,
@@ -300,12 +333,40 @@ class TeacherToolsService:
             ip=ip,
         )
 
+        return await self._tasks.submit_batch_download(
+            organization_id=organization_id,
+            owner_id=context.user.id,
+            username=context.user.username,
+            resume_ids=list(resume_ids),
+            request_id=request_id,
+            ip=ip,
+        )
+
+    def build_batch_archive(
+        self,
+        *,
+        organization_id: str,
+        actor_user_id: str,
+        actor_username: str,
+        resume_ids: list[str],
+        ip: str | None = None,
+    ) -> DownloadResult:
+        """真正的打包（worker 调用）：ZIP 结构 / manifest / 审计一次完成（`ADR-029` §2.3、§2.4）。
+
+        **第一句仍是动作闸**：记录里的组织 id 在入队时已经过闸，但 worker 执行时
+        组织归属可能已经变了（成员被移除），所以这里再用同一个判据过一遍——
+        代价是一次纯函数调用，收益是「每个入口第一句都是闸」这条契约在异步链路里不断裂。
+        这一步拒绝时**不写 denied 审计**：入队那一刻已经过了闸并留了痕，这里拒绝只意味着
+        「排队期间归属变了」，用户拿到的是任务失败里的一句「请先绑定组织」。
+        """
+        organization_id = _require_worker_organization(organization_id)
+
         # 去重但保序：同一 id 出现两次只出一份 PDF，顺序仍按用户勾选的顺序。
         ordered_ids = list(dict.fromkeys(resume_ids))
         documents, skipped = self._repository.documents(organization_id, ordered_ids)
         if not documents:
-            self._write_audit(
-                context=context,
+            self._write_audit_for(
+                actor_user_id=actor_user_id,
                 organization_id=organization_id,
                 action=AuditAction.RESUME_BATCH_DOWNLOAD,
                 target_type="resume_batch",
@@ -316,6 +377,7 @@ class TeacherToolsService:
                 bytes_count=0,
                 reason="no_downloadable_resume",
                 ip=ip,
+                detail=None,
             )
             self._audit.commit()
             raise NoDownloadableResumeError(ordered_ids)
@@ -323,8 +385,8 @@ class TeacherToolsService:
         try:
             items, files = self._build_archive_files(documents)
         except (PaperStylesUnavailableError, PdfRendererUnavailableError):
-            self._write_audit(
-                context=context,
+            self._write_audit_for(
+                actor_user_id=actor_user_id,
                 organization_id=organization_id,
                 action=AuditAction.RESUME_BATCH_DOWNLOAD,
                 target_type="resume_batch",
@@ -335,6 +397,7 @@ class TeacherToolsService:
                 bytes_count=0,
                 reason="renderer_unavailable",
                 ip=ip,
+                detail=None,
             )
             self._audit.commit()
             raise
@@ -345,7 +408,7 @@ class TeacherToolsService:
         manifest = BatchManifest(
             generated_at=generated_at,
             organization_id=organization_id,
-            actor_user_id=context.user.id,
+            actor_user_id=actor_user_id,
             format="pdf",
             item_count=len(items),
             items=items,
@@ -358,7 +421,7 @@ class TeacherToolsService:
             "简历批量导出\n"
             f"导出时间：{generated_at}\n"
             f"组织：{organization_name}\n"
-            f"发起人：{context.user.username}\n"
+            f"发起人：{actor_username}\n"
             f"条目数：{len(items)}（跳过 {len(skipped)} 条）\n"
             "格式：PDF\n"
             "本包只含已授权导出到本组织的简历版本；逐条校验和见 manifest.json。\n"
@@ -374,8 +437,8 @@ class TeacherToolsService:
                 archive.writestr(f"resumes/{name}", content)
         content = buffer.getvalue()
 
-        self._write_audit(
-            context=context,
+        self._write_audit_for(
+            actor_user_id=actor_user_id,
             organization_id=organization_id,
             action=AuditAction.RESUME_BATCH_DOWNLOAD,
             target_type="resume_batch",
@@ -386,6 +449,7 @@ class TeacherToolsService:
             bytes_count=len(content),
             reason=None,
             ip=ip,
+            detail=None,
         )
         self._audit.commit()
         stamp = utc_now().strftime("%Y%m%d-%H%M%S")
@@ -522,9 +586,46 @@ class TeacherToolsService:
         强行套下载那一份 `format/bytes` 会写出一条自相矛盾的审计。
         默认路径仍然只走 `teacher_audit_detail()`，避免字段名在调用点分叉。
         """
+        self._write_audit_for(
+            actor_user_id=context.user.id,
+            organization_id=organization_id,
+            action=action,
+            target_type=target_type,
+            target_id=target_id,
+            result=result,
+            resource_ids=resource_ids,
+            item_count=item_count,
+            bytes_count=bytes_count,
+            reason=reason,
+            ip=ip,
+            detail=detail,
+        )
+
+    def _write_audit_for(
+        self,
+        *,
+        actor_user_id: str,
+        organization_id: str | None,
+        action: AuditAction,
+        target_type: str,
+        target_id: str | None,
+        result: AuditResult,
+        resource_ids: list[str],
+        item_count: int,
+        bytes_count: int,
+        reason: str | None,
+        ip: str | None,
+        detail: str | None = None,
+    ) -> None:
+        """同上，但 actor 只给 id。
+
+        worker 里没有 `CurrentUserContext`（那是查库查出来的），而打包的审计恰好发生在
+        worker 里（`ADR-033` §2.7）。两处共用同一个行形状，只把 actor 的取法抽出来——
+        这样「下载审计到底记了什么」仍然只有一份实现。
+        """
         self._audit.record(
             action=action,
-            actor_user_id=context.user.id,
+            actor_user_id=actor_user_id,
             organization_id=organization_id,
             target_type=target_type,
             target_id=target_id,

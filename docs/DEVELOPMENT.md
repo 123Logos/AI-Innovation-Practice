@@ -306,11 +306,48 @@ uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 ```
 
-生产环境（**下面是目标形态，今天还没有一次真实部署过**：开发主机没装 Docker，`ADR-008` 那批件全是 `NOT VERIFIED`，`AGENTS.md` §1.5 的 Redis / 对象存储 / Worker 也一件都没接线）：
+### 11.2 Redis 与异步任务 worker（第 30 轮，`ADR-033`）
+
+导入 PDF 与批量导出这两条重链路**已经搬进队列**：web 进程只做「落盘 + 入队 + 轮询」，
+解析与渲染由 worker 执行。所以本地要跑通这两条功能，除了 MySQL 还需要一个 Redis
+和至少一个 worker 进程。
+
+```bash
+# 本机（或用 docker run -p 6379:6379 redis:7）
+redis-server                                  # 或：docker run --rm -p 6379:6379 redis:7
+
+# 三条队列三个进程，各起各的（另开三个终端）
+uv run arq app.worker.OcrWorkerSettings       # 导入：文本层 / OCR / DeepSeek
+uv run arq app.worker.PdfWorkerSettings       # 打包：无头浏览器渲染 + ZIP
+uv run arq app.worker.DefaultWorkerSettings   # 常规 I/O（今天没有任务注册）
+```
+
+**⚠️ 不起 worker 的表现是「任务永远停在 pending」**，不是报错：web 那边 202 已经回了，
+队列里也真有这条任务，只是没人消费。它会在 `WORKER_TASK_TTL_SECONDS`（默认 30 分钟）
+之后变成 404。这条是本篇最容易在部署时踩到的坑，所以单独写一行。
+
+| 环境变量 | 默认 | 作用 |
+|---|---|---|
+| `REDIS_URL` | 空（= 两条功能 503） | 队列与任务记录；`production` 下缺失启动即失败 |
+| `WORKER_OCR_MAX_JOBS` | 4 | 导入并发（吃 CPU，共用一个 OCR 引擎） |
+| `WORKER_PDF_MAX_JOBS` | 2 | 打包并发（每条起一个浏览器子进程，**防 OOM**） |
+| `WORKER_DEFAULT_MAX_JOBS` | 10 | 常规 I/O 并发（今天空跑） |
+| `WORKER_JOB_TIMEOUT_SECONDS` | 900 | 单任务超时，也是 BYOK Key 密文的 TTL |
+| `WORKER_TASK_TTL_SECONDS` | 1800 | 任务记录（状态 + 结果）保留时长 |
+| `WORKER_IMPORT_DIR` / `WORKER_DOWNLOAD_DIR` | `temp/imports` / `downloads` | 暂存与产物目录（都在 `.gitignore` 里） |
+
+**没有 Redis 时会发生什么**（如实写清，而不是假装可用）：web 照常启动，
+登录 / 档案 / 岗位 / 测评 / 面试 / 看板全部正常；只有
+`POST /resumes/import-pdf` 与 `POST /teacher/resumes/batch-download` 返回 **503**
+（消息是全站 5xx 的固定一句「服务暂时不可用，请稍后重试。」，
+`details.reason = "TASK_QUEUE_UNAVAILABLE"` 供排障）。**不回落成同步执行**——
+那等于让最重的那两条链路绕开并发上限（`ADR-033` §6）。
+
+生产环境（**下面是目标形态，今天还没有一次真实部署过**：开发主机没装 Docker，`ADR-008` 那批件全是 `NOT VERIFIED`；`ADR-033` 之后 Redis 与 worker **有代码了**，但同样没有一次真机部署）：
 
 1. 构建前端静态资源和后端镜像；
 2. 由密钥管理系统注入环境变量——**必注入的只有 `DATABASE_URL` 与 `JWT_SECRET_KEY`**（§8 那两个启动即拦的检查）；`DEEPSEEK_API_KEY` 不需要，AI 凭据是用户自己带的（BYOK）；
-3. 启动 MySQL、API、反向代理。~~Redis、对象存储、Worker~~ 这三件**当前没有对应代码**，把它们放进 runbook 只会让人去查一个不存在的进程；真要引入时按 §4.6 先写 ADR，再回来改这一节；
+3. 启动 MySQL、**Redis**、API、**三个 worker**（§11.2）与反向代理。对象存储仍然**没有对应代码**（产物落在本地盘，`ADR-033` §7 第 5 条记着「多机部署不成立」）；
 4. 执行 Alembic 迁移和健康检查（`/api/v1/health`；迁移漏跑时开发/测试打印告警、**生产直接拒绝启动**）；
 5. 配置 HTTPS、备份、监控和告警；
 6. 先灰度，再开放企业和学生流量。
@@ -319,7 +356,7 @@ uv run uvicorn app.main:app --reload
 
 **设计**：结构化日志包含 request ID、用户/组织哈希、路由、状态码、耗时和错误码；指标包含 API 延迟、AI 成功率、任务积压、数据库连接、导出量和授权拒绝量。告警不得把敏感请求体直接发送到第三方。
 
-**现状（2026-11-15 核对）**：统一响应信封里确实带 `request_id`，错误也按枚举码归一（G3 那张 `app/core/error_messages.py`），日志配置在 `app/main.py`；**但没有任何指标系统**——没有 Prometheus/OTel/APM 依赖，「API 延迟 / AI 成功率 / 任务积压 / 导出量 / 授权拒绝量」这五个数今天只能从日志和库里手工统计，其中「任务积压」本来就不存在（没有队列）。这一节整段仍是验收基线，不是已交付能力。
+**现状（2026-11-16 核对）**：统一响应信封里确实带 `request_id`，错误也按枚举码归一（G3 那张 `app/core/error_messages.py`），日志配置在 `app/main.py`；**但没有任何指标系统**——没有 Prometheus/OTel/APM 依赖，「API 延迟 / AI 成功率 / 导出量 / 授权拒绝量」这四个数今天只能从日志和库里手工统计。**「任务积压」从第 30 轮起真的存在了**（`ADR-033` 的三条 ARQ 队列），观测手段是 `redis-cli zcard arq:queue:ocr` / `arq:queue:pdf`——一个手工命令，不是指标。这一节整段仍是验收基线，不是已交付能力。
 
 参考：[OWASP API Security Top 10 2023](https://api-security.owasp.org/editions/2023/en/0x11-t10/)、[W3C WebRTC Recommendation](https://www.w3.org/TR/webrtc/)、[ISO/IEC 25010:2023](https://www.iso.org/standard/78176.html)。
 所有文本文件统一 UTF-8 无 BOM；Windows 下用 Get-Content -Encoding utf8 查看，避免乱码。

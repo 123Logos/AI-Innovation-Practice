@@ -28,6 +28,7 @@ from app.core.error_messages import (
 )
 from app.core.errors import error_response
 from app.core.rate_limit import limiter
+from app.integrations.task_runtime import reset_task_runtime
 from app.services.resume_import import PdfImportError
 from app.services.resume_service import (
     ResumeApiKeyMissingError,
@@ -159,7 +160,12 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
                 check_migration_state(connection, settings)
         finally:
             engine.dispose()
-    yield
+    try:
+        yield
+    finally:
+        # 第 30 轮（`ADR-033`）：任务队列的连接池随进程关掉。**容忍没配 Redis**——
+        # 那种部署下 `_TASK_RUNTIME` 从来没被建过，`reset` 是空操作。
+        await reset_task_runtime()
 
 
 def create_app() -> FastAPI:
@@ -342,10 +348,17 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(PdfImportError)
     async def pdf_import_failed(_: Request, exc: PdfImportError) -> JSONResponse:
-        """外部 PDF 导入的五个失败码共用一个 422（`ADR-031` 2.5）。
+        """PDF 导入**同步预检**的失败码（`ADR-031` 2.5；第 30 轮起只剩两个，`ADR-033` §2.7）。
 
-        **为什么一个状态码配五个码**：老板指定「无 Key 或 AI 失败返回 422」，
-        而这五种情况用户的下一步完全不同（换文件 / 配 Key / 稍后再试 / 手动填）。
+        第 30 轮把解析搬进 worker 之后，走这条处理器的只有上传端点自己敢判的两件事：
+        体积超限（`PDF_TOO_LARGE`）与没带 Key（`AI_KEY_MISSING`）。
+        另外三个码（`PDF_INVALID` / `AI_SERVICE_UNAVAILABLE` / `AI_OUTPUT_INVALID`）
+        必须真跑一遍才知道，所以它们是**任务终态**里的 `error.code`——
+        同一个受信目录（`app/core/task_errors.py::TASK_ERROR_MESSAGES`），
+        只是出口从「这个处理器」换成了「`GET /tasks/{id}` 的响应」。
+
+        **为什么一个状态码配多个码**：老板指定「无 Key 或 AI 失败返回 422」，
+        而这几种情况用户的下一步完全不同（换文件 / 配 Key / 稍后再试 / 手动填）。
         前端按 `code` 分叉——`AI_KEY_MISSING` 那一条要带出「点此配置 AI 密钥」的链接
         （第 25 轮的 `AiKeyHint`），按状态码分叉会把这五种混成一锅。
 

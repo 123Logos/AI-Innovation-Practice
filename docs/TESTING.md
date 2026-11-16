@@ -15,7 +15,7 @@
 |---|---|---|---|
 | 静态检查 | **实际用的**：Ruff（`ruff format --check` + `ruff check`）、mypy、import-linter（5 个 contract）、ESLint、vue-tsc。~~Pyright~~ 不在本仓库工具链里。 | 格式、类型、**分层依赖方向**和前端类型 | P0/P1 |
 | 单元测试 | Pytest、Vitest | 公式、状态机、schema、组件、错误映射 | P0/P1 |
-| 集成测试 | Pytest + MySQL（~~Redis/MinIO~~ 未接线，故「任务」与「签名 URL」两类今天无从测起） | 数据库、鉴权、组织隔离、权限闸、审计 | P0/P1 |
+| 集成测试 | Pytest + MySQL；**Redis 用 `fakeredis` 替身**（第 30 轮，`ADR-033`）。~~MinIO~~ 仍未接线，故「签名 URL」那一类今天无从测起 | 数据库、鉴权、组织隔离、权限闸、审计、**异步任务四态与队列隔离** | P0/P1 |
 | 契约测试 | OpenAPI + Schemathesis/断言 | 状态码、响应结构、错误码 | P0/P1 |
 | E2E | Playwright —— **未实施**：仓库里没有 playwright 依赖也没有脚本。主流程今天靠集成测试 + 真浏览器 CDP 手工实测兜住 | 主流程、移动端和错误态 | P0/P1（缺口） |
 | 安全测试 | OWASP 清单、依赖扫描、授权矩阵 | BOLA、认证、SSRF、限流和泄露 | P0 |
@@ -32,7 +32,7 @@ uv run ruff format --check app tests alembic scripts
 uv run ruff check app tests scripts
 uv run mypy app scripts
 uv run lint-imports
-uv run pytest -q                 # 2026-11-16 实测：824 passed
+uv run pytest -q                 # 2026-11-16 实测：见交付说明（含 59 条导入 + 23 条教师端 + 新增的任务用例）
 
 # 文档与文案闸（五道，全在 scripts/）
 uv run python scripts/check_ui_copy.py            # G1
@@ -47,6 +47,24 @@ npm run typecheck
 npm run test
 npm run build
 ```
+
+### 2.1 异步任务怎么测（第 30 轮，`ADR-033`）
+
+`tests/conftest.py` 的 `task_runtime` 夹具（autouse）把「取任务运行时」换成
+`tests/task_support.py` 里的 fakeredis 实现：**队列与记录都真的在 fakeredis 里**，
+ARQ 的 `enqueue_job` 与 `arq.Worker` 也都是真的——只是 Redis 本身被替掉了。
+
+| 想测什么 | 怎么写 |
+|---|---|
+| 「上传之后跑完」 | `run_all_workers()`：在新事件循环里 `burst` 跑一次真 worker |
+| 任务四态 | 先读 `GET /tasks/{id}` 的 `pending`，跑完再读 `completed` / `failed` |
+| job 丢了 | `drop_job(task_id, queue)`：删掉 ARQ 的两条键，模拟 worker 崩溃 |
+| Key 生命周期 | `read_secret(task_id)` / `job_raw(task_id)`：断言「密文在、明文不在、用完消失」 |
+
+**两条 Windows 特有的兼容垫片**写在 `task_support.py::_worker_compat_shims` 里
+（`signal.SIGUSR1` 在 Windows 上不存在；fakeredis 没实现 ARQ 启动时打的 `INFO`），
+注释里写清了「为什么不是改 arq 本身」。**本机没有 Redis**，所以真实 Redis 上的
+worker 运行不在 CI 也不在本机覆盖面内——这一格如实记在 `ADR-033` §3 代价第 6 条。
 
 ## 3. 错误编号与输出规范
 

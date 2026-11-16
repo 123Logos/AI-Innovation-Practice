@@ -11,6 +11,7 @@ T7.2 起 `get_resume_service` 装配真实 MySQL 仓储；`FakeResumeRepository`
 """
 
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException
@@ -32,6 +33,7 @@ from app.integrations.profile_summarizer import DeepSeekProfileSummarizer
 from app.integrations.resume_generator import TemplateResumeGenerator
 from app.integrations.resume_structurer import DeepSeekResumeStructurer
 from app.integrations.skill_extractor import DeepSeekJobSkillExtractor
+from app.integrations.task_runtime import get_task_runtime
 from app.repositories.assessment_repository import AssessmentRepository
 from app.repositories.audit_log_repository import AuditAction, AuditLogRepository, AuditResult
 from app.repositories.interview_repository import InterviewRepository
@@ -59,6 +61,7 @@ from app.services.organization_service import OrganizationService
 from app.services.profile_service import ProfileService
 from app.services.resume_import import ResumePdfImportService
 from app.services.resume_service import ResumeService
+from app.services.task_service import TaskService
 from app.services.teacher_tools_service import TeacherToolsService
 
 UNAUTHORIZED_MESSAGE = "无效或已过期的访问令牌。"
@@ -304,12 +307,23 @@ def get_assessment_service(request: Request) -> Iterator[AssessmentService]:
 def get_teacher_tools_service() -> Iterator[TeacherToolsService]:
     """装配教师端工具（FR-08 / B10a、B10b，`ADR-029`）。
 
-    一个 session、**三个仓储 + 一个渲染器**：看板读标签/技能/岗位，导出读简历，
-    两者都要在同一笔请求里写审计。分两次会话就会出现「文件发出去了、审计没写」
-    的窗口，而下载审计答不了「谁在什么时候带走了什么」。
+    一个 session、**三个仓储 + 一个渲染器 + 一个任务服务**：看板读标签/技能/岗位，
+    导出读简历，两者都要在同一笔请求里写审计；批量下载从第 30 轮起只**入队**
+    （`ADR-033` §2.7），所以还要一个 `TaskService`。
 
     `PdfRenderer` 走可注入的抽象：测试把装配点上的符号换成假实现（与
     `tests/test_interviews.py` 的 `ai_coach` 同构），CI 不需要真的装浏览器。
+    """
+    with teacher_tools_scope() as service:
+        yield service
+
+
+@contextmanager
+def teacher_tools_scope() -> Iterator[TeacherToolsService]:
+    """同一套装配的**非依赖版本**：worker 的打包任务也要用它（`ADR-033` §2.7）。
+
+    两处共用一个函数而不是各装配一遍：worker 里的那份如果漏装审计仓储，
+    「文件发出去了、审计没写」就会成为异步链路独有的洞，而它在 HTTP 用例里测不出来。
     """
     with session_scope() as session:
         yield TeacherToolsService(
@@ -317,7 +331,18 @@ def get_teacher_tools_service() -> Iterator[TeacherToolsService]:
             audit=AuditLogRepository(session),
             organizations=OrganizationRepository(session),
             renderer=HeadlessBrowserPdfRenderer(),
+            tasks=get_task_service(),
         )
+
+
+def get_task_service() -> TaskService:
+    """任务服务（第 30 轮，`ADR-033`）。
+
+    **不建连接**：`TaskService` 只持有一个「取运行时」的调用，`get_task_runtime()`
+    在真正用到它的时候才连 Redis。这样没配 `REDIS_URL` 时只有两个任务端点 503，
+    教师看板、单份导出这些**不需要队列**的端点照常工作。
+    """
+    return TaskService(get_task_runtime)
 
 
 def get_interview_service(request: Request) -> Iterator[InterviewService]:
@@ -367,25 +392,22 @@ def get_resume_service(request: Request) -> Iterator[ResumeService]:
         )
 
 
-def get_resume_pdf_import_service(request: Request) -> ResumePdfImportService:
-    """装配外部 PDF 简历导入（第 28 轮，`ADR-031`）。
+def get_deepseek_key(request: Request) -> str:
+    """BYOK 请求头里的那一把 Key（剥空白）。
 
-    **这里刻意没有 `session_scope()`**：本端点一行都不写库（2.1），所以它不需要、
-    也不该占一条数据库连接。这是「纯计算端点」这条既有分工的干净形态
-    （`/resumes/polish` 与 `/jobs/extract-skills` 都因为还要读档案/岗位才开 session），
-    不是漏装配——漏装配的样子是「开了 session 却一个仓储都没传进去」。
-
-    Key 的取法与 `get_resume_service` 完全同构：空 Key 时 structurer 装 `None`，
-    由服务层翻译成 422 `AI_KEY_MISSING`，**不在这里 4xx**——
-    这一族的码与文案都由服务层决定，装配层不参与业务判断。
-
-    Key 只活在这一次请求的内存里：不落库、不写日志、不进异常消息（`ADR-009`）。
-
-    v2（`ADR-031` §2.9）之后抽取器换成 `TextLayerThenOcrExtractor`：文字层优先、
-    读不出才认像素。**OCR 引擎不在这里建**——它挂在这个抽取器上懒建，
-    所以「没导过扫描件的一次进程」既不起模型也不占那把锁。
+    第 30 轮起它是**独立依赖**（`ADR-033` §2.4）：导入端点要把 Key 加密后交给 worker，
+    而「从哪个头取、要不要 strip」只该有一处定义。取法一格没变
+    （`X-DeepSeek-Key`，`ADR-009`），变的只是拿到之后怎么送过进程边界。
     """
-    api_key = request.headers.get(DEEPSEEK_KEY_HEADER, "").strip()
+    return request.headers.get(DEEPSEEK_KEY_HEADER, "").strip()
+
+
+def build_resume_pdf_import_service(api_key: str) -> ResumePdfImportService:
+    """导入服务的唯一装配点：HTTP 与 worker 共用（`ADR-033` §2.7）。
+
+    两个调用点唯一的差别是 Key 从哪来（请求头 / Redis 里解出来的密文），
+    而「装哪两个适配器、空 Key 时怎么办」只有一份实现。
+    """
     return ResumePdfImportService(
         pdf_extractor=TextLayerThenOcrExtractor(),
         structurer=DeepSeekResumeStructurer(api_key) if api_key else None,

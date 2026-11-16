@@ -10,7 +10,8 @@
  */
 
 import { http, unwrap } from './client'
-import type { ApiSuccess } from './types'
+import { downloadTaskFile } from './tasks'
+import type { ApiSuccess, TaskQueued } from './types'
 
 /* --------------------------------- 读模型 --------------------------------- */
 
@@ -81,14 +82,32 @@ export async function listResumes(): Promise<DownloadableResume[]> {
   return unwrap(response).items
 }
 
-/** `POST /api/v1/teacher/resumes/batch-download`：勾选的简历打成一个 ZIP。 */
-export async function downloadBatch(resumeIds: string[]): Promise<Blob> {
-  const response = await http.post<Blob>(
-    '/teacher/resumes/batch-download',
-    { resume_ids: resumeIds, format: 'pdf' },
-    { responseType: 'blob' },
-  )
-  return response.data
+/**
+ * `POST /api/v1/teacher/resumes/batch-download`：**入队**并拿回 `task_id`（第 30 轮，`ADR-033`）。
+ *
+ * 第 30 轮之前这里直接拿 ZIP；现在打包在 `arq:queue:pdf` 的 worker 里跑
+ * （并发上限 `WORKER_PDF_MAX_JOBS`，默认 2），所以这个函数返回的是任务标识，
+ * 调用方接着用 `usePollTask()` 轮询，完成后调 `fetchTaskArchive()` 取文件。
+ *
+ * 三点与旧版不同：
+ * 1. **不 `responseType: 'blob'`**：202 的响应体是 JSON（`{task_id, ...}`），
+ *    按 blob 解析会让 `response.data` 变成一个 Blob，`unwrap()` 直接失败；
+ * 2. **超时回到默认 15 秒**：这个请求只做「过闸 + 建记录 + 入队」；
+ * 3. **失败口径变了**：散人 400、一条都不可下载 → 现在是**任务失败**
+ *    （`state=failed` + `code=NO_DOWNLOADABLE_RESUME`），不再是同步 400。
+ *    只有「没组织」仍留在同步路径上——它不需要读任何业务数据就能判。
+ */
+export async function downloadBatch(resumeIds: string[]): Promise<TaskQueued> {
+  const response = await http.post<ApiSuccess<TaskQueued>>('/teacher/resumes/batch-download', {
+    resume_ids: resumeIds,
+    format: 'pdf',
+  })
+  return unwrap(response)
+}
+
+/** 任务完成后取产物（一次性；文件由后端在响应结束时删掉）。 */
+export async function fetchTaskArchive(taskId: string): Promise<Blob> {
+  return downloadTaskFile(taskId)
 }
 
 /** `POST /api/v1/resumes/{id}/export?format=pdf`：单份 PDF。 */

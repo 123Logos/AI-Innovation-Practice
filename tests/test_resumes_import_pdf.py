@@ -19,8 +19,16 @@
 5. 回执即可保存 —— 把响应里的 `profile` 原样 `PUT /profiles/me` 必须 200：
    这是「AI 产物不该让用户点保存时才吃 422」这条口径唯一的证明方式。
 
+**第 30 轮（`ADR-033`）把这条链路改成了异步**：上传端点只返回 202 + `task_id`，
+真正的解析发生在 worker 里，结果从 `GET /tasks/{task_id}` 取。所以本文件的
+`_import()` 现在做三件事——**上传 → 跑一次真 ARQ worker（fakeredis 承载队列）→ 轮询终态**，
+再把它翻译成与旧契约同形的对象（`TaskOutcome`）。这样做的理由只有一个：
+上面那些断言（抽出来的文本是不是模型收到的那段、归一有没有丢条、`dropped` 对不对）
+一条都不该因为「传输层换了」而作废。202 契约本身由 `tests/test_tasks.py` 单独钉。
+
 Key 相关：`API_KEY` 只是本地假串，本机没有真实凭据；它必须出现在**外呼请求**里
-（BYOK 的定义），且绝不出现在响应体里。
+（BYOK 的定义），且绝不出现在响应体里。第 30 轮之后它还要跨越一次进程边界：
+以 Fernet 密文在 Redis 里活到 worker 读完为止（`ADR-033` §2.4）。
 
 拦截点仍是自己构造的 `httpx2.MockTransport`：`openai` 3.x 走 `httpx2`，
 而 pytest-httpx / respx 只给 `httpx` 打补丁（实测那种「Mock」会把请求真的发出去）。
@@ -55,8 +63,10 @@ from sqlalchemy.engine import Engine
 from app.core.rate_limit import IMPORT_RATE_LIMIT
 from app.repositories.user_repository import get_engine
 from app.services.resume_import import MAX_PDF_BYTES
+from tests.task_support import run_all_workers
 
-IMPORT_URL = "/api/v1/resumes/import-pdf"
+API = "/api/v1"
+IMPORT_URL = f"{API}/resumes/import-pdf"
 PROFILE_ME_URL = "/api/v1/profiles/me"
 REGISTER_URL = "/api/v1/auth/register"
 LOGIN_URL = "/api/v1/auth/login"
@@ -357,6 +367,70 @@ def image_pdf(text: str, *, pages: int = 1) -> bytes:
     return bytes(out)
 
 
+class TaskOutcome:
+    """一次「上传 + 跑任务 + 轮询」的合成结果，**形状与旧的同步响应一致**。
+
+    为什么造这个对象而不是把 40 条断言全改成读 `data.result`：那些断言测的是
+    「解析与归一对不对」，它们与「结果是同步返回还是轮询拿到」无关。
+    传输层换了就把断言全重写一遍，等于把「这条链路还对不对」的证据一起丢掉。
+    真正属于新契约的三件事（202、四态、轮询里的 `progress` / `stage`）
+    由 `tests/test_tasks.py` 单独测，不靠这个对象。
+
+    - 任务 `complete` → `status_code = 200`，`json()["data"]` 就是旧契约的
+      `{profile, meta}`（直接来自记录的 `result` 字段）；
+    - 任务 `failed` → `status_code = 422`，`json()` 是与旧契约同形的错误信封
+      （`error.code` / `error.message` / `error.retryable` / `meta.request_id`）。
+    """
+
+    def __init__(self, upload: Any, task_id: str, payload: dict[str, Any]) -> None:
+        self.upload = upload
+        self.task_id = task_id
+        self.payload = payload
+        self.status_code = 200 if payload["state"] == "complete" else 422
+        self.request = upload.request
+
+    @property
+    def text(self) -> str:
+        return json.dumps(self.json(), ensure_ascii=False)
+
+    def json(self) -> dict[str, Any]:
+        if self.status_code == 200:
+            return {"data": self.payload.get("result") or {}}
+        error = self.payload.get("error") or {}
+        return {
+            "error": {
+                "code": error.get("code"),
+                "message": error.get("message"),
+                "details": {},
+                "retryable": bool(error.get("retryable")),
+            },
+            "meta": {"request_id": self.upload.json().get("meta", {}).get("request_id")},
+        }
+
+
+class UploadRejected:
+    """**同步预检**的拒绝：上传端点自己就敢判的两件事（体积超限、没带 Key）。
+
+    `ADR-033` §2.7 的分界：用户能立刻修的错误留在同步路径上（不等排队），
+    必须真跑一遍才知道的（文件读不出字、AI 挂了）才落到任务终态。
+    这个对象让两边的断言写法一致，同时把「哪些是同步拒绝」这件事留在代码里，
+    而不是靠 `status_code == 202` 的断言失败去发现。
+    """
+
+    def __init__(self, response: Any) -> None:
+        self.response = response
+        self.status_code = response.status_code
+        self.request = response.request
+        self.task_id: str | None = None
+
+    @property
+    def text(self) -> str:
+        return str(self.response.text)
+
+    def json(self) -> dict[str, Any]:
+        return dict(self.response.json())
+
+
 def _import(
     client: TestClient,
     token: str,
@@ -364,12 +438,28 @@ def _import(
     *,
     filename: str = "resume.pdf",
     with_key: bool = True,
-) -> Any:
-    return client.post(
+) -> TaskOutcome | UploadRejected:
+    """上传 → 断言 202 → 跑一次 worker → 轮询终态。
+
+    worker 是**真的**（`arq.Worker` + fakeredis），不是直接调任务函数：
+    「任务注册在哪条队列」「`_job_id` 对不对」「worker 取到的是不是这条」这三件
+    只有让 ARQ 自己跑一遍才测得到（理由见 `tests/task_support.py`）。
+    """
+    upload = client.post(
         IMPORT_URL,
         files={"file": (filename, data, "application/pdf")},
         headers=_byok(token) if with_key else _auth(token),
     )
+    if upload.status_code != 202:
+        # 只可能是同步预检（422）。**不许**在这里顺手返回 200，
+        # 否则「上传即入队」这条契约在用例里就没被验过。
+        assert upload.status_code == 422, upload.text
+        return UploadRejected(upload)
+    task_id: str = upload.json()["data"]["task_id"]
+    run_all_workers()
+    status = client.get(f"{API}/tasks/{task_id}", headers=_auth(token))
+    assert status.status_code == 200, status.text
+    return TaskOutcome(upload, task_id, status.json()["data"])
 
 
 def _profile(response: Any) -> dict[str, Any]:

@@ -6,6 +6,7 @@ import ResumePreview from '@/components/ResumePreview.vue'
 import StylePanel from '@/components/StylePanel.vue'
 import AiKeyHint from '@/components/AiKeyHint.vue'
 import { isApiError } from '@/api'
+import { TaskFailedError } from '@/composables/usePollTask'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
 import { useResumeStore } from '@/stores/resume'
@@ -26,6 +27,26 @@ const loadError = ref('')
  */
 const importFeedback = ref<{ tone: 'ok' | 'error'; text: string } | null>(null)
 const importCode = ref<string | null>(null)
+
+/**
+ * 任务进度（第 30 轮，`ADR-033`）：进度条与那行文字都读服务端的 `stage`/`progress`。
+ *
+ * **不在前端自己推**：`progress` 由 `app/core/task_kinds.py::progress_for()` 算，
+ * 前端再算一遍就会出现「进度条到 100% 但状态还是 running」这种自相矛盾的画面。
+ */
+const importStageText = computed(() => {
+  switch (store.importTask?.stage) {
+    case 'queued':
+      return '已排队，马上开始…'
+    case 'extracting':
+      return '正在提取文字…'
+    case 'structuring':
+      return '正在整理成档案…'
+    default:
+      return '正在解析 PDF…'
+  }
+})
+const importProgress = computed(() => store.importTask?.progress ?? 5)
 const fileInput = ref<HTMLInputElement | null>(null)
 
 /** 草稿写入时间，仅用于提示文案。 */
@@ -99,7 +120,11 @@ async function handleFileChange(event: Event): Promise<void> {
   try {
     await store.importPdf(file)
   } catch (error) {
-    importCode.value = isApiError(error) ? error.code : null
+    importCode.value = isApiError(error)
+      ? error.code
+      : error instanceof TaskFailedError
+        ? error.code
+        : null
     importFeedback.value = { tone: 'error', text: importFailureText(error) }
     return
   }
@@ -117,6 +142,14 @@ async function handleFileChange(event: Event): Promise<void> {
  * 而扫描件这件事只有用户能判断（我们分不清是扫描件还是加密），所以给的是动作不是原因。
  */
 function importFailureText(error: unknown): string {
+  // 第 30 轮（`ADR-033`）：失败发生在任务终态里，抛的是 `TaskFailedError`（带码与句子）。
+  // 它**不是** `ApiError`——请求成功了，任务失败了；两者的下一步不同，不能合并成一个分支。
+  if (error instanceof TaskFailedError) {
+    // 任务终态里那句已经是受信目录里的话，而且**已经说清了下一步**
+    // （AI_UNAVAILABLE 那句自带「本次请求未被保存，您的资料不受影响」）。
+    // 在这里再拼一句只会变成两句同义话，读起来像系统在自我安慰。
+    return error.message
+  }
   if (!isApiError(error)) return '导入失败，请稍后重试。'
   switch (error.code) {
     case 'PDF_TOO_LARGE':
@@ -276,7 +309,22 @@ onUnmounted(() => {
       data-testid="import-mask"
     >
       <div class="ui-panel import-mask__card">
-        <p class="import-mask__text">正在解析 PDF…</p>
+        <p class="import-mask__text">{{ importStageText }}</p>
+        <!--
+          进度条：`role="progressbar"` + 三个 aria 值，屏幕阅读器读得到「到哪一步了」。
+          `width` 用内联样式而不是若干档类名：百分比是数据，不是样式。
+        -->
+        <div
+          class="import-mask__bar"
+          role="progressbar"
+          :aria-valuenow="importProgress"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          :aria-label="importStageText"
+          data-testid="import-progress"
+        >
+          <span class="import-mask__fill" :style="{ width: `${importProgress}%` }"></span>
+        </div>
         <p class="import-mask__hint">这一步用的是你自己的 AI 用量，通常几秒到半分钟。</p>
       </div>
     </div>
@@ -340,6 +388,9 @@ onUnmounted(() => {
 .import-mask__card { text-align: center; }
 .import-mask__text { margin: 0; color: var(--ui-ink); font-size: var(--text-lg); font-weight: 650; }
 .import-mask__hint { margin: 8px 0 0; color: var(--ui-ink-muted); font-size: var(--text-sm); line-height: 1.5; }
+/* 进度条：底轨与填充都用主题色令牌（G4 不许裸 hex）。高度 6px 是「看得见但不抢眼」的那一档。 */
+.import-mask__bar { height: 6px; margin: 12px auto 0; border-radius: 999px; background: var(--theme-bg-light); overflow: hidden; }
+.import-mask__fill { display: block; height: 100%; border-radius: 999px; background: var(--theme-primary); transition: width var(--motion-fast) ease-out; }
 
 /* 本地草稿恢复提示：用页面内联条，不用 window.confirm —— 可样式化、不阻塞、可测。 */
 .draft-banner-shell { width: min(calc(var(--paper-a4-width) + 96px), 100%); margin: 0 auto; padding: 12px 48px 0; }
