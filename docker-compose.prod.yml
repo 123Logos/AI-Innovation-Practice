@@ -1,0 +1,224 @@
+# 生产形态的一键部署文件（第 31 轮）。
+#
+# NOT VERIFIED：开发主机没装 Docker（`docs/adr/ADR-008-docker-configs-unverified.md`），
+# 这份文件与 `Dockerfile.*` 都**从未真机跑过**。它是一份「按今天的代码写准了坐标」的
+# 部署草案，不是一份已验证的部署——第一次 `up` 仍可能需要修。
+#
+# 与 `docker-compose.yml`（开发形态）的四处差别，都不是风格问题：
+#
+#   1. `ENVIRONMENT=production`：`app/core/config.py` 在 production 下强制
+#      强 JWT（≥32 字符）、`DATABASE_URL`、`REDIS_URL` 齐全，缺一个**启动即失败**；
+#      迁移落后时 `app/main.py::check_migration_state` 直接拒绝启动。开发形态故意用
+#      `development`，就是为了本机能带着未提交的迁移先跑起来。
+#   2. `db` / `redis` **不发布端口**：只走 compose 内网。开发形态把 6379 映射出来是为了
+#      `redis-cli` 看队列深度，生产多开一个口就是多一条可扫的攻击面。
+#   3. `worker-pdf` 的镜像里装了 Chromium 与中文字体（`build.args.INSTALL_PDF_BROWSER=1`）。
+#      没有它，导出会以 `PDF_RENDERER_UNAVAILABLE` 失败——**不会**返回假 PDF
+#      （`ADR-029` §2.5），但对用户来说就是「导出用不了」。
+#   4. 每个服务都带日志轮转（`x-logging`），否则一天就能把宿主磁盘写满。
+#
+# 五个必起服务：`db`（MySQL）、`redis`、`web`（Uvicorn）、`worker-ocr`、`worker-pdf`。
+# 另带 `frontend`（nginx 托管 SPA + 反代 `/api`）：不带它就没有界面，而
+# `FRONTEND_URL` / `ALLOWED_ORIGINS` 也得指向某个东西。想自己接反向代理就把
+# `frontend` 整段删掉，把你的域名写进 `.env` 的 `PUBLIC_ORIGIN`。
+#
+# 变量全部来自仓库根的 `.env`（compose 自动加载）。`${VAR:?}` 会让缺失的必填项
+# **当场失败并指名道姓**，而不是起一个半配置的容器。
+#   MYSQL_PASSWORD / MYSQL_DATABASE / MYSQL_USER / JWT_SECRET_KEY（≥32 字符）/ PUBLIC_ORIGIN
+
+name: ai-career-platform
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# 三个 worker 与 web 共用同一份环境：它们读同一个库、同一条队列，装配口径必须一致
+# （worker 里漏一个变量，表现是「HTTP 侧好好的、任务里 500」）。
+x-app-env: &app-env
+  # 库地址按服务名拼：宿主 `.env` 里那个 127.0.0.1 在容器里指的是容器自己。
+  DATABASE_URL: mysql+pymysql://${MYSQL_USER:-root}:${MYSQL_PASSWORD:?MYSQL_PASSWORD is not set - create .env from .env.example}@db:3306/${MYSQL_DATABASE:?MYSQL_DATABASE is not set - create .env from .env.example}?charset=utf8mb4
+  ENVIRONMENT: production
+  JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY is not set - create .env from .env.example}
+  REDIS_URL: redis://redis:6379/0
+  # 三条队列的并发上限（`ADR-033` §2.2）。pdf 两条 = 两个浏览器子进程，
+  # 机器内存 < 4 GB 时把它调到 1，否则 OOM 杀的是 worker 而不是「慢一点」。
+  WORKER_OCR_MAX_JOBS: ${WORKER_OCR_MAX_JOBS:-4}
+  WORKER_PDF_MAX_JOBS: ${WORKER_PDF_MAX_JOBS:-2}
+  WORKER_DEFAULT_MAX_JOBS: ${WORKER_DEFAULT_MAX_JOBS:-10}
+  WORKER_JOB_TIMEOUT_SECONDS: ${WORKER_JOB_TIMEOUT_SECONDS:-900}
+  WORKER_TASK_TTL_SECONDS: ${WORKER_TASK_TTL_SECONDS:-1800}
+  WORKER_IMPORT_DIR: temp/imports
+  WORKER_DOWNLOAD_DIR: downloads
+  # BYOK 的 Key 用 Fernet 加密后过 Redis，加密密钥由 JWT_SECRET_KEY 派生
+  # （`app/core/task_secrets.py`）：换 JWT 密钥等于让在途任务的 Key 全部解不开，
+  # 表现是任务以 `AI_KEY_MISSING` 失败。轮换要挑没人跑任务的窗口。
+
+services:
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is not set - create .env from .env.example}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?MYSQL_DATABASE is not set - create .env from .env.example}
+      MYSQL_USER: ${MYSQL_USER:-root}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is not set - create .env from .env.example}
+    # 简历正文与中文姓名都靠 utf8mb4；排序规则与迁移里建表时一致。
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    # `noeviction` 不是调优而是**正确性**（`ADR-033` §7 第 6 条）：任务记录被内存策略
+    # 淘汰 = 任务凭空消失，用户看到 404 而不是「失败」。
+    # `appendonly yes` 让队列与任务记录活过 Redis 重启——生产里重启一次就把在途任务
+    # 全清掉，用户侧表现为「转了半天然后 404」。AOF 有磁盘成本，故只在这里开，
+    # 开发形态不开（本地重启就该重来）。
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--appendfsync",
+        "everysec",
+        "--maxmemory-policy",
+        "noeviction",
+      ]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Uvicorn（web）。**一个进程**，不是 `--workers N`：
+  # 限流（slowapi）与「降级运行时」都是进程内状态，多进程会让两条语义悄悄变成
+  # 「每个进程各算一份」。要扛并发先加 worker 容器（任务本来就在 worker 里），
+  # 真要多 web 副本时先读 `ADR-034` §3 第 1 条。
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      <<: *app-env
+      APP_HOST: 0.0.0.0
+      APP_PORT: "8000"
+      # 前端与 API 同源（nginx 反代 /api），这两个只影响重定向与文档页。
+      FRONTEND_URL: ${PUBLIC_ORIGIN:-http://localhost}
+      ALLOWED_ORIGINS: ${PUBLIC_ORIGIN:-http://localhost}
+      RATE_LIMIT_ENABLED: "true"
+      ENABLE_API_DOCS: ${ENABLE_API_DOCS:-false}
+      # nginx 在同一 compose 网络里转发，所以信任它的 `X-Forwarded-For`/`-Proto`。
+      # 用环境变量而不是 `--forwarded-allow-ips='*'`：那一串引号会原样变成参数值，
+      # uvicorn 解析出的就不是 `*` 了（这种错只在日志里留一行 warning）。
+      FORWARDED_ALLOW_IPS: "*"
+    # 迁移在启动命令里跑：生产形态下 `check_migration_state` 会因为「库落后于代码」
+    # 拒绝启动，所以必须**先 upgrade 再 uvicorn**。
+    # 多副本时要先把迁移单独跑一次（`docker compose run --rm web alembic upgrade head`），
+    # 否则几个容器会同时抢同一把 DDL。
+    command: sh -c "uv run --no-sync alembic upgrade head && exec uv run --no-sync uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # 上传暂存与导出产物都是**本地盘**（`ADR-033` §2.5）：web 落盘、worker 读盘，
+    # 所以三个 worker 必须挂同一份卷。也正因为是本地盘，多机部署不成立（§7 第 5 条）。
+    volumes:
+      - task-temp:/app/temp
+      - task-downloads:/app/downloads
+    # 停止时给在途请求一点时间把响应写完（uvicorn 收到 SIGTERM 会停止接新连接）。
+    stop_grace_period: 30s
+
+  worker-ocr:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    restart: unless-stopped
+    logging: *default-logging
+    environment: *app-env
+    command: sh -c "uv run --no-sync arq app.worker.OcrWorkerSettings"
+    volumes:
+      - task-temp:/app/temp
+      - task-downloads:/app/downloads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # ARQ 收到 SIGTERM 会停止取新 job 并把在跑的那几条写完；
+    # 给的时间要比单任务超时短，否则停机像卡死。
+    stop_grace_period: 60s
+
+  worker-pdf:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      args:
+        # 只有这个镜像装 Chromium + 中文字体（约 +500 MB）。
+        INSTALL_PDF_BROWSER: "1"
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      <<: *app-env
+      # 刻意**不设** `PDF_BROWSER_PATH`：渲染器先看显式配置，配了个不存在的路径
+      # 会直接判「没有浏览器」（`app/integrations/pdf_renderer.py::_resolve_browser`），
+      # 而镜像里 `/usr/bin/chromium` 在 PATH 上，`shutil.which("chromium")` 找得到。
+      # 只有把浏览器装在非标准位置时才需要显式指定。
+      PDF_BROWSER_PATH: ${PDF_BROWSER_PATH:-}
+    command: sh -c "uv run --no-sync arq app.worker.PdfWorkerSettings"
+    volumes:
+      - task-temp:/app/temp
+      - task-downloads:/app/downloads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    stop_grace_period: 120s
+
+  # 前端（nginx 托管构建产物 + 反代 /api）。五个必起服务之外的那一个：
+  # 只跑后端也能用（接口在 :8000），但产品没有界面。
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      web:
+        condition: service_healthy
+    ports:
+      # 生产对外只开这一个口。宿主上已有反向代理（Caddy / Traefik / 云 LB）时，
+      # 把它改成 `127.0.0.1:8080:80` 再让上游转发进来。
+      - "80:80"
+
+# `worker-default`（`arq:queue:default`）**故意不在这里**：今天没有任何任务注册到那条
+# 队列（`ADR-033` §7 第 4 条）。真起了它，容器会健康地空转，看起来像是「多了一个组件」。
+# 第一个常规 I/O 任务落地时，照 worker-ocr 复制一段、换 `DefaultWorkerSettings` 即可。
+
+volumes:
+  mysql-data:
+  # 只有开了 `appendonly` 才有意义；没有它重启即丢队列。
+  redis-data:
+  # 上传暂存与导出产物（本地盘，多机部署不成立）
+  task-temp:
+  task-downloads:

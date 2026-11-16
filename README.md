@@ -299,3 +299,76 @@ docker compose down -v   # 连数据卷一起删除，数据会丢失
 ```
 
 第一次在真实 Docker 宿主上完整跑通 `build` + `up` 之后，应回来把 ADR-008 的状态改为「已验证」。
+
+## 🚢 生产环境一键部署（`docker-compose.prod.yml`）
+
+> ⚠️ 与上一节同一条声明：开发主机没有 Docker，**这份生产编排从未真机跑过**（ADR-008）。
+> 它按今天的代码把坐标写准了（服务名、卷、迁移顺序、worker 与浏览器），但第一次 `up`
+> 仍可能需要修。生产上线前请先在一台测试机跑通。
+
+一条命令拉起六个容器：`db`（MySQL）、`redis`、`web`（Uvicorn）、`worker-ocr`、
+`worker-pdf`、`frontend`（nginx）。前五个是**必起的**；`frontend` 是界面本身，
+你自己接反向代理时可以整段删掉。`worker-default` 故意不起——那条队列今天没有任务注册。
+
+### 1. 准备 `.env`（缺一项就当场失败，不会起半配置的容器）
+
+| 变量 | 必填 | 说明 |
+|---|---|---|
+| `MYSQL_PASSWORD` | ✅ | 数据库密码，**别用示例值** |
+| `MYSQL_DATABASE` | ✅ | 库名（空库会自动建表） |
+| `MYSQL_USER` |  | 默认 `root` |
+| `JWT_SECRET_KEY` | ✅ | **≥ 32 字符**，`production` 下短于此长度启动即失败。生成：`openssl rand -hex 32`（或 `python -c "import secrets;print(secrets.token_hex(32))"`） |
+| `PUBLIC_ORIGIN` | ✅ | 对外访问地址，例如 `https://career.example.com`；写进 `FRONTEND_URL` / `ALLOWED_ORIGINS` |
+| `WORKER_PDF_MAX_JOBS` |  | 默认 `2`（两个浏览器子进程）。**内存 < 4 GB 的机器调到 1**，否则 OOM 杀的是 worker |
+| `ENABLE_API_DOCS` |  | 默认 `false`（生产不暴露 `/docs` 与 `/openapi.json`） |
+
+`production` 是**强制**的：缺 `DATABASE_URL` / `REDIS_URL` / 强 JWT 中任意一项，容器
+启动即失败；库结构落后于代码时 `check_migration_state` 直接拒绝启动。**不会**像本地那样
+降级成内存队列（`ADR-034` §2.1）——生产的并发上限只存在于真队列里。
+
+### 2. 起服务
+
+```bash
+# 构建并后台启动（首次会构建镜像；worker-pdf 因为装了 Chromium 会多花几分钟）
+docker compose -f docker-compose.prod.yml up -d --build
+
+# 看状态：db / redis 等到 healthy，web 才会起；frontend 等 web 健康
+docker compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.prod.yml logs -f web worker-pdf
+```
+
+`web` 的启动命令是 `alembic upgrade head && uvicorn ...`，所以空库第一次起来就会建表。
+
+### 3. 验收（三条都过才算起来了）
+
+```bash
+curl -fsS http://127.0.0.1/api/v1/health                 # 200 + {"status":"ok",...}
+docker compose -f docker-compose.prod.yml exec redis redis-cli ping   # PONG
+docker compose -f docker-compose.prod.yml exec redis redis-cli zcard arq:queue:pdf  # 0
+```
+
+再到网页上走一遍两条重链路：**导入 PDF**（看进度条是否推进到「整理成档案」）与
+**教师端批量导出**（看进度行 + 自动下载 ZIP）。导出若失败并显示「导出服务暂时不可用」，
+说明 `worker-pdf` 里的 Chromium 没装上——看 `logs worker-pdf` 里的
+`PDF 渲染调用失败`。
+
+### 4. 日常运维
+
+```bash
+docker compose -f docker-compose.prod.yml restart worker-pdf   # 只重启一条队列
+docker compose -f docker-compose.prod.yml pull && up -d        # 升级镜像
+docker compose -f docker-compose.prod.yml down                 # 停服务，保留数据卷
+docker compose -f docker-compose.prod.yml down -v              # 连 MySQL / Redis 数据一起删
+```
+
+- **迁移**：单副本时由 `web` 启动时跑。**多副本**要先单独跑一次
+  `docker compose -f docker-compose.prod.yml run --rm web alembic upgrade head`，
+  否则几个容器会抢同一把 DDL。
+- **队列积压**：`redis-cli zcard arq:queue:ocr` / `arq:queue:pdf`（`arq:queue:pdf` 长期不降
+  说明浏览器渲染慢或 `worker-pdf` 挂了）。没有指标系统，这是今天唯一的观测手段。
+- **Redis 开了 AOF**（`appendonly yes`）：重启不会丢在途任务。任务记录本身有 TTL
+  （`WORKER_TASK_TTL_SECONDS`，默认 30 分钟），不会无限涨。
+- **换 `JWT_SECRET_KEY` 会让在途任务的 BYOK 密文解不开**（加密密钥由它派生），
+  挑没有任务在跑的窗口换。
+- **不要多机部署**：任务产物在本地盘（`task-downloads` 卷），
+  `ADR-033` §7 第 5 条记着这条限制。

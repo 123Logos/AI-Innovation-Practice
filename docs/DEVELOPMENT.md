@@ -382,6 +382,11 @@ web 那边 202 已经回了，队列里也真有这条任务，只是没人消�
 
 生产环境（**下面是目标形态，今天还没有一次真实部署过**：开发主机没装 Docker，`ADR-008` 那批件全是 `NOT VERIFIED`；`ADR-033` 之后 Redis 与 worker **有代码了**，但同样没有一次真机部署）：
 
+> 第 31 轮补了一份**一键编排**：`docker-compose.prod.yml`（db / redis / web /
+> worker-ocr / worker-pdf / frontend 六个容器，`ENVIRONMENT=production`、内部网络不发布
+> db 与 redis 端口、worker-pdf 镜像内装 Chromium + 中文字体）。操作步骤与验收命令见
+> `README.md` 的「生产环境一键部署」一节。它与下面这份清单是同一件事的两种粒度。
+
 1. 构建前端静态资源和后端镜像；
 2. 由密钥管理系统注入环境变量——**必注入的只有 `DATABASE_URL` 与 `JWT_SECRET_KEY`**（§8 那两个启动即拦的检查）；`DEEPSEEK_API_KEY` 不需要，AI 凭据是用户自己带的（BYOK）；
 3. 启动 MySQL、**Redis**（生产必配，`production` 下缺它启动即失败）、API、**三个 worker**（§11.2）与反向代理。对象存储仍然**没有对应代码**（产物落在本地盘，`ADR-033` §7 第 5 条记着「多机部署不成立」）；

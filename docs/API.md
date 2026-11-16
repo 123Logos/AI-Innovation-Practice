@@ -1392,7 +1392,7 @@ SSE 需要长连接与断线恢复，而 1.5 秒轮询在这个量级下够用�
 | 字段 | 说明 |
 |---|---|
 | `state` | **只有四态**：`pending` / `running` / `complete` / `failed` |
-| `stage` | `queued` / `extracting` / `structuring` / `rendering` / `packaging` / `null`（终态清空）。只用于画进度条，不是状态机 |
+| `stage` | `queued` / `extracting` / `structuring` / `rendering` / `packaging`。`complete` 时为 `null`；**`failed` 时保留它跑到的那一档**（不回拨，进度条只进不退）。只用于画进度条，不是状态机 |
 | `progress` | 0–100，**服务端算**（`app/core/task_kinds.py::progress_for`），前端只画 |
 | `result` | 仅 `complete`：`import_pdf` → `{profile, meta}`；`batch_download` → `{filename, bytes, download_url}` |
 | `error` | 仅 `failed`：`{code, message, retryable}`，`code` 见 §6 那张表 + `TASK_LOST` / `TASK_EXPIRED` / `TASK_INTERNAL` |

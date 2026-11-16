@@ -118,7 +118,12 @@ def test_import_returns_202_and_no_payload(client: TestClient) -> None:
 
 
 def test_pending_then_failed_with_error_code_and_progress(client: TestClient) -> None:
-    """四态里的三段：`pending` →（跑一次 worker）→ `failed`，且进度停在抽取那一档。"""
+    """四态里的三段：`pending` →（跑一次 worker）→ `failed`，且进度**停在它跑到的那一档**。
+
+    第 31 轮修了一次倒退：这条用例原来断言「停在抽取那一档（35）」，而 runner 在调
+    `import_profile()` 之前已经推进到 `structuring`（70）——于是前端看到 70 掉回 35。
+    现在失败只改 `state` + `error`，`stage` 保留，所以这里断言 70。
+    """
     headers, _ = _auth(client)
     task_id = _upload(client, headers).json()["data"]["task_id"]
 
@@ -142,11 +147,56 @@ def test_pending_then_failed_with_error_code_and_progress(client: TestClient) ->
         data["error"]["message"]
         == "这份文件没识别到文字，请上传含文字层的 PDF，或在下面手动填写档案。"
     )
-    # 失败停在抽取阶段：把它标成 structuring 会让用户以为是 AI 的错。
-    assert data["stage"] == "extracting"
-    assert data["progress"] == progress_for(TaskState.FAILED, TaskStage.EXTRACTING)
+    # 失败停在**它跑到的那一档**（抽取与结构化都在 `import_profile()` 里，
+    # 调它之前 runner 已经把 stage 推到 structuring）：进度条只进不退。
+    # 「是文件读不出字」这件事由 `error.code` 说，不再靠把 stage 往回拨来表达。
+    assert data["stage"] == "structuring"
+    assert data["progress"] == progress_for(TaskState.FAILED, TaskStage.STRUCTURING)
     assert data["finished_at"]
     assert data["result"] is None
+
+
+def test_import_failure_keeps_the_structuring_stage(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """在 `structuring` 抛错：终态 `stage` 必须还是 `structuring`，**不许退回 `extracting`**。
+
+    判据是「抛错那一帧的 stage == 终态的 stage」——不是在终态里看一眼 70 就算了。
+    所以导出服务换成会在 `import_profile()` 里当场炸的桩，并在**抛之前**读一次记录：
+    记录里那一格就是 runner 推进到的位置，终态必须与它一致。
+
+    换成桩还顺手让这条用例不依赖 OCR：真实空白 PDF 也能复现，只是要等 2 秒起模型。
+    """
+    from app.services import dependencies
+    from app.services.resume_import import PdfInvalidError
+    from tests.task_support import read_record
+
+    headers, _ = _auth(client)
+    task_id = _upload(client, headers).json()["data"]["task_id"]
+    observed: dict[str, str] = {}
+
+    class _ExplodingImporter:
+        def import_profile(self, data: bytes) -> Any:
+            # 这一格里是 `structuring`：runner 在调 `import_profile()` 之前推进过一次。
+            observed["stage_at_failure"] = read_record(task_id).get("stage", "")
+            raise PdfInvalidError("这份文件读不出文字")
+
+    monkeypatch.setattr(
+        dependencies, "build_resume_pdf_import_service", lambda api_key: _ExplodingImporter()
+    )
+
+    run_all_workers()
+
+    data = client.get(f"{API}/tasks/{task_id}", headers=headers).json()["data"]
+    assert data["state"] == "failed"
+    # 失败原因仍然由 code 表达（「读不出字」这件事没有丢）。
+    assert data["error"]["code"] == "PDF_INVALID"
+    assert observed["stage_at_failure"] == "structuring"
+    # 核心断言：终态 stage == 抛错那一帧的 stage（70 没掉回 35）。
+    assert data["stage"] == observed["stage_at_failure"]
+    assert data["progress"] == progress_for(TaskState.FAILED, TaskStage.STRUCTURING)
+    assert data["progress"] == 70
+    assert "extracting" not in json.dumps(data)
 
 
 def test_running_state_is_reported_from_the_record(client: TestClient) -> None:

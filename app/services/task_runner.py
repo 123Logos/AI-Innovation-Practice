@@ -93,12 +93,12 @@ class TaskRunner:
             await self._advance(task_id, TaskState.RUNNING, TaskStage.EXTRACTING)
             api_key = await self._take_key(task_id)
             if api_key is None:
-                await self._fail(task_id, "AI_KEY_MISSING", TaskStage.EXTRACTING)
+                await self._fail(task_id, "AI_KEY_MISSING")
                 return
             try:
                 data = task_files.read_import_file(task_id)
             except FileNotFoundError:
-                await self._fail(task_id, "TASK_EXPIRED", TaskStage.EXTRACTING)
+                await self._fail(task_id, "TASK_EXPIRED")
                 return
 
             service = self._build_importer(api_key)
@@ -108,7 +108,7 @@ class TaskRunner:
             except PdfImportError as error:
                 # 五个码之一（`ADR-031` §2.5）：码进记录，句子由受信目录给。
                 logger.info("导入任务失败（task=%s, code=%s）", task_id, error.code)
-                await self._fail(task_id, error.code, _import_failure_stage(error.code))
+                await self._fail(task_id, error.code)
                 return
 
             await self._store.finish(
@@ -119,14 +119,14 @@ class TaskRunner:
             )
         except asyncio.CancelledError:
             # 超时被 ARQ 取消：写一次失败再**原样抛出**，否则 ARQ 会把这次取消记成成功。
-            await self._fail(task_id, "TASK_LOST", TaskStage.EXTRACTING)
+            await self._fail(task_id, "TASK_LOST")
             raise
         except TaskQueueUnavailableError:
             # 记录本身都写不进去了，没什么能做的：让异常冒出去进 worker 日志。
             raise
         except Exception:
             logger.exception("导入任务出现未分类异常（task=%s）", task_id)
-            await self._fail(task_id, "TASK_INTERNAL", TaskStage.STRUCTURING)
+            await self._fail(task_id, "TASK_INTERNAL")
         finally:
             # 暂存文件与 Key 密文都在这条任务的边界内：成功与否都必须消失（§2.4 / §2.5）。
             task_files.discard_import_file(task_id)
@@ -142,7 +142,7 @@ class TaskRunner:
             await self._advance(task_id, TaskState.RUNNING, TaskStage.RENDERING)
             if actor is None:
                 # 记录里缺组织（不该发生：入队前已过闸）：宁可显式失败也不打一份没有归属的包。
-                await self._fail(task_id, "TASK_INTERNAL", TaskStage.RENDERING)
+                await self._fail(task_id, "TASK_INTERNAL")
                 return
 
             def build() -> DownloadResult:
@@ -166,7 +166,7 @@ class TaskRunner:
                     mapped for klass, mapped in _BATCH_CODE.items() if isinstance(error, klass)
                 )
                 logger.info("打包任务失败（task=%s, code=%s）", task_id, code)
-                await self._fail(task_id, code, TaskStage.RENDERING)
+                await self._fail(task_id, code)
                 return
 
             await self._advance(task_id, TaskState.RUNNING, TaskStage.PACKAGING)
@@ -179,13 +179,13 @@ class TaskRunner:
                 file_bytes=len(archive.content),
             )
         except asyncio.CancelledError:
-            await self._fail(task_id, "TASK_LOST", TaskStage.RENDERING)
+            await self._fail(task_id, "TASK_LOST")
             raise
         except TaskQueueUnavailableError:
             raise
         except Exception:
             logger.exception("打包任务出现未分类异常（task=%s）", task_id)
-            await self._fail(task_id, "TASK_INTERNAL", TaskStage.RENDERING)
+            await self._fail(task_id, "TASK_INTERNAL")
 
     # ------------------------------------------------------------------ 内部
 
@@ -196,13 +196,41 @@ class TaskRunner:
             # 推进失败不中断业务：任务照跑，只是前端看不到 stage 的变化。
             logger.warning("任务阶段推进失败（task=%s, stage=%s）", task_id, stage)
 
-    async def _fail(self, task_id: str, code: str, stage: TaskStage) -> None:
+    async def _fail(self, task_id: str, code: str) -> None:
+        """把任务记成失败，**stage 一律保留记录里当前那一档**（第 31 轮修复）。
+
+        修的是什么：以前失败时由调用点指定 stage，导入那侧还专门把 `PDF_INVALID`
+        「归回」抽取阶段——理由是「标成 structuring 会让用户以为是 AI 的错」。
+        但 `import_profile()` 内部同时做抽取与结构化，任务在抛异常那一帧**已经**推进到
+        `structuring`（进度 70），归回 `extracting`（35）等于让进度条当场倒退：
+        用户看到 70% 掉到 35%，然后才是失败。
+
+        现在的分工：
+        - **stage 说「跑到哪一步」**——取记录里那一格，失败不重置（进度条只进不退）；
+        - **code 说「为什么失败」**——`PDF_INVALID` 仍然明确表达「这份文件读不出字」，
+          前端按 `error.code` 分叉的既有口径一个字都没变。
+
+        为什么是「读记录」而不是让每个调用点写死一个值：写死等于把「调用那一刻在哪个阶段」
+        抄一遍，抄漏一处就又是一次倒退。读一次记录（只在失败路径上发生）没这个风险。
+
+        两处已知的边角，都选了「宁可弱一点，也不丢失败」：
+        - 取消路径（`CancelledError`）里多了一次 `await`，理论上二次取消可能让这次写入
+          半途中断；兜底是 `TaskService.status()` 那个「记录非终态 + job 已不在 → `TASK_LOST`」
+          的分支，用户看到的仍是同一句话；
+        - 记录读不出来时按 `None` 写（进度回落到默认值），而不是放弃写失败——「进度不好看」
+          比「任务永远停在 running」轻得多。
+        """
         resolved_code, message, _ = describe_failure(code)
+        try:
+            record = await self._store.read(task_id)
+        except TaskQueueUnavailableError:
+            # 连记录都读不到：下面的 `finish` 也写不进去，走同一条兜底。
+            record = None
         try:
             await self._store.finish(
                 task_id,
                 state=TaskState.FAILED,
-                stage=stage,
+                stage=record.stage if record is not None else None,
                 error_code=resolved_code,
                 error_message=message,
             )
@@ -226,17 +254,6 @@ class TaskRunner:
         except TaskQueueUnavailableError:
             # TTL 会兜住（§2.4）：这里失败只意味着密文多活一会儿。
             logger.warning("任务凭据未能立即删除（task=%s），等待 TTL 过期", task_id)
-
-
-def _import_failure_stage(code: str) -> TaskStage:
-    """导入失败落在哪个阶段：抽字那两级归 `EXTRACTING`，模型那一级归 `STRUCTURING`。
-
-    进度条要能解释「跑到哪一步断的」：`PDF_INVALID` 是「这份文件没识别到文字」，
-    它发生在抽取（文本层 + OCR）；把它标成 `structuring` 会让用户以为是 AI 的问题。
-    """
-    if code in {"PDF_INVALID", "PDF_TOO_LARGE"}:
-        return TaskStage.EXTRACTING
-    return TaskStage.STRUCTURING
 
 
 #: 打包侧三种域错误 → 失败码。成一对方便逐条对照 `ADR-029` / `ADR-033` 的码表；
