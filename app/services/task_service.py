@@ -38,7 +38,15 @@ from app.core.task_errors import (
     TaskQueueUnavailableError,
     describe_failure,
 )
-from app.core.task_kinds import KIND_QUEUE, TaskKind, TaskStage, TaskState, progress_for
+from app.core.task_kinds import (
+    FUNCTION_BATCH_DOWNLOAD,
+    FUNCTION_IMPORT_PDF,
+    KIND_QUEUE,
+    TaskKind,
+    TaskStage,
+    TaskState,
+    progress_for,
+)
 from app.core.task_secrets import encrypt_secret
 from app.integrations.task_queue import JobLiveness
 from app.integrations.task_runtime import TaskRuntime
@@ -46,11 +54,6 @@ from app.integrations.task_store import TaskRecord, TaskStore
 from app.schemas.task import TaskError, TaskQueued, TaskStatus
 
 logger = logging.getLogger(__name__)
-
-#: worker 里注册的函数名（`app/worker.py`）。**入队点与注册点共用这两个常量**：
-#: 一边改名、另一边忘了改，任务就会永远 pending，而那种错只能靠「名字对得上」的用例发现。
-FUNCTION_IMPORT_PDF = "import_pdf_task"
-FUNCTION_BATCH_DOWNLOAD = "batch_download_task"
 
 RuntimeProvider = Callable[[], Awaitable[TaskRuntime]]
 

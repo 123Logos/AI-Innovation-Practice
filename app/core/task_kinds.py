@@ -58,6 +58,19 @@ KIND_QUEUE: dict[TaskKind, str] = {
     TaskKind.BATCH_DOWNLOAD: QUEUE_PDF,
 }
 
+#: worker 里注册的函数名（`app/worker.py`）。**入队点与注册点共用这两个常量**：
+#: 一边改名、另一边忘了改，任务就会永远 pending，而那种错只能靠「名字对得上」的用例发现。
+#:
+#: 第 31 轮（`ADR-034`）从 `app/services/task_service.py` 挪到这里的唯一原因：
+#: 内存降级队列（`app/integrations/task_inline.py`）也要按名字校验，
+#: 而 `integrations/` 在分层里位于 `services/` 之下，不能反向 import。
+#: `task_service` 仍然 `from app.core.task_kinds import FUNCTION_IMPORT_PDF` 再导出，
+#: 所以老的引用点一个字都不用改。
+FUNCTION_IMPORT_PDF = "import_pdf_task"
+FUNCTION_BATCH_DOWNLOAD = "batch_download_task"
+
+ALL_TASK_FUNCTIONS = frozenset({FUNCTION_IMPORT_PDF, FUNCTION_BATCH_DOWNLOAD})
+
 #: 阶段 → 进度百分比（0–100）。**唯一算法在这里**：前端只画，不自己推。
 #: 数值不求精确（我们拿不到真实的字节进度），只求「单调不减」且让用户看出在动：
 #: 排队 5、抽字 35、结构化 70、渲染 45、打包 85、完成 100。

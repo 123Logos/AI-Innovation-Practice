@@ -274,8 +274,8 @@
 | 请求体或查询参数不合模型 | 422 | `VALIDATION_ERROR` | `app/main.py:209-221` |
 | 无 `Authorization` 头 / 令牌无效或过期 | 401 | `CLIENT_ERROR`，message 为 `UNAUTHORIZED_MESSAGE` | 抛出 `app/services/dependencies.py::_context_from_request`、`app/services/dependencies.py::_bearer_token`；映射 `app/main.py:193-195` |
 | 岗位不存在 / 不属于当前用户 / 已在回收站 | 404 | `NOT_FOUND`（处理器的固定文案「资源不存在。」） | 抛出 `app/api/v1/jobs.py:116-118`；映射 `app/main.py::http_exception` |
-| 有登录但缺 `job:review`（只出现在 `GET /jobs/review-queue` 与 `POST /jobs/{job_id}/review`） | 403 | `CLIENT_ERROR`，`details.reason = "FORBIDDEN"` | `app/services/dependencies.py:83`；映射 `app/main.py:215-235` |
-| 提取请求缺 `X-DeepSeek-Key` | 400 | `AI_KEY_MISSING`，`retryable: false` | `app/services/job_service.py:281-282` → `app/main.py:260-265` |
+| 有登录但缺 `job:review`（只出现在 `GET /jobs/review-queue` 与 `POST /jobs/{job_id}/review`） | 403 | `CLIENT_ERROR`，`details.reason = "FORBIDDEN"` | `app/services/dependencies.py:83`；映射 `app/main.py:250-270` |
+| 提取请求缺 `X-DeepSeek-Key` | 400 | `AI_KEY_MISSING`，`retryable: false` | `app/services/job_service.py:281-282` → `app/main.py:295-300` |
 | DeepSeek 拒绝该 Key（鉴权失败） | 401 | `AI_KEY_INVALID` | `app/integrations/skill_extractor.py:294-298` → `app/services/job_service.py::JobService.extract_skills` → `app/main.py:272-281` |
 | 上游不可用 / 输出不是可解析 JSON / 内容为空 / 无一可回溯 | 502 | `AI_SERVICE_UNAVAILABLE`，`retryable: true` | `app/main.py:278-291`（异常族 `app/services/job_service.py:281-290`、`:270-281`） |
 | 输出被服务端 `max_tokens` 切断（`finish_reason == "length"`） | 502 | `AI_SERVICE_UNAVAILABLE`，`retryable: true`，**并在外层 `meta.finish_reason` 回显 `"length"`** | 就地组装 `app/api/v1/jobs.py:151-160`，文案 `EXTRACT_TRUNCATED_MESSAGE` `app/api/v1/jobs.py:62-65` |
@@ -489,7 +489,7 @@
 
 | # | 情形 | HTTP + `error.code` | 代码位置 |
 |---|---|---|---|
-| 1 | 请求头没有 Key | 400 `AI_KEY_MISSING` | `app/services/job_service.py:281-282` → `app/main.py:260-265` |
+| 1 | 请求头没有 Key | 400 `AI_KEY_MISSING` | `app/services/job_service.py:281-282` → `app/main.py:295-300` |
 | 2 | DeepSeek 拒绝该 Key | 401 `AI_KEY_INVALID` | `app/integrations/skill_extractor.py:294-298` → `app/services/job_service.py::JobService.extract_skills` → `app/main.py:272-281` |
 | 3 | 网络超时 / 上游 4xx·5xx | 502 `AI_SERVICE_UNAVAILABLE` | `app/integrations/skill_extractor.py:299-303` → `app/services/job_service.py:212-213` |
 | 4 | 返回内容不是可解析的 JSON 对象 | 502 `AI_SERVICE_UNAVAILABLE` | `app/integrations/skill_extractor.py:327-343` |
@@ -1368,6 +1368,10 @@ ADR-013 §10 第 3c 步。链路：`app/api/v1/jobs.py::requirement_match_job` �
 **这一章从「设计意图」变成了实现**：`app/api/v1/tasks.py` 两个端点，`app/worker.py`
 三条队列（`arq:queue:ocr` / `arq:queue:pdf` / `arq:queue:default`）。
 
+**本章的契约与「任务在哪个进程执行」无关**：本地不配 `REDIS_URL` 时会走内存降级
+（`ADR-034`，任务在 web 进程内跑），但 202、四态、`stage`/`progress`、一次性下载
+**一个字段都不变**。所以前端按本章写，本地与生产同一条代码路径。
+
 ~~`# PHASE-2: not wired` — 本章全部端点未接通：`app/api/v1/` 下没有任何 `/ai-jobs` 路由~~
 → **2026-11-16 更正**：任务端点已经存在，但**不叫 `/ai-jobs`**，契约也不同（见下）。
 `/ai-jobs` 那套（`type` / `retry_count` / SSE `/events`）**没有实现，也不打算按它实现**：
@@ -1392,6 +1396,11 @@ SSE 需要长连接与断线恢复，而 1.5 秒轮询在这个量级下够用�
 | `progress` | 0–100，**服务端算**（`app/core/task_kinds.py::progress_for`），前端只画 |
 | `result` | 仅 `complete`：`import_pdf` → `{profile, meta}`；`batch_download` → `{filename, bytes, download_url}` |
 | `error` | 仅 `failed`：`{code, message, retryable}`，`code` 见 §6 那张表 + `TASK_LOST` / `TASK_EXPIRED` / `TASK_INTERNAL` |
+
+**内存降级模式**（`development` / `local` 且没有 `REDIS_URL`，`ADR-034`）：状态从进程内
+内存读取，语义与之逐条对齐（终态只写一次、TTL、密钥读到即删）。两个差别要知道：
+① 只对**单实例**有效（多进程下会 404）；② 不应用 `WORKER_*_MAX_JOBS`。
+其余（含失败码、`TASK_LOST`、一次性下载）完全一致。
 
 **任务失败是 200 + `state=failed`，不是 4xx/5xx**：请求成功地被回答了，
 失败信息在 `error` 里。这条如果反过来做，前端轮询会把它当网络错误，

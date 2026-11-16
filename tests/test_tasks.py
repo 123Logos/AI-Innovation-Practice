@@ -6,7 +6,9 @@
 2. **四态判定表**（§2.3）：`pending` →（job 没了）`failed TASK_LOST`；
    记录写 `running` → 报 `running`；`complete` → `progress=100` 且 `stage=None`；
 3. **归属**：别人的 `task_id` 与不存在的 `task_id` 同一个 404；
-4. **队列不可用就 503**（§2.6）：没配 `REDIS_URL` / 队列抛错时**不许假装 202**；
+4. **队列不可用就 503**（§2.6）：队列抛错时**不许假装 202**；没配 `REDIS_URL` 时
+   在 `test` 环境仍是 503，而在 `development` 下会走内存降级（第 31 轮 `ADR-034`，
+   那一条另有 `tests/test_inline_runtime.py` 专门测）；
 5. **BYOK 跨进程**（§2.4）：入队后 Redis 里只有密文，worker 读走即删，
    ARQ job 的 args 里没有明文；
 6. **队列隔离**（§2.2）：三个 `WorkerSettings` 的 `queue_name` / `max_jobs` / `functions`
@@ -21,6 +23,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import uuid
 from pathlib import Path
@@ -248,11 +251,26 @@ def test_queue_failure_returns_503_not_202(
     assert queue_depth(QUEUE_OCR) == 0
 
 
-def test_missing_redis_url_is_503(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    """没配 `REDIS_URL`：**启动不失败**（web 还要干活），但任务端点 503。"""
+def test_missing_redis_url_is_503_where_degradation_is_off(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """没配 `REDIS_URL` 且**不许降级**（`environment=test`）：启动不失败，但任务端点 503。
+
+    第 31 轮（`ADR-034`）之后「没配 Redis」不再等于 503——`development` / `local` 会走
+    内存降级（见下一条用例）。但**测试环境绝不降级**这条边界必须自己有一条用例：
+    一旦它在 `test` 下也生效，`tests/test_tasks.py` 与 `tests/test_resumes_import_pdf.py`
+    里那套 fakeredis + 真 `arq.Worker` 的证据链就会被悄悄绕过，而它们不会因此变红。
+    """
     settings = task_runtime.get_settings()
     monkeypatch.setattr(
-        task_runtime, "get_settings", lambda: settings.model_copy(update={"redis_url": None})
+        task_runtime,
+        "get_settings",
+        lambda: settings.model_copy(update={"redis_url": None, "environment": "test"}),
+    )
+    monkeypatch.setattr(
+        dependencies,
+        "get_settings",
+        lambda: settings.model_copy(update={"redis_url": None, "environment": "test"}),
     )
     monkeypatch.setattr(dependencies, "get_task_runtime", task_runtime.get_task_runtime)
     monkeypatch.setattr(task_runtime, "_runtime", None)
@@ -262,6 +280,44 @@ def test_missing_redis_url_is_503(client: TestClient, monkeypatch: pytest.Monkey
 
     assert response.status_code == 503, response.text
     assert response.json()["error"]["details"]["reason"] == "TASK_QUEUE_UNAVAILABLE"
+
+
+def test_missing_redis_url_in_development_returns_202(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`development` + 没配 `REDIS_URL` → **202，不是 503**（本地零依赖降级，`ADR-034`）。
+
+    执行器换成空实现：本用例要验的是「端点不再 503、契约仍是 202」，
+    而「任务真的跑完并写回结果」由 `tests/test_inline_runtime.py` 的端到端用例负责。
+    两件分开的理由很实际——这里若真跑一遍解析，就会在 CI 里拉起 OCR 与真实外呼。
+    """
+    from app.services import inline_runtime
+
+    async def _noop(task_id: str) -> None:
+        return None
+
+    settings = task_runtime.get_settings()
+    inline_settings = settings.model_copy(update={"redis_url": None, "environment": "development"})
+    monkeypatch.setattr(task_runtime, "get_settings", lambda: inline_settings)
+    monkeypatch.setattr(dependencies, "get_settings", lambda: inline_settings)
+    monkeypatch.setattr(inline_runtime, "get_settings", lambda: inline_settings)
+    monkeypatch.setattr(inline_runtime, "_make_executor", lambda store: _noop)
+    monkeypatch.setattr(dependencies, "get_task_runtime", task_runtime.get_task_runtime)
+    monkeypatch.setattr(task_runtime, "_runtime", None)
+    headers, _ = _auth(client)
+
+    response = _upload(client, headers)
+
+    assert response.status_code == 202, response.text
+    data = response.json()["data"]
+    assert set(data) == {"task_id", "kind", "state", "created_at"}
+    assert data["kind"] == "import_pdf"
+    # 记录真的落进了内存存储（不是「202 了但什么都没建」）。
+    runtime = asyncio.run(dependencies._task_runtime())
+    record = asyncio.run(runtime.store.read(data["task_id"]))
+    assert record is not None
+    assert record.kind is TaskKind.IMPORT_PDF
+    asyncio.run(inline_runtime.reset_inline_task_runtime())
 
 
 # --------------------------------------------------------------------------- #

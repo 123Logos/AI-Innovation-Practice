@@ -183,6 +183,10 @@ GET  /api/v1/tasks/{task_id}/download  → 200 application/zip（一次性），
   `details.reason = "TASK_QUEUE_UNAVAILABLE"` 供排障（与 `PDF_RENDERER_UNAVAILABLE`
   那个 503 完全同一处置）。这里没有为「队列挂了」单独开一句人话，因为 5xx 一律不上屏
   具体文案是 F1c 定的红线，破一次就会有第二个例外。
+  → **第 31 轮补口（`ADR-034`）**：`development` / `local` 下**没配** `REDIS_URL` 不再
+  返回 503，而是走内存降级（任务在 web 进程内执行，契约仍是 202 + 轮询）。
+  这不是把这一条放松：`test` 环境与其它环境名仍然 503，`production` 仍然启动即失败；
+  变的只是「本地开发默认值」，而且换的是执行位置，不是响应形状。
 
 ### 2.7 两个端点的行为变化（如实记账：这是**破坏性**契约变更）
 

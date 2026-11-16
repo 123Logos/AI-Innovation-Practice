@@ -291,10 +291,18 @@ def task_runtime(monkeypatch: pytest.MonkeyPatch) -> Iterator["FakeRuntimeProvid
     # 三个 import 点各有一份引用：只打一个补丁，「另一条路径」会绕过它去连真 Redis。
     monkeypatch.setattr("app.services.dependencies.get_task_runtime", provider)
     monkeypatch.setattr("app.worker.get_task_runtime", provider)
+    # 第 31 轮（`ADR-034`）：内存降级的单例也是一份跨用例的全局状态
+    # （记录、在途任务）。默认用例一条都不会进那个分支，但**有两条用例会**
+    # （`test_missing_redis_url_in_development_returns_202` 与
+    # `test_inline_runtime.py`），漏了复位就会串味到后面的用例。
+    from app.services.inline_runtime import reset_inline_task_runtime
+
+    asyncio.run(reset_inline_task_runtime())
     try:
         yield provider
     finally:
         asyncio.run(provider.close())
+        asyncio.run(reset_inline_task_runtime())
 
 
 @pytest.fixture(autouse=True)

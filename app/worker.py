@@ -52,13 +52,18 @@ logger = logging.getLogger(__name__)
 def redis_settings() -> RedisSettings:
     """worker 的 Redis 地址。**没配就启动即失败**（`AGENTS.md` §4.3 同一纪律）。
 
-    与 web 侧的区别：web 可以在没配 Redis 时活着（只有两个任务端点 503），
-    而 worker 的全部意义就是消费队列——连地址都没有，起来只会空转。
+    与 web 侧的区别：web 在 `development` / `local` 下没有 `REDIS_URL` 会自动
+    **内存降级**（`ADR-034`：任务跑在 web 进程里），而 worker 的全部意义就是消费
+    Redis 上的队列——连地址都没有，起来只会空转。所以这里的报错要顺带说清
+    「降级模式下不需要 worker」，免得有人以为命令敲错了。
     """
     url = get_settings().redis_url
     if not url:
         raise RuntimeError(
-            "REDIS_URL 未配置：worker 无法启动（见 docs/DEVELOPMENT.md 的 Redis 一节）"
+            "REDIS_URL 未配置：worker 无法启动。"
+            "若只是本地开发，直接 `uvicorn app.main:app` 即可（无 REDIS_URL 时自动内存降级，"
+            "任务在 web 进程内执行，见 ADR-034 / docs/DEVELOPMENT.md §11.2）；"
+            "要测完整异步链路请先起 Redis 并在 .env 里配 REDIS_URL。"
         )
     return RedisSettings.from_dsn(url)
 

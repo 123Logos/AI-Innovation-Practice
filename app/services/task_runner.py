@@ -27,11 +27,16 @@ from typing import Any
 from app.core import task_files
 from app.core.pdf_errors import PdfRendererUnavailableError
 from app.core.task_errors import TaskQueueUnavailableError, describe_failure
-from app.core.task_kinds import TaskKind, TaskStage, TaskState
+from app.core.task_kinds import (
+    FUNCTION_BATCH_DOWNLOAD,
+    FUNCTION_IMPORT_PDF,
+    TaskKind,
+    TaskStage,
+    TaskState,
+)
 from app.core.task_secrets import SecretDecryptError, decrypt_secret
 from app.integrations.task_store import TaskRecord, TaskStore
 from app.services.resume_import import PdfImportError, ResumePdfImportService
-from app.services.task_service import FUNCTION_BATCH_DOWNLOAD, FUNCTION_IMPORT_PDF
 from app.services.teacher_tools_service import (
     DownloadResult,
     NoDownloadableResumeError,

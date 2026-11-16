@@ -22,6 +22,7 @@ from app.core.action_gate import (
     OrganizationAction,
     require_organization,
 )
+from app.core.config import get_settings
 from app.core.error_messages import ErrorMessage
 from app.core.teacher_tools_rules import teacher_audit_detail
 from app.integrations.copy_writer import DeepSeekCopyWriter
@@ -33,7 +34,7 @@ from app.integrations.profile_summarizer import DeepSeekProfileSummarizer
 from app.integrations.resume_generator import TemplateResumeGenerator
 from app.integrations.resume_structurer import DeepSeekResumeStructurer
 from app.integrations.skill_extractor import DeepSeekJobSkillExtractor
-from app.integrations.task_runtime import get_task_runtime
+from app.integrations.task_runtime import TaskRuntime, get_task_runtime
 from app.repositories.assessment_repository import AssessmentRepository
 from app.repositories.audit_log_repository import AuditAction, AuditLogRepository, AuditResult
 from app.repositories.interview_repository import InterviewRepository
@@ -53,6 +54,7 @@ from app.services.auth_service import (
     AuthService,
     CurrentUserContext,
 )
+from app.services.inline_runtime import get_inline_task_runtime
 from app.services.interview_service import InterviewService
 from app.services.invitation_service import InvitationService
 from app.services.job_service import JobService
@@ -336,13 +338,33 @@ def teacher_tools_scope() -> Iterator[TeacherToolsService]:
 
 
 def get_task_service() -> TaskService:
-    """任务服务（第 30 轮，`ADR-033`）。
+    """任务服务（第 30 轮 `ADR-033`；第 31 轮加降级，`ADR-034`）。
 
-    **不建连接**：`TaskService` 只持有一个「取运行时」的调用，`get_task_runtime()`
-    在真正用到它的时候才连 Redis。这样没配 `REDIS_URL` 时只有两个任务端点 503，
-    教师看板、单份导出这些**不需要队列**的端点照常工作。
+    **不建连接**：`TaskService` 只持有一个「取运行时」的调用，`_task_runtime()`
+    在真正用到它的时候才建（连 Redis 或建内存存储）。这样「没有队列」只影响
+    两个任务端点，教师看板、单份导出这些**不需要队列**的端点照常工作。
     """
-    return TaskService(get_task_runtime)
+    return TaskService(_task_runtime)
+
+
+async def _task_runtime() -> TaskRuntime:
+    """取任务运行时：内存降级还是 Redis（第 31 轮，`ADR-034` §2.5）。
+
+    这是本轮**唯一**的行为分叉，而且分叉点刻意放在装配层而不是服务层：
+    `TaskService` 与 `TaskRunner` 对「运行时是谁」完全无感，所以降级模式下
+    HTTP 契约、失败码、单次性下载、前端轮询一个字节都没变。
+
+    两个分支的语义差别只有一条：没配 `REDIS_URL` 时，
+    - 环境允许降级（`development` / `local`）→ 进程内跑，功能可用；
+    - 其它环境 → 抛 `TaskQueueUnavailableError`（对外 503，第 30 轮的既有口径）。
+
+    `get_task_runtime` 这个**模块级名字**在调用时才解析：测试里
+    `monkeypatch.setattr("app.services.dependencies.get_task_runtime", provider)`
+    照旧生效，第 30 轮那套 fakeredis 链路不受影响。
+    """
+    if get_settings().inline_task_runtime:
+        return await get_inline_task_runtime()
+    return await get_task_runtime()
 
 
 def get_interview_service(request: Request) -> Iterator[InterviewService]:

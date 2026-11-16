@@ -32,7 +32,7 @@
 
 | 方面 | 现状（代码里可验证） | 设计目标（尚未接线，一行实现都没有） |
 |---|---|---|
-| 后端 | `uv` + Python 3.13 + FastAPI + SQLAlchemy + MySQL 8，同步请求 | Redis、ARQ/Celery、消息队列、任何后台任务框架 |
+| 后端 | `uv` + Python 3.13 + FastAPI + SQLAlchemy + MySQL 8；重任务走 Redis + ARQ（本地可内存降级） | Celery、S3、WebRTC |
 | 前端 | Vue 3 + TypeScript + Vite + Element Plus，响应式 Web（`ADR-001`） | 小程序 / 原生 App |
 | AI | **BYOK**：用户在界面里填自己的 DeepSeek Key，后端携带它调用 DeepSeek（`ADR-009` 润色 / `ADR-011` JD 技能提取 / `ADR-013` 匹配 / `ADR-028` 画像概述 / `ADR-031` 外部 PDF 简历结构化），**非流式** | 服务端自持 Key 的调用形态（已废弃，`.env` 的 `DEEPSEEK_API_KEY` 不再被任何代码读取） |
 | 语音 | 浏览器 `MediaRecorder` 录音 + **直连** DeepSeek 语音工具做转写（`ADR-030`，回合制面试） | WebRTC 音视频房间（`media_rooms` 等表已裁定不建） |
@@ -121,11 +121,14 @@ Key 能出现在哪，是 `frontend/src/api/client.ts` 里**两张 fail-closed �
 - [uv](https://docs.astral.sh/uv/)（Python 包管理器）
 - 本机 MySQL 8 正在运行（默认端口 3306）
 - 项目根目录有 `.env`，其中 `DATABASE_URL` 指向你的 MySQL
-- **（可选，但「导入 PDF 简历」与「批量导出」这两条功能需要）本机有一个 Redis**：
-  `redis-server`，或者 `docker run -d --name redis -p 6379:6379 redis:7`。
-  没有它这两条功能会返回 **503**（一句「服务暂时不可用，请稍后重试。」，
-  `details.reason = TASK_QUEUE_UNAVAILABLE`），其它功能一切正常——
-  **不回落成同步执行**（`ADR-033` §2.6）
+- **Redis 可以不装**。第 31 轮起（`ADR-034`），`.env` 里不配 `REDIS_URL` 时
+  `development` 会走**内存降级**：「导入 PDF 简历」与「批量导出」照常可用，
+  任务在 web 进程内执行，前端体验与生产一致（202 + 轮询 + 进度条）。
+  **代价写在明处**：只对**单 Web 进程**有效（`uvicorn --workers >1` 会 404），
+  且不应用 `WORKER_*_MAX_JOBS` 并发上限。
+  → 要测**多进程并发或完整异步链路**（三条队列、真 worker、任务停摆观察），
+  请按 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) §11.2 起 Redis 与 ARQ Worker；
+  那时 `.env` 里配上 `REDIS_URL` 即可，配了就不降级。
 
 准备完成后：
 
@@ -145,9 +148,11 @@ Key 能出现在哪，是 `frontend/src/api/client.ts` 里**两张 fail-closed �
 1. 检查 `uv` / `npm` 是否安装、`.env` 是否存在、MySQL 端口是否可连；
 2. 新开一个窗口跑后端：先 `uv run alembic upgrade head` 同步表结构，再 `uv run uvicorn app.main:app --reload`；
 3. 新开一个窗口跑前端：进入 `frontend`，首次运行会先 `npm install`，然后 `npm run dev`；
-   **（异步任务）** 另开窗口跑 worker —— `uv run arq app.worker.OcrWorkerSettings`（导入）与
-   `uv run arq app.worker.PdfWorkerSettings`（打包）。**不起 worker 的表现是「任务永远停在
-   pending」**，不是报错；三条队列与并发配置见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) §11.2；
+   **（异步任务）默认什么都不用起**——`.env` 不配 `REDIS_URL` 时走内存降级。
+   只有在 `.env` 里配了 `REDIS_URL` 之后，才需要另开窗口跑 worker
+   （`uv run arq app.worker.OcrWorkerSettings` / `PdfWorkerSettings`）；
+   **配了地址却不起 worker 的表现是「任务永远停在 pending」**，不是报错，
+   三条队列与并发配置见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) §11.2；
 4. 轮询 `http://127.0.0.1:8000/api/v1/health` 和 `http://localhost:5173`，等两个服务真的能响应后自动用默认浏览器打开页面。
 
 启动完成后：
@@ -158,7 +163,7 @@ Key 能出现在哪，是 `frontend/src/api/client.ts` 里**两张 fail-closed �
 | 后端健康检查 | http://127.0.0.1:8000/api/v1/health |
 | 接口文档 | http://127.0.0.1:8000/docs |
 
-停止服务：直接关掉「后端」「前端」（以及 worker）窗口。
+停止服务：直接关掉「后端」「前端」（以及 worker，如果你起了的话）窗口。
 
 常见问题：
 
