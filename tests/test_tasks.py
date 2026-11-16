@@ -6,7 +6,9 @@
 2. **四态判定表**（§2.3）：`pending` →（job 没了）`failed TASK_LOST`；
    记录写 `running` → 报 `running`；`complete` → `progress=100` 且 `stage=None`；
 3. **归属**：别人的 `task_id` 与不存在的 `task_id` 同一个 404；
-4. **队列不可用就 503**（§2.6）：没配 `REDIS_URL` / 队列抛错时**不许假装 202**；
+4. **队列不可用就 503**（§2.6）：队列抛错时**不许假装 202**；没配 `REDIS_URL` 时
+   在 `test` 环境仍是 503，而在 `development` 下会走内存降级（第 31 轮 `ADR-034`，
+   那一条另有 `tests/test_inline_runtime.py` 专门测）；
 5. **BYOK 跨进程**（§2.4）：入队后 Redis 里只有密文，worker 读走即删，
    ARQ job 的 args 里没有明文；
 6. **队列隔离**（§2.2）：三个 `WorkerSettings` 的 `queue_name` / `max_jobs` / `functions`
@@ -21,6 +23,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import uuid
 from pathlib import Path
@@ -115,7 +118,12 @@ def test_import_returns_202_and_no_payload(client: TestClient) -> None:
 
 
 def test_pending_then_failed_with_error_code_and_progress(client: TestClient) -> None:
-    """四态里的三段：`pending` →（跑一次 worker）→ `failed`，且进度停在抽取那一档。"""
+    """四态里的三段：`pending` →（跑一次 worker）→ `failed`，且进度**停在它跑到的那一档**。
+
+    第 31 轮修了一次倒退：这条用例原来断言「停在抽取那一档（35）」，而 runner 在调
+    `import_profile()` 之前已经推进到 `structuring`（70）——于是前端看到 70 掉回 35。
+    现在失败只改 `state` + `error`，`stage` 保留，所以这里断言 70。
+    """
     headers, _ = _auth(client)
     task_id = _upload(client, headers).json()["data"]["task_id"]
 
@@ -139,11 +147,56 @@ def test_pending_then_failed_with_error_code_and_progress(client: TestClient) ->
         data["error"]["message"]
         == "这份文件没识别到文字，请上传含文字层的 PDF，或在下面手动填写档案。"
     )
-    # 失败停在抽取阶段：把它标成 structuring 会让用户以为是 AI 的错。
-    assert data["stage"] == "extracting"
-    assert data["progress"] == progress_for(TaskState.FAILED, TaskStage.EXTRACTING)
+    # 失败停在**它跑到的那一档**（抽取与结构化都在 `import_profile()` 里，
+    # 调它之前 runner 已经把 stage 推到 structuring）：进度条只进不退。
+    # 「是文件读不出字」这件事由 `error.code` 说，不再靠把 stage 往回拨来表达。
+    assert data["stage"] == "structuring"
+    assert data["progress"] == progress_for(TaskState.FAILED, TaskStage.STRUCTURING)
     assert data["finished_at"]
     assert data["result"] is None
+
+
+def test_import_failure_keeps_the_structuring_stage(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """在 `structuring` 抛错：终态 `stage` 必须还是 `structuring`，**不许退回 `extracting`**。
+
+    判据是「抛错那一帧的 stage == 终态的 stage」——不是在终态里看一眼 70 就算了。
+    所以导出服务换成会在 `import_profile()` 里当场炸的桩，并在**抛之前**读一次记录：
+    记录里那一格就是 runner 推进到的位置，终态必须与它一致。
+
+    换成桩还顺手让这条用例不依赖 OCR：真实空白 PDF 也能复现，只是要等 2 秒起模型。
+    """
+    from app.services import dependencies
+    from app.services.resume_import import PdfInvalidError
+    from tests.task_support import read_record
+
+    headers, _ = _auth(client)
+    task_id = _upload(client, headers).json()["data"]["task_id"]
+    observed: dict[str, str] = {}
+
+    class _ExplodingImporter:
+        def import_profile(self, data: bytes) -> Any:
+            # 这一格里是 `structuring`：runner 在调 `import_profile()` 之前推进过一次。
+            observed["stage_at_failure"] = read_record(task_id).get("stage", "")
+            raise PdfInvalidError("这份文件读不出文字")
+
+    monkeypatch.setattr(
+        dependencies, "build_resume_pdf_import_service", lambda api_key: _ExplodingImporter()
+    )
+
+    run_all_workers()
+
+    data = client.get(f"{API}/tasks/{task_id}", headers=headers).json()["data"]
+    assert data["state"] == "failed"
+    # 失败原因仍然由 code 表达（「读不出字」这件事没有丢）。
+    assert data["error"]["code"] == "PDF_INVALID"
+    assert observed["stage_at_failure"] == "structuring"
+    # 核心断言：终态 stage == 抛错那一帧的 stage（70 没掉回 35）。
+    assert data["stage"] == observed["stage_at_failure"]
+    assert data["progress"] == progress_for(TaskState.FAILED, TaskStage.STRUCTURING)
+    assert data["progress"] == 70
+    assert "extracting" not in json.dumps(data)
 
 
 def test_running_state_is_reported_from_the_record(client: TestClient) -> None:
@@ -248,11 +301,26 @@ def test_queue_failure_returns_503_not_202(
     assert queue_depth(QUEUE_OCR) == 0
 
 
-def test_missing_redis_url_is_503(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    """没配 `REDIS_URL`：**启动不失败**（web 还要干活），但任务端点 503。"""
+def test_missing_redis_url_is_503_where_degradation_is_off(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """没配 `REDIS_URL` 且**不许降级**（`environment=test`）：启动不失败，但任务端点 503。
+
+    第 31 轮（`ADR-034`）之后「没配 Redis」不再等于 503——`development` / `local` 会走
+    内存降级（见下一条用例）。但**测试环境绝不降级**这条边界必须自己有一条用例：
+    一旦它在 `test` 下也生效，`tests/test_tasks.py` 与 `tests/test_resumes_import_pdf.py`
+    里那套 fakeredis + 真 `arq.Worker` 的证据链就会被悄悄绕过，而它们不会因此变红。
+    """
     settings = task_runtime.get_settings()
     monkeypatch.setattr(
-        task_runtime, "get_settings", lambda: settings.model_copy(update={"redis_url": None})
+        task_runtime,
+        "get_settings",
+        lambda: settings.model_copy(update={"redis_url": None, "environment": "test"}),
+    )
+    monkeypatch.setattr(
+        dependencies,
+        "get_settings",
+        lambda: settings.model_copy(update={"redis_url": None, "environment": "test"}),
     )
     monkeypatch.setattr(dependencies, "get_task_runtime", task_runtime.get_task_runtime)
     monkeypatch.setattr(task_runtime, "_runtime", None)
@@ -262,6 +330,44 @@ def test_missing_redis_url_is_503(client: TestClient, monkeypatch: pytest.Monkey
 
     assert response.status_code == 503, response.text
     assert response.json()["error"]["details"]["reason"] == "TASK_QUEUE_UNAVAILABLE"
+
+
+def test_missing_redis_url_in_development_returns_202(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`development` + 没配 `REDIS_URL` → **202，不是 503**（本地零依赖降级，`ADR-034`）。
+
+    执行器换成空实现：本用例要验的是「端点不再 503、契约仍是 202」，
+    而「任务真的跑完并写回结果」由 `tests/test_inline_runtime.py` 的端到端用例负责。
+    两件分开的理由很实际——这里若真跑一遍解析，就会在 CI 里拉起 OCR 与真实外呼。
+    """
+    from app.services import inline_runtime
+
+    async def _noop(task_id: str) -> None:
+        return None
+
+    settings = task_runtime.get_settings()
+    inline_settings = settings.model_copy(update={"redis_url": None, "environment": "development"})
+    monkeypatch.setattr(task_runtime, "get_settings", lambda: inline_settings)
+    monkeypatch.setattr(dependencies, "get_settings", lambda: inline_settings)
+    monkeypatch.setattr(inline_runtime, "get_settings", lambda: inline_settings)
+    monkeypatch.setattr(inline_runtime, "_make_executor", lambda store: _noop)
+    monkeypatch.setattr(dependencies, "get_task_runtime", task_runtime.get_task_runtime)
+    monkeypatch.setattr(task_runtime, "_runtime", None)
+    headers, _ = _auth(client)
+
+    response = _upload(client, headers)
+
+    assert response.status_code == 202, response.text
+    data = response.json()["data"]
+    assert set(data) == {"task_id", "kind", "state", "created_at"}
+    assert data["kind"] == "import_pdf"
+    # 记录真的落进了内存存储（不是「202 了但什么都没建」）。
+    runtime = asyncio.run(dependencies._task_runtime())
+    record = asyncio.run(runtime.store.read(data["task_id"]))
+    assert record is not None
+    assert record.kind is TaskKind.IMPORT_PDF
+    asyncio.run(inline_runtime.reset_inline_task_runtime())
 
 
 # --------------------------------------------------------------------------- #

@@ -29,6 +29,7 @@ from app.core.error_messages import (
 from app.core.errors import error_response
 from app.core.rate_limit import limiter
 from app.integrations.task_runtime import reset_task_runtime
+from app.services.inline_runtime import reset_inline_task_runtime
 from app.services.resume_import import PdfImportError
 from app.services.resume_service import (
     ResumeApiKeyMissingError,
@@ -160,12 +161,46 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
                 check_migration_state(connection, settings)
         finally:
             engine.dispose()
+    _log_task_runtime(settings)
     try:
         yield
     finally:
         # 第 30 轮（`ADR-033`）：任务队列的连接池随进程关掉。**容忍没配 Redis**——
         # 那种部署下 `_TASK_RUNTIME` 从来没被建过，`reset` 是空操作。
+        # 第 31 轮（`ADR-034`）：内存降级运行时也要关——它没有连接，但会把在途任务取消，
+        # 否则热重载之后上一轮的 OCR 线程还在占 CPU。
+        await reset_inline_task_runtime()
         await reset_task_runtime()
+
+
+def _log_task_runtime(settings: Settings) -> None:
+    """启动时把「我现在跑哪一种任务运行时」打出来（第 31 轮，`ADR-034` §2.4）。
+
+    为什么值得一行日志：降级模式下**没有 worker 进程**，任务停摆的样子是
+    「点了导入一直转」。运维/开发者看一眼启动日志就能分清是「内存模式在跑」还是
+    「Redis 模式但 worker 没起」——这两种的排查方向完全相反。
+    """
+    if settings.inline_task_runtime:
+        logger.warning(
+            "任务运行时：内存降级（无 REDIS_URL，environment=%s）——"
+            "导入与批量导出在本进程内执行，仅单实例有效、不应用并发上限；"
+            "要测完整异步链路请配置 REDIS_URL 并启动 arq worker（ADR-034）",
+            settings.environment,
+        )
+    elif settings.redis_url:
+        logger.info("任务运行时：Redis（%s）", _mask_redis_url(settings.redis_url))
+    else:
+        logger.warning(
+            "任务运行时：不可用（无 REDIS_URL，environment=%s）——"
+            "两个任务端点将返回 503。development/local 下留空即可自动降级",
+            settings.environment,
+        )
+
+
+def _mask_redis_url(url: str) -> str:
+    """只留 host:port/db：连接串里可能带密码（`redis://:pwd@host:6379/0`）。"""
+    tail = url.rsplit("@", 1)[-1]
+    return f"redis://{tail}" if "@" in url else url
 
 
 def create_app() -> FastAPI:

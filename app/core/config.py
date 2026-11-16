@@ -6,6 +6,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 JWT_SECRET_MIN_LENGTH = 32
 DEVELOPMENT_JWT_SECRET_KEY = "development-only-insecure-jwt-secret-key-do-not-use"
 
+#: 允许「内存降级」的环境名（第 31 轮，`ADR-034` §2.1）。
+#:
+#: **是允许清单而不是「非 production 就降级」**：`test` 必须排除（测试的证据链是
+#: fakeredis + 真 `arq.Worker`，降级会把那条覆盖悄悄删掉），`staging` 这类挂着真实
+#: 用户的环境名也不该悄悄把 OCR 跑进 web 进程。没写进来的环境名一律按「不降级」处理
+#: ——宁可 503 也不静默换实现。
+INLINE_TASK_ENVIRONMENTS = frozenset({"development", "local"})
+
 
 class Settings(BaseSettings):
     app_name: str = "ai-career-platform"
@@ -21,9 +29,10 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     database_url: str | None = None
     #: 第 30 轮（`ADR-033`）：异步任务队列与任务记录的 Redis 连接串。
-    #: **默认 None = 任务功能不可用**（两个入队端点 503 `TASK_QUEUE_UNAVAILABLE`），
-    #: 绝不静默回落成「内存队列」——那种回落会在多 worker 部署时表现为「任务凭空消失」。
-    #: `production` 下缺失直接启动失败（见 `validate_production_dependencies`）。
+    #: **第 31 轮起（`ADR-034`）留空不再是「任务功能不可用」**：在
+    #: `INLINE_TASK_ENVIRONMENTS` 里留空会走**内存降级**（进程内执行，单实例可用，
+    #: 没有并发上限）；在其它环境留空仍是 503，`production` 下缺失直接启动失败
+    #: （见 `validate_production_redis_url`）。判据收在 `inline_task_runtime`。
     redis_url: str | None = None
     #: 三项并发上限（老板第 30 轮点名）。每项各管一条队列，理由见 `ADR-033` §2.2：
     #: - OCR 吃 CPU 且共用一个引擎，4 约等于「8 核留一半给 web」；
@@ -95,6 +104,22 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]
+
+    @property
+    def inline_task_runtime(self) -> bool:
+        """是否走**内存降级**运行时（第 31 轮，`ADR-034` §2.1）。
+
+        判据是两件的**与**：
+
+        1. 没有 `REDIS_URL`——有地址就意味着「我要测完整异步链路」，不该被降级盖掉；
+        2. 环境在 `INLINE_TASK_ENVIRONMENTS` 里（`development` / `local`）——
+           `test` 必须走 fakeredis（`ADR-033` §4 的证据链），`production` 由
+           `validate_production_redis_url` 拦在启动时，其它环境名宁可 503。
+
+        写成属性而不是多一个环境变量：多一个开关就多一种「本地是内存、CI 是 Redis、
+        线上是第三种」的排列，而这三者的**契约必须完全一致**，区别只在执行位置。
+        """
+        return not self.redis_url and self.environment.strip().lower() in INLINE_TASK_ENVIRONMENTS
 
     @property
     def jwt_expire_seconds(self) -> int:

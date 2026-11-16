@@ -32,7 +32,7 @@
 
 | 方面 | 现状（代码里可验证） | 设计目标（尚未接线，一行实现都没有） |
 |---|---|---|
-| 后端 | `uv` + Python 3.13 + FastAPI + SQLAlchemy + MySQL 8，同步请求 | Redis、ARQ/Celery、消息队列、任何后台任务框架 |
+| 后端 | `uv` + Python 3.13 + FastAPI + SQLAlchemy + MySQL 8；重任务走 Redis + ARQ（本地可内存降级） | Celery、S3、WebRTC |
 | 前端 | Vue 3 + TypeScript + Vite + Element Plus，响应式 Web（`ADR-001`） | 小程序 / 原生 App |
 | AI | **BYOK**：用户在界面里填自己的 DeepSeek Key，后端携带它调用 DeepSeek（`ADR-009` 润色 / `ADR-011` JD 技能提取 / `ADR-013` 匹配 / `ADR-028` 画像概述 / `ADR-031` 外部 PDF 简历结构化），**非流式** | 服务端自持 Key 的调用形态（已废弃，`.env` 的 `DEEPSEEK_API_KEY` 不再被任何代码读取） |
 | 语音 | 浏览器 `MediaRecorder` 录音 + **直连** DeepSeek 语音工具做转写（`ADR-030`，回合制面试） | WebRTC 音视频房间（`media_rooms` 等表已裁定不建） |
@@ -121,11 +121,14 @@ Key 能出现在哪，是 `frontend/src/api/client.ts` 里**两张 fail-closed �
 - [uv](https://docs.astral.sh/uv/)（Python 包管理器）
 - 本机 MySQL 8 正在运行（默认端口 3306）
 - 项目根目录有 `.env`，其中 `DATABASE_URL` 指向你的 MySQL
-- **（可选，但「导入 PDF 简历」与「批量导出」这两条功能需要）本机有一个 Redis**：
-  `redis-server`，或者 `docker run -d --name redis -p 6379:6379 redis:7`。
-  没有它这两条功能会返回 **503**（一句「服务暂时不可用，请稍后重试。」，
-  `details.reason = TASK_QUEUE_UNAVAILABLE`），其它功能一切正常——
-  **不回落成同步执行**（`ADR-033` §2.6）
+- **Redis 可以不装**。第 31 轮起（`ADR-034`），`.env` 里不配 `REDIS_URL` 时
+  `development` 会走**内存降级**：「导入 PDF 简历」与「批量导出」照常可用，
+  任务在 web 进程内执行，前端体验与生产一致（202 + 轮询 + 进度条）。
+  **代价写在明处**：只对**单 Web 进程**有效（`uvicorn --workers >1` 会 404），
+  且不应用 `WORKER_*_MAX_JOBS` 并发上限。
+  → 要测**多进程并发或完整异步链路**（三条队列、真 worker、任务停摆观察），
+  请按 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) §11.2 起 Redis 与 ARQ Worker；
+  那时 `.env` 里配上 `REDIS_URL` 即可，配了就不降级。
 
 准备完成后：
 
@@ -145,9 +148,11 @@ Key 能出现在哪，是 `frontend/src/api/client.ts` 里**两张 fail-closed �
 1. 检查 `uv` / `npm` 是否安装、`.env` 是否存在、MySQL 端口是否可连；
 2. 新开一个窗口跑后端：先 `uv run alembic upgrade head` 同步表结构，再 `uv run uvicorn app.main:app --reload`；
 3. 新开一个窗口跑前端：进入 `frontend`，首次运行会先 `npm install`，然后 `npm run dev`；
-   **（异步任务）** 另开窗口跑 worker —— `uv run arq app.worker.OcrWorkerSettings`（导入）与
-   `uv run arq app.worker.PdfWorkerSettings`（打包）。**不起 worker 的表现是「任务永远停在
-   pending」**，不是报错；三条队列与并发配置见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) §11.2；
+   **（异步任务）默认什么都不用起**——`.env` 不配 `REDIS_URL` 时走内存降级。
+   只有在 `.env` 里配了 `REDIS_URL` 之后，才需要另开窗口跑 worker
+   （`uv run arq app.worker.OcrWorkerSettings` / `PdfWorkerSettings`）；
+   **配了地址却不起 worker 的表现是「任务永远停在 pending」**，不是报错，
+   三条队列与并发配置见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) §11.2；
 4. 轮询 `http://127.0.0.1:8000/api/v1/health` 和 `http://localhost:5173`，等两个服务真的能响应后自动用默认浏览器打开页面。
 
 启动完成后：
@@ -158,7 +163,7 @@ Key 能出现在哪，是 `frontend/src/api/client.ts` 里**两张 fail-closed �
 | 后端健康检查 | http://127.0.0.1:8000/api/v1/health |
 | 接口文档 | http://127.0.0.1:8000/docs |
 
-停止服务：直接关掉「后端」「前端」（以及 worker）窗口。
+停止服务：直接关掉「后端」「前端」（以及 worker，如果你起了的话）窗口。
 
 常见问题：
 
@@ -294,3 +299,76 @@ docker compose down -v   # 连数据卷一起删除，数据会丢失
 ```
 
 第一次在真实 Docker 宿主上完整跑通 `build` + `up` 之后，应回来把 ADR-008 的状态改为「已验证」。
+
+## 🚢 生产环境一键部署（`docker-compose.prod.yml`）
+
+> ⚠️ 与上一节同一条声明：开发主机没有 Docker，**这份生产编排从未真机跑过**（ADR-008）。
+> 它按今天的代码把坐标写准了（服务名、卷、迁移顺序、worker 与浏览器），但第一次 `up`
+> 仍可能需要修。生产上线前请先在一台测试机跑通。
+
+一条命令拉起六个容器：`db`（MySQL）、`redis`、`web`（Uvicorn）、`worker-ocr`、
+`worker-pdf`、`frontend`（nginx）。前五个是**必起的**；`frontend` 是界面本身，
+你自己接反向代理时可以整段删掉。`worker-default` 故意不起——那条队列今天没有任务注册。
+
+### 1. 准备 `.env`（缺一项就当场失败，不会起半配置的容器）
+
+| 变量 | 必填 | 说明 |
+|---|---|---|
+| `MYSQL_PASSWORD` | ✅ | 数据库密码，**别用示例值** |
+| `MYSQL_DATABASE` | ✅ | 库名（空库会自动建表） |
+| `MYSQL_USER` |  | 默认 `root` |
+| `JWT_SECRET_KEY` | ✅ | **≥ 32 字符**，`production` 下短于此长度启动即失败。生成：`openssl rand -hex 32`（或 `python -c "import secrets;print(secrets.token_hex(32))"`） |
+| `PUBLIC_ORIGIN` | ✅ | 对外访问地址，例如 `https://career.example.com`；写进 `FRONTEND_URL` / `ALLOWED_ORIGINS` |
+| `WORKER_PDF_MAX_JOBS` |  | 默认 `2`（两个浏览器子进程）。**内存 < 4 GB 的机器调到 1**，否则 OOM 杀的是 worker |
+| `ENABLE_API_DOCS` |  | 默认 `false`（生产不暴露 `/docs` 与 `/openapi.json`） |
+
+`production` 是**强制**的：缺 `DATABASE_URL` / `REDIS_URL` / 强 JWT 中任意一项，容器
+启动即失败；库结构落后于代码时 `check_migration_state` 直接拒绝启动。**不会**像本地那样
+降级成内存队列（`ADR-034` §2.1）——生产的并发上限只存在于真队列里。
+
+### 2. 起服务
+
+```bash
+# 构建并后台启动（首次会构建镜像；worker-pdf 因为装了 Chromium 会多花几分钟）
+docker compose -f docker-compose.prod.yml up -d --build
+
+# 看状态：db / redis 等到 healthy，web 才会起；frontend 等 web 健康
+docker compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.prod.yml logs -f web worker-pdf
+```
+
+`web` 的启动命令是 `alembic upgrade head && uvicorn ...`，所以空库第一次起来就会建表。
+
+### 3. 验收（三条都过才算起来了）
+
+```bash
+curl -fsS http://127.0.0.1/api/v1/health                 # 200 + {"status":"ok",...}
+docker compose -f docker-compose.prod.yml exec redis redis-cli ping   # PONG
+docker compose -f docker-compose.prod.yml exec redis redis-cli zcard arq:queue:pdf  # 0
+```
+
+再到网页上走一遍两条重链路：**导入 PDF**（看进度条是否推进到「整理成档案」）与
+**教师端批量导出**（看进度行 + 自动下载 ZIP）。导出若失败并显示「导出服务暂时不可用」，
+说明 `worker-pdf` 里的 Chromium 没装上——看 `logs worker-pdf` 里的
+`PDF 渲染调用失败`。
+
+### 4. 日常运维
+
+```bash
+docker compose -f docker-compose.prod.yml restart worker-pdf   # 只重启一条队列
+docker compose -f docker-compose.prod.yml pull && up -d        # 升级镜像
+docker compose -f docker-compose.prod.yml down                 # 停服务，保留数据卷
+docker compose -f docker-compose.prod.yml down -v              # 连 MySQL / Redis 数据一起删
+```
+
+- **迁移**：单副本时由 `web` 启动时跑。**多副本**要先单独跑一次
+  `docker compose -f docker-compose.prod.yml run --rm web alembic upgrade head`，
+  否则几个容器会抢同一把 DDL。
+- **队列积压**：`redis-cli zcard arq:queue:ocr` / `arq:queue:pdf`（`arq:queue:pdf` 长期不降
+  说明浏览器渲染慢或 `worker-pdf` 挂了）。没有指标系统，这是今天唯一的观测手段。
+- **Redis 开了 AOF**（`appendonly yes`）：重启不会丢在途任务。任务记录本身有 TTL
+  （`WORKER_TASK_TTL_SECONDS`，默认 30 分钟），不会无限涨。
+- **换 `JWT_SECRET_KEY` 会让在途任务的 BYOK 密文解不开**（加密密钥由它派生），
+  挑没有任务在跑的窗口换。
+- **不要多机部署**：任务产物在本地盘（`task-downloads` 卷），
+  `ADR-033` §7 第 5 条记着这条限制。

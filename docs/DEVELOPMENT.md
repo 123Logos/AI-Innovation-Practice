@@ -306,29 +306,63 @@ uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 ```
 
-### 11.2 Redis 与异步任务 worker（第 30 轮，`ADR-033`）
+### 11.2 异步任务：本地内存降级 / 生产 Redis + worker（`ADR-033` / `ADR-034`）
 
 导入 PDF 与批量导出这两条重链路**已经搬进队列**：web 进程只做「落盘 + 入队 + 轮询」，
-解析与渲染由 worker 执行。所以本地要跑通这两条功能，除了 MySQL 还需要一个 Redis
-和至少一个 worker 进程。
+解析与渲染由 worker 执行。**但本地开发不需要为此装 Redis**——第 31 轮起有一层
+零依赖降级（`ADR-034`）。
+
+#### 两种形态，一句话分清
+
+| 形态 | 触发条件 | 任务在哪跑 | 适合 |
+|---|---|---|---|
+| **内存降级**（默认） | `.env` 里**没有** `REDIS_URL` 且 `ENVIRONMENT=development` / `local` | web 进程内（`asyncio.create_task`） | 本地改前端 / 改业务，`uvicorn app.main:app` 一把梭 |
+| **Redis + worker** | 配了 `REDIS_URL` | 三个独立 worker 进程 | 测完整异步链路、并发上限、多进程、部署 |
+
+**两种形态的 HTTP 契约完全一致**：都是 202 + `GET /tasks/{id}` 四态轮询 + 一次性下载，
+前端没有第二条代码路径。区别只在「谁执行」以及「有没有并发上限」。
+
+启动日志会直接告诉你现在是哪一种：
+
+```
+WARNING  任务运行时：内存降级（无 REDIS_URL，environment=development）——…
+INFO     任务运行时：Redis（redis://127.0.0.1:6379/0）
+```
+
+#### 形态一：内存降级（本地默认，什么都不用起）
 
 ```bash
-# 本机（或用 docker run -p 6379:6379 redis:7）
-redis-server                                  # 或：docker run --rm -p 6379:6379 redis:7
+uv run uvicorn app.main:app --reload      # 就这一条
+```
 
-# 三条队列三个进程，各起各的（另开三个终端）
+- 任务记录在**内存**里（进程重启即丢），文件仍落 `temp/imports/` 与 `downloads/`；
+- **只对单实例有效**：`--workers 2` 会「A 进程入队、B 进程轮询 404」；
+- **不应用 `WORKER_*_MAX_JOBS`**：没有队列就没有「同时几个」。重活仍在线程池里跑
+  （`asyncio.to_thread`），所以阻塞的是线程，不是事件循环；
+- `arq app.worker.*` 在这个形态下**没有意义**（没有 Redis 可连），启动会直接报错并提示这一点。
+
+#### 形态二：Redis + 三个 worker（测完整链路 / 生产）
+
+```bash
+# 1) Redis（或 docker run -p 6379:6379 redis:7）
+redis-server
+
+# 2) .env 里配上 REDIS_URL=redis://127.0.0.1:6379/0（配了就不降级）
+
+# 3) 三条队列三个进程，各起各的（另开三个终端）
 uv run arq app.worker.OcrWorkerSettings       # 导入：文本层 / OCR / DeepSeek
 uv run arq app.worker.PdfWorkerSettings       # 打包：无头浏览器渲染 + ZIP
 uv run arq app.worker.DefaultWorkerSettings   # 常规 I/O（今天没有任务注册）
 ```
 
-**⚠️ 不起 worker 的表现是「任务永远停在 pending」**，不是报错：web 那边 202 已经回了，
-队列里也真有这条任务，只是没人消费。它会在 `WORKER_TASK_TTL_SECONDS`（默认 30 分钟）
-之后变成 404。这条是本篇最容易在部署时踩到的坑，所以单独写一行。
+**⚠️ 配了 `REDIS_URL` 却不起 worker 的表现是「任务永远停在 pending」**，不是报错：
+web 那边 202 已经回了，队列里也真有这条任务，只是没人消费。它会在
+`WORKER_TASK_TTL_SECONDS`（默认 30 分钟）之后变成 404。这条是本篇最容易在部署时
+踩到的坑，所以单独写一行——**想省掉这个坑，本地就别配 `REDIS_URL`**（走形态一）。
 
 | 环境变量 | 默认 | 作用 |
 |---|---|---|
-| `REDIS_URL` | 空（= 两条功能 503） | 队列与任务记录；`production` 下缺失启动即失败 |
+| `REDIS_URL` | 空 | 空 + `development`/`local` = **内存降级**；空 + 其它环境 = 两条功能 503；配了就一律走 Redis；`production` 下缺失启动即失败 |
 | `WORKER_OCR_MAX_JOBS` | 4 | 导入并发（吃 CPU，共用一个 OCR 引擎） |
 | `WORKER_PDF_MAX_JOBS` | 2 | 打包并发（每条起一个浏览器子进程，**防 OOM**） |
 | `WORKER_DEFAULT_MAX_JOBS` | 10 | 常规 I/O 并发（今天空跑） |
@@ -336,18 +370,26 @@ uv run arq app.worker.DefaultWorkerSettings   # 常规 I/O（今天没有任务�
 | `WORKER_TASK_TTL_SECONDS` | 1800 | 任务记录（状态 + 结果）保留时长 |
 | `WORKER_IMPORT_DIR` / `WORKER_DOWNLOAD_DIR` | `temp/imports` / `downloads` | 暂存与产物目录（都在 `.gitignore` 里） |
 
-**没有 Redis 时会发生什么**（如实写清，而不是假装可用）：web 照常启动，
-登录 / 档案 / 岗位 / 测评 / 面试 / 看板全部正常；只有
-`POST /resumes/import-pdf` 与 `POST /teacher/resumes/batch-download` 返回 **503**
-（消息是全站 5xx 的固定一句「服务暂时不可用，请稍后重试。」，
-`details.reason = "TASK_QUEUE_UNAVAILABLE"` 供排障）。**不回落成同步执行**——
-那等于让最重的那两条链路绕开并发上限（`ADR-033` §6）。
+**没有 Redis 时会发生什么**（第 31 轮之后分两种，如实写清而不是假装可用）：
+
+- `ENVIRONMENT=development` / `local`：**内存降级**（形态一），两条功能照常可用；
+- 其它环境（含 `test`、`staging`）：两个入队端点返回 **503**
+  （消息是全站 5xx 的固定一句「服务暂时不可用，请稍后重试。」，
+  `details.reason = "TASK_QUEUE_UNAVAILABLE"` 供排障）。
+
+两种都不**回落成同步执行**——那等于让最重的那两条链路绕开并发上限（`ADR-033` §6），
+而且会让前端出现第二条代码路径。降级保留的是「202 + 轮询」，换掉的只是执行位置。
 
 生产环境（**下面是目标形态，今天还没有一次真实部署过**：开发主机没装 Docker，`ADR-008` 那批件全是 `NOT VERIFIED`；`ADR-033` 之后 Redis 与 worker **有代码了**，但同样没有一次真机部署）：
 
+> 第 31 轮补了一份**一键编排**：`docker-compose.prod.yml`（db / redis / web /
+> worker-ocr / worker-pdf / frontend 六个容器，`ENVIRONMENT=production`、内部网络不发布
+> db 与 redis 端口、worker-pdf 镜像内装 Chromium + 中文字体）。操作步骤与验收命令见
+> `README.md` 的「生产环境一键部署」一节。它与下面这份清单是同一件事的两种粒度。
+
 1. 构建前端静态资源和后端镜像；
 2. 由密钥管理系统注入环境变量——**必注入的只有 `DATABASE_URL` 与 `JWT_SECRET_KEY`**（§8 那两个启动即拦的检查）；`DEEPSEEK_API_KEY` 不需要，AI 凭据是用户自己带的（BYOK）；
-3. 启动 MySQL、**Redis**、API、**三个 worker**（§11.2）与反向代理。对象存储仍然**没有对应代码**（产物落在本地盘，`ADR-033` §7 第 5 条记着「多机部署不成立」）；
+3. 启动 MySQL、**Redis**（生产必配，`production` 下缺它启动即失败）、API、**三个 worker**（§11.2）与反向代理。对象存储仍然**没有对应代码**（产物落在本地盘，`ADR-033` §7 第 5 条记着「多机部署不成立」）；
 4. 执行 Alembic 迁移和健康检查（`/api/v1/health`；迁移漏跑时开发/测试打印告警、**生产直接拒绝启动**）；
 5. 配置 HTTPS、备份、监控和告警；
 6. 先灰度，再开放企业和学生流量。

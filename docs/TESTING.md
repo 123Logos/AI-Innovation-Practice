@@ -61,6 +61,14 @@ ARQ 的 `enqueue_job` 与 `arq.Worker` 也都是真的——只是 Redis 本身�
 | job 丢了 | `drop_job(task_id, queue)`：删掉 ARQ 的两条键，模拟 worker 崩溃 |
 | Key 生命周期 | `read_secret(task_id)` / `job_raw(task_id)`：断言「密文在、明文不在、用完消失」 |
 
+**内存降级模式（第 31 轮，`ADR-034`）怎么测**：`tests/test_inline_runtime.py` 只测降级本身
+——触发条件（`development` + 无 `REDIS_URL` 才降级，`test` 环境**绝不**降级）、
+`MemoryTaskStore` 的语义对齐（终态只写一次 / TTL / 密钥读到即删）、
+以及一条任务真的能在进程内跑完（`pending` → `complete`，失败落 `failed` + 码）。
+`tests/test_tasks.py` 只多两条：`test` 环境仍是 503、`development` 下是 202。
+**降级路径不在 `client` 夹具里跑重活**：那会在 CI 里拉起 OCR 与真实外呼，
+所以端到端那条用桩导入服务，真解析仍由 `test_resumes_import_pdf.py` 覆盖。
+
 **两条 Windows 特有的兼容垫片**写在 `task_support.py::_worker_compat_shims` 里
 （`signal.SIGUSR1` 在 Windows 上不存在；fakeredis 没实现 ARQ 启动时打的 `INFO`），
 注释里写清了「为什么不是改 arq 本身」。**本机没有 Redis**，所以真实 Redis 上的

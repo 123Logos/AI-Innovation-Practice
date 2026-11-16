@@ -177,12 +177,22 @@ GET  /api/v1/tasks/{task_id}/download  → 200 application/zip（一次性），
   轮询端点对「任务失败」返回 200 + `state=failed`，因为请求本身成功地被回答了。
 - **`message` 一律来自 `ErrorMessage`**（G3 的既有纪律）：worker 里抛出的上游异常文本
   只进日志，不进记录、不进响应。
+- **`stage` 在 `failed` 时保留「跑到的那一档」，不清空、不回拨**（第 31 轮修正）：
+  本篇最初让调用点指定失败落在哪一档，导入那侧还把 `PDF_INVALID` 归回 `extracting`；
+  但 `import_profile()` 内部同时做抽取与结构化，抛错那一帧任务已经推进到 `structuring`
+  （进度 70），归回 35 就是**进度条当场倒退**。现在 `TaskRunner._fail()` 只写
+  `state` + `error`，`stage` 取记录当前值——"为什么失败"由 `error.code` 表达，
+  `stage` 只回答"跑到哪一步"。`complete` 仍是 `null`。
 - **入队失败必须 503，不许假装 202**：Redis 连不上 / 没配 `REDIS_URL` 时，
   两个入队端点返回 **503**。「先回 202 再想办法」会让用户永远等一个不存在的任务。
   消息本身走全站 5xx 的既有口径——**固定一句**「服务暂时不可用，请稍后重试。」，
   `details.reason = "TASK_QUEUE_UNAVAILABLE"` 供排障（与 `PDF_RENDERER_UNAVAILABLE`
   那个 503 完全同一处置）。这里没有为「队列挂了」单独开一句人话，因为 5xx 一律不上屏
   具体文案是 F1c 定的红线，破一次就会有第二个例外。
+  → **第 31 轮补口（`ADR-034`）**：`development` / `local` 下**没配** `REDIS_URL` 不再
+  返回 503，而是走内存降级（任务在 web 进程内执行，契约仍是 202 + 轮询）。
+  这不是把这一条放松：`test` 环境与其它环境名仍然 503，`production` 仍然启动即失败；
+  变的只是「本地开发默认值」，而且换的是执行位置，不是响应形状。
 
 ### 2.7 两个端点的行为变化（如实记账：这是**破坏性**契约变更）
 
