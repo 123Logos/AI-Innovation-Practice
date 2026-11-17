@@ -10,6 +10,17 @@
 
 name: ai-career-platform
 
+# 三条队列共用的「后台进程」配置（第 32 轮，与 docker-compose.prod.yml 同口径）：
+# 1. `Dockerfile.backend` 的全局 HEALTHCHECK 打的是 `:8000/api/v1/health`，worker 不监听
+#    HTTP，不 disable 就会在 `docker compose ps` 里永远挂着 unhealthy——那条状态与
+#    「有没有在消费任务」毫无关系，留着只会教人忽略红色。
+# 2. 停机只给 10 秒。被硬杀的在途任务由轮询收敛成 `TASK_LOST`（`ADR-033` §2.3 的判定表），
+#    界面上读到的是「任务进行到一半中断了，请重新上传（或重新发起导出）。」
+x-worker-runtime: &worker-runtime
+  healthcheck:
+    disable: true
+  stop_grace_period: 10s
+
 services:
   db:
     image: mysql:8.0
@@ -59,6 +70,11 @@ services:
       # and database_url rules in production, and the startup migration check refuses
       # to boot an out-of-date database there.
       ENVIRONMENT: development
+      # 应用容器的进程时钟固定东八区（第 32 轮，与 `docker-compose.prod.yml` 同一口径；
+      # 负责人裁定「不能留一个同样会踩坑的开发版」）。修的是 `date.today()` 那批调用：
+      # UTC 底座在北京时间 00:00–08:00 之间「今天」还是昨天，岗位过期会晚 8 小时生效。
+      # `db` **故意不加**：库里时间统一是 naive UTC（`app/core/datetime_display.py`）。
+      TZ: Asia/Shanghai
       APP_HOST: 0.0.0.0
       APP_PORT: "8000"
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY is not set - create .env from .env.example}
@@ -95,6 +111,9 @@ services:
       dockerfile: Dockerfile.backend
     restart: unless-stopped
     environment: &worker-env
+      # 与 backend 同一个时钟口径（第 32 轮，理由见上面 backend 那段的注释）：
+      # web 与 worker 必须读同一个「今天」，否则界面上判过期、任务里判没过期。
+      TZ: Asia/Shanghai
       DATABASE_URL: mysql+pymysql://${MYSQL_USER:-root}:${MYSQL_PASSWORD}@db:3306/${MYSQL_DATABASE}?charset=utf8mb4
       ENVIRONMENT: development
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY is not set - create .env from .env.example}
@@ -108,6 +127,7 @@ services:
       # 而不是回一个假 PDF（ADR-029 §2.5）。
       PDF_BROWSER_PATH: ${PDF_BROWSER_PATH:-}
     command: sh -c "uv run --no-sync arq app.worker.OcrWorkerSettings"
+    <<: *worker-runtime
     # 上传暂存目录必须与 backend 共用一份卷：web 落盘、worker 读盘（ADR-033 §2.5）。
     volumes:
       - task-temp:/app/temp
@@ -125,6 +145,7 @@ services:
     restart: unless-stopped
     environment: *worker-env
     command: sh -c "uv run --no-sync arq app.worker.PdfWorkerSettings"
+    <<: *worker-runtime
     volumes:
       - task-temp:/app/temp
       - task-downloads:/app/downloads
@@ -141,6 +162,7 @@ services:
     restart: unless-stopped
     environment: *worker-env
     command: sh -c "uv run --no-sync arq app.worker.DefaultWorkerSettings"
+    <<: *worker-runtime
     volumes:
       - task-temp:/app/temp
       - task-downloads:/app/downloads

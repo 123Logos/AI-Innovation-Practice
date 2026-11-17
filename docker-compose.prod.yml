@@ -40,6 +40,15 @@ x-app-env: &app-env
   # 库地址按服务名拼：宿主 `.env` 里那个 127.0.0.1 在容器里指的是容器自己。
   DATABASE_URL: mysql+pymysql://${MYSQL_USER:-root}:${MYSQL_PASSWORD:?MYSQL_PASSWORD is not set - create .env from .env.example}@db:3306/${MYSQL_DATABASE:?MYSQL_DATABASE is not set - create .env from .env.example}?charset=utf8mb4
   ENVIRONMENT: production
+  # 应用容器（web + 三个 worker）的进程时钟固定东八区（第 32 轮）。
+  # `db` / `redis` **故意不加**：库里时间走 `utc_now()`（naive UTC，
+  # `app/core/datetime_display.py:56`），MySQL 留在 UTC 才对得上。
+  # 修的是没被 `shanghai_today()` 覆盖的那批调用——岗位过期判定、匹配、简历服务里的
+  # `date.today()`（`app/services/job_service.py:227`）：UTC 机器在北京时间
+  # 00:00–08:00 之间「今天」还是昨天，所以那天该下线的岗位会多挂 8 小时。
+  # 写在 x-app-env 里而不是各服务里：web 与 worker 必须读同一个口径，
+  # 否则「界面上已过期、任务里还没过期」这种分裂会出现在导出队列上。
+  TZ: Asia/Shanghai
   JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY is not set - create .env from .env.example}
   REDIS_URL: redis://redis:6379/0
   # 三条队列的并发上限（`ADR-033` §2.2）。pdf 两条 = 两个浏览器子进程，
@@ -145,6 +154,16 @@ services:
     volumes:
       - task-temp:/app/temp
       - task-downloads:/app/downloads
+    # nginx 的 upstream 写死的是 `backend:8000`（`docker/nginx.conf`）：开发形态里那个
+    # 服务就叫 `backend`，生产这一份叫 `web`。加一个网络别名，同一份 nginx.conf 在两种
+    # 拓扑下都能解析——**没有别名时生产的所有 `/api/` 都是 502**（`docker compose ps`
+    # 全绿、`curl :8000/health` 通，只有走界面才红，是最难猜的那类错）。
+    # 真机第一次 up 时如果别名不生效，改 `docker/nginx.conf` 的 `proxy_pass` 为
+    # `http://web:8000` 并把开发形态的 `backend` 重命名成 `web`，别两边各留一份。
+    networks:
+      default:
+        aliases:
+          - backend
     # 停止时给在途请求一点时间把响应写完（uvicorn 收到 SIGTERM 会停止接新连接）。
     stop_grace_period: 30s
 
@@ -164,9 +183,19 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    # ARQ 收到 SIGTERM 会停止取新 job 并把在跑的那几条写完；
-    # 给的时间要比单任务超时短，否则停机像卡死。
-    stop_grace_period: 60s
+    # 镜像里的 `HEALTHCHECK` 打的是 `GET :8000/api/v1/health`（`Dockerfile.backend`），
+    # worker 不起 HTTP 服务，那条检查**永远失败**——`docker compose ps` 里两条队列会
+    # 一直挂着 unhealthy，而它和「worker 是不是在消费任务」没有任何关系。
+    # 关掉它，unhealthy 只留给真会 HTTP 的 `web`。今天观测队列的深度还是 `redis-cli zcard`
+    # （README「日常运维」那条）。
+    healthcheck:
+      disable: true
+    # 停机只给 10 秒（第 32 轮裁定：重启要快）。代价写在案：SIGTERM 后仍在跑的那几条
+    # 会被硬杀，记录停在 running 而 job 消失，下一次轮询按 `TASK_LOST` 收敛成失败
+    # （`app/services/task_service.py::status`），界面上就是那句
+    # 「任务进行到一半中断了，请重新上传（或重新发起导出）。」
+    # ——不是永远转圈，也不会假装成功。想改成「停机时把在跑的做完」就把它调回 60s。
+    stop_grace_period: 10s
 
   worker-pdf:
     build:
@@ -193,7 +222,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    stop_grace_period: 120s
+    # 同 worker-ocr：HTTP 健康检查对 worker 永远是红的，关掉。
+    healthcheck:
+      disable: true
+    # 10 秒（原来 120s）。这里被硬杀的代价比 ocr 那条更直观：一份正在渲染的 ZIP 会停在
+    # running，下一次轮询收敛成 `TASK_LOST`，界面读到的是那句
+    # 「任务进行到一半中断了，请重新上传（或重新发起导出）。」
+    # Chromium 启动 + 渲染是这套里最慢的一段，所以重启高峰（比如刚发版）别连着 restart。
+    stop_grace_period: 10s
 
   # 前端（nginx 托管构建产物 + 反代 /api）。五个必起服务之外的那一个：
   # 只跑后端也能用（接口在 :8000），但产品没有界面。

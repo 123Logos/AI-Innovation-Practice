@@ -285,13 +285,30 @@ compose 会带着 `:?` 提示直接失败，不会拉起半配置的服务。
 # 只做解析和变量插值检查，不构建镜像
 docker compose config
 
-# 构建并启动 db + backend + frontend
+# 构建并启动全部七个服务：db + redis + backend + worker-ocr + worker-pdf + worker-default + frontend
 docker compose up --build
 ```
 
 启动后访问 **http://localhost:8080**（前端由 nginx 托管静态文件，并把 `/api/` 反代到
 `backend:8000`，与浏览器同源，因此不需要额外配置 CORS）。后端容器启动命令是
 `alembic upgrade head && uvicorn ...`，空数据库卷会自动建表。
+
+三条只有在这份编排里才有的说明：
+
+- **三条 worker 都起**，包括 `worker-default`（生产那份故意不起它）。**不起 worker 的表现是
+  「任务永远 pending」**：导入 PDF 与批量导出的 202 照样回得去、队列里也真有任务，只是没人消费。
+  只跑 `backend` 调试其它接口时可以 `docker compose up -d db redis backend frontend`。
+- Redis 的 6379 在这份编排里**发布到宿主**，只为本地 `redis-cli` 看队列深度
+  （`zcard arq:queue:ocr` / `arq:queue:pdf`）；生产那份不发布端口。
+- 开发形态的 `worker-pdf` 用的也是**不装 Chromium** 的那支镜像（没传
+  `INSTALL_PDF_BROWSER=1`），所以在这套容器里跑批量导出会以 `PDF_RENDERER_UNAVAILABLE`
+  失败——这是既有行为（`ADR-029` §2.5 宁可失败也不回假 PDF），不是这一轮改出来的。
+  要在容器里验导出，给那一条服务的 `build.args` 补上 `INSTALL_PDF_BROWSER: "1"`。
+
+时钟与权限三项与生产同口径（第 32 轮同步，不留双标）：应用容器 `TZ: Asia/Shanghai`
+（`db` 留在 UTC）、worker 禁用镜像那条 HTTP 健康检查、停机宽限 10 秒。
+`/app/temp` 与 `/app/downloads` 的属主由 `Dockerfile.backend` 在降权前处理好，
+新建卷不需要手工赋权；老卷的处置见下面生产那一节的「卷权限」。
 
 ```powershell
 docker compose down      # 停止服务，保留 MySQL 数据卷
@@ -339,7 +356,44 @@ docker compose -f docker-compose.prod.yml logs -f web worker-pdf
 
 `web` 的启动命令是 `alembic upgrade head && uvicorn ...`，所以空库第一次起来就会建表。
 
-### 3. 验收（三条都过才算起来了）
+### 3. 卷权限：`task-temp` / `task-downloads`
+
+导入的 PDF 先落到 `task-temp` 卷（`/app/temp/imports`，web 写、worker 读），导出的 ZIP 落到
+`task-downloads`（`/app/downloads`，`worker-pdf` 写、用户下载时 web 读）。三条容器挂的是
+**同一份卷**，所以真正写它们的那个用户（`appuser`，uid 10001）必须有权限。
+
+**新建卷不用管**：`Dockerfile.backend` 在切成 `appuser` 之前就把这两个目录建好并
+`chown` 给它，Docker 第一次创建空命名卷时会把镜像里那个目录的属主带进卷。
+
+**已经存在的卷要手工赋权一次**——卷只要不是空的，Docker 就不会重放镜像里的属主。
+第 32 轮之前建的镜像留下的老卷仍然是 `root:root`，表现是两条链路各以一种难猜的方式红：
+
+- 导入 PDF：**接口直接 500**，202 都回不出去。暂存文件是 web 在入队之前落的
+  （`app/services/task_service.py` 调 `save_import_file`），写不进去就轮不到排队，
+  `logs web` 里是 `PermissionError: /app/temp/imports/...`；
+- 批量导出：任务以失败收场，界面上那行进度报失败——ZIP 是 `worker-pdf` 写的
+  （`save_download_file`），产物根本落不到 `task-downloads`。
+
+```bash
+# 以 root 进一次 web 容器改属主（默认用户 appuser 改不动 root 拥有的目录）
+docker compose -f docker-compose.prod.yml run --rm --no-deps --user root web \
+  sh -c "chown 10001:10001 /app/temp /app/downloads"
+
+# 确认两个目录都归 10001
+docker compose -f docker-compose.prod.yml exec web ls -ld /app/temp /app/downloads
+```
+
+想直接清掉重来也行（丢在途任务与未下载的产物，但**不动数据库**）：
+
+```bash
+docker compose -f docker-compose.prod.yml down
+docker volume rm ai-career-platform_task-temp ai-career-platform_task-downloads
+docker compose -f docker-compose.prod.yml up -d
+```
+
+别用 `down -v` 来清这两个卷：那会连 `mysql-data` 一起删，库就没了。
+
+### 4. 验收（三条都过才算起来了）
 
 ```bash
 curl -fsS http://127.0.0.1/api/v1/health                 # 200 + {"status":"ok",...}
@@ -352,7 +406,11 @@ docker compose -f docker-compose.prod.yml exec redis redis-cli zcard arq:queue:p
 说明 `worker-pdf` 里的 Chromium 没装上——看 `logs worker-pdf` 里的
 `PDF 渲染调用失败`。
 
-### 4. 日常运维
+第一条 `curl` 是走 nginx 的 `/api` 反代打到后端的，所以它同时在验 `web` 那个
+`backend` 网络别名（`docker/nginx.conf` 的 `proxy_pass` 认的就是这个名字）。
+它要是 502 而 `curl http://127.0.0.1:8000/api/v1/health` 直连是 200，就是别名没生效。
+
+### 5. 日常运维
 
 ```bash
 docker compose -f docker-compose.prod.yml restart worker-pdf   # 只重启一条队列
@@ -372,3 +430,17 @@ docker compose -f docker-compose.prod.yml down -v              # 连 MySQL / Red
   挑没有任务在跑的窗口换。
 - **不要多机部署**：任务产物在本地盘（`task-downloads` 卷），
   `ADR-033` §7 第 5 条记着这条限制。
+- **重启 worker 只给 10 秒**（`stop_grace_period`）：SIGTERM 后仍在跑的那几条会被硬杀，
+  下一次轮询收敛成 `TASK_LOST`，界面上是那句「任务进行到一半中断了，请重新上传
+  （或重新发起导出）。」，不会假装成功。
+  要「停机时把在跑的做完」就把 `worker-ocr` / `worker-pdf` 调回 60s / 120s。
+- **两个 worker 没有 HTTP 健康检查**（`healthcheck: disable: true`）：它们是后台进程，
+  不监听 8000，沿用镜像里那条 `/api/v1/health` 会让它们在 `ps` 里永远挂着 unhealthy。
+  所以 `docker compose ps` 只看得到 `db` / `redis` / `web` / `frontend` 的健康态，
+  worker 活没活要看 `logs` 或在跑的任务有没有推进。
+- **应用容器固定东八区**（`TZ: Asia/Shanghai`，在 `x-app-env` 里）：`db` 仍在 UTC，
+  和库里 naive UTC 的写入口径对得上（`app/core/datetime_display.py`）。去掉 TZ 的话，
+  UTC 机器在北京时间 00:00–08:00 之间会把「今天」判成昨天，岗位过期晚 8 小时才生效。
+  这行 TZ 由 glibc 查 `/usr/share/zoneinfo` 落地，`Dockerfile.backend` 因此显式装了一层
+  `tzdata`（无条件那一步——`INSTALL_PDF_BROWSER` 只有 `worker-pdf` 传，挪进 `if` 里
+  web 与 `worker-ocr` 就没这层保险了）。
