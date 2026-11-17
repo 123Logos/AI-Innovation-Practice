@@ -20,6 +20,26 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# `tzdata`：把编排里那句 `TZ: Asia/Shanghai` 变成确定事实的一层保险（第 32 轮）。
+# glibc 解析 TZ 要查 `/usr/share/zoneinfo`，而「底座 python:3.13-slim 里有没有这个目录」
+# 在这台开发主机上**核实不了**：没装 Docker，Docker Hub 也不可达（auth.docker.io 超时）。
+# 能核实的是 bookworm 的 Packages 索引：tzdata 是 `Priority: required`
+# （下载 0.3 MB / Installed-Size 2.5 MB；连同 Depends 共 2 个包、0.4 MB / 3.0 MB），
+# 所以底座很可能已经带。显式装一层的代价是百 KB 级、且底座已有时 apt 是空操作，
+# 换来的是「TZ 不会静默回落 UTC」——把一个看不见的失败换成便宜的确定性，划算。
+# 位置也是约束：必须在无条件那一步。`INSTALL_PDF_BROWSER=1` 只有 `worker-pdf` 传，
+# 挪进那个 `if` 里，web 与 `worker-ocr` 用的就是不含这层的另一支镜像。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+# 这一支装的是无头 Chromium 与中文字体。`--no-install-recommends` 是量的关键：
+# 按 bookworm 的 Packages 索引算闭包（Depends，或项取第一个候选），上面那层 tzdata 加
+# 这里三个包共 230 个包、下载 256 MB / Installed-Size 820 MB；放进 recommends 变成
+# 466 个包、333 MB / 1151 MB。
+# 多出来的 331 MB 不是 GTK 那些（libgtk/libgbm/libcups2 是 chromium 的硬 Depends，
+# 装浏览器就躲不掉），而是 Qt5 一整套、perl、samba-libs、udev、cpp-12、python3.11
+# 这类与「把页面打成 PDF」无关的东西。
 RUN if [ "$INSTALL_PDF_BROWSER" = "1" ]; then \
         apt-get update \
         && apt-get install -y --no-install-recommends chromium fonts-noto-cjk fontconfig \
@@ -38,16 +58,40 @@ COPY alembic.ini ./
 COPY alembic ./alembic
 COPY app ./app
 
+# 教师端导出/看板要的「纸面真相」：`app/core/teacher_tools_rules.py` 用
+# `PROJECT_ROOT = Path(__file__).resolve().parents[2]` 拼出
+# `/app/frontend/src/styles.css` 与 `/app/frontend/src/components/ResumePreview.vue`，
+# 直接读源码里的 CSS（`ADR-029` §2.5：样式有两份 = 「实时预览不腰斩、导出稿腰斩」，
+# 而且不报错）。镜像里没有这两份文件时，导出会失败在 `PaperStylesUnavailableError`，
+# 而不是悄悄换上一套后端自抄的排版。
+# 只 COPY 这两个文件，不搬整个 `frontend/`：后端镜像不需要 SPA 源码，
+# 更不需要 `node_modules`（`.dockerignore` 本来也把它排除了）。
+COPY frontend/src/styles.css ./frontend/src/
+COPY frontend/src/components/ResumePreview.vue ./frontend/src/components/
+
 RUN uv sync --frozen --no-dev --no-install-project
 
 # Run as a non-root user: uv only reads the venv at runtime (`--no-sync`),
 # so the files can stay root-owned and world-readable.
-RUN useradd --create-home --uid 10001 appuser
+#
+# 上传暂存与导出产物目录必须在切到 appuser **之前**建好并归它所有
+# （第 32 轮）。`app/core/task_files.py` 只做 `mkdir(parents=True, exist_ok=True)`：
+# 目录不存在时它以 root 的身份建出来，appuser 随后写盘就是 `PermissionError`——
+# 导入接口在 web 进程里落暂存文件，写不进就直接 500（202 都回不出去）；
+# 导出是 worker-pdf 写 ZIP，写不进就是任务失败。
+# 命名卷第一次挂载时会把这个目录的属主带进卷里（Docker 对空卷的行为），
+# 所以新建卷不需要手工赋权；**已经存在**的卷不会重放，见 README「卷权限」。
+RUN useradd --create-home --uid 10001 appuser \
+    && mkdir -p /app/temp/imports /app/downloads \
+    && chown -R appuser:appuser /app/temp /app/downloads
 USER appuser
 
 EXPOSE 8000
 
 # /api/v1/health is the canonical readiness endpoint (app/api/router.py:10).
+# Workers built from this same image do NOT serve HTTP, so they override this with
+# `healthcheck: disable: true` in docker-compose.prod.yml — otherwise both queue
+# containers sit at "unhealthy" forever while still consuming jobs.
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=6 \
     CMD ["python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=4).status == 200 else 1)"]
 
