@@ -10,10 +10,10 @@
 | 前端 | Vue 3、TypeScript、Vite、Element Plus、Pinia、Vue Router | ✅ 全部在用；单文件组件在 `frontend/src/`，**没有 `layouts/` 与 `styles/` 目录**（外框是 `components/AppLayout.vue`，令牌在 `src/styles.css`） |
 | 后端 | Python 3.13、uv、FastAPI、Pydantic v2、SQLAlchemy 2、Alembic | ✅ 全部在用；包根是仓库根的 `app/`，**不是 `backend/app/`** |
 | 数据库 | MySQL 8.0+，字符集 `utf8mb4` | ✅ `resume_mvp_dev` / `resume_mvp_test`，23 张表 / 28 个 Alembic 修订 |
-| 异步任务 | Redis + ARQ/Celery（二选一，MVP 推荐 ARQ） | ❌ **一行都没写**：`pyproject.toml` 里没有 redis/arq/celery/boto3，所有链路同步 + 单库 + 应用时钟。引入任何一件要先过 `AGENTS.md` §4.6 的 ADR |
+| 异步任务 | Redis + ARQ（`ADR-033`，第 30 轮落地） | ✅ `app/worker.py` 三条队列（ocr / pdf / default），PDF 导入与批量打包 202 + 轮询；本地无 Redis 时内存降级（`ADR-034`）。Celery 未引入 |
 | AI | 后端 DeepSeek API 适配器，结构化输出与提示词版本化 | ⚠️ 形态改了：**BYOK**（`ADR-009`）——Key 由用户逐请求携带（`X-DeepSeek-Key`），非流式，模型 `deepseek-flash`；服务端配置里那个 Key 不再被读取 |
 | 文件 | S3 兼容对象存储；数据库只保存元数据 | ❌ 未接线。批量导出是同步生成的 ZIP 直接回给浏览器（`ADR-029`），PDF 由宿主机浏览器渲染 |
-| 部署 | Docker Compose + Nginx/Caddy + HTTPS | ⚠️ Docker 件已入库但**从未构建过**（`ADR-008`，每个文件头都有 `NOT VERIFIED`）；日常用 `start.bat` |
+| 部署 | Docker Compose + Nginx/Caddy + HTTPS | ✅ 生产编排 2026-11-17 在阿里云 ECS（Ubuntu 22.04）真机部署并验收通过（`ADR-008` 第 32–34 轮修订）；开发形态编排仍未起过；日常开发用 `start.bat` |
 
 ## 2. 总体架构
 
@@ -380,7 +380,9 @@ web 那边 202 已经回了，队列里也真有这条任务，只是没人消�
 两种都不**回落成同步执行**——那等于让最重的那两条链路绕开并发上限（`ADR-033` §6），
 而且会让前端出现第二条代码路径。降级保留的是「202 + 轮询」，换掉的只是执行位置。
 
-生产环境（**下面是目标形态，今天还没有一次真实部署过**：开发主机没装 Docker，`ADR-008` 那批件全是 `NOT VERIFIED`；`ADR-033` 之后 Redis 与 worker **有代码了**，但同样没有一次真机部署）：
+生产环境（**2026-11-17 已有第一次真实部署**：负责人的阿里云 ECS「试用三个月」免费机，
+Ubuntu 22.04 / 2 vCPU / 4 GiB，`docker-compose.prod.yml` 全栈重建后验收通过，
+见 `ADR-008` 第 34 轮修订；开发主机仍没装 Docker，开发形态编排未起过）：
 
 > 第 31 轮补了一份**一键编排**：`docker-compose.prod.yml`（db / redis / web /
 > worker-ocr / worker-pdf / frontend 六个容器，`ENVIRONMENT=production`、内部网络不发布

@@ -1,9 +1,9 @@
-# Never built on the development host (no Docker installed — ADR-008). The backend
-# image has since been built and run once on the owner's Ubuntu 22.04 server
-# (2026-11-17, see ADR-008's round 32–33 revision). Whether THIS image was built there
-# is not recorded — the API requests in `logs web` carry real client IPs, which is also
-# consistent with a host-level reverse proxy serving the SPA itself. Until someone says
-# otherwise, treat it as a deployment-ready draft, not as a working deployment.
+# Built as part of the full production stack on the owner's Aliyun ECS (Ubuntu 22.04)
+# on 2026-11-17: after the round 32–34 fixes the owner rebuilt every service and
+# confirmed the acceptance checks passed, with the UI served through this nginx image
+# (the prod compose publishes it on :80). The DEV host still has no Docker, so it was
+# never built on the development machine. What is NOT separately recorded: a
+# step-by-step verification of this image in isolation (e.g. its own HEALTHCHECK).
 
 FROM node:22-alpine AS build
 

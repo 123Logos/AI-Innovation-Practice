@@ -1,10 +1,11 @@
 """部署配置的耦合闸（第 32 轮）。
 
-`ADR-008` 那句话没变：**开发主机没装 Docker，这些文件从未真机跑过**。所以本模块不
-去证明「`up` 能起来」——那要一台真有 Docker 的机器，第一次上线仍然可能要修。
-
-它证明的是另一件事：这五处配置都不是孤立字符串，而是**另一端代码的镜像**。改一端忘了
-另一端，这里必须红。每条断言都写成耦合，而不是「文档里有没有某个词」：
+验证边界（第 34 轮更新）：**生产编排已在真机验证**——2026-11-17 负责人的阿里云 ECS
+（Ubuntu 22.04）上 `down -v` 重建后，README 验收命令与导入/导出链路实测通过；
+开发主机依旧没装 Docker，**开发形态那份编排至今没在任何机器上起过**。
+本模块证明的不是「`up` 能起来」，而是另一件事：这五处配置都不是孤立字符串，
+而是**另一端代码的镜像**。改一端忘了另一端，这里必须红。每条断言都写成耦合，
+而不是「文档里有没有某个词」：
 
 1. `docker/nginx.conf` 的 `proxy_pass` 主机名，必须在两份编排里都解析得到服务；
    生产那一份靠的是 `web` 上的网络别名。别名丢了不会报错，只会所有 `/api/` 变 502，
@@ -23,6 +24,10 @@
 7. `.env.example` 的并发/时长默认值必须等于 `Settings` 的默认值，且 nginx 那条
    `client_max_body_size` 的依据必须指真实上限（`MAX_PDF_BYTES`），不能指着
    `MAX_UPLOAD_MB` 那种没有任何代码读的键。
+8. apt 换源开关（第 34 轮）：`Dockerfile.backend` 的 `APT_MIRROR` 默认必须是官方源
+   （内网镜像只在阿里云内网可达，写死它别的服务器就构建不了），换源必须带守卫、
+   落在 trixie 底座的 deb822 源文件上、发生在第一次 `apt-get update` 之前；
+   两份编排里每一个用这份 Dockerfile 的服务都要传同一个插值口径。
 
 10 秒宽限的代价（在途任务落成 `TASK_LOST`）不在这里验——那是
 `tests/test_tasks.py::test_lost_job_becomes_failed_and_stays_failed` 的活，
@@ -534,4 +539,88 @@ def test_the_upload_limit_documentation_points_at_a_real_knob() -> None:
     )
     assert "MAX_PDF_BYTES" in _text(ENV_EXAMPLE), (
         ".env.example 里 `MAX_UPLOAD_MB` 旁边要写清楚真实上限在哪，别让人以为改它能放宽"
+    )
+
+
+# ------------------------------------------- 8. apt 换源：默认官方源，开关传齐每个服务
+
+#: 第 34 轮真机教训：ECS 上官方源与公网镜像都可能慢，换源要做成开关而不是写死。
+#: 默认值只能是官方源——`mirrors.cloud.aliyuncs.com` 只在阿里云内网可达，
+#: 把它写成默认，「别的服务器拉了能直接构建」当场为假。
+OFFICIAL_APT_MIRROR = "deb.debian.org"
+
+
+def _dockerfile_apt_mirror_default() -> str:
+    match = re.search(r"^ARG APT_MIRROR=(\S+)\s*$", _text(BACKEND_DOCKERFILE), re.MULTILINE)
+    assert match is not None, "Dockerfile.backend 没有声明 ARG APT_MIRROR"
+    return match.group(1)
+
+
+def _backend_image_services(label: str) -> dict[str, Any]:
+    """这份编排里所有用 Dockerfile.backend 构建的服务（frontend 用的是另一份）。"""
+    return {
+        name: svc
+        for name, svc in _services(label).items()
+        if (svc.get("build") or {}).get("dockerfile") == "Dockerfile.backend"
+    }
+
+
+def test_apt_mirror_default_keeps_the_official_source_so_any_host_can_build() -> None:
+    """默认官方源 + 带守卫的换源 + 落在第一次 apt-get update 之前的 deb822 源文件上。
+
+    三个失败面各钉一条：默认值被改成内网镜像（别的服务器构建直接失败）、
+    守卫被删（默认构建也去 sed 源文件）、换源挪到 update 之后（那次 update 仍走官方源）。
+    """
+    assert _dockerfile_apt_mirror_default() == OFFICIAL_APT_MIRROR, (
+        "APT_MIRROR 的默认值不再是官方源：内网镜像只在阿里云内网可达，"
+        "写死它等于让其它所有服务器的构建失败"
+    )
+
+    text = _text(BACKEND_DOCKERFILE)
+    assert re.search(r'if \[ "\$APT_MIRROR" != "deb\.debian\.org" \]', text), (
+        "换源没了守卫：默认构建也会去 sed 底座的源文件，官方源这个兜底就不再是『什么都不动』"
+    )
+
+    first_update = text.index("apt-get update")
+    # 只看指令行：注释里也写着这个路径，不能拿注释当换源真的发生了的证据。
+    prefix = "\n".join(
+        line for line in text[:first_update].splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "/etc/apt/sources.list.d/debian.sources" in prefix, (
+        "换源必须落在 trixie 底座的 deb822 源文件上、且在第一次 apt-get update 之前："
+        "挪到 update 之后，那次 update 仍走官方源，慢的就是它"
+    )
+    assert "$APT_MIRROR" in prefix and "security.debian.org" in prefix, (
+        "换源要把 deb.debian.org 与 security.debian.org 两条主机名都替换成 APT_MIRROR，"
+        "漏一条就有一半请求仍走官方源"
+    )
+
+
+@pytest.mark.parametrize("label", TOPOLOGY_CASES)
+def test_every_backend_image_service_gets_the_same_apt_mirror_switch(label: str) -> None:
+    """同一份 Dockerfile 构建的服务必须传同一个开关：漏一条，那条服务就各走各的源。
+
+    插值的兜底默认必须等于 Dockerfile 里 ARG 的默认值——两边分叉时，
+    不写 `.env` 的机器在两条服务上构建出不同源配置的镜像。
+    """
+    expected = f"${{APT_MIRROR:-{_dockerfile_apt_mirror_default()}}}"
+    services = _backend_image_services(label)
+    assert services, f"{label} 编排里没有用 Dockerfile.backend 构建的服务"
+    for name, svc in sorted(services.items()):
+        args = (svc.get("build") or {}).get("args") or {}
+        assert args.get("APT_MIRROR") == expected, (
+            f"{label} 的 {name} 没传 APT_MIRROR（或兜底默认与 Dockerfile 分叉）："
+            f"应为 {expected}，否则 .env 里的换源对它不生效"
+        )
+
+
+def test_env_example_documents_the_apt_mirror_switch_without_changing_the_default() -> None:
+    """`.env.example` 要写出两个镜像地址供人挑，但默认必须仍是注释态（= 官方源）。"""
+    text = _text(ENV_EXAMPLE)
+    assert "APT_MIRROR" in text and "mirrors.cloud.aliyuncs.com" in text, (
+        ".env.example 没有记录 apt 换源开关与阿里云内网镜像地址"
+    )
+    assert "APT_MIRROR" not in _env_example_values(), (
+        "APT_MIRROR 在 .env.example 里被 uncomment 了：照抄本文件就会把构建钉在某个镜像上，"
+        "默认应当是官方源（注释态）"
     )

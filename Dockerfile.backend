@@ -1,10 +1,11 @@
-# Never built on the development host (no Docker installed — ADR-008). It HAS been
-# built and run once for real: the owner's Ubuntu 22.04 cloud server, 2026-11-17, where
-# it exposed three coordinate errors (task-volume ownership, the paper CSS not being
-# copied in, and this image not shipping a browser while `web` renders PDFs
-# synchronously). All three are fixed in ADR-008's round 32–33 revision, and that
-# revision has not been rebuilt on that server yet. Treat every line below as
-# "derived from the code and partly falsified by one real deploy", not as verified.
+# Built and run for real on the owner's Aliyun ECS (Ubuntu 22.04, "试用三个月" free
+# tier, 2 vCPU / 4 GiB) on 2026-11-17. The first run exposed three coordinate errors
+# (task-volume ownership, the paper CSS not being copied in, and `web` not shipping a
+# browser while it renders single exports synchronously); fixed in PRs #52–#54, then
+# `down -v` + rebuild + the README acceptance checks all passed on that server
+# (owner-confirmed). The DEV host still has no Docker, so nothing here was ever built
+# on the development machine — treat the coordinates as "derived from the code,
+# falsified once by a real deploy, then re-verified on that same server".
 
 FROM python:3.13-slim
 
@@ -15,6 +16,15 @@ FROM python:3.13-slim
 # `fonts-noto-cjk` 不是可选项：容器里没有中文字体时，导出的简历是清一色豆腐块，
 # 而产物仍然以 `%PDF-` 开头（校验会通过）——那种「成功但满屏方块」的失败最难查。
 ARG INSTALL_PDF_BROWSER=0
+
+# apt 换源开关（第 34 轮）。默认是官方源：任何能出网的机器拉下来都能直接构建。
+# 国内机器嫌 deb.debian.org 慢时，在仓库根 `.env` 写一行（两份编排都会把它传进来）：
+#   阿里云 ECS：APT_MIRROR=mirrors.cloud.aliyuncs.com  ← 走内网，不占公网带宽
+#   其它国内机器：APT_MIRROR=mirrors.aliyun.com        ← 公网镜像
+# 注意内网镜像**只在阿里云内网可达**，所以它绝不能成为默认值——写死它，
+# 「别的服务器拉了能直接构建」就不成立了。换源只发生在下面无条件那一步：
+# sed 改过的 sources 会带进后续所有层，浏览器分支不需要再换一次。
+ARG APT_MIRROR=deb.debian.org
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -33,7 +43,16 @@ WORKDIR /app
 # 换来的是「TZ 不会静默回落 UTC」——把一个看不见的失败换成便宜的确定性，划算。
 # 位置也是约束：必须在无条件那一步。`INSTALL_PDF_BROWSER=1` 只有 `worker-pdf` 传，
 # 挪进那个 `if` 里，web 与 `worker-ocr` 用的就是不含这层的另一支镜像。
-RUN apt-get update \
+# 2026-11-17 真机已确认 TZ 落地（`exec web date` 打出 +0800）。
+# 底座 python:3.13-slim 现为 trixie（真机构建日志确认），源文件是 deb822 格式的
+# `/etc/apt/sources.list.d/debian.sources`，security 那条 URI 也在同一个文件里。
+# `APT_MIRROR` 非默认时在这里换源：sed 改过的 sources 带进后续所有层，
+# 浏览器分支不需要再换一次。
+RUN if [ "$APT_MIRROR" != "deb.debian.org" ]; then \
+        sed -i "s|deb.debian.org|$APT_MIRROR|g; s|security.debian.org|$APT_MIRROR|g" \
+            /etc/apt/sources.list.d/debian.sources; \
+    fi \
+    && apt-get update \
     && apt-get install -y --no-install-recommends tzdata \
     && rm -rf /var/lib/apt/lists/*
 

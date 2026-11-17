@@ -147,9 +147,12 @@
       含 upgrade+downgrade 迁移检查）/ `eslint`（ADR-012，2026-11-07 才真实存在）/ `npm ci` /
       `vitest` / `vue-tsc` / `vite build`。
       上面那句「只在本地验证过」已经过期。
-    - **(b) 未达成**：公网部署没有任何证据。仓库里只有 `Dockerfile.backend` / `Dockerfile.frontend` /
+    - **(b) 已达成（2026-11-17 更新）**：公网部署已有真机证据——负责人的阿里云 ECS
+      （Ubuntu 22.04）上 `docker-compose.prod.yml` 全栈部署，PR #52–#54 修复三处坐标缺陷后
+      重建验收通过（`ADR-008` 第 32–34 轮修订）。下面这段 2026-11-07 的原文保留作时点记录：
+      ~~公网部署没有任何证据。仓库里只有 `Dockerfile.backend` / `Dockerfile.frontend` /
       `docker-compose.yml`，而 `ADR-008-docker-configs-unverified.md` 自己标注了**未验证**。
-      不要从这些文件推断成「已部署」。
+      不要从这些文件推断成「已部署」。~~
   - 口径已定（字面判达成）：2026-11-07 起本仓库改为 PR 合入流程（约定见 `docs/DEVELOPMENT.md` §10.0），
     PR #1 与 PR #2 的 `test` job 均真实跑绿。原始输出摘自 PR #1 的运行日志（run 42359183399）：
     `All checks passed!` / `Success: no issues found in 39 source files` /
