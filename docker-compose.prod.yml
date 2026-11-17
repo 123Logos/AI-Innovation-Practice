@@ -1,8 +1,10 @@
 # 生产形态的一键部署文件（第 31 轮）。
 #
-# NOT VERIFIED：开发主机没装 Docker（`docs/adr/ADR-008-docker-configs-unverified.md`），
-# 这份文件与 `Dockerfile.*` 都**从未真机跑过**。它是一份「按今天的代码写准了坐标」的
-# 部署草案，不是一份已验证的部署——第一次 `up` 仍可能需要修。
+# 验证状态（第 33 轮更新）：开发主机没装 Docker（`docs/adr/ADR-008-docker-configs-unverified.md`），
+# 但这份编排 2026-11-17 在负责人的 Ubuntu 22.04 云主机上**真机起过一次**，当场抓出三处
+# 「坐标写错」级缺陷（卷属主、纸面 CSS、web 没装浏览器），修账见 ADR-008 的第 32–33 轮修订。
+# 本文件里第 33 轮的改动仍未在那台机器上重跑过 —— 它仍然是「按代码写准了坐标」的部署件，
+# 不是已验证的部署件。
 #
 # 与 `docker-compose.yml`（开发形态）的四处差别，都不是风格问题：
 #
@@ -124,6 +126,18 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
+      args:
+        # web 也要装无头浏览器（第 33 轮修）。**不是**为了批量导出——那条在 `worker-pdf` 里。
+        # 原因是单份导出是**同步**端点：`POST /resumes/{resume_id}/export`
+        # （`app/api/v1/teacher_tools.py` 的 `export_router`）在 web 进程里直接调
+        # `HeadlessBrowserPdfRenderer.render()`，容器里没有浏览器时它归成
+        # `PdfRendererUnavailableError` → 对外 **503「暂时无法生成 PDF」**。
+        # 之前这里没传开关，表现就是「打包能排队、单份导出必 503」，而健康检查全绿。
+        # 代价按 Debian bookworm 的包索引闭包算：`chromium fonts-noto-cjk fontconfig tzdata`
+        # = 230 个包、下载 256 MB、Installed-Size 820 MB —— web 镜像因此和 worker-pdf 同量级。
+        # 更省的形状是把单份导出也挪进 `arq:queue:pdf`（那样 web 就不需要浏览器），
+        # 那是端点契约变更，记在 `ADR-008` 修订的替代方案里。
+        INSTALL_PDF_BROWSER: "1"
     restart: unless-stopped
     logging: *default-logging
     environment:

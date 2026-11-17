@@ -1,6 +1,9 @@
-# NOT VERIFIED: Docker is not installed on the development host.
-# See docs/adr/ADR-008-docker-configs-unverified.md. This image has never been built;
-# treat it as a deployment-ready draft, not as a working deployment.
+# Never built on the development host (no Docker installed — ADR-008). The backend
+# image has since been built and run once on the owner's Ubuntu 22.04 server
+# (2026-11-17, see ADR-008's round 32–33 revision). Whether THIS image was built there
+# is not recorded — the API requests in `logs web` carry real client IPs, which is also
+# consistent with a host-level reverse proxy serving the SPA itself. Until someone says
+# otherwise, treat it as a deployment-ready draft, not as a working deployment.
 
 FROM node:22-alpine AS build
 

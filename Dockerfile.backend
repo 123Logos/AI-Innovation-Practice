@@ -1,6 +1,10 @@
-# NOT VERIFIED: Docker is not installed on the development host.
-# See docs/adr/ADR-008-docker-configs-unverified.md. This image has never been built;
-# treat it as a deployment-ready draft, not as a working deployment.
+# Never built on the development host (no Docker installed — ADR-008). It HAS been
+# built and run once for real: the owner's Ubuntu 22.04 cloud server, 2026-11-17, where
+# it exposed three coordinate errors (task-volume ownership, the paper CSS not being
+# copied in, and this image not shipping a browser while `web` renders PDFs
+# synchronously). All three are fixed in ADR-008's round 32–33 revision, and that
+# revision has not been rebuilt on that server yet. Treat every line below as
+# "derived from the code and partly falsified by one real deploy", not as verified.
 
 FROM python:3.13-slim
 
