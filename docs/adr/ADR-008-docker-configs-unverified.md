@@ -177,6 +177,16 @@
    认出消费 pdf 队列的服务，再加上「提供 HTTP 的那个」，逐个断言
    `build.args.INSTALL_PDF_BROWSER == "1"`；另有一条测试专门守「单份导出仍是同步 `def`」
    这个前提——它红了就说明归属变了（比如挪进队列），要连着改判据与编排，不许注释掉。
+7. **小机器的并发档位按「谁真的吃内存」分档，不按机器大小一刀切**（负责人给出云主机规格
+   2 vCPU / 4 GiB 之后定的）：
+   - `WORKER_PDF_MAX_JOBS` 是内存的主账——每条任务一个 Chromium 子进程，4 GiB 设 `1`；
+   - `WORKER_OCR_MAX_JOBS` **不是**模型内存的账：`app/integrations/pdf_ocr.py` 里 `_ENGINE`
+     是双检锁单例、`recognize()` 全程持 `_CALL_LOCK`，识别在进程内**串行**，调大只会让任务
+     在锁上排队 + 各自握着已解码的页面位图，4 GiB 建议 `2`（DeepSeek 那一段还能重叠）。
+     第 33 轮我先把这条写成「四条并发会被内核 OOM 杀」——那是没读代码的推断，已改账；
+   - 两个数都**不是量出来的**：`.env.example` 与 README 都改成「先跑 `docker stats
+     --no-stream`（空闲 + 正在导出各一次）、`free -m`、`dmesg -T | grep -i 'killed process'`
+     再定」，并把这句话放在数字旁边，免得下一个人在 8 GiB 机器上照抄 4 GiB 的档位。
 
 ### 后果
 
@@ -191,17 +201,29 @@
 - 本修订留下两处我的判断失误，记在案：①决策 3 只修了批量那条链路、漏了同步的单份导出
   （见决策 6）；②「卷权限」那节最初给的 chown 没带 `-R`，老卷里 root 建出来的
   `/app/temp/imports` 改不到，现在 README 与实操命令统一成 `-R`。
+- 顺带查出一件**配置依据是假的**：`docker/nginx.conf` 里 `client_max_body_size 10m` 的注释
+  一直写「Matches `MAX_UPLOAD_MB=10` in `.env.example`」，而 `MAX_UPLOAD_MB` 在 `app/`、
+  `scripts/`、两份编排里**零命中**——`Settings` 是 `extra="ignore"`，所以它躺在
+  `.env.example` 里谁都不读。真实上限是代码里的 `MAX_PDF_BYTES = 5 MiB`
+  （`app/services/resume_import.py`）。nginx 的注释已改成指向它，`.env.example` 那一行
+  加了「没有任何代码读它」的说明并暂时保留。
+  同一轮扫出来 `.env.example` 里还有约 17 个键没人读（`S3_*`、`DEEPSEEK_API_KEY` /
+  `_BASE_URL` / `_MODEL`、`ENABLE_UUID_AUTH`、`ACCESS_TOKEN_COOKIE_SECURE`、
+  `JWT_REFRESH_EXPIRE_DAYS` 等；`TEST_DATABASE_URL` 由 `tests/conftest.py` 读，不算死键）。
+  **那是一份待裁定的清单，不在本 PR 的改动里**：要么接线、要么删，逐个判要单独一轮账。
 - `web` 现在也带浏览器，代价按包索引闭包算是 230 个包 / 下载 256 MB /
   `Installed-Size` 820 MB —— 生产的最小机器规格因此上升，`build` 也更久。这是「同步端点
   在 web 进程里渲染」这个既有形状的账单；真正省掉它的办法见替代方案最后一条。
-- 闸不是空转的：27 个变异点逐个把配置改回坏的样子（删别名 / 打开 worker 健康检查 /
+- 闸不是空转的：31 个变异点逐个把配置改回坏的样子（删别名 / 打开 worker 健康检查 /
   删 TZ / 给 `db` 加 TZ / 删 tzdata / **把 tzdata 挪进 `INSTALL_PDF_BROWSER` 分支** /
   去掉某条 `apt-get install` 的 `--no-install-recommends` / 删或改 COPY 落点 /
   chown 少一个目录 / 改 uid / 上传上限降回 1m / 去掉 try_files / 宽限期改回 60s /
   README 的 chown 少一个路径 / README 标题不再点名卷名 / `.dockerignore` 排掉 `frontend/src` /
   开发形态那三件各改一遍 + 把任务卷挂到别的路径 / **撤掉 prod `web`、dev `backend`、
-  dev `worker-pdf` 的浏览器开关 / 把 `export_resume` 改成 `async def`**），
-  对应用例每一次都红，恢复后 36 条全绿。
+  dev `worker-pdf` 的浏览器开关 / 把 `export_resume` 改成 `async def` /
+  `.env.example` 的 OCR 与超时默认值各漂移一格 / nginx 与 `.env.example` 各丢掉
+  `MAX_PDF_BYTES` 这条真实依据**），
+  对应用例每一次都红，恢复后 42 条全绿。
   每条红的用例 id 都逐个核对过是**该管它的那一条**，不是靠别家用例凑数。
 - worker 没有健康检查之后，`docker compose ps` 对 worker 不提供任何信号；观测手段只剩
   `logs` 与 `redis-cli zcard`（README「日常运维」）。这是接受的状态，不是遗漏。

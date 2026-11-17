@@ -20,6 +20,9 @@
 6. **谁渲染 PDF，谁的镜像就得装 Chromium**：批量在 `arq:queue:pdf` 那条 worker 里，
    单份导出是同步端点、在提供 HTTP 的那个服务里。第 33 轮云服务器上的 503 就是
    生产只给 `worker-pdf` 传了 `INSTALL_PDF_BROWSER=1`、`web` 没传。
+7. `.env.example` 的并发/时长默认值必须等于 `Settings` 的默认值，且 nginx 那条
+   `client_max_body_size` 的依据必须指真实上限（`MAX_PDF_BYTES`），不能指着
+   `MAX_UPLOAD_MB` 那种没有任何代码读的键。
 
 10 秒宽限的代价（在途任务落成 `TASK_LOST`）不在这里验——那是
 `tests/test_tasks.py::test_lost_job_becomes_failed_and_stays_failed` 的活，
@@ -42,6 +45,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from app.core import teacher_tools_rules as paper
+from app.core.config import Settings
 from app.main import app
 from app.services.resume_import import MAX_PDF_BYTES
 
@@ -52,6 +56,7 @@ NGINX_CONF = ROOT / "docker" / "nginx.conf"
 BACKEND_DOCKERFILE = ROOT / "Dockerfile.backend"
 TEACHER_TOOLS_API = ROOT / "app" / "api" / "v1" / "teacher_tools.py"
 DOCKERIGNORE = ROOT / ".dockerignore"
+ENV_EXAMPLE = ROOT / ".env.example"
 README = ROOT / "README.md"
 
 #: 两份编排。负责人第 32 轮裁定「不能留一个同样会踩坑的开发版」，所以三件加固项
@@ -476,3 +481,57 @@ def test_every_service_that_renders_pdf_ships_a_browser(label: str) -> None:
             f"{label} 的 {name} 会渲染 PDF，但 build.args 没打开 INSTALL_PDF_BROWSER："
             "镜像里没有浏览器，导出会以 PDF_RENDERER_UNAVAILABLE 失败"
         )
+
+
+# ------------------------------------------------- 7. `.env.example` 与代码默认值不能分叉
+
+#: 并发与时长这一族：运维照的是 `.env.example`（README 那张表也指它），真正的兜底是
+#: `app/core/config.py`。两边分叉时，改默认的人会让文档指着一个没人用的数字。
+ENV_DEFAULT_KEYS = (
+    "WORKER_OCR_MAX_JOBS",
+    "WORKER_PDF_MAX_JOBS",
+    "WORKER_DEFAULT_MAX_JOBS",
+    "WORKER_JOB_TIMEOUT_SECONDS",
+    "WORKER_TASK_TTL_SECONDS",
+)
+
+
+def _env_example_values() -> dict[str, str]:
+    out: dict[str, str] = {}
+    for line in _text(ENV_EXAMPLE).splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        out[key.strip()] = value.strip()
+    return out
+
+
+@pytest.mark.parametrize("key", ENV_DEFAULT_KEYS)
+def test_env_example_defaults_match_the_settings_defaults(key: str) -> None:
+    """`.env.example` 写的默认值必须就是 `Settings` 的默认值。"""
+    declared = _env_example_values()[key]
+    field = Settings.model_fields[key.lower()]
+    assert int(declared) == field.default, (
+        f".env.example 写 {key}={declared}，代码默认是 {field.default}：文档与兜底分叉了"
+    )
+
+
+def test_the_upload_limit_documentation_points_at_a_real_knob() -> None:
+    """nginx 那行 `client_max_body_size` 的依据必须是真的（第 33 轮它指着个没人读的键）。
+
+    `MAX_UPLOAD_MB` 在 `app/`、`scripts/`、两份编排里零命中，而 `Settings` 是
+    `extra="ignore"`——它躺在 `.env.example` 里谁都不读。真实上限是代码里的
+    `MAX_PDF_BYTES`（导入 5 MiB），所以注释与文档都必须指着它，而不是那个空键。
+    """
+    nginx = _text(NGINX_CONF)
+    assert not re.search(r"Matches\s+MAX_UPLOAD_MB", nginx), (
+        "nginx.conf 又把 10m 的依据写回 `MAX_UPLOAD_MB`：那个键没有任何代码读，"
+        "依据必须指 `app/services/resume_import.py::MAX_PDF_BYTES`"
+    )
+    assert "MAX_PDF_BYTES" in nginx, (
+        "nginx.conf 的上传上限注释必须落到真实的那条判据（MAX_PDF_BYTES）"
+    )
+    assert "MAX_PDF_BYTES" in _text(ENV_EXAMPLE), (
+        ".env.example 里 `MAX_UPLOAD_MB` 旁边要写清楚真实上限在哪，别让人以为改它能放宽"
+    )
