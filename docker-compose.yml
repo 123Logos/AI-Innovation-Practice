@@ -1,6 +1,9 @@
-# NOT VERIFIED: Docker is not installed on the development host.
-# See docs/adr/ADR-008-docker-configs-unverified.md. Nothing below has been run;
-# the first real `docker compose up` is expected to need fixes.
+# NOT VERIFIED ON THIS HOST: Docker is not installed on the development host, and this
+# dev topology has never been brought up anywhere. The production sibling
+# (`docker-compose.prod.yml`) did get one real run on an Ubuntu 22.04 server on
+# 2026-11-17, which exposed three coordinate-level mistakes now recorded in
+# docs/adr/ADR-008's round 32–33 revision; nothing below should be read as "verified",
+# and the first real `docker compose up` here is still expected to need fixes.
 #
 # Secrets are never written in this file. Docker Compose auto-loads the repo root
 # `.env`, which already defines MYSQL_USER / MYSQL_PASSWORD / MYSQL_DATABASE /
@@ -60,6 +63,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
+      args:
+        # 与生产同口径（第 33 轮）：单份导出 `POST /resumes/{id}/export` 是同步端点，
+        # 浏览器渲染跑在 backend 进程里；不装就必然 503「暂时无法生成 PDF」。
+        # 本地 `start-local.ps1` 那条路能用，是因为宿主机上有 Edge 可被
+        # `pdf_renderer._resolve_browser` 找到——容器里没有这个运气。
+        INSTALL_PDF_BROWSER: "1"
     restart: unless-stopped
     environment:
       # Built from service coordinates on purpose: the host DATABASE_URL in `.env`
@@ -142,6 +151,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
+      args:
+        # 批量导出的渲染发生在这条队列里（`arq:queue:pdf`），所以这一支也必须有浏览器；
+        # 之前只有生产传了这个开关，开发形态点批量打包会以 `PDF_RENDERER_UNAVAILABLE` 失败。
+        INSTALL_PDF_BROWSER: "1"
     restart: unless-stopped
     environment: *worker-env
     command: sh -c "uv run --no-sync arq app.worker.PdfWorkerSettings"

@@ -271,10 +271,11 @@ npm run dev
 
 ## 🐳 Docker 启动 (可选)
 
-> ⚠️ 注意：此 Docker 配置在当前开发环境中尚未经过实际运行验证，仅作工程化结构参考。
-> 开发主机未安装 Docker，`Dockerfile.backend` / `Dockerfile.frontend` / `docker-compose.yml` /
-> `docker/nginx.conf` 一次都没有构建或启动过，每个文件头部都写有 `NOT VERIFIED` 声明。
-> 决策背景与后果见 [ADR-008](docs/adr/ADR-008-docker-configs-unverified.md)。
+> ⚠️ 注意：开发主机没装 Docker，这套配置**从未在开发环境里构建或运行过**。
+> 2026-11-17 负责人的 Ubuntu 22.04 云主机真机起过一次生产编排，当场暴露三处
+> 「坐标写错」级缺陷（任务卷属主、镜像里没有纸面 CSS、`web` 没装浏览器），
+> 修账见 [ADR-008](docs/adr/ADR-008-docker-configs-unverified.md) 的第 32–33 轮修订。
+> 文件头部仍写着本机的验证边界；**下面这一节说的是开发形态，它到今天还没被真机起过**。
 > 日常开发请使用上一节的 `start-local.ps1`。
 
 前置条件：已安装 Docker Desktop，且项目根目录存在 `.env`。`docker compose` 会自动读取根目录
@@ -300,10 +301,12 @@ docker compose up --build
   只跑 `backend` 调试其它接口时可以 `docker compose up -d db redis backend frontend`。
 - Redis 的 6379 在这份编排里**发布到宿主**，只为本地 `redis-cli` 看队列深度
   （`zcard arq:queue:ocr` / `arq:queue:pdf`）；生产那份不发布端口。
-- 开发形态的 `worker-pdf` 用的也是**不装 Chromium** 的那支镜像（没传
-  `INSTALL_PDF_BROWSER=1`），所以在这套容器里跑批量导出会以 `PDF_RENDERER_UNAVAILABLE`
-  失败——这是既有行为（`ADR-029` §2.5 宁可失败也不回假 PDF），不是这一轮改出来的。
-  要在容器里验导出，给那一条服务的 `build.args` 补上 `INSTALL_PDF_BROWSER: "1"`。
+- **两条导出链路在容器里都能真跑通了**（第 33 轮补的）：`backend` 与 `worker-pdf` 都传了
+  `INSTALL_PDF_BROWSER: "1"`，装的是同一份 Chromium + `fonts-noto-cjk`。之前两边都没装，
+  表现是「打包 202 之后秒失败、单份导出稳定 503」而健康检查全绿。代价是首次 `build`
+  慢很多、这两支镜像各胖约这个量级（按 Debian 索引闭包算是 230 个包 / 下载 256 MB /
+  `Installed-Size` 820 MB）。用上一节 `start-local.ps1` 那条路不需要它——宿主机上有 Edge
+  可被 `pdf_renderer._resolve_browser` 找到。
 
 时钟与权限三项与生产同口径（第 32 轮同步，不留双标）：应用容器 `TZ: Asia/Shanghai`
 （`db` 留在 UTC）、worker 禁用镜像那条 HTTP 健康检查、停机宽限 10 秒。
@@ -316,10 +319,15 @@ docker compose down -v   # 连数据卷一起删除，数据会丢失
 ```
 
 第一次在真实 Docker 宿主上完整跑通 `build` + `up` 之后，应回来把 ADR-008 的状态改为「已验证」。
+生产那份 2026-11-17 已经在云主机上起过一次（暴露的三处缺陷见下面生产一节），**开发形态这份
+仍然一次都没起过**——日常开发请直接用它上面的 `start-local.ps1`。
 
 ## 🚢 生产环境一键部署（`docker-compose.prod.yml`）
 
-> ⚠️ 与上一节同一条声明：开发主机没有 Docker，**这份生产编排从未真机跑过**（ADR-008）。
+> ⚠️ 验证边界（第 33 轮更新）：开发主机没有 Docker，本节的编排 2026-11-17 在云主机上
+> **真机起过一次**，抓出三处配置缺陷（见下面的「从第 32 轮之前的镜像升级」那张表与
+> ADR-008 修订）。但本节**当前这一版**（`web` 也装浏览器、`TZ`、卷属主、纸面 CSS）
+> 还没有在那台机器上重跑过——它仍然不是「已验证的部署」，只是坐标按代码写准了的部署件。
 > 它按今天的代码把坐标写准了（服务名、卷、迁移顺序、worker 与浏览器），但第一次 `up`
 > 仍可能需要修。生产上线前请先在一台测试机跑通。
 
@@ -337,6 +345,7 @@ docker compose down -v   # 连数据卷一起删除，数据会丢失
 | `JWT_SECRET_KEY` | ✅ | **≥ 32 字符**，`production` 下短于此长度启动即失败。生成：`openssl rand -hex 32`（或 `python -c "import secrets;print(secrets.token_hex(32))"`） |
 | `PUBLIC_ORIGIN` | ✅ | 对外访问地址，例如 `https://career.example.com`；写进 `FRONTEND_URL` / `ALLOWED_ORIGINS` |
 | `WORKER_PDF_MAX_JOBS` |  | 默认 `2`（两个浏览器子进程）。**内存 < 4 GB 的机器调到 1**，否则 OOM 杀的是 worker |
+| `WORKER_OCR_MAX_JOBS` |  | 默认 `4`。这一条跑的是 `onnxruntime` 推理（扫描版 PDF 的 OCR），**四条并发在小内存云主机上撑不住**：表现是任务不推进或 `worker-ocr` 被内核 OOM 杀掉后重启，`dmesg -T \| grep -i 'killed process'` 能看到。内存 < 4 GB 同样调到 `1` |
 | `ENABLE_API_DOCS` |  | 默认 `false`（生产不暴露 `/docs` 与 `/openapi.json`） |
 
 `production` 是**强制**的：缺 `DATABASE_URL` / `REDIS_URL` / 强 JWT 中任意一项，容器
@@ -346,7 +355,7 @@ docker compose down -v   # 连数据卷一起删除，数据会丢失
 ### 2. 起服务
 
 ```bash
-# 构建并后台启动（首次会构建镜像；worker-pdf 因为装了 Chromium 会多花几分钟）
+# 构建并后台启动（首次会构建镜像；`web` 与 `worker-pdf` 都装了 Chromium，各多花几分钟）
 docker compose -f docker-compose.prod.yml up -d --build
 
 # 看状态：db / redis 等到 healthy，web 才会起；frontend 等 web 健康
@@ -376,8 +385,9 @@ docker compose -f docker-compose.prod.yml logs -f web worker-pdf
 
 ```bash
 # 以 root 进一次 web 容器改属主（默认用户 appuser 改不动 root 拥有的目录）
+# `-R` 是必要的：老卷里可能已经有 root 建出来的半成品子目录（比如 /app/temp/imports）
 docker compose -f docker-compose.prod.yml run --rm --no-deps --user root web \
-  sh -c "chown 10001:10001 /app/temp /app/downloads"
+  sh -c "chown -R 10001:10001 /app/temp /app/downloads"
 
 # 确认两个目录都归 10001
 docker compose -f docker-compose.prod.yml exec web ls -ld /app/temp /app/downloads
@@ -410,7 +420,42 @@ docker compose -f docker-compose.prod.yml exec redis redis-cli zcard arq:queue:p
 `backend` 网络别名（`docker/nginx.conf` 的 `proxy_pass` 认的就是这个名字）。
 它要是 502 而 `curl http://127.0.0.1:8000/api/v1/health` 直连是 200，就是别名没生效。
 
-### 5. 日常运维
+还有三条是查**镜像里到底有没有东西**的——它们不查进程活不活，专治「容器全绿但功能不可用」：
+
+```bash
+# 渲染 PDF 的两个地方都要有浏览器：web（单份导出是同步端点）与 worker-pdf（批量打包）
+docker compose -f docker-compose.prod.yml exec web sh -c 'command -v chromium'
+docker compose -f docker-compose.prod.yml exec worker-pdf sh -c 'command -v chromium'
+# 纸面 CSS：没有它两条导出链路都会以 PDF_RENDERER_UNAVAILABLE 秒失败
+docker compose -f docker-compose.prod.yml exec worker-pdf ls -l /app/frontend/src/styles.css
+# 时区：应打出 +08 而不是 UTC，否则 TZ 那行没落地
+docker compose -f docker-compose.prod.yml exec web date
+```
+
+### 5. 从第 32 轮之前的镜像升级（云服务器上踩过的那一套）
+
+镜像内容变了（纸面 CSS、任务目录属主、tzdata、web 的浏览器），**光改 compose 文件或 `restart` 都不算升级**：
+`build` 用的是 git 工作树里的代码，`up -d` 只在镜像变了时才重建。旧镜像的表现是：
+
+| 症状 | 真正缺的东西 | 一条判据 |
+|---|---|---|
+| 导入 PDF 报 500，`logs web` 里 `PermissionError: '/app/temp/imports'` | 卷是旧镜像建的，属主还是 root | `exec web ls -ld /app/temp` |
+| 批量打包接了任务、**0.1 秒**就 `PDF_RENDERER_UNAVAILABLE`（`stage=rendering`） | 镜像里没有 `/app/frontend/src/*` | `exec worker-pdf ls -l /app/frontend/src/styles.css` |
+| 单份导出稳定 503「暂时无法生成 PDF」 | `web` 的镜像没装 Chromium | `exec web sh -c 'command -v chromium'` |
+| 岗位过期晚 8 小时生效、容器日志时间戳是 UTC | 跑的还是 #52 之前的 compose（没有 `TZ`）或没装 tzdata | `exec web date` |
+
+一次做完：
+
+```bash
+cd ~/AI-Innovation-Practice
+git pull --ff-only origin master                    # 先让工作树到最新，build 才拿到新代码
+docker compose -f docker-compose.prod.yml build     # 镜像内容变了，必须 rebuild
+docker compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml run --rm --no-deps --user root web \
+  sh -c "chown -R 10001:10001 /app/temp /app/downloads"   # 老卷仍然要过一次（新卷不用）
+```
+
+### 6. 日常运维
 
 ```bash
 docker compose -f docker-compose.prod.yml restart worker-pdf   # 只重启一条队列

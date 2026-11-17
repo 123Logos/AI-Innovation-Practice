@@ -17,6 +17,9 @@
    且 UID 就是镜像创建的那个 `appuser`。
 5. worker 不继承 HTTP 健康检查、重启只给 10 秒；`web` 的健康检查留着，因为
    `frontend` 靠 `service_healthy` 等它。
+6. **谁渲染 PDF，谁的镜像就得装 Chromium**：批量在 `arq:queue:pdf` 那条 worker 里，
+   单份导出是同步端点、在提供 HTTP 的那个服务里。第 33 轮云服务器上的 503 就是
+   生产只给 `worker-pdf` 传了 `INSTALL_PDF_BROWSER=1`、`web` 没传。
 
 10 秒宽限的代价（在途任务落成 `TASK_LOST`）不在这里验——那是
 `tests/test_tasks.py::test_lost_job_becomes_failed_and_stays_failed` 的活，
@@ -47,6 +50,7 @@ PROD_COMPOSE = ROOT / "docker-compose.prod.yml"
 DEV_COMPOSE = ROOT / "docker-compose.yml"
 NGINX_CONF = ROOT / "docker" / "nginx.conf"
 BACKEND_DOCKERFILE = ROOT / "Dockerfile.backend"
+TEACHER_TOOLS_API = ROOT / "app" / "api" / "v1" / "teacher_tools.py"
 DOCKERIGNORE = ROOT / ".dockerignore"
 README = ROOT / "README.md"
 
@@ -334,7 +338,9 @@ def test_readme_volume_section_matches_the_compose_mounts_and_the_image_uid() ->
     section = readme[heading.start() : heading.end() + tail.start()]
 
     uid = re.search(r"--uid (\d+)", _text(BACKEND_DOCKERFILE)).group(1)
-    chown = re.search(r"chown (\d+):(\d+)([^\n]*)", section)
+    # `(?:-\S+\s+)?` 是为了允许 `chown -R 10001:10001 …`：老卷里 root 建出来的子目录
+    # 必须递归改，非递归那条命令是我第 32 轮写漏的。
+    chown = re.search(r"chown (?:-\S+\s+)?(\d+):(\d+)([^\n]*)", section)
     assert chown is not None, (
         f"README 没给出对已存在卷的 chown 命令（应为 chown {uid}:{uid} <挂载点>）"
     )
@@ -414,3 +420,59 @@ def test_dockerignore_does_not_starve_the_paper_styles_copy() -> None:
             }
         )
         assert not hits, f"{rel} 会被 .dockerignore 的 {hits} 排除，镜像里就没有纸面样式了"
+
+
+# ----------------------------------------------------- 6. 谁渲染 PDF，谁就得装浏览器
+
+
+def _services_that_render_pdf(label: str) -> set[str]:
+    """这份编排里真的会调无头浏览器渲染 PDF 的服务。
+
+    两个来源，都不靠人记：
+    1. `command` 里跑 `PdfWorkerSettings` 的（批量打包的渲染在 `arq:queue:pdf`）；
+    2. 那个提供 HTTP 的服务——因为单份导出 `POST /resumes/{resume_id}/export` 是**同步**
+       端点，渲染就发生在它的进程里（前提由下一条测试守着）。
+    """
+    rendered = {
+        name
+        for name, service in _services(label).items()
+        if "PdfWorkerSettings" in str(service.get("command") or "")
+    }
+    rendered.add(API_SERVICE[label])
+    return rendered
+
+
+def test_sync_export_endpoint_still_lives_in_the_api_process() -> None:
+    """守着上一条判据的前提：单份导出仍然是同步 `def`，渲染跑在 web 进程里。
+
+    哪天它改成 202 + 队列（那才是更省的形状，web 就不用装 ~820 MB 的浏览器闭包），
+    这条会红——**那时请连着把两条测试和两份编排的 `build.args` 一起改掉**，
+    不要把它注释掉：它红了就说明「谁需要浏览器」这个归属变了。
+    """
+    handler = re.search(
+        r'@export_router\.post\("/\{resume_id\}/export"\)\s*\n(?:@[^\n]*\n)*(?P<kind>async def|def)\s+export_resume',
+        _text(TEACHER_TOOLS_API),
+    )
+    assert handler is not None, (
+        "在 teacher_tools.py 里找不到 export_resume 这条路由：本模块关于「谁渲染 PDF」的判据需要重新核对"
+    )
+    assert handler.group("kind") == "def", (
+        "export_resume 已经是 async def（大概挪进队列了）：web 不再需要自带浏览器，"
+        "请连带复核 `_services_that_render_pdf` 与两份编排的 INSTALL_PDF_BROWSER"
+    )
+
+
+@pytest.mark.parametrize("label", TOPOLOGY_CASES)
+def test_every_service_that_renders_pdf_ships_a_browser(label: str) -> None:
+    """渲染 PDF 的那个容器必须装 Chromium（第 33 轮的线上故障就是这条没满足）。
+
+    症状写清楚，因为它长得完全不像配置错了：健康检查全绿、`GET /api/v1/health` 200、
+    打包任务能被 worker 接走，只有单份导出稳定 503「暂时无法生成 PDF」，
+    而批量任务在 0.1 秒内落成 `PDF_RENDERER_UNAVAILABLE`。
+    """
+    for name in sorted(_services_that_render_pdf(label)):
+        args = (_services(label)[name].get("build") or {}).get("args") or {}
+        assert args.get("INSTALL_PDF_BROWSER") == "1", (
+            f"{label} 的 {name} 会渲染 PDF，但 build.args 没打开 INSTALL_PDF_BROWSER："
+            "镜像里没有浏览器，导出会以 PDF_RENDERER_UNAVAILABLE 失败"
+        )
