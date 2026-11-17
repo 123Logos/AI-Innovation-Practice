@@ -37,7 +37,7 @@
 | AI | **BYOK**：用户在界面里填自己的 DeepSeek Key，后端携带它调用 DeepSeek（`ADR-009` 润色 / `ADR-011` JD 技能提取 / `ADR-013` 匹配 / `ADR-028` 画像概述 / `ADR-031` 外部 PDF 简历结构化），**非流式** | 服务端自持 Key 的调用形态（已废弃，`.env` 的 `DEEPSEEK_API_KEY` 不再被任何代码读取） |
 | 语音 | 浏览器 `MediaRecorder` 录音 + **直连** DeepSeek 语音工具做转写（`ADR-030`，回合制面试） | WebRTC 音视频房间（`media_rooms` 等表已裁定不建） |
 | 文件 | 不落对象存储：批量下载是同步生成的 ZIP（`ADR-029`），PDF 用宿主机浏览器渲染；导入外部 PDF 先读文字层（`pypdf`），读不出才本机 OCR（`pypdfium2` 渲染 + `rapidocr`/`onnxruntime`，模型在 wheel 内、不出网，`ADR-031` v2） | S3 兼容私有对象存储、云端 OCR（学生姓名/电话不送给第二个服务商） |
-| 部署 | 本地 `start.bat` / `start-local.ps1` 一键启动；CI 在 GitHub Actions 的 **PR** 上跑 | `docker-compose.yml` 等 Docker 件已入库但**从未构建过**（见 [ADR-008](docs/adr/ADR-008-docker-configs-unverified.md)） |
+| 部署 | 本地 `start.bat` / `start-local.ps1` 一键启动；CI 在 GitHub Actions 的 **PR** 上跑；**生产编排已在阿里云 ECS 真机部署并验收通过**（2026-11-17，见 [ADR-008](docs/adr/ADR-008-docker-configs-unverified.md) 第 34 轮修订） | 开发形态 `docker-compose.yml` 仍未在任何机器上起过 |
 
 数据库里现在是 **23 张表 / 28 个 Alembic 修订**（Phase 1 基线那 5 张早已扩出，新增每张表都要先有 ADR——`AGENTS.md` §4.2）。
 
@@ -271,11 +271,12 @@ npm run dev
 
 ## 🐳 Docker 启动 (可选)
 
-> ⚠️ 注意：开发主机没装 Docker，这套配置**从未在开发环境里构建或运行过**。
-> 2026-11-17 负责人的 Ubuntu 22.04 云主机真机起过一次生产编排，当场暴露三处
-> 「坐标写错」级缺陷（任务卷属主、镜像里没有纸面 CSS、`web` 没装浏览器），
-> 修账见 [ADR-008](docs/adr/ADR-008-docker-configs-unverified.md) 的第 32–33 轮修订。
-> 文件头部仍写着本机的验证边界；**下面这一节说的是开发形态，它到今天还没被真机起过**。
+> ⚠️ 验证边界（第 34 轮更新）：开发主机没装 Docker，**开发形态这份编排至今没在任何机器上
+> 起过**。共用的 `Dockerfile.backend` 已在真机验证：2026-11-17 负责人的阿里云 ECS
+> （Ubuntu 22.04，「试用三个月」免费机）上，生产编排第一次起暴露三处「坐标写错」级缺陷
+> （任务卷属主、镜像里没有纸面 CSS、`web` 没装浏览器），PR #52–#54 修复后重建，
+> 验收命令与导入/导出链路实测通过（见下面生产一节与
+> [ADR-008](docs/adr/ADR-008-docker-configs-unverified.md) 第 32–34 轮修订）。
 > 日常开发请使用上一节的 `start-local.ps1`。
 
 前置条件：已安装 Docker Desktop，且项目根目录存在 `.env`。`docker compose` 会自动读取根目录
@@ -318,18 +319,17 @@ docker compose down      # 停止服务，保留 MySQL 数据卷
 docker compose down -v   # 连数据卷一起删除，数据会丢失
 ```
 
-第一次在真实 Docker 宿主上完整跑通 `build` + `up` 之后，应回来把 ADR-008 的状态改为「已验证」。
-生产那份 2026-11-17 已经在云主机上起过一次（暴露的三处缺陷见下面生产一节），**开发形态这份
-仍然一次都没起过**——日常开发请直接用它上面的 `start-local.ps1`。
+开发形态这份编排仍然一次都没起过（生产那份已于 2026-11-17 在阿里云 ECS 上重建并验收通过，
+见下一节）——日常开发请直接用它上面的 `start-local.ps1`。
 
 ## 🚢 生产环境一键部署（`docker-compose.prod.yml`）
 
-> ⚠️ 验证边界（第 33 轮更新）：开发主机没有 Docker，本节的编排 2026-11-17 在云主机上
-> **真机起过一次**，抓出三处配置缺陷（见下面的「从第 32 轮之前的镜像升级」那张表与
-> ADR-008 修订）。但本节**当前这一版**（`web` 也装浏览器、`TZ`、卷属主、纸面 CSS）
-> 还没有在那台机器上重跑过——它仍然不是「已验证的部署」，只是坐标按代码写准了的部署件。
-> 它按今天的代码把坐标写准了（服务名、卷、迁移顺序、worker 与浏览器），但第一次 `up`
-> 仍可能需要修。生产上线前请先在一台测试机跑通。
+> ✅ 验证状态（第 34 轮更新）：本节的编排 2026-11-17 在负责人的阿里云 ECS
+> （Ubuntu 22.04，「试用三个月」免费机，2 vCPU / 4 GiB）上**真机部署并验收通过**：
+> 第一次起抓出三处配置缺陷（卷属主、纸面 CSS、web 没装浏览器，见下面
+> 「从第 32 轮之前的镜像升级」那张表），PR #52–#54 修复后 `down -v` 重建，
+> 本节验收命令与导入 PDF / 单份导出 / 批量打包链路实测无问题（负责人确认）。
+> 开发主机仍然没有 Docker；**换一台新机器部署时仍建议先跑一遍本节验收**。
 
 一条命令拉起六个容器：`db`（MySQL）、`redis`、`web`（Uvicorn）、`worker-ocr`、
 `worker-pdf`、`frontend`（nginx）。前五个是**必起的**；`frontend` 是界面本身，
@@ -348,6 +348,7 @@ docker compose down -v   # 连数据卷一起删除，数据会丢失
 | `WORKER_OCR_MAX_JOBS` |  | 默认 `4`。**调大它不会多份 OCR 模型内存**——`app/integrations/pdf_ocr.py` 用一把全局 `_CALL_LOCK` 把识别串成一条，全进程共用一个引擎；多出来的并发只是在锁上排队，各自握着已解码的页面位图。2 vCPU / 4 GiB 建议 `2`（让 DeepSeek 那一段还能重叠） |
 | 上面两个数怎么定 |  | 别照抄注释，量一次：`docker stats --no-stream`（空闲时 + 正在批量导出时各看一遍）、`free -m`、`sudo dmesg -T \| grep -i 'killed process'`。被内核杀掉的那一个通常是 `worker-pdf` 或 `mysqld` |
 | `ENABLE_API_DOCS` |  | 默认 `false`（生产不暴露 `/docs` 与 `/openapi.json`） |
+| `APT_MIRROR` |  | 只影响 `build`，不影响运行。默认官方源 `deb.debian.org`，任何机器拉了都能直接构建。国内机器嫌慢再写：**阿里云 ECS** 用 `mirrors.cloud.aliyuncs.com`（内网镜像，不占公网带宽）；其它国内机器用 `mirrors.aliyun.com`。注意内网镜像只在阿里云内网可达，别把它带到别的服务器上 |
 
 `production` 是**强制**的：缺 `DATABASE_URL` / `REDIS_URL` / 强 JWT 中任意一项，容器
 启动即失败；库结构落后于代码时 `check_migration_state` 直接拒绝启动。**不会**像本地那样
@@ -365,6 +366,11 @@ docker compose -f docker-compose.prod.yml logs -f web worker-pdf
 ```
 
 `web` 的启动命令是 `alembic upgrade head && uvicorn ...`，所以空库第一次起来就会建表。
+
+构建慢先查两件事（2026-11-17 真机踩过）：一是实例的**公网带宽档位**——1 Mbps 固定带宽
+只有 125 KB/s，换哪个公网镜像都一样慢，临时改「按流量 100 Mbps」构建完再改回最省事；
+二是 apt 源——阿里云 ECS 在 `.env` 写 `APT_MIRROR=mirrors.cloud.aliyuncs.com` 走内网镜像。
+`uv sync`（PyPI）与 `npm ci` 仍走公网，内网镜像只救 apt 那几层。
 
 ### 3. 卷权限：`task-temp` / `task-downloads`
 

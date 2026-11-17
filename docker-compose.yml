@@ -1,9 +1,10 @@
-# NOT VERIFIED ON THIS HOST: Docker is not installed on the development host, and this
-# dev topology has never been brought up anywhere. The production sibling
-# (`docker-compose.prod.yml`) did get one real run on an Ubuntu 22.04 server on
-# 2026-11-17, which exposed three coordinate-level mistakes now recorded in
-# docs/adr/ADR-008's round 32–33 revision; nothing below should be read as "verified",
-# and the first real `docker compose up` here is still expected to need fixes.
+# NOT VERIFIED ANYWHERE: this dev topology has never been brought up on any machine
+# (the dev host has no Docker). Its production sibling (`docker-compose.prod.yml`)
+# WAS deployed for real on the owner's Aliyun ECS (Ubuntu 22.04) on 2026-11-17:
+# the first run exposed three coordinate-level mistakes (fixed in PRs #52–#54), and
+# the rebuild after those fixes passed the README acceptance checks on that server.
+# The shared `Dockerfile.backend` is therefore real-build-verified; this topology's
+# own wiring (service names, published ports, worker-default) is still untested.
 #
 # Secrets are never written in this file. Docker Compose auto-loads the repo root
 # `.env`, which already defines MYSQL_USER / MYSQL_PASSWORD / MYSQL_DATABASE /
@@ -69,6 +70,9 @@ services:
         # 本地 `start-local.ps1` 那条路能用，是因为宿主机上有 Edge 可被
         # `pdf_renderer._resolve_browser` 找到——容器里没有这个运气。
         INSTALL_PDF_BROWSER: "1"
+        # apt 源（第 34 轮，与生产同口径）：默认官方源；国内机器在 `.env` 写
+        # APT_MIRROR=mirrors.aliyun.com（阿里云 ECS 用内网镜像 mirrors.cloud.aliyuncs.com）。
+        APT_MIRROR: ${APT_MIRROR:-deb.debian.org}
     restart: unless-stopped
     environment:
       # Built from service coordinates on purpose: the host DATABASE_URL in `.env`
@@ -118,6 +122,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
+      args:
+        # 与 backend 同一个 apt 源口径（第 34 轮）：同一份 Dockerfile 的服务一起传。
+        APT_MIRROR: ${APT_MIRROR:-deb.debian.org}
     restart: unless-stopped
     environment: &worker-env
       # 与 backend 同一个时钟口径（第 32 轮，理由见上面 backend 那段的注释）：
@@ -155,6 +162,7 @@ services:
         # 批量导出的渲染发生在这条队列里（`arq:queue:pdf`），所以这一支也必须有浏览器；
         # 之前只有生产传了这个开关，开发形态点批量打包会以 `PDF_RENDERER_UNAVAILABLE` 失败。
         INSTALL_PDF_BROWSER: "1"
+        APT_MIRROR: ${APT_MIRROR:-deb.debian.org}
     restart: unless-stopped
     environment: *worker-env
     command: sh -c "uv run --no-sync arq app.worker.PdfWorkerSettings"
@@ -172,6 +180,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
+      args:
+        APT_MIRROR: ${APT_MIRROR:-deb.debian.org}
     restart: unless-stopped
     environment: *worker-env
     command: sh -c "uv run --no-sync arq app.worker.DefaultWorkerSettings"
