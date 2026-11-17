@@ -344,8 +344,9 @@ docker compose down -v   # 连数据卷一起删除，数据会丢失
 | `MYSQL_USER` |  | 默认 `root` |
 | `JWT_SECRET_KEY` | ✅ | **≥ 32 字符**，`production` 下短于此长度启动即失败。生成：`openssl rand -hex 32`（或 `python -c "import secrets;print(secrets.token_hex(32))"`） |
 | `PUBLIC_ORIGIN` | ✅ | 对外访问地址，例如 `https://career.example.com`；写进 `FRONTEND_URL` / `ALLOWED_ORIGINS` |
-| `WORKER_PDF_MAX_JOBS` |  | 默认 `2`（两个浏览器子进程）。**内存 < 4 GB 的机器调到 1**，否则 OOM 杀的是 worker |
-| `WORKER_OCR_MAX_JOBS` |  | 默认 `4`。这一条跑的是 `onnxruntime` 推理（扫描版 PDF 的 OCR），**四条并发在小内存云主机上撑不住**：表现是任务不推进或 `worker-ocr` 被内核 OOM 杀掉后重启，`dmesg -T \| grep -i 'killed process'` 能看到。内存 < 4 GB 同样调到 `1` |
+| `WORKER_PDF_MAX_JOBS` |  | 默认 `2`。**这是内存的主账**：每条任务起一个无头浏览器子进程，2 就是最多两个 Chromium。2 vCPU / 4 GiB 的机器设 `1` |
+| `WORKER_OCR_MAX_JOBS` |  | 默认 `4`。**调大它不会多份 OCR 模型内存**——`app/integrations/pdf_ocr.py` 用一把全局 `_CALL_LOCK` 把识别串成一条，全进程共用一个引擎；多出来的并发只是在锁上排队，各自握着已解码的页面位图。2 vCPU / 4 GiB 建议 `2`（让 DeepSeek 那一段还能重叠） |
+| 上面两个数怎么定 |  | 别照抄注释，量一次：`docker stats --no-stream`（空闲时 + 正在批量导出时各看一遍）、`free -m`、`sudo dmesg -T \| grep -i 'killed process'`。被内核杀掉的那一个通常是 `worker-pdf` 或 `mysqld` |
 | `ENABLE_API_DOCS` |  | 默认 `false`（生产不暴露 `/docs` 与 `/openapi.json`） |
 
 `production` 是**强制**的：缺 `DATABASE_URL` / `REDIS_URL` / 强 JWT 中任意一项，容器
